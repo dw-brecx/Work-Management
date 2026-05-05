@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
@@ -5,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { init: initDb, get, all, run } = require('./db');
+const { sendInviteEmail } = require('./email');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -112,7 +114,7 @@ app.get('/api/invites', requireAuth, (req, res) => {
   res.json(all('SELECT * FROM invites ORDER BY created_at DESC'));
 });
 
-app.post('/api/invites', requireAuth, (req, res) => {
+app.post('/api/invites', requireAuth, async (req, res) => {
   const { email, name, role, dept } = req.body;
   if (!email || !name) return res.status(400).json({ error:'Email and name required' });
   const norm = email.toLowerCase().trim();
@@ -124,7 +126,13 @@ app.post('/api/invites', requireAuth, (req, res) => {
   const info = run(`INSERT INTO invites (email,name,role,dept,token,status,invited_by,expires_at)
     VALUES (?,?,?,?,?,'Pending',?,?)`, norm, name.trim(), role||'', dept||'', token, req.session.userId, expires);
   const invite = get('SELECT * FROM invites WHERE id=?', Number(info.lastInsertRowid));
-  res.json({ ...invite, inviteUrl:`http://localhost:${PORT}/invite.html?token=${token}` });
+  const inviter = get('SELECT name FROM users WHERE id=?', req.session.userId);
+  try {
+    await sendInviteEmail({ toEmail: norm, toName: name.trim(), inviterName: inviter?.name || 'Your team', role, dept, token });
+  } catch(e) {
+    console.error('[email] Failed to send invite:', e.message);
+  }
+  res.json({ ...invite, inviteUrl:`${process.env.APP_URL || `http://localhost:${PORT}`}/invite.html?token=${token}` });
 });
 
 app.delete('/api/invites/:id', requireAuth, (req, res) => {
