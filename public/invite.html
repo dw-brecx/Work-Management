@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WorkNest – Accept Invite</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--accent:#004874;--accent2:#0873af;--bg:#eef4f8;--card:#fff;--border:#d9e4ee;--text:#0a1f33;--text2:#52677a;--text3:#8ca0b3;--red:#dc2626;--green:#16a34a}
+body{
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  background:radial-gradient(circle at 15% 10%,rgba(0,72,116,.16),transparent 32%),
+             radial-gradient(circle at 85% 5%,rgba(37,99,235,.12),transparent 28%),
+             linear-gradient(135deg,#eef4f8,#f9fbfd 70%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:var(--text);
+}
+.card{background:rgba(255,255,255,.94);border:1px solid rgba(217,228,238,.9);border-radius:22px;box-shadow:0 30px 90px rgba(2,6,23,.12);padding:40px 36px;width:440px;max-width:95vw}
+.logo{display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:28px}
+.logo-icon{width:48px;height:48px;border-radius:16px;background:linear-gradient(135deg,#004874,#0f7cb5 56%,#8dd3f7);box-shadow:0 12px 28px rgba(0,72,116,.22);display:flex;align-items:center;justify-content:center}
+.logo-icon svg{width:24px;height:24px;color:#fff}
+.logo-text{font-size:22px;font-weight:800;letter-spacing:-.04em;color:#0a1f33}
+.logo-sub{font-size:11px;color:var(--text3);margin-top:1px}
+.invite-badge{background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border:1px solid #bae6fd;border-radius:14px;padding:14px 16px;margin-bottom:24px;text-align:center}
+.invite-badge-title{font-size:13px;font-weight:700;color:#0369a1;margin-bottom:3px}
+.invite-badge-sub{font-size:11.5px;color:#0284c7}
+.form-row{margin-bottom:14px}
+label{display:block;font-size:11.5px;font-weight:700;color:var(--text2);margin-bottom:5px}
+input{width:100%;padding:11px 14px;border:1px solid var(--border);border-radius:12px;font-size:13px;color:var(--text);background:#fff;outline:none;font-family:inherit;transition:.18s ease}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 4px rgba(0,72,116,.10)}
+input[readonly]{background:var(--bg);cursor:default;color:var(--text2)}
+.pw-wrap{position:relative}
+.pw-wrap input{padding-right:42px}
+.pw-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;padding:0}
+.pw-toggle:hover{color:var(--accent)}
+.btn{width:100%;padding:13px;border:none;border-radius:13px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 12px 24px rgba(0,72,116,.22);transition:.18s ease;margin-top:4px}
+.btn:hover{transform:translateY(-1px);box-shadow:0 16px 30px rgba(0,72,116,.28)}
+.btn:disabled{opacity:.6;cursor:default;transform:none}
+.err-msg{background:#fee2e2;border:1px solid #fecaca;color:var(--red);font-size:12px;padding:10px 12px;border-radius:10px;margin-bottom:14px;display:none}
+.err-msg.show{display:block}
+.success-card{text-align:center;padding:20px 0}
+.success-icon{font-size:48px;margin-bottom:16px}
+.success-title{font-size:18px;font-weight:800;color:var(--text);margin-bottom:8px}
+.success-sub{font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:20px}
+.loading{text-align:center;padding:40px 0;color:var(--text3)}
+.loading-spinner{font-size:28px;animation:spin 1s linear infinite;display:block;margin-bottom:12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+    </div>
+    <div>
+      <div class="logo-text">WorkNest</div>
+      <div class="logo-sub">Work Management</div>
+    </div>
+  </div>
+
+  <div id="loading-state" class="loading">
+    <span class="loading-spinner">⏳</span>
+    Loading your invite…
+  </div>
+
+  <div id="form-state" style="display:none">
+    <div class="invite-badge">
+      <div class="invite-badge-title">🎉 You've been invited to WorkNest</div>
+      <div class="invite-badge-sub" id="invite-details">Set up your account below to get started.</div>
+    </div>
+    <div class="err-msg" id="form-err"></div>
+    <div class="form-row">
+      <label>Full Name</label>
+      <input type="text" id="f-name" readonly/>
+    </div>
+    <div class="form-row">
+      <label>Email</label>
+      <input type="email" id="f-email" readonly/>
+    </div>
+    <div class="form-row">
+      <label>Create Password</label>
+      <div class="pw-wrap">
+        <input type="password" id="f-pw" placeholder="Min 6 characters" autocomplete="new-password"/>
+        <button class="pw-toggle" type="button" onclick="togglePw()">👁</button>
+      </div>
+    </div>
+    <div class="form-row">
+      <label>Confirm Password</label>
+      <div class="pw-wrap">
+        <input type="password" id="f-pw2" placeholder="Repeat password" autocomplete="new-password"/>
+      </div>
+    </div>
+    <button class="btn" id="accept-btn" onclick="doAccept()">Join WorkNest</button>
+  </div>
+
+  <div id="error-state" style="display:none">
+    <div class="err-msg show" id="error-msg">This invite link is invalid or has already been used.</div>
+    <div style="text-align:center;margin-top:16px">
+      <a href="/login.html" style="color:var(--accent);font-size:13px">Go to Sign In →</a>
+    </div>
+  </div>
+
+  <div id="success-state" style="display:none" class="success-card">
+    <div class="success-icon">🎊</div>
+    <div class="success-title">Welcome aboard!</div>
+    <div class="success-sub">Your account has been created.<br>Redirecting you to WorkNest…</div>
+  </div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get('token');
+
+function togglePw() {
+  const inp = document.getElementById('f-pw');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function show(id) {
+  ['loading-state','form-state','error-state','success-state'].forEach(s => {
+    document.getElementById(s).style.display = s === id ? '' : 'none';
+  });
+}
+
+function showFormErr(msg) {
+  const el = document.getElementById('form-err');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+async function loadInvite() {
+  if (!token) { show('error-state'); return; }
+  try {
+    const r = await fetch(`/api/invites/token/${token}`);
+    if (!r.ok) { show('error-state'); return; }
+    const data = await r.json();
+    document.getElementById('f-name').value = data.name;
+    document.getElementById('f-email').value = data.email;
+    if (data.role || data.dept) {
+      document.getElementById('invite-details').textContent = `${data.role}${data.dept ? ' · ' + data.dept : ''}`;
+    }
+    show('form-state');
+  } catch {
+    show('error-state');
+  }
+}
+
+async function doAccept() {
+  document.getElementById('form-err').classList.remove('show');
+  const name = document.getElementById('f-name').value;
+  const email = document.getElementById('f-email').value;
+  const pw = document.getElementById('f-pw').value;
+  const pw2 = document.getElementById('f-pw2').value;
+  if (pw.length < 6) { showFormErr('Password must be at least 6 characters.'); return; }
+  if (pw !== pw2) { showFormErr('Passwords do not match.'); return; }
+
+  const btn = document.getElementById('accept-btn');
+  btn.disabled = true; btn.textContent = 'Setting up your account…';
+
+  try {
+    const r = await fetch('/api/auth/register', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, email, password: pw, token })
+    });
+    const data = await r.json();
+    if (!r.ok) { showFormErr(data.error || 'Failed to create account.'); return; }
+    show('success-state');
+    setTimeout(() => { window.location.href = '/'; }, 2000);
+  } catch {
+    showFormErr('Network error. Please try again.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Join WorkNest';
+  }
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter') doAccept(); });
+loadInvite();
+</script>
+</body>
+</html>

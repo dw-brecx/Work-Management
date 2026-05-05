@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WorkNest – Sign In</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#004874;--accent2:#0873af;
+  --bg:#eef4f8;--card:#fff;--border:#d9e4ee;
+  --text:#0a1f33;--text2:#52677a;--text3:#8ca0b3;
+  --red:#dc2626;--green:#16a34a;
+}
+body{
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  background:radial-gradient(circle at 15% 10%,rgba(0,72,116,.16),transparent 32%),
+             radial-gradient(circle at 85% 5%,rgba(37,99,235,.12),transparent 28%),
+             linear-gradient(135deg,#eef4f8,#f9fbfd 70%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:var(--text);
+}
+.card{
+  background:rgba(255,255,255,.94);
+  border:1px solid rgba(217,228,238,.9);
+  border-radius:22px;
+  box-shadow:0 30px 90px rgba(2,6,23,.12);
+  padding:40px 36px;
+  width:420px;max-width:95vw;
+}
+.logo{display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:28px}
+.logo-icon{
+  width:48px;height:48px;border-radius:16px;
+  background:linear-gradient(135deg,#004874,#0f7cb5 56%,#8dd3f7);
+  box-shadow:0 12px 28px rgba(0,72,116,.22);
+  display:flex;align-items:center;justify-content:center;
+}
+.logo-icon svg{width:24px;height:24px;color:#fff}
+.logo-text{font-size:22px;font-weight:800;letter-spacing:-.04em;color:#0a1f33}
+.logo-sub{font-size:11px;color:var(--text3);margin-top:1px}
+.tabs{display:flex;background:var(--bg);border-radius:12px;padding:4px;gap:4px;margin-bottom:24px}
+.tab{flex:1;padding:9px;text-align:center;font-size:12.5px;font-weight:600;border:none;background:transparent;cursor:pointer;border-radius:9px;color:var(--text2);transition:all .15s}
+.tab.active{background:#fff;color:var(--accent);box-shadow:0 4px 12px rgba(0,72,116,.1)}
+.form-row{margin-bottom:14px}
+label{display:block;font-size:11.5px;font-weight:700;color:var(--text2);margin-bottom:5px}
+input{
+  width:100%;padding:11px 14px;border:1px solid var(--border);border-radius:12px;
+  font-size:13px;color:var(--text);background:#fff;outline:none;font-family:inherit;
+  transition:.18s ease;
+}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 4px rgba(0,72,116,.10)}
+input.error{border-color:var(--red)}
+.pw-wrap{position:relative}
+.pw-wrap input{padding-right:42px}
+.pw-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;padding:0}
+.pw-toggle:hover{color:var(--accent)}
+.btn{
+  width:100%;padding:13px;border:none;border-radius:13px;font-size:14px;font-weight:700;
+  cursor:pointer;font-family:inherit;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff;box-shadow:0 12px 24px rgba(0,72,116,.22);
+  transition:.18s ease;margin-top:4px;
+}
+.btn:hover{transform:translateY(-1px);box-shadow:0 16px 30px rgba(0,72,116,.28)}
+.btn:disabled{opacity:.6;cursor:default;transform:none}
+.divider{display:flex;align-items:center;gap:12px;margin:18px 0;color:var(--text3);font-size:11px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.err-msg{background:#fee2e2;border:1px solid #fecaca;color:var(--red);font-size:12px;padding:10px 12px;border-radius:10px;margin-bottom:14px;display:none}
+.err-msg.show{display:block}
+.success-msg{background:#f0fdf4;border:1px solid #bbf7d0;color:var(--green);font-size:12px;padding:10px 12px;border-radius:10px;margin-bottom:14px;display:none}
+.success-msg.show{display:block}
+.hint{font-size:11px;color:var(--text3);text-align:center;margin-top:16px;line-height:1.55}
+.hint a{color:var(--accent);cursor:pointer;text-decoration:underline}
+.footer-hint{font-size:11px;color:var(--text3);text-align:center;margin-top:20px}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+      </svg>
+    </div>
+    <div>
+      <div class="logo-text">WorkNest</div>
+      <div class="logo-sub">Work Management</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" id="tab-signin" onclick="showTab('signin')">Sign In</button>
+    <button class="tab" id="tab-signup" onclick="showTab('signup')">Create Account</button>
+  </div>
+
+  <!-- SIGN IN -->
+  <div id="pane-signin">
+    <div class="err-msg" id="signin-err"></div>
+    <div class="form-row">
+      <label>Email</label>
+      <input type="email" id="si-email" placeholder="you@company.com" autocomplete="email"/>
+    </div>
+    <div class="form-row">
+      <label>Password</label>
+      <div class="pw-wrap">
+        <input type="password" id="si-pw" placeholder="Your password" autocomplete="current-password"/>
+        <button class="pw-toggle" type="button" onclick="togglePw('si-pw',this)">👁</button>
+      </div>
+    </div>
+    <button class="btn" id="signin-btn" onclick="doSignIn()">Sign In</button>
+    <div class="footer-hint">Default demo: <strong>admin@worknest.com</strong> / <strong>admin123</strong></div>
+  </div>
+
+  <!-- SIGN UP -->
+  <div id="pane-signup" style="display:none">
+    <div class="err-msg" id="signup-err"></div>
+    <div class="success-msg" id="signup-ok">Account created! Signing you in…</div>
+    <div class="form-row">
+      <label>Full Name</label>
+      <input type="text" id="su-name" placeholder="Jane Doe" autocomplete="name"/>
+    </div>
+    <div class="form-row">
+      <label>Email</label>
+      <input type="email" id="su-email" placeholder="you@company.com" autocomplete="email"/>
+    </div>
+    <div class="form-row">
+      <label>Password</label>
+      <div class="pw-wrap">
+        <input type="password" id="su-pw" placeholder="Min 6 characters" autocomplete="new-password"/>
+        <button class="pw-toggle" type="button" onclick="togglePw('su-pw',this)">👁</button>
+      </div>
+    </div>
+    <button class="btn" id="signup-btn" onclick="doSignUp()">Create Account</button>
+  </div>
+</div>
+
+<script>
+function showTab(tab) {
+  document.getElementById('pane-signin').style.display = tab === 'signin' ? '' : 'none';
+  document.getElementById('pane-signup').style.display = tab === 'signup' ? '' : 'none';
+  document.getElementById('tab-signin').classList.toggle('active', tab === 'signin');
+  document.getElementById('tab-signup').classList.toggle('active', tab === 'signup');
+}
+
+function togglePw(id, btn) {
+  const inp = document.getElementById(id);
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+}
+
+function showErr(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function hideErr(id) { document.getElementById(id)?.classList.remove('show'); }
+
+async function doSignIn() {
+  hideErr('signin-err');
+  const email = document.getElementById('si-email').value.trim();
+  const password = document.getElementById('si-pw').value;
+  if (!email || !password) { showErr('signin-err', 'Please enter your email and password.'); return; }
+  const btn = document.getElementById('signin-btn');
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email, password })
+    });
+    const data = await r.json();
+    if (!r.ok) { showErr('signin-err', data.error || 'Sign in failed.'); return; }
+    window.location.href = '/';
+  } catch { showErr('signin-err', 'Network error. Please try again.'); }
+  finally { btn.disabled = false; btn.textContent = 'Sign In'; }
+}
+
+async function doSignUp() {
+  hideErr('signup-err');
+  document.getElementById('signup-ok').classList.remove('show');
+  const name = document.getElementById('su-name').value.trim();
+  const email = document.getElementById('su-email').value.trim();
+  const password = document.getElementById('su-pw').value;
+  if (!name) { showErr('signup-err', 'Please enter your name.'); return; }
+  if (!email) { showErr('signup-err', 'Please enter your email.'); return; }
+  if (password.length < 6) { showErr('signup-err', 'Password must be at least 6 characters.'); return; }
+  const btn = document.getElementById('signup-btn');
+  btn.disabled = true; btn.textContent = 'Creating account…';
+  try {
+    const r = await fetch('/api/auth/register', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, email, password })
+    });
+    const data = await r.json();
+    if (!r.ok) { showErr('signup-err', data.error || 'Registration failed.'); return; }
+    document.getElementById('signup-ok').classList.add('show');
+    setTimeout(() => { window.location.href = '/'; }, 1200);
+  } catch { showErr('signup-err', 'Network error. Please try again.'); }
+  finally { btn.disabled = false; btn.textContent = 'Create Account'; }
+}
+
+// Enter key support
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const active = document.getElementById('pane-signin').style.display !== 'none' ? 'signin' : 'signup';
+  if (active === 'signin') doSignIn(); else doSignUp();
+});
+
+// Check if already logged in
+fetch('/api/auth/me').then(r => { if (r.ok) window.location.href = '/'; });
+</script>
+</body>
+</html>
