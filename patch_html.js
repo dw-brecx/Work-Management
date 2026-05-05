@@ -968,8 +968,19 @@ window._pendingTicketFiles = [];
 function initAttachmentFeature() {
   injectAttachmentStyles();
   patchCreateTicketModal();
-  patchCommentSection();
   watchTicketDetailPanel();
+  // Comment attach bar: set up now + re-apply when detail panel opens
+  setupCommentAttachBar();
+  const _origOTD = window.openTicketDetail;
+  if (typeof _origOTD === 'function' && !_origOTD._cmtPatched) {
+    const patched = function(id, ...args) {
+      const r = _origOTD.call(this, id, ...args);
+      setTimeout(setupCommentAttachBar, 400);
+      return r;
+    };
+    patched._cmtPatched = true;
+    window.openTicketDetail = patched;
+  }
 }
 
 function injectAttachmentStyles() {
@@ -1287,32 +1298,83 @@ function setupCommentAttachments(container) {
 }
 
 // ── Load + display attachments in ticket detail ──────────────────────────────
-async function loadTicketAttachments(ticketId, container) {
+async function loadTicketAttachments(ticketId) {
   try {
     const atts = await apiGet(\`/api/tickets/\${ticketId}/attachments\`);
-    if (!atts.length) return;
-    let section = container.querySelector('.ticket-attachments-section');
-    if (!section) {
-      section = document.createElement('div');
-      section.className = 'ticket-attachments-section';
-      container.appendChild(section);
+
+    // ── 1. Replace #det-panel-attachments content with real files ────────────
+    const attPanel = document.getElementById('det-panel-attachments');
+    if (attPanel) {
+      attPanel.innerHTML = atts.length === 0
+        ? \`<div style="text-align:center;padding:24px;color:var(--text3);font-size:12px">No attachments yet</div>\`
+        : '';
+      atts.forEach(att => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg2);border-radius:8px;margin-bottom:6px;';
+        if (att.mimeType.startsWith('audio/')) {
+          row.innerHTML = \`
+            <div style="width:28px;height:28px;background:#ede9fe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">🎤</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:11px;font-weight:500;color:var(--text2);margin-bottom:3px">Voice note · \${att.uploader}</div>
+              <audio controls src="\${att.url}" style="height:28px;width:100%;max-width:220px"></audio>
+            </div>\`;
+        } else if (att.mimeType.startsWith('image/')) {
+          row.style.cursor = 'pointer';
+          row.onclick = () => window.open(att.url, '_blank');
+          row.innerHTML = \`
+            <img src="\${att.url}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${att.originalName}</div>
+              <div style="font-size:10px;color:var(--text3)">\${att.uploader}</div>
+            </div>
+            <span style="color:var(--text3);font-size:14px">↓</span>\`;
+        } else {
+          const ext = att.originalName.split('.').pop().toUpperCase().slice(0,3);
+          const bg = ext==='PDF'?'#fef2f2':ext==='DOC'?'#eff6ff':'#f0fdf4';
+          const col = ext==='PDF'?'#dc2626':ext==='DOC'?'#2563eb':'#16a34a';
+          row.style.cursor = 'pointer';
+          row.onclick = () => window.open(att.url, '_blank');
+          row.innerHTML = \`
+            <div style="width:28px;height:28px;background:\${bg};border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:\${col};flex-shrink:0">\${ext}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${att.originalName}</div>
+              <div style="font-size:10px;color:var(--text3)">\${att.uploader}</div>
+            </div>
+            <span style="color:var(--text3);font-size:14px">↓</span>\`;
+        }
+        attPanel.appendChild(row);
+      });
     }
-    section.innerHTML = \`<h4>Attachments (\${atts.length})</h4><div class="ticket-attach-grid"></div>\`;
-    const grid = section.querySelector('.ticket-attach-grid');
-    atts.forEach(att => {
-      const item = document.createElement('div');
-      item.className = 'ticket-attach-item';
-      if (att.mimeType.startsWith('image/')) {
-        item.innerHTML = \`<img src="\${att.url}" alt="\${att.originalName}"><div class="attach-meta">\${att.originalName}</div>\`;
-        item.onclick = () => window.open(att.url, '_blank');
-      } else if (att.mimeType.startsWith('audio/')) {
-        item.innerHTML = \`<div style="padding:8px 10px;font-size:11px;color:#6b7280;font-weight:500">🎤 \${att.uploader}</div><audio controls src="\${att.url}"></audio>\`;
-      } else {
-        item.innerHTML = \`<div class="attach-doc">📄 <span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${att.originalName}</span></div>\`;
-        item.onclick = () => window.open(att.url, '_blank');
+
+    // ── 2. Update Attachments tab badge count ────────────────────────────────
+    const attTabBtn = Array.from(document.querySelectorAll('.tab')).find(t => /^attachments/i.test(t.textContent.trim()));
+    if (attTabBtn) {
+      attTabBtn.innerHTML = \`Attachments\${atts.length > 0 ? \` <span class="tab-count">\${atts.length}</span>\` : ''}\`;
+    }
+
+    // ── 3. Right panel thumbnail strip (images + audio only) ─────────────────
+    const rp = document.querySelector('.right-panel.td-right, .right-panel');
+    if (rp) {
+      rp.querySelectorAll('.ticket-attachments-section').forEach(el => el.remove());
+      const media = atts.filter(a => a.mimeType.startsWith('image/') || a.mimeType.startsWith('audio/'));
+      if (media.length > 0) {
+        const sec = document.createElement('div');
+        sec.className = 'ticket-attachments-section';
+        sec.style.cssText = 'padding:12px 14px;border-top:1px solid var(--border);margin-top:8px';
+        sec.innerHTML = \`<div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Attachments (\${atts.length})</div>\`;
+        media.forEach(att => {
+          const el = document.createElement('div');
+          el.style.cssText = 'margin-bottom:8px';
+          if (att.mimeType.startsWith('audio/')) {
+            el.innerHTML = \`<div style="font-size:11px;color:var(--text2);margin-bottom:3px">🎤 \${att.uploader}</div><audio controls src="\${att.url}" style="width:100%;height:30px"></audio>\`;
+          } else {
+            el.innerHTML = \`<img src="\${att.url}" onclick="window.open('\${att.url}','_blank')" style="width:100%;border-radius:8px;cursor:pointer;max-height:120px;object-fit:cover">\`;
+          }
+          sec.appendChild(el);
+        });
+        rp.appendChild(sec);
       }
-      grid.appendChild(item);
-    });
+    }
   } catch(e) {}
 }
 
@@ -1330,23 +1392,140 @@ function watchTicketDetailPanel() {
 }
 
 function injectAttachmentsWhenReady(ticketId) {
-  // Poll until the detail panel has the correct ticket content, then inject
   let attempts = 0;
   const interval = setInterval(async () => {
     attempts++;
-    const panel = document.querySelector('.right-panel.td-right, .right-panel');
-    // Confirm the panel is showing this ticket (look for ticket ID text)
-    if (panel && (panel.textContent.includes(ticketId) || attempts > 8)) {
+    const panel = document.getElementById('det-panel-attachments');
+    if (panel && (document.querySelector('.right-panel')?.textContent.includes(ticketId) || attempts > 8)) {
       clearInterval(interval);
-      // Remove any previous attachment section
-      panel.querySelectorAll('.ticket-attachments-section').forEach(el => el.remove());
-      await loadTicketAttachments(ticketId, panel);
+      await loadTicketAttachments(ticketId);
     }
     if (attempts > 15) clearInterval(interval);
   }, 250);
 }
 
+// ── Comment section: direct wire-up ─────────────────────────────────────────
+function setupCommentAttachBar() {
+  const box = document.querySelector('.td-composer-box');
+  if (!box || box.dataset.attachBarAdded) return;
+  box.dataset.attachBarAdded = '1';
+
+  let cmtPendingFiles = [];
+  let cmtRecorder = null;
+  let cmtRecInterval = null;
+  let cmtRecSecs = 0;
+
+  // Insert bar inside the composer box, above the actions row
+  const bar = document.createElement('div');
+  bar.className = 'attach-bar';
+  bar.style.cssText = 'padding:4px 10px 6px;border-top:1px solid var(--border);';
+  bar.innerHTML = \`
+    <label class="attach-btn" style="font-size:11px;padding:4px 10px;cursor:pointer">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+      Attach File
+      <input type="file" multiple accept="image/*,.pdf,.doc,.docx" style="display:none" id="cmt-file-input">
+    </label>
+    <button class="attach-btn cmt-voice-btn" type="button" id="cmt-voice-btn" style="font-size:11px;padding:4px 10px;">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+      Voice Note
+    </button>
+    <span class="rec-timer" id="cmt-rec-timer" style="display:none"></span>
+    <div class="attach-preview-list" id="cmt-previews" style="width:100%;margin-top:4px"></div>
+  \`;
+  const actions = box.querySelector('.td-composer-actions');
+  if (actions) box.insertBefore(bar, actions);
+  else box.appendChild(bar);
+
+  // File input
+  document.getElementById('cmt-file-input').addEventListener('change', function() {
+    Array.from(this.files).forEach(f => { cmtPendingFiles.push(f); addCmtPreview(f); });
+    this.value = '';
+  });
+
+  // Voice recording
+  const voiceBtn = document.getElementById('cmt-voice-btn');
+  const recTimer = document.getElementById('cmt-rec-timer');
+  voiceBtn.addEventListener('click', async () => {
+    if (cmtRecorder && cmtRecorder.state === 'recording') { cmtRecorder.stop(); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks = [];
+      cmtRecorder = new MediaRecorder(stream);
+      cmtRecorder.ondataavailable = e => chunks.push(e.data);
+      cmtRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        clearInterval(cmtRecInterval);
+        recTimer.style.display = 'none';
+        voiceBtn.classList.remove('recording');
+        voiceBtn.innerHTML = \`<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Voice Note\`;
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        blob.name = \`voice-\${Date.now()}.webm\`;
+        cmtPendingFiles.push(blob);
+        addCmtPreview(blob, true);
+      };
+      cmtRecorder.start();
+      cmtRecSecs = 0;
+      recTimer.style.display = 'inline';
+      recTimer.textContent = '0:00';
+      cmtRecInterval = setInterval(() => {
+        cmtRecSecs++;
+        recTimer.textContent = Math.floor(cmtRecSecs/60) + ':' + String(cmtRecSecs%60).padStart(2,'0');
+      }, 1000);
+      voiceBtn.classList.add('recording');
+      voiceBtn.innerHTML = \`<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop\`;
+    } catch(e) { alert('Microphone access denied.'); }
+  });
+
+  function addCmtPreview(file, isAudio) {
+    const list = document.getElementById('cmt-previews');
+    const item = document.createElement('div');
+    item.className = 'attach-preview-item';
+    const idx = cmtPendingFiles.length - 1;
+    if (isAudio || file.type?.startsWith('audio/')) {
+      item.innerHTML = \`<audio controls src="\${URL.createObjectURL(file)}" style="height:28px"></audio><div class="attach-file-info" style="font-size:10px">🎤 Voice note</div>\`;
+    } else if (file.type?.startsWith('image/')) {
+      item.innerHTML = \`<img src="\${URL.createObjectURL(file)}" style="width:52px;height:52px;object-fit:cover;display:block">\`;
+    } else {
+      item.innerHTML = \`<div class="attach-file-info">📄 \${file.name}</div>\`;
+    }
+    const rm = document.createElement('button');
+    rm.className = 'attach-remove'; rm.textContent = '×';
+    rm.onclick = () => { cmtPendingFiles.splice(idx, 1); item.remove(); };
+    item.appendChild(rm);
+    list.appendChild(item);
+  }
+
+  // Patch addComment to upload files after comment is posted
+  const _origAddComment = window.addComment;
+  if (typeof _origAddComment === 'function') {
+    window.addComment = async function(...args) {
+      const filesToUpload = [...cmtPendingFiles];
+      cmtPendingFiles = [];
+      document.getElementById('cmt-previews').innerHTML = '';
+      const r = await _origAddComment.apply(this, args);
+      if (filesToUpload.length > 0) {
+        const ticketId = window.currentDetailTicketId;
+        if (ticketId) {
+          for (const file of filesToUpload) {
+            try {
+              const form = new FormData();
+              form.append('file', file, file.name || 'voice.webm');
+              form.append('ticketId', ticketId);
+              await fetch('/api/upload', { method: 'POST', body: form });
+            } catch(e) {}
+          }
+          setTimeout(() => injectAttachmentsWhenReady(ticketId), 300);
+        }
+      }
+      return r;
+    };
+  }
+}
+
 // ── Bootstrap: fast local render, then API overwrite ─────────────────────────
+// Zero the hardcoded baseline so stats don't flash fake numbers
+DASH_BASELINE.total = 0; DASH_BASELINE.inProgress = 0;
+DASH_BASELINE.overdue = 0; DASH_BASELINE.completed = 0;
 loadPersistedState();
 initDashboard();
 initDetailComments();
