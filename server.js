@@ -629,19 +629,26 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// One-time cleanup: remove fake seeded demo comments
+// ── One-time: wipe all demo/seed data from existing databases ────────────────
 try {
-  run("DELETE FROM ticket_comments WHERE author IN ('Sarah Johnson','Mike Peters') AND ticket_id='TKT-1042'");
-  run("DELETE FROM ticket_comments WHERE author='John Doe' AND ticket_id='TKT-1042' AND text LIKE 'Great progress%'");
+  // Remove demo team members seeded by old db.js
+  run("DELETE FROM users WHERE email IN ('sarah@worknest.com','mike@worknest.com','emily@worknest.com','david@worknest.com','priya@worknest.com')");
+  // Remove demo tickets
+  run("DELETE FROM tickets WHERE id IN ('TKT-1042','TKT-1041','TKT-1040','TKT-1039','TKT-1038','TKT-1037','TKT-1036','TKT-1035','TKT-0998')");
+  // Remove demo plans
+  run("DELETE FROM plans WHERE id IN ('PLN-001','PLN-002','PLN-003')");
+  // Remove demo invites
+  run("DELETE FROM invites WHERE email IN ('ariana@worknest.com','daniel@worknest.com')");
+  // Rename "John Doe" admin to "Admin" if still using the old seed name
+  run("UPDATE users SET name='Admin', role='Administrator' WHERE email='admin@worknest.com' AND name='John Doe'");
   // Migrate any voice note attachments to VOICENOTE:: comments
   const voiceAtts = all("SELECT * FROM attachments WHERE mime_type LIKE 'audio/%'");
   for (const att of voiceAtts) {
     const existing = get("SELECT id FROM ticket_comments WHERE ticket_id=? AND text LIKE 'VOICENOTE::%'", att.ticket_id);
-    if (!existing) {
-      const fileUrl = '/uploads/' + att.filename;
-      run("INSERT INTO ticket_comments (ticket_id, author, author_init, author_bg, author_col, text) VALUES (?,?,?,?,?,?)",
+    if (!existing && att.ticket_id) {
+      run("INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text) VALUES (?,?,?,?,?,?)",
         att.ticket_id, att.uploader, att.uploader.split(' ').map(w=>w[0]).join('').substring(0,2),
-        '#ede9fe', '#5b21b6', 'VOICENOTE::' + fileUrl);
+        '#ede9fe', '#5b21b6', 'VOICENOTE::/uploads/' + att.filename);
       run("DELETE FROM attachments WHERE id=?", att.id);
     }
   }

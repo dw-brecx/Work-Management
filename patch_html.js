@@ -486,16 +486,19 @@ const DESIGN_CSS = `
       justify-content: space-between !important;
       padding: 18px 16px 14px !important;
     }
-    #sidebar.collapsed .sb-logo { justify-content: center !important; padding: 18px 0 14px !important; }
+    /* Collapsed: hide the logo/navigate button, center just the toggle arrow */
+    #sidebar.collapsed .sb-logo > button:not(.sb-collapse-btn) { display: none !important; }
+    #sidebar.collapsed .sb-logo { justify-content: center !important; padding: 14px 0 12px !important; }
     .sb-collapse-btn {
       background: none !important;
       border: none !important;
       cursor: pointer !important;
       color: #9ca3af !important;
-      padding: 4px !important;
+      padding: 6px !important;
       border-radius: 8px !important;
       display: flex !important;
       align-items: center !important;
+      justify-content: center !important;
       transition: color .15s, background .15s !important;
       flex-shrink: 0 !important;
     }
@@ -2525,8 +2528,12 @@ function setupCommentAttachBar() {
 
 // ── Sidebar collapse / mobile toggle ─────────────────────────────────────────
 window.toggleSidebar = function() {
-  const sb = document.getElementById('sidebar');
-  if (sb) sb.classList.toggle('collapsed');
+  var sb = document.getElementById('sidebar');
+  if (!sb) return;
+  var collapsed = sb.classList.toggle('collapsed');
+  // Force inline width so no external CSS can fight it
+  sb.style.width = collapsed ? '64px' : '220px';
+  try { localStorage.setItem('wn_sb_collapsed', collapsed ? '1' : '0'); } catch(e) {}
 };
 window.openMobileSidebar = function() {
   document.getElementById('sidebar')?.classList.add('mobile-open');
@@ -2534,6 +2541,16 @@ window.openMobileSidebar = function() {
 window.closeMobileSidebar = function() {
   document.getElementById('sidebar')?.classList.remove('mobile-open');
 };
+// Restore sidebar collapsed state across page loads
+(function() {
+  try {
+    var sb = document.getElementById('sidebar');
+    if (sb && localStorage.getItem('wn_sb_collapsed') === '1') {
+      sb.classList.add('collapsed');
+      sb.style.width = '64px';
+    }
+  } catch(e) {}
+})();
 
 // ── Bootstrap: fast local render, then API overwrite ─────────────────────────
 // Zero the hardcoded baseline so stats don't flash fake numbers
