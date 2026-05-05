@@ -281,7 +281,8 @@ const DESIGN_CSS = `
       border-radius: 24px !important;
       box-shadow: 0 28px 64px rgba(16,24,40,.16) !important;
       border: 1px solid #e8ecf4 !important;
-      overflow: hidden !important;
+      overflow-y: auto !important;
+      max-height: 90vh !important;
     }
     .modal-head { border-radius: 0 !important; }
 
