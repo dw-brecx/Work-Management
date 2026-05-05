@@ -9368,10 +9368,42 @@ async function initApp() {
 }
 
 // ── Voice Notes & File Attachments ────────────────────────────────────────────
+
+// Global queue: files staged in the create-ticket modal, uploaded once we get the real ticket ID
+window._pendingTicketFiles = [];
+
+// Intercept fetch to catch the POST /api/tickets response and upload staged files immediately
+(function() {
+  const _origFetch = window.fetch;
+  window.fetch = async function(url, opts, ...rest) {
+    const result = await _origFetch.call(this, url, opts, ...rest);
+    if (typeof url === 'string' && url.includes('/api/tickets') && opts?.method === 'POST' && window._pendingTicketFiles?.length) {
+      try {
+        const clone = result.clone();
+        const data = await clone.json();
+        if (data && data.id) {
+          const files = [...window._pendingTicketFiles];
+          window._pendingTicketFiles = [];
+          for (const file of files) {
+            try {
+              const form = new FormData();
+              form.append('file', file, file.name || 'voice-note.webm');
+              form.append('ticketId', data.id);
+              await _origFetch.call(window, '/api/upload', { method:'POST', body:form });
+            } catch(e) { console.warn('[attach] upload failed:', e); }
+          }
+        }
+      } catch(e) {}
+    }
+    return result;
+  };
+})();
+
 function initAttachmentFeature() {
   injectAttachmentStyles();
   patchCreateTicketModal();
   patchCommentSection();
+  watchTicketDetailPanel();
 }
 
 function injectAttachmentStyles() {
@@ -9544,25 +9576,14 @@ function setupTicketModalAttachments(modal) {
     list.appendChild(item);
   }
 
-  // Patch the submit button to upload files after ticket creation
-  const origSubmit = submitBtn?.onclick;
+  // Stage files into global queue — fetch intercept uploads them with the real ticket ID
   if (submitBtn) {
-    submitBtn.addEventListener('click', async () => {
+    submitBtn.addEventListener('click', () => {
       if (pendingFiles.length === 0) return;
-      // Wait briefly for the ticket to be created, then find the newest ticket and upload
-      await new Promise(r => setTimeout(r, 800));
-      const newest = TICKETS_DATA[TICKETS_DATA.length - 1];
-      if (!newest) return;
-      for (const file of pendingFiles) {
-        try {
-          const form = new FormData();
-          form.append('file', file, file.name || 'voice-note.webm');
-          form.append('ticketId', newest.id);
-          await fetch('/api/upload', { method:'POST', body:form });
-        } catch(e) { console.warn('Upload failed:', e); }
-      }
+      window._pendingTicketFiles = [...pendingFiles];
       pendingFiles = [];
-    }, true);
+      document.getElementById('modal-attach-previews').innerHTML = '';
+    });
   }
 }
 
@@ -9672,41 +9693,31 @@ function setupCommentAttachments(container) {
     previews.appendChild(item);
   }
 
-  // Patch the send button inside the same container or parent
-  function findSendBtn() {
-    return container.querySelector('button[onclick*="addComment"], button.btn-primary, button[class*="send"]')
-      || container.parentElement?.querySelector('button[onclick*="addComment"], button.cmt-send');
-  }
-
-  // Poll for send button and patch it
-  let patchAttempts = 0;
-  const patchInterval = setInterval(() => {
-    const sendBtn = findSendBtn();
-    if (sendBtn && !sendBtn.dataset.attachPatched) {
-      sendBtn.dataset.attachPatched = '1';
-      sendBtn.addEventListener('click', async () => {
-        if (pendingFiles.length === 0) return;
-        await new Promise(r => setTimeout(r, 600));
-        // Get the most recent comment for this ticket
-        const ticketId = window.currentDetailTicketId || window.currentOpenTicket?.id;
-        if (!ticketId) return;
-        const cmts = document.querySelectorAll('.cmt-item, .comment-item, [class*="cmt-"]');
-        const lastCmt = cmts[cmts.length - 1];
-        for (const file of [...pendingFiles]) {
-          try {
-            const form = new FormData();
-            form.append('file', file, file.name || 'voice-note.webm');
-            form.append('ticketId', ticketId);
-            await fetch('/api/upload', { method:'POST', body:form });
-          } catch(e) { console.warn('Upload failed:', e); }
-        }
-        pendingFiles = [];
-        previews.innerHTML = '';
-      }, true);
-      clearInterval(patchInterval);
+  // Upload files when the send button is clicked (intercept fetch catches comment POST)
+  // We upload directly with the known ticket ID right when the button is pressed
+  const sendArea = container.closest?.('.right-panel, .td-right') || document.querySelector('.right-panel');
+  container.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn || !/send|comment|add/i.test(btn.textContent + btn.className)) return;
+    if (pendingFiles.length === 0) return;
+    const ticketId = window.currentDetailTicketId;
+    if (!ticketId) return;
+    const filesToUpload = [...pendingFiles];
+    pendingFiles = [];
+    previews.innerHTML = '';
+    // Wait briefly for comment to be saved, then upload and refresh attachment list
+    await new Promise(r => setTimeout(r, 500));
+    for (const file of filesToUpload) {
+      try {
+        const form = new FormData();
+        form.append('file', file, file.name || 'voice-note.webm');
+        form.append('ticketId', ticketId);
+        await fetch('/api/upload', { method:'POST', body:form });
+      } catch(e) { console.warn('[attach] comment upload failed:', e); }
     }
-    if (++patchAttempts > 20) clearInterval(patchInterval);
-  }, 300);
+    // Refresh the attachment display
+    injectAttachmentsWhenReady(ticketId);
+  }, true);
 }
 
 // ── Load + display attachments in ticket detail ──────────────────────────────
@@ -9739,18 +9750,34 @@ async function loadTicketAttachments(ticketId, container) {
   } catch(e) {}
 }
 
-// Hook into ticket detail open to load attachments
-const _origOpenTicketDetail = window.openTicketDetail;
-if (typeof _origOpenTicketDetail === 'function') {
-  window.openTicketDetail = function(id, ...args) {
-    window.currentDetailTicketId = id;
-    const r = _origOpenTicketDetail.call(this, id, ...args);
-    setTimeout(() => {
-      const panel = document.querySelector('.right-panel, .detail-panel, [class*="detail"]');
-      if (panel) loadTicketAttachments(id, panel);
-    }, 400);
-    return r;
-  };
+// Watch the right panel for ticket detail renders and inject attachments
+function watchTicketDetailPanel() {
+  const _orig = window.openTicketDetail;
+  if (typeof _orig === 'function') {
+    window.openTicketDetail = function(id, ...args) {
+      window.currentDetailTicketId = id;
+      const r = _orig.call(this, id, ...args);
+      injectAttachmentsWhenReady(id);
+      return r;
+    };
+  }
+}
+
+function injectAttachmentsWhenReady(ticketId) {
+  // Poll until the detail panel has the correct ticket content, then inject
+  let attempts = 0;
+  const interval = setInterval(async () => {
+    attempts++;
+    const panel = document.querySelector('.right-panel.td-right, .right-panel');
+    // Confirm the panel is showing this ticket (look for ticket ID text)
+    if (panel && (panel.textContent.includes(ticketId) || attempts > 8)) {
+      clearInterval(interval);
+      // Remove any previous attachment section
+      panel.querySelectorAll('.ticket-attachments-section').forEach(el => el.remove());
+      await loadTicketAttachments(ticketId, panel);
+    }
+    if (attempts > 15) clearInterval(interval);
+  }, 250);
 }
 
 // ── Bootstrap: fast local render, then API overwrite ─────────────────────────
