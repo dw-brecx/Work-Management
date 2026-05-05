@@ -4,7 +4,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const { randomUUID } = require('crypto');
 
-const DB_PATH = path.join(__dirname, 'worknest.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'worknest.db');
 const db = new DatabaseSync(DB_PATH);
 
 db.exec("PRAGMA journal_mode = WAL");

@@ -10,7 +10,7 @@ const multer = require('multer');
 const { init: initDb, get, all, run } = require('./db');
 const { sendInviteEmail } = require('./email');
 
-const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'public', 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -39,7 +39,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
   store: new FileStore({ path: path.join(__dirname, '.sessions'), retries: 1, ttl: 7 * 24 * 3600 }),
-  secret: 'worknest-secret-key-change-in-production',
+  secret: process.env.SESSION_SECRET || 'worknest-dev-secret',
   resave: false,
   saveUninitialized: false,
   cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 }
@@ -257,6 +257,14 @@ app.post('/api/tickets/:id/comments', requireAuth, (req, res) => {
   res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, init, bg, col, text:text.trim(), time:'Just now' });
 });
 
+app.delete('/api/tickets/:id/comments/:commentId', requireAuth, (req, res) => {
+  const comment = get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
+  if (!comment) return res.status(404).json({ error:'Comment not found' });
+  run('DELETE FROM ticket_comments WHERE id=?', req.params.commentId);
+  run('UPDATE tickets SET comments_count=MAX(0,comments_count-1) WHERE id=?', req.params.id);
+  res.json({ ok:true });
+});
+
 app.get('/api/tickets/:id/timeline', requireAuth, (req, res) => {
   const rows = all('SELECT * FROM ticket_timelines WHERE ticket_id=? ORDER BY created_at DESC', req.params.id);
   if (!rows.length) {
@@ -291,6 +299,11 @@ app.put('/api/worktasks/:id', requireAuth, (req, res) => {
   if (timer_running!==undefined) { u.push('timer_running=?'); v.push(timer_running?1:0); }
   if (timer_elapsed!==undefined) { u.push('timer_elapsed=?'); v.push(timer_elapsed); }
   if (u.length) { v.push(req.params.id); run(`UPDATE work_tasks SET ${u.join(',')} WHERE id=?`, ...v); }
+  res.json({ ok:true });
+});
+
+app.delete('/api/worktasks/:id', requireAuth, (req, res) => {
+  run('DELETE FROM work_tasks WHERE id=?', req.params.id);
   res.json({ ok:true });
 });
 
@@ -387,6 +400,24 @@ app.post('/api/plans/:id/comments', requireAuth, (req, res) => {
   res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, bg, col, text:text.trim(), time:'Just now' });
 });
 
+// ── Plan files ────────────────────────────────────────────────────────────────
+app.get('/api/plans/:id/files', requireAuth, (req, res) => {
+  const rows = all('SELECT * FROM plan_files WHERE plan_id=? ORDER BY created_at ASC', req.params.id);
+  res.json(rows.map(r => ({ id:r.id, name:r.filename, size:r.size, createdAt:r.created_at })));
+});
+
+app.post('/api/plans/:id/files', requireAuth, upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error:'No file' });
+  const info = run('INSERT INTO plan_files (plan_id,filename,size) VALUES (?,?,?)',
+    req.params.id, req.file.originalname, req.file.size);
+  res.status(201).json({ id:Number(info.lastInsertRowid), name:req.file.originalname, size:req.file.size });
+});
+
+app.delete('/api/plan-files/:id', requireAuth, (req, res) => {
+  run('DELETE FROM plan_files WHERE id=?', req.params.id);
+  res.json({ ok:true });
+});
+
 // ── Profile ───────────────────────────────────────────────────────────────────
 app.put('/api/profile', requireAuth, (req, res) => {
   const { name, role, dept } = req.body;
@@ -415,6 +446,11 @@ app.get('/api/notifications', requireAuth, (req, res) => {
 
 app.put('/api/notifications/read-all', requireAuth, (req, res) => {
   run('UPDATE notifications SET unread=0 WHERE user_id=?', req.session.userId);
+  res.json({ ok:true });
+});
+
+app.put('/api/notifications/:id/read', requireAuth, (req, res) => {
+  run('UPDATE notifications SET unread=0 WHERE id=? AND user_id=?', req.params.id, req.session.userId);
   res.json({ ok:true });
 });
 
@@ -469,6 +505,11 @@ app.delete('/api/attachments/:id', requireAuth, (req, res) => {
     run('DELETE FROM attachments WHERE id=?', req.params.id);
   }
   res.json({ ok: true });
+});
+
+// ── Health ────────────────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({ ok:true, ts: new Date().toISOString() });
 });
 
 // ── Catch-all ─────────────────────────────────────────────────────────────────
