@@ -353,8 +353,75 @@ const DESIGN_CSS = `
       overflow: hidden !important;
     }
 
-    /* ── Profile menu ── */
-    .profile-menu { border-radius: 16px !important; box-shadow: 0 8px 28px rgba(16,24,40,.12) !important; overflow: hidden !important; }
+    /* ── Profile menu — modern redesign ── */
+    .profile-menu {
+      background: #ffffff !important;
+      border-radius: 16px !important;
+      box-shadow: 0 12px 36px rgba(16,24,40,.14), 0 2px 8px rgba(16,24,40,.06) !important;
+      border: 1px solid #e8ecf4 !important;
+      padding: 6px !important;
+      min-width: 224px !important;
+      overflow: visible !important;
+    }
+    .profile-menu-head {
+      padding: 12px 12px 11px !important;
+      border-bottom: 1px solid #f0f3fb !important;
+      margin-bottom: 4px !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 10px !important;
+    }
+    .profile-menu-avatar {
+      width: 38px !important; height: 38px !important;
+      border-radius: 11px !important;
+      font-size: 13px !important; font-weight: 700 !important;
+      flex-shrink: 0 !important;
+      display: flex !important; align-items: center !important; justify-content: center !important;
+    }
+    .profile-menu-name { font-size: 13.5px !important; font-weight: 600 !important; color: #111827 !important; line-height: 1.3 !important; }
+    .profile-menu-email { font-size: 11.5px !important; color: #9ca3af !important; margin-top: 1px !important; }
+    .profile-menu button {
+      display: flex !important; align-items: center !important; gap: 9px !important;
+      padding: 8px 11px !important; border-radius: 10px !important;
+      font-size: 13px !important; font-weight: 500 !important; color: #374151 !important;
+      background: none !important; border: none !important; cursor: pointer !important;
+      width: 100% !important; text-align: left !important; transition: background .12s, color .12s !important;
+    }
+    .profile-menu button:hover { background: #f5f7fa !important; color: #111827 !important; }
+    .profile-menu button.danger { color: #dc2626 !important; }
+    .profile-menu button.danger:hover { background: #fef2f2 !important; }
+    .profile-menu-line { height: 1px !important; background: #f0f3fb !important; margin: 4px 6px !important; }
+    .pm-icon { width: 15px !important; height: 15px !important; color: #9ca3af !important; flex-shrink: 0 !important; }
+    .profile-menu button:hover .pm-icon { color: #6b7280 !important; }
+    .profile-menu button.danger .pm-icon { color: #f87171 !important; }
+
+    /* ── Sidebar collapse arrow (chevron, not hamburger) ── */
+    .sb-collapse-btn { border-radius: 8px !important; }
+    .sb-collapse-btn svg { transition: transform .22s cubic-bezier(.4,0,.2,1) !important; }
+    #sidebar.collapsed .sb-collapse-btn svg { transform: rotate(180deg) !important; }
+
+    /* ── Hide fake pagination ── */
+    .pg { display: none !important; }
+
+    /* ── Dashboard / Reports filter bar ── */
+    .page-filter-bar {
+      display: flex !important; align-items: center !important; gap: 8px !important;
+      margin-bottom: 18px !important; flex-wrap: wrap !important;
+    }
+    .pf-label { font-size: 11.5px !important; font-weight: 500 !important; color: var(--text3) !important; white-space: nowrap !important; }
+    .pf-select {
+      font-size: 12px !important; font-weight: 500 !important; color: #374151 !important;
+      background: #fff !important; border: 1px solid #e4e9f2 !important;
+      border-radius: 10px !important; padding: 6px 26px 6px 10px !important;
+      cursor: pointer !important; appearance: none !important; -webkit-appearance: none !important;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%239ca3af'/%3E%3C/svg%3E") !important;
+      background-repeat: no-repeat !important; background-position: right 8px center !important;
+      box-shadow: 0 1px 3px rgba(16,24,40,.06) !important; transition: border-color .15s !important;
+      width: auto !important; min-width: 130px !important; max-width: 200px !important;
+      height: auto !important; line-height: normal !important;
+    }
+    .pf-select:hover { border-color: #93c5fd !important; }
+    .pf-select:focus { border-color: #93c5fd !important; outline: none !important; box-shadow: 0 0 0 3px rgba(37,99,235,.08) !important; }
 
     /* ── Timeline ── */
     .tl-dot { box-shadow: 0 0 0 3px #edf1f9 !important; border-radius: 50% !important; }
@@ -370,10 +437,183 @@ const DESIGN_CSS = `
     .stk-avatar   { border-radius: 50% !important; }
     .tag          { border-radius: 999px !important; }
     select        { border-radius: 12px !important; }
+
+    /* ── Kill original body/html gradient that causes pink corners ── */
+    html, body { background: #f5f7fa !important; }
+    body::before, body::after { display: none !important; }
+
+    /* ── Dashboard donut chart hover tooltips ── */
+    .donut-segment { cursor: pointer; transition: opacity .15s; }
+    .donut-segment:hover { opacity: .75; }
+    .donut-tooltip {
+      position: fixed; background: #1e293b; color: #fff;
+      padding: 6px 10px; border-radius: 8px; font-size: 12px;
+      pointer-events: none; z-index: 9999; white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(0,0,0,.2); display: none;
+    }
+    .donut-tooltip.show { display: block; }
+
+    /* ── Sidebar: full + collapsed states ─────────────────────────── */
+    #sidebar {
+      width: 220px !important;
+      transition: width .22s cubic-bezier(.4,0,.2,1) !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+    }
+    #sidebar.collapsed { width: 64px !important; }
+    #sidebar.collapsed .nav-label,
+    #sidebar.collapsed .nav-item span:not(.badge),
+    #sidebar.collapsed .nav-item-text,
+    #sidebar.collapsed .sb-logo-name,
+    #sidebar.collapsed .sb-full-logo,
+    #sidebar.collapsed .badge,
+    #sidebar.collapsed .sb-bottom > *:not(.sb-user),
+    #sidebar.collapsed .sb-invite,
+    #sidebar.collapsed .sb-user-name,
+    #sidebar.collapsed .sb-user-role { display: none !important; }
+    #sidebar.collapsed .sb-icon-logo { display: block !important; }
+    #sidebar.collapsed .nav-item {
+      justify-content: center !important;
+      padding: 10px 0 !important;
+      overflow: hidden !important;
+    }
+    #sidebar.collapsed .nav-item svg { margin: 0 auto !important; flex-shrink: 0 !important; }
+    .sb-full-logo { display: block !important; height: 36px !important; width: auto !important; }
+    .sb-icon-logo { display: none !important; height: 30px !important; width: auto !important; }
+    .sb-logo {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      padding: 18px 16px 14px !important;
+    }
+    #sidebar.collapsed .sb-logo { justify-content: center !important; padding: 18px 0 14px !important; }
+    .sb-collapse-btn {
+      background: none !important;
+      border: none !important;
+      cursor: pointer !important;
+      color: #9ca3af !important;
+      padding: 4px !important;
+      border-radius: 8px !important;
+      display: flex !important;
+      align-items: center !important;
+      transition: color .15s, background .15s !important;
+      flex-shrink: 0 !important;
+    }
+    .sb-collapse-btn:hover { color: #2563eb !important; background: #eff6ff !important; }
+    #sidebar.collapsed .sb-collapse-btn { margin: 0 auto !important; }
+
+    /* ── Mobile sidebar overlay ── */
+    #sb-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(15,23,42,.4);
+      z-index: 99;
+      backdrop-filter: blur(2px);
+    }
+    .mob-menu-btn {
+      display: none !important;
+      background: none !important;
+      border: none !important;
+      cursor: pointer !important;
+      color: #374151 !important;
+      padding: 6px !important;
+      border-radius: 8px !important;
+      margin-right: 8px !important;
+    }
+    .mob-menu-btn:hover { background: #f3f4f6 !important; }
+    @media (max-width: 768px) {
+      .mob-menu-btn { display: flex !important; align-items: center !important; }
+      #sidebar {
+        position: fixed !important;
+        left: -240px !important;
+        top: 0 !important;
+        height: 100vh !important;
+        z-index: 100 !important;
+        width: 220px !important;
+        transition: left .25s cubic-bezier(.4,0,.2,1) !important;
+      }
+      #sidebar.mobile-open { left: 0 !important; }
+      #sidebar.mobile-open ~ #sb-overlay { display: block; }
+      #app { width: 100% !important; }
+      #topbar { padding: 0 14px !important; }
+      .search-wrap { max-width: 200px !important; }
+      .page, .page-content { padding: 16px !important; }
+      .stat-grid { grid-template-columns: 1fr 1fr !important; }
+      .tbl { overflow-x: auto !important; }
+    }
+
+    /* ── Nav item layout ── */
+    .nav-item {
+      display: flex !important;
+      align-items: center !important;
+      gap: 9px !important;
+    }
+    .nav-item svg { flex-shrink: 0 !important; }
+
+    /* ── Notification panel icons ── */
+    .notif-icon-wrap { font-size: 0 !important; }
+    .notif-icon-wrap svg { width: 15px !important; height: 15px !important; }
+
+    /* ── Voice note in comments ── */
+    .voice-comment-player {
+      display: flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+      padding: 6px 0 !important;
+    }
+    .voice-comment-player audio {
+      height: 30px !important;
+      max-width: 200px !important;
+      flex: 1 !important;
+    }
+    .voice-comment-label {
+      font-size: 11px !important;
+      color: #7c3aed !important;
+      font-weight: 500 !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 4px !important;
+    }
+
+    /* ── Settings sidebar tabs (remove emoji dependency) ── */
+    .stab-icon { display: none !important; }
+
+    /* ── Profile menu items ── */
+    .profile-menu-icon { display: none !important; }
+    .profile-menu button { gap: 10px !important; }
+
+    /* ── Password toggle ── */
+    .pw-toggle { font-size: 0 !important; }
+    .pw-toggle svg { width: 16px; height: 16px; display: inline-block; }
+
   </style>
 `;
 
 html = html.replace('</head>', DESIGN_CSS + '\n</head>');
+
+// ── Clear all hardcoded fake data arrays from source template ─────────────────
+// Replace populated static arrays with empty ones; real data comes from API calls
+html = html.replace(
+  /const COMMENTS_DATA = \[[\s\S]*?\];/,
+  'const COMMENTS_DATA = [];'
+);
+html = html.replace(
+  /let TICKETS_DATA = \[[\s\S]*?\];/,
+  'let TICKETS_DATA = [];'
+);
+html = html.replace(
+  /let TEAM_DATA = \[[\s\S]*?\];/,
+  'let TEAM_DATA = [];'
+);
+html = html.replace(
+  /let DASH_ACTIVITY = \[[\s\S]*?\];/,
+  'let DASH_ACTIVITY = [];'
+);
+// CAL_EVENTS is an object — replace the whole populated literal with an empty object
+html = html.replace(
+  /const CAL_EVENTS = \{[\s\S]*?\};/,
+  'const CAL_EVENTS = {};'
+);
 
 // ── Targeted patches ──────────────────────────────────────────────────────────
 
@@ -400,6 +640,566 @@ html = html.replace(
   "Note added by John Doe:",
   "Note added by ${(window.CURRENT_USER||{name:'John Doe'}).name}:"
 );
+
+// ── Branding ──────────────────────────────────────────────────────────────────
+html = html.replace('<title>WorkNest – Work Management</title>', '<title>Syruvia</title>');
+
+// ── Sidebar: replace WorkNest logo with Syruvia SVG logo + collapse button ────
+html = html.replace(
+  `    <div class="sb-logo-icon">
+      <svg width="16" height="16" fill="none" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="8" height="8" rx="1.5" fill="white"/>
+        <rect x="13" y="3" width="8" height="8" rx="1.5" fill="white" opacity=".6"/>
+        <rect x="3" y="13" width="8" height="8" rx="1.5" fill="white" opacity=".6"/>
+        <rect x="13" y="13" width="8" height="8" rx="1.5" fill="white" opacity=".3"/>
+      </svg>
+    </div>
+    <div>
+      <div class="sb-logo-text">WorkNest</div>
+      <div class="sb-logo-sub">Work Management</div>
+    </div>`,
+  `    <button onclick="navigate('dashboard')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;flex:1;min-width:0;">
+      <img src="/syruvia-logo.svg" class="sb-full-logo" alt="Syruvia">
+      <img src="/syruvia-icon.svg" class="sb-icon-logo" alt="Syruvia">
+    </button>
+    <button class="sb-collapse-btn" onclick="toggleSidebar()" title="Collapse sidebar">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>`
+);
+
+// ── Mobile overlay element (lives just before #app) ───────────────────────────
+html = html.replace(
+  '</div>\n\n<!-- APP -->',
+  '</div>\n<div id="sb-overlay" onclick="closeMobileSidebar()"></div>\n\n<!-- APP -->'
+);
+
+// ── Mobile hamburger button in topbar ─────────────────────────────────────────
+html = html.replace(
+  '    <div class="search-wrap">',
+  '    <button class="mob-menu-btn" onclick="openMobileSidebar()" aria-label="Open menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>\n    <div class="search-wrap">'
+);
+
+// ── Profile menu: modern redesign with SVG icons + real email ────────────────
+html = html.replace(
+  `<div class="profile-menu" id="profile-menu">
+          <div class="profile-menu-head">
+            <div class="avatar profile-menu-avatar">JD</div>
+            <div>
+              <div class="profile-menu-name">John Doe</div>
+              <div class="profile-menu-email">john@worknest.com</div>
+            </div>
+          </div>
+          <button onclick="navigate('settings'); closeProfileMenu();"><span class="profile-menu-icon">👤</span><span class="profile-menu-text">My Profile</span></button>
+          <button onclick="navigate('my-tickets'); closeProfileMenu();"><span class="profile-menu-icon">✓</span><span class="profile-menu-text">My Tickets</span></button>
+          <button onclick="closeProfileMenu();"><span class="profile-menu-icon">🔔</span><span class="profile-menu-text">Notifications</span></button>
+          <button onclick="navigate('settings'); closeProfileMenu();"><span class="profile-menu-icon">⚙</span><span class="profile-menu-text">Account Settings</span></button>
+          <button onclick="closeProfileMenu();"><span class="profile-menu-icon">?</span><span class="profile-menu-text">Help & Support</span></button>
+          <div class="profile-menu-line"></div>
+          <button onclick="closeProfileMenu();clearPersistedState();"><span class="profile-menu-icon">⟲</span><span class="profile-menu-text">Reset demo data</span></button>
+          <button class="danger" onclick="closeProfileMenu();"><span class="profile-menu-icon">↪</span><span class="profile-menu-text">Sign Out</span></button>
+        </div>`,
+  `<div class="profile-menu" id="profile-menu">
+          <div class="profile-menu-head">
+            <div class="avatar profile-menu-avatar">JD</div>
+            <div style="min-width:0">
+              <div class="profile-menu-name">John Doe</div>
+              <div class="profile-menu-email" id="pm-email">admin@worknest.com</div>
+            </div>
+          </div>
+          <button onclick="navigate('settings'); closeProfileMenu();">
+            <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            My Profile
+          </button>
+          <button onclick="navigate('my-tickets'); closeProfileMenu();">
+            <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+            My Tickets
+          </button>
+          <button onclick="navigate('settings'); closeProfileMenu();">
+            <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            Account Settings
+          </button>
+          <div class="profile-menu-line"></div>
+          <button onclick="closeProfileMenu();confirmResetData();">
+            <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
+            Reset All Data
+          </button>
+          <button class="danger" onclick="closeProfileMenu();window.logoutUser&&window.logoutUser();">
+            <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Sign Out
+          </button>
+        </div>`
+);
+
+// ── Notification panel: empty state (emoji → SVG) ─────────────────────────────
+html = html.replace(
+  '<div class="notif-empty-icon">🔔</div>',
+  '<div class="notif-empty-icon" style="font-size:0"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.4"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>'
+);
+
+// ── Dashboard: inject filter bar above the stat grid ─────────────────────────
+html = html.replace(
+  `<p style="color:var(--text2);font-size:12px;margin-bottom:18px">Welcome back, John! Here's what's happening.</p>
+
+      <div class="stat-grid">`,
+  `<p style="color:var(--text2);font-size:12px;margin-bottom:14px">Welcome back, John! Here's what's happening.</p>
+
+      <div class="page-filter-bar" id="dash-filter-bar">
+        <span class="pf-label">Period</span>
+        <select class="pf-select" id="dash-period" onchange="applyDashFilters()">
+          <option value="all">All Time</option>
+          <option value="month" selected>This Month</option>
+          <option value="quarter">Last 3 Months</option>
+          <option value="year">This Year</option>
+        </select>
+        <span class="pf-label" style="margin-left:6px">Department</span>
+        <select class="pf-select" id="dash-dept" onchange="applyDashFilters()">
+          <option value="">All Departments</option>
+        </select>
+      </div>
+
+      <div class="stat-grid">`
+);
+
+// ── Reports: inject filter bar above the report grid ─────────────────────────
+html = html.replace(
+  `<p style="color:var(--text2);font-size:12px;margin-bottom:16px">Insights and analytics for your team's performance.</p>
+      <div class="report-grid">`,
+  `<p style="color:var(--text2);font-size:12px;margin-bottom:14px">Insights and analytics for your team's performance.</p>
+
+      <div class="page-filter-bar" id="rpt-filter-bar">
+        <span class="pf-label">Period</span>
+        <select class="pf-select" id="rpt-period" onchange="applyReportFilters()">
+          <option value="all">All Time</option>
+          <option value="month" selected>This Month</option>
+          <option value="quarter">Last 3 Months</option>
+          <option value="year">This Year</option>
+        </select>
+        <span class="pf-label" style="margin-left:6px">Department</span>
+        <select class="pf-select" id="rpt-dept-filter" onchange="applyReportFilters()">
+          <option value="">All Departments</option>
+        </select>
+        <span class="pf-label" style="margin-left:6px">Assignee</span>
+        <select class="pf-select" id="rpt-assignee-filter" onchange="applyReportFilters()">
+          <option value="">Everyone</option>
+        </select>
+      </div>
+
+      <div class="report-grid">`
+);
+
+// ── Reports page: add IDs so JS can populate with real data ──────────────────
+html = html.replace(
+  `<div class="card"><div style="font-size:12px;color:var(--text3);margin-bottom:4px">Total Tickets</div><div style="font-size:28px;font-weight:600">1,248</div><div style="font-size:11px;color:var(--green)">↑ 18.2% this month</div></div>`,
+  `<div class="card"><div style="font-size:12px;color:var(--text3);margin-bottom:4px">Total Tickets</div><div style="font-size:28px;font-weight:600" id="rpt-total">—</div><div style="font-size:11px;color:var(--green)" id="rpt-total-delta"></div></div>`
+);
+html = html.replace(
+  `<div class="card"><div style="font-size:12px;color:var(--text3);margin-bottom:4px">Avg. Resolution Time</div><div style="font-size:28px;font-weight:600">2.4d</div><div style="font-size:11px;color:var(--green)">↓ 0.3d from last month</div></div>`,
+  `<div class="card"><div style="font-size:12px;color:var(--text3);margin-bottom:4px">Open Tickets</div><div style="font-size:28px;font-weight:600" id="rpt-open">—</div><div style="font-size:11px;color:var(--text3)" id="rpt-open-delta"></div></div>`
+);
+html = html.replace(
+  `<div class="card"><div style="font-size:12px;color:var(--text3);margin-bottom:4px">SLA Compliance</div><div style="font-size:28px;font-weight:600">94%</div><div style="font-size:11px;color:var(--green)">↑ 2% from last month</div></div>`,
+  `<div class="card"><div style="font-size:12px;color:var(--text3);margin-bottom:4px">Overdue</div><div style="font-size:28px;font-weight:600" id="rpt-overdue">—</div><div style="font-size:11px;color:var(--text3)" id="rpt-overdue-delta"></div></div>`
+);
+
+// ── Reports dept bars: add an id to the container ────────────────────────────
+html = html.replace(
+  '<div style="font-size:13px;font-weight:500;margin-bottom:14px">Tickets by Department</div>\n          <div style="display:flex;flex-direction:column;gap:10px">',
+  '<div style="font-size:13px;font-weight:500;margin-bottom:14px">Tickets by Department</div>\n          <div id="rpt-dept-bars" style="display:flex;flex-direction:column;gap:10px">'
+);
+
+// ── Reports: replace monthly chart card with a real data-driven one ──────────
+html = html.replace(
+  '<div style="font-size:13px;font-weight:500;margin-bottom:14px">Monthly Ticket Volume</div>\n          <div class="bar-chart"',
+  '<div style="font-size:13px;font-weight:500;margin-bottom:14px">Monthly Ticket Volume</div>\n          <div id="rpt-monthly-chart" style="display:flex;align-items:flex-end;gap:6px;height:80px;margin-bottom:8px"></div>\n          <div class="bar-chart" style="display:none"'
+);
+
+// ── Reports: add Custom Reports section after the grid ───────────────────────
+html = html.replace(
+  // After the monthly/dept grid, add custom reports
+  '</div>\n    </div>\n\n    <!-- ========== SETTINGS ========== -->',
+  `      <div style="margin-top:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:600">Custom Reports</div>
+          <button onclick="generateCustomReport()" style="padding:7px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">+ Generate Report</button>
+        </div>
+        <div id="custom-report-area" style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:14px">
+            <div><label style="font-size:11px;color:var(--text2);font-weight:600;display:block;margin-bottom:4px">Status</label>
+              <select id="cr-status" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <option value="">All</option><option>Open</option><option>In Progress</option><option>On Hold</option><option>In Review</option><option>Closed</option><option>Overdue</option>
+              </select></div>
+            <div><label style="font-size:11px;color:var(--text2);font-weight:600;display:block;margin-bottom:4px">Priority</label>
+              <select id="cr-priority" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <option value="">All</option><option>Low</option><option>Medium</option><option>High</option><option>Urgent</option>
+              </select></div>
+            <div><label style="font-size:11px;color:var(--text2);font-weight:600;display:block;margin-bottom:4px">Department</label>
+              <select id="cr-dept" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <option value="">All</option><option>Engineering</option><option>Design</option><option>Support</option><option>Operations</option><option>Management</option>
+              </select></div>
+          </div>
+          <div id="cr-results" style="font-size:12px;color:var(--text3);text-align:center;padding:16px">Select filters above and click Generate Report</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== SETTINGS ========== -->`
+);
+
+// ── Settings: add Reset Data tab to sidebar ──────────────────────────────────
+html = html.replace(
+  `            <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
+              <span class="stab-icon">🛡️</span> Permissions
+            </div>`,
+  `            <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
+              <span class="stab-icon">🛡️</span> Permissions
+            </div>
+            <div class="settings-tab" data-stab="reset" onclick="switchSettingsTab('reset')" style="color:#dc2626">
+              <span class="stab-icon">⚠️</span> Reset Data
+            </div>`
+);
+
+// ── Settings: add Reset Data section ─────────────────────────────────────────
+html = html.replace(
+  '<!-- Permissions panel (matrix) -->',
+  `<!-- Reset Data panel -->
+        <div class="card settings-panel" id="settings-panel-reset" style="display:none">
+          <div style="margin-bottom:14px">
+            <h2 style="font-size:14px;font-weight:600;margin-bottom:4px;color:#dc2626">Reset Application Data</h2>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Permanently delete all tickets, comments, attachments, plans, events, and notifications. User accounts are kept. This cannot be undone.</p>
+            <button onclick="confirmResetData()" style="padding:10px 20px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Reset All Data</button>
+          </div>
+        </div>
+
+        <!-- Permissions panel (matrix) -->`
+);
+
+// ── Notification items: replace ${n.icon} emoji with SVG via getNotifIcon() ────
+html = html.replace(
+  '<div class="notif-icon-wrap ${n.type}">${n.icon}</div>',
+  '<div class="notif-icon-wrap ${n.type}">${window.getNotifIcon ? window.getNotifIcon(n.type) : \'\'}</div>'
+);
+
+// ── Patch formatCommentText: VOICENOTE:: prefix renders inline audio player ───
+html = html.replace('</body>', `<script>
+(function(){
+
+  /* ── 0. Search bar: clear value and prevent browser autofill ── */
+  (function() {
+    function clearSearch() {
+      var gs = document.getElementById('global-search');
+      if (!gs) return;
+      gs.value = '';
+      gs.setAttribute('autocomplete', 'off');
+      gs.setAttribute('name', 'syruvia-search-' + Math.random());
+    }
+    clearSearch();
+    setTimeout(clearSearch, 100);
+    setTimeout(clearSearch, 500);
+    // Prevent Chrome autofill from re-injecting email on focus
+    document.addEventListener('focus', function(e) {
+      if (e.target && e.target.id === 'global-search') {
+        // Only clear if the value looks like an email (autofill artifact)
+        if (e.target.value && e.target.value.indexOf('@') !== -1) e.target.value = '';
+      }
+    }, true);
+  })();
+
+  /* ── 0b. Dashboard donut chart: interactive hover with real status counts ── */
+  function initDonutHover() {
+    var svg = document.querySelector('.donut-chart svg, .chart-donut svg, [class*="donut"] svg');
+    if (!svg) return;
+    var circles = svg.querySelectorAll('circle[stroke-dasharray]');
+    if (!circles.length) return;
+
+    // Fetch real counts
+    fetch('/api/stats').then(function(r){ return r.json(); }).then(function(d) {
+      var statusMap = {
+        'Open': d.open || 0,
+        'In Progress': d.inProgress || 0,
+        'Overdue': d.overdue || 0,
+        'Closed': d.closed || 0
+      };
+
+      // Create tooltip div
+      var tip = document.createElement('div');
+      tip.className = 'donut-tooltip';
+      tip.id = 'donut-tip';
+      document.body.appendChild(tip);
+
+      // Map stroke colors to statuses
+      var colorMap = {
+        '#3b82f6': 'Open',
+        '#f59e0b': 'In Progress',
+        '#ef4444': 'Overdue',
+        '#22c55e': 'Closed',
+        '#8b5cf6': 'On Hold',
+        '#06b6d4': 'In Review',
+        '#a855f7': 'Pending Review'
+      };
+
+      circles.forEach(function(c) {
+        c.classList.add('donut-segment');
+        var color = c.getAttribute('stroke') || '';
+        var status = colorMap[color] || color;
+        var count = statusMap[status] !== undefined ? statusMap[status] : '';
+
+        c.addEventListener('mouseenter', function(e) {
+          tip.textContent = status + (count !== '' ? ': ' + count : '');
+          tip.classList.add('show');
+        });
+        c.addEventListener('mousemove', function(e) {
+          tip.style.left = (e.clientX + 12) + 'px';
+          tip.style.top = (e.clientY - 28) + 'px';
+        });
+        c.addEventListener('mouseleave', function() {
+          tip.classList.remove('show');
+        });
+      });
+    }).catch(function(){});
+  }
+  setTimeout(initDonutHover, 800);
+
+  /* ── 1. formatCommentText: render VOICENOTE:: as inline audio player ── */
+  var _fct = window.formatCommentText;
+  window.formatCommentText = function(raw) {
+    if (raw && raw.startsWith('VOICENOTE::')) {
+      var url = raw.slice(11);
+      var safe = url.replace(/"/g, '&quot;');
+      return '<div class="voice-comment-player">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2">' +
+        '<path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/>' +
+        '<path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>' +
+        '<audio controls src="' + safe + '" style="height:28px;max-width:200px"></audio>' +
+        '<span class="voice-comment-label">Voice note</span></div>';
+    }
+    return _fct ? _fct.call(this, raw) : (raw || '');
+  };
+
+  /* ── 2. Wrap nav item bare text nodes in .nav-label spans ── */
+  document.querySelectorAll('#nav .nav-item').forEach(function(item) {
+    item.childNodes.forEach(function(node) {
+      if (node.nodeType === 3 && node.textContent.trim()) {
+        var span = document.createElement('span');
+        span.className = 'nav-label';
+        span.style.cssText = 'flex:1;overflow:hidden;text-overflow:clip;white-space:nowrap;';
+        span.textContent = node.textContent;
+        node.parentNode.replaceChild(span, node);
+      }
+    });
+  });
+
+  /* ── 3. Settings + profile menu: patch applyUserToUI to populate email field ── */
+  var _origApplyUser = window.applyUserToUI;
+  window.applyUserToUI = function(u) {
+    if (_origApplyUser) _origApplyUser.call(this, u);
+    var emailEl = document.getElementById('prof-email');
+    if (emailEl && u && u.email) emailEl.value = u.email;
+    var nameEl = document.getElementById('prof-name');
+    if (nameEl && u && u.name) nameEl.value = u.name;
+    // Update profile dropdown menu email
+    var pmEmail = document.getElementById('pm-email');
+    if (pmEmail && u && u.email) pmEmail.textContent = u.email;
+  };
+  // Also fetch current user immediately and populate
+  fetch('/api/auth/me').then(function(r){ return r.ok ? r.json() : null; }).then(function(u) {
+    if (!u) return;
+    var emailEl = document.getElementById('prof-email');
+    if (emailEl && u.email) emailEl.value = u.email;
+    var nameEl = document.getElementById('prof-name');
+    if (nameEl && u.name) nameEl.value = u.name;
+    var roleEl = document.getElementById('prof-role');
+    if (roleEl && u.role) roleEl.value = u.role;
+  }).catch(function(){});
+
+  /* ── 4. Reports + Dashboard: load real stats from API with optional filters ── */
+  function buildStatsUrl(periodId, deptId, assigneeId) {
+    var params = new URLSearchParams();
+    var period = document.getElementById(periodId);
+    if (period && period.value && period.value !== 'all') params.set('period', period.value);
+    var dept = document.getElementById(deptId);
+    if (dept && dept.value) params.set('dept', dept.value);
+    if (assigneeId) {
+      var assignee = document.getElementById(assigneeId);
+      if (assignee && assignee.value) params.set('assignee', assignee.value);
+    }
+    return '/api/stats' + (params.toString() ? '?' + params.toString() : '');
+  }
+
+  function populateFilterDropdowns(data) {
+    // Populate dept dropdowns
+    ['dash-dept','rpt-dept-filter'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (!el || !data.allDepts) return;
+      var cur = el.value;
+      el.innerHTML = '<option value="">All Departments</option>' +
+        data.allDepts.map(function(d){ return '<option value="' + d.dept + '">' + d.dept + '</option>'; }).join('');
+      if (cur) el.value = cur;
+    });
+    // Populate assignee dropdown
+    var ra = document.getElementById('rpt-assignee-filter');
+    if (ra && data.allAssignees) {
+      var cur = ra.value;
+      ra.innerHTML = '<option value="">Everyone</option>' +
+        data.allAssignees.map(function(a){ return '<option value="' + a.name + '">' + a.name + '</option>'; }).join('');
+      if (cur) ra.value = cur;
+    }
+  }
+
+  function applyStatsToUI(d) {
+    // Dashboard stat cards
+    if (document.getElementById('dash-stat-total')) document.getElementById('dash-stat-total').textContent = d.total;
+    if (document.getElementById('dash-stat-inprogress')) document.getElementById('dash-stat-inprogress').textContent = d.inProgress;
+    if (document.getElementById('dash-stat-overdue')) document.getElementById('dash-stat-overdue').textContent = d.overdue;
+    // Reports stat cards
+    if (document.getElementById('rpt-total')) document.getElementById('rpt-total').textContent = d.total;
+    if (document.getElementById('rpt-total-delta')) document.getElementById('rpt-total-delta').textContent = d.open + ' open · ' + d.closed + ' closed';
+    if (document.getElementById('rpt-open')) document.getElementById('rpt-open').textContent = d.open;
+    if (document.getElementById('rpt-open-delta')) document.getElementById('rpt-open-delta').textContent = d.inProgress + ' in progress';
+    if (document.getElementById('rpt-overdue')) document.getElementById('rpt-overdue').textContent = d.overdue;
+    if (document.getElementById('rpt-overdue-delta')) document.getElementById('rpt-overdue-delta').textContent = d.overdue > 0 ? 'Needs attention' : 'All on track';
+
+    var deptBars = document.getElementById('rpt-dept-bars');
+    if (deptBars) {
+      var colors = ['var(--accent)','var(--accent2)','#10b981','#f59e0b','#ef4444','#8b5cf6'];
+      if (d.byDept && d.byDept.length) {
+        var maxCount = d.byDept[0].c;
+        deptBars.innerHTML = d.byDept.map(function(row, i) {
+          var pct = maxCount > 0 ? Math.round((row.c / maxCount) * 100) : 0;
+          return '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px">' +
+            '<span style="font-size:12px">' + (row.dept || 'Unknown') + '</span>' +
+            '<span style="font-size:12px;font-weight:500">' + row.c + '</span></div>' +
+            '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%;background:' + colors[i % colors.length] + '"></div></div></div>';
+        }).join('');
+      } else {
+        deptBars.innerHTML = '<div style="color:#9ca3af;font-size:12px;padding:8px 0">No data for selected filters.</div>';
+      }
+    }
+
+    var monthlyEl = document.getElementById('rpt-monthly-chart');
+    if (monthlyEl && d.monthly && d.monthly.length) {
+      var maxM = Math.max.apply(null, d.monthly.map(function(m){ return m.count; })) || 1;
+      monthlyEl.innerHTML = d.monthly.map(function(m) {
+        var h = Math.max(4, Math.round((m.count / maxM) * 76));
+        return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">' +
+          '<span style="font-size:10px;color:#64748b">' + (m.count || '') + '</span>' +
+          '<div style="width:100%;background:#3b82f6;border-radius:3px 3px 0 0;height:' + h + 'px;min-height:4px;opacity:.8"></div>' +
+          '<span style="font-size:9px;color:#94a3b8">' + m.label + '</span></div>';
+      }).join('');
+    }
+  }
+
+  function loadStatsWithFilters(periodId, deptId, assigneeId) {
+    var url = buildStatsUrl(periodId, deptId, assigneeId);
+    return fetch(url).then(function(r){ return r.json(); }).then(function(d) {
+      applyStatsToUI(d);
+      populateFilterDropdowns(d);
+    }).catch(function(){});
+  }
+
+  function loadReportStats() {
+    if (!document.getElementById('rpt-total') && !document.getElementById('dash-stat-total')) return;
+    loadStatsWithFilters('rpt-period', 'rpt-dept-filter', 'rpt-assignee-filter');
+  }
+
+  window.applyDashFilters = function() {
+    loadStatsWithFilters('dash-period', 'dash-dept', null);
+  };
+
+  window.applyReportFilters = function() {
+    loadStatsWithFilters('rpt-period', 'rpt-dept-filter', 'rpt-assignee-filter');
+  };
+
+  // Intercept route changes to re-load stats and clear search bar
+  var _origNav = window.navigate;
+  if (typeof _origNav === 'function') {
+    window.navigate = function(route) {
+      var r = _origNav.apply(this, arguments);
+      if (route === 'reports') setTimeout(loadReportStats, 200);
+      if (route === 'dashboard') setTimeout(function(){ loadStatsWithFilters('dash-period','dash-dept',null); }, 200);
+      // Always clear the search bar on navigation (prevents browser autofill from persisting)
+      var _gs = document.getElementById('global-search');
+      if (_gs) { _gs.value = ''; setTimeout(function(){ if (_gs) _gs.value = ''; }, 50); }
+      return r;
+    };
+  }
+  // Also run on hash change
+  window.addEventListener('hashchange', function() {
+    var p = location.hash || location.pathname;
+    if (p.includes('reports')) setTimeout(loadReportStats, 200);
+    if (p.includes('dashboard')) setTimeout(function(){ loadStatsWithFilters('dash-period','dash-dept',null); }, 200);
+  });
+  // Run both on initial load
+  setTimeout(function(){ loadStatsWithFilters('dash-period','dash-dept',null); }, 300);
+  setTimeout(loadReportStats, 300);
+
+  /* ── 4. Notification panel: SVG icons by type ── */
+  var NOTIF_ICONS = {
+    mention:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+    assigned: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    overdue:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+    status:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>',
+    note:     '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+    comment:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+    due:      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+    default:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>'
+  };
+  window.getNotifIcon = function(type) {
+    return NOTIF_ICONS[type] || NOTIF_ICONS.default;
+  };
+
+  /* ── Custom Reports ── */
+  window.generateCustomReport = function() {
+    var status = document.getElementById('cr-status')?.value;
+    var priority = document.getElementById('cr-priority')?.value;
+    var dept = document.getElementById('cr-dept')?.value;
+    var results = document.getElementById('cr-results');
+    if (!results) return;
+    results.innerHTML = '<div style="color:#64748b;padding:8px">Loading...</div>';
+    fetch('/api/tickets').then(function(r){ return r.json(); }).then(function(tickets) {
+      var filtered = tickets.filter(function(t) {
+        return (!status || t.status === status) &&
+               (!priority || t.priority === priority) &&
+               (!dept || t.dept === dept);
+      });
+      if (!filtered.length) {
+        results.innerHTML = '<div style="color:#94a3b8;padding:16px;text-align:center">No tickets match the selected filters.</div>';
+        return;
+      }
+      var rows = filtered.map(function(t) {
+        return '<tr style="border-bottom:1px solid #f1f5f9">' +
+          '<td style="padding:8px 6px;font-weight:500">' + t.id + '</td>' +
+          '<td style="padding:8px 6px">' + t.title + '</td>' +
+          '<td style="padding:8px 6px">' + t.status + '</td>' +
+          '<td style="padding:8px 6px">' + t.priority + '</td>' +
+          '<td style="padding:8px 6px">' + (t.dept||'') + '</td>' +
+          '<td style="padding:8px 6px">' + (t.due||'—') + '</td></tr>';
+      }).join('');
+      results.innerHTML = '<div style="margin-bottom:8px;font-size:11px;color:#64748b">' + filtered.length + ' tickets found</div>' +
+        '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        '<thead><tr style="background:#f8fafc;font-size:11px;color:#64748b">' +
+        '<th style="padding:8px 6px;text-align:left">ID</th><th style="padding:8px 6px;text-align:left">Title</th>' +
+        '<th style="padding:8px 6px;text-align:left">Status</th><th style="padding:8px 6px;text-align:left">Priority</th>' +
+        '<th style="padding:8px 6px;text-align:left">Dept</th><th style="padding:8px 6px;text-align:left">Due</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div>';
+    }).catch(function(){ results.innerHTML = '<div style="color:#ef4444">Failed to load tickets.</div>'; });
+  };
+
+  /* ── Reset data ── */
+  window.confirmResetData = function() {
+    if (!confirm('This will permanently delete ALL tickets, comments, attachments, plans, events and notifications. User accounts are kept.\\n\\nAre you sure?')) return;
+    if (!confirm('Are you absolutely sure? This CANNOT be undone.')) return;
+    fetch('/api/reset', { method: 'POST' })
+      .then(function(r){ return r.json(); })
+      .then(function(d) {
+        if (d.ok) { alert('All data has been reset. The page will reload.'); location.reload(); }
+        else alert('Reset failed.');
+      })
+      .catch(function(){ alert('Reset failed. Please try again.'); });
+  };
+
+})();
+</script>
+</body>`);
 
 // ── Replace static init block with API-backed async init ──────────────────────
 
@@ -1391,7 +2191,7 @@ async function loadTicketAttachments(ticketId) {
   } catch(e) {}
 }
 
-// Watch the right panel for ticket detail renders and inject attachments
+// Watch the right panel for ticket detail renders and inject attachments + real comments
 function watchTicketDetailPanel() {
   const _orig = window.openTicketDetail;
   if (typeof _orig === 'function') {
@@ -1399,6 +2199,18 @@ function watchTicketDetailPanel() {
       window.currentDetailTicketId = id;
       const r = _orig.call(this, id, ...args);
       injectAttachmentsWhenReady(id);
+      // Load real comments from API (replaces empty localComments from template)
+      apiGet('/api/tickets/' + id + '/comments').then(function(cmts) {
+        if (!Array.isArray(cmts)) return;
+        localComments.length = 0;
+        cmts.forEach(function(c) { localComments.push(c); });
+        if (typeof renderComments === 'function') renderComments();
+        // Update comment count badge
+        var badge = document.querySelector('.right-panel .section-title .badge, [data-section="comments"] .badge');
+        if (badge) badge.textContent = cmts.length;
+        var countEl = document.querySelector('.comments-count');
+        if (countEl) countEl.textContent = cmts.length;
+      }).catch(function(){});
       return r;
     };
   }
@@ -1508,32 +2320,69 @@ function setupCommentAttachBar() {
     list.appendChild(item);
   }
 
-  // Patch addComment to upload files after comment is posted
+  // Patch addComment: save text to API, audio files → VOICENOTE:: comment, others → attachment
   const _origAddComment = window.addComment;
   if (typeof _origAddComment === 'function') {
     window.addComment = async function(...args) {
+      const txtEl = document.getElementById('comment-input');
+      const commentText = txtEl ? txtEl.value.trim() : '';
       const filesToUpload = [...cmtPendingFiles];
       cmtPendingFiles = [];
       document.getElementById('cmt-previews').innerHTML = '';
       const r = await _origAddComment.apply(this, args);
-      if (filesToUpload.length > 0) {
-        const ticketId = window.currentDetailTicketId;
-        if (ticketId) {
+      const ticketId = window.currentDetailTicketId;
+      if (ticketId) {
+        // Save text comment to API
+        if (commentText) {
+          apiPost('/api/tickets/' + ticketId + '/comments', { text: commentText }).catch(()=>{});
+        }
+        // Handle attached files
+        if (filesToUpload.length > 0) {
+          let needsAttachRefresh = false;
           for (const file of filesToUpload) {
             try {
               const form = new FormData();
               form.append('file', file, file.name || 'voice.webm');
               form.append('ticketId', ticketId);
-              await fetch('/api/upload', { method: 'POST', body: form });
+              const resp = await fetch('/api/upload', { method: 'POST', body: form });
+              if (file.type && file.type.startsWith('audio/')) {
+                // Post audio as a voice note comment so it appears in the comment thread
+                const data = await resp.json();
+                if (data && data.url) {
+                  await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'VOICENOTE::' + data.url });
+                  try {
+                    const cmts = await apiGet('/api/tickets/' + ticketId + '/comments');
+                    if (Array.isArray(cmts)) {
+                      localComments.length = 0;
+                      cmts.forEach(c => localComments.push(c));
+                      renderComments();
+                    }
+                  } catch {}
+                }
+              } else {
+                needsAttachRefresh = true;
+              }
             } catch(e) {}
           }
-          setTimeout(() => injectAttachmentsWhenReady(ticketId), 300);
+          if (needsAttachRefresh) setTimeout(() => injectAttachmentsWhenReady(ticketId), 300);
         }
       }
       return r;
     };
   }
 }
+
+// ── Sidebar collapse / mobile toggle ─────────────────────────────────────────
+window.toggleSidebar = function() {
+  const sb = document.getElementById('sidebar');
+  if (sb) sb.classList.toggle('collapsed');
+};
+window.openMobileSidebar = function() {
+  document.getElementById('sidebar')?.classList.add('mobile-open');
+};
+window.closeMobileSidebar = function() {
+  document.getElementById('sidebar')?.classList.remove('mobile-open');
+};
 
 // ── Bootstrap: fast local render, then API overwrite ─────────────────────────
 // Zero the hardcoded baseline so stats don't flash fake numbers

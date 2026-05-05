@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>WorkNest – Sign In</title>
+<title>Syruvia – Sign In</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -76,16 +76,8 @@ input.error{border-color:var(--red)}
 </head>
 <body>
 <div class="card">
-  <div class="logo">
-    <div class="logo-icon">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
-      </svg>
-    </div>
-    <div>
-      <div class="logo-text">WorkNest</div>
-      <div class="logo-sub">Work Management</div>
-    </div>
+  <div class="logo" style="flex-direction:column;gap:6px">
+    <img src="/syruvia-logo.svg" alt="Syruvia" style="height:52px;width:auto">
   </div>
 
   <div class="tabs">
@@ -104,7 +96,7 @@ input.error{border-color:var(--red)}
       <label>Password</label>
       <div class="pw-wrap">
         <input type="password" id="si-pw" placeholder="Your password" autocomplete="current-password"/>
-        <button class="pw-toggle" type="button" onclick="togglePw('si-pw',this)">👁</button>
+        <button class="pw-toggle" type="button" onclick="togglePw('si-pw',this)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
     </div>
     <button class="btn" id="signin-btn" onclick="doSignIn()">Sign In</button>
@@ -127,7 +119,7 @@ input.error{border-color:var(--red)}
       <label>Password</label>
       <div class="pw-wrap">
         <input type="password" id="su-pw" placeholder="Min 6 characters" autocomplete="new-password"/>
-        <button class="pw-toggle" type="button" onclick="togglePw('su-pw',this)">👁</button>
+        <button class="pw-toggle" type="button" onclick="togglePw('su-pw',this)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
       </div>
     </div>
     <button class="btn" id="signup-btn" onclick="doSignUp()">Create Account</button>
@@ -145,7 +137,10 @@ function showTab(tab) {
 function togglePw(id, btn) {
   const inp = document.getElementById(id);
   inp.type = inp.type === 'password' ? 'text' : 'password';
-  btn.textContent = inp.type === 'password' ? '👁' : '🙈';
+  const isHidden = inp.type === 'password';
+  btn.innerHTML = isHidden
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 }
 
 function showErr(id, msg) {

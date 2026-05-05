@@ -6,3 +6,6 @@ node_modules/
 .claude/
 check_*.js
 .env
+public/uploads/
+server.log
+*.log

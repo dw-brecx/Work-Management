@@ -247,11 +247,6 @@ function seedDefaultAdmin() {
     ])
   );
 
-  const insCmt = `INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text) VALUES (?,?,?,?,?,?)`;
-  run(insCmt, 'TKT-1042','Sarah Johnson','SJ','#ede9fe','#5b21b6',"I've completed the authentication flow and initial API integration. Working on error handling and callback mapping now.");
-  run(insCmt, 'TKT-1042','Mike Peters',  'MP','#dde4ff','#3730a3','The sandbox environment is stable. You can test the payment initiation and status check endpoints.');
-  run(insCmt, 'TKT-1042','John Doe',     'JD','#dcfce7','#166534','Great progress! Please share ETA for staging tests so we can plan the UAT with the finance team.');
-
   run(`INSERT OR IGNORE INTO plans (id,title,notes,status,created_at,updated_at) VALUES (?,?,?,?,?,?)`,
     'PLN-001','Investigate why customer support replies are slow',
     'Hypothesis: too many handoffs between Tier 1 and Tier 2.\n\nQuestions:\n• Avg response time by agent?\n• Where do tickets sit longest?\n• Should we add a triage stage?\n\nData to pull: last 30 days of TKT response times.',

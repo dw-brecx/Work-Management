@@ -507,6 +507,81 @@ app.delete('/api/attachments/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Stats (Reports page) ──────────────────────────────────────────────────────
+app.get('/api/stats', requireAuth, (req, res) => {
+  const { period, dept, assignee } = req.query;
+
+  // Build date filter clause (use created_at which stores ISO datetime)
+  let dateClause = '';
+  const now = new Date();
+  if (period === 'week') {
+    const since = new Date(now - 7 * 86400000).toISOString().slice(0, 10);
+    dateClause = `AND created_at >= '${since}'`;
+  } else if (period === 'month') {
+    const y = now.getFullYear(), m = String(now.getMonth() + 1).padStart(2, '0');
+    dateClause = `AND created_at LIKE '${y}-${m}%'`;
+  } else if (period === 'quarter') {
+    const since = new Date(now - 90 * 86400000).toISOString().slice(0, 10);
+    dateClause = `AND created_at >= '${since}'`;
+  } else if (period === 'year') {
+    dateClause = `AND created_at LIKE '${now.getFullYear()}%'`;
+  }
+  const deptClause = dept ? `AND dept = '${dept.replace(/'/g, "''")}'` : '';
+  const assigneeClause = assignee
+    ? `AND id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${assignee.replace(/'/g, "''")}')`
+    : '';
+  const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
+
+  const total = get(`SELECT COUNT(*) as c FROM tickets ${where}`).c;
+  const open = get(`SELECT COUNT(*) as c FROM tickets ${where} AND status='Open'`).c;
+  const inProgress = get(`SELECT COUNT(*) as c FROM tickets ${where} AND status='In Progress'`).c;
+  const overdue = get(`SELECT COUNT(*) as c FROM tickets ${where} AND overdue=1`).c;
+  const closed = get(`SELECT COUNT(*) as c FROM tickets ${where} AND status='Closed'`).c;
+  const byDept = all(`SELECT dept, COUNT(*) as c FROM tickets ${where} GROUP BY dept ORDER BY c DESC`);
+
+  // All distinct departments (for filter dropdowns)
+  const allDepts = all("SELECT DISTINCT dept FROM tickets WHERE dept IS NOT NULL AND dept != '' ORDER BY dept");
+
+  // All distinct assignees (for filter dropdowns)
+  const allAssignees = all("SELECT DISTINCT user_name as name FROM ticket_assignees WHERE user_name IS NOT NULL AND user_name != '' ORDER BY user_name");
+
+  // Monthly counts for last 6 months (always unfiltered for the trend chart)
+  const monthly = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const label = d.toLocaleString('default', { month: 'short' });
+    let q = `SELECT COUNT(*) as c FROM tickets WHERE created_at LIKE '${y}-${m}%'`;
+    if (deptClause) q += ` ${deptClause}`;
+    if (assigneeClause) q += ` ${assigneeClause}`;
+    const count = get(q).c;
+    monthly.push({ label, count });
+  }
+
+  res.json({ total, open, inProgress, overdue, closed, byDept, monthly, allDepts, allAssignees });
+});
+
+// ── Reset all demo/beta data ──────────────────────────────────────────────────
+app.post('/api/reset', requireAuth, (req, res) => {
+  run('DELETE FROM ticket_comments');
+  run('DELETE FROM attachments');
+  run('DELETE FROM ticket_timelines');
+  run('DELETE FROM notifications');
+  run('DELETE FROM tickets');
+  run('DELETE FROM ticket_assignees');
+  run('DELETE FROM ticket_details');
+  run('DELETE FROM plans');
+  run('DELETE FROM plan_files');
+  run('DELETE FROM plan_comments');
+  run('DELETE FROM cal_events');
+  run('DELETE FROM work_tasks');
+  // Reset auto-increment counters
+  run("DELETE FROM sqlite_sequence WHERE name IN ('ticket_comments','attachments','notifications')");
+  res.json({ ok: true });
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({ ok:true, ts: new Date().toISOString() });
@@ -517,6 +592,24 @@ app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// One-time cleanup: remove fake seeded demo comments
+try {
+  run("DELETE FROM ticket_comments WHERE author IN ('Sarah Johnson','Mike Peters') AND ticket_id='TKT-1042'");
+  run("DELETE FROM ticket_comments WHERE author='John Doe' AND ticket_id='TKT-1042' AND text LIKE 'Great progress%'");
+  // Migrate any voice note attachments to VOICENOTE:: comments
+  const voiceAtts = all("SELECT * FROM attachments WHERE mime_type LIKE 'audio/%'");
+  for (const att of voiceAtts) {
+    const existing = get("SELECT id FROM ticket_comments WHERE ticket_id=? AND text LIKE 'VOICENOTE::%'", att.ticket_id);
+    if (!existing) {
+      const fileUrl = '/uploads/' + att.filename;
+      run("INSERT INTO ticket_comments (ticket_id, author, author_init, author_bg, author_col, text) VALUES (?,?,?,?,?,?)",
+        att.ticket_id, att.uploader, att.uploader.split(' ').map(w=>w[0]).join('').substring(0,2),
+        '#ede9fe', '#5b21b6', 'VOICENOTE::' + fileUrl);
+      run("DELETE FROM attachments WHERE id=?", att.id);
+    }
+  }
+} catch(e) { console.warn('[cleanup]', e.message); }
 
 app.listen(PORT, () => {
   console.log(`\n✅  WorkNest running at http://localhost:${PORT}`);
