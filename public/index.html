@@ -8948,7 +8948,20 @@ function patchTicketMutations() {
     window.saveTicket = async function(...args) {
       const r = origSaveTicket.apply(this, args);
       const t = TICKETS_DATA[0];
-      if (t) apiPost('/api/tickets', { ...t, req: t.req }).catch(()=>{});
+      if (t) {
+        try {
+          await apiPost('/api/tickets', { ...t, req: t.req });
+        } catch(err) {
+          if (err.message !== 'unauth') {
+            // Roll back the ghost ticket from the UI
+            const idx = TICKETS_DATA.findIndex(x => x.id === t.id);
+            if (idx !== -1) TICKETS_DATA.splice(idx, 1);
+            if (typeof initDashboard === 'function') initDashboard();
+            if (typeof renderTickets === 'function') renderTickets();
+            alert('Could not save ticket to the server. Please check your connection and try again.');
+          }
+        }
+      }
       return r;
     };
   }
