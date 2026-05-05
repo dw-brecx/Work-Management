@@ -883,6 +883,7 @@ html = html.replace(
         </div>
       </div>
     </div>
+    </div>
 
     <!-- ========== SETTINGS ========== -->`
 );
