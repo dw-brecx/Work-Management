@@ -174,9 +174,16 @@ function init() {
       ticket_id TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS departments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   seedDefaultAdmin();
+  seedDefaultDepartments();
 }
 
 function get(sql, ...params) {
@@ -196,6 +203,14 @@ function seedDefaultAdmin() {
   run(`INSERT INTO users (name, email, password_hash, role, dept, color, perm_role)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     'Admin', 'admin@worknest.com', hash, 'Administrator', 'Management', '#2563eb', 'Owner');
+}
+
+function seedDefaultDepartments() {
+  const defaults = ['Engineering', 'Design', 'Support', 'Operations', 'Management', 'General'];
+  defaults.forEach(name => {
+    if (!get('SELECT id FROM departments WHERE name=?', name))
+      run('INSERT INTO departments (name) VALUES (?)', name);
+  });
 }
 
 module.exports = { db, init, get, all, run };

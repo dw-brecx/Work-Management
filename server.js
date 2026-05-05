@@ -59,6 +59,13 @@ function getUser(userId) {
   return get('SELECT id,name,email,role,dept,color,perm_role FROM users WHERE id=?', userId);
 }
 
+function requireAdmin(req, res, next) {
+  if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
+  const u = get('SELECT perm_role FROM users WHERE id=?', req.session.userId);
+  if (!u || !['Owner','Admin'].includes(u.perm_role)) return res.status(403).json({ error: 'Admin access required' });
+  next();
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
@@ -599,8 +606,56 @@ app.get('/api/stats', requireAuth, (req, res) => {
   res.json({ total, open, inProgress, overdue, closed, byDept, monthly, allDepts, allAssignees });
 });
 
-// ── Reset all demo/beta data ──────────────────────────────────────────────────
-app.post('/api/reset', requireAuth, (req, res) => {
+// ── Admin: create user directly ───────────────────────────────────────────────
+app.post('/api/admin/users', requireAdmin, (req, res) => {
+  const { name, email, password, role, dept, permRole } = req.body;
+  if (!name?.trim() || !email?.trim() || !password) return res.status(400).json({ error: 'Name, email and password required' });
+  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  const norm = email.toLowerCase().trim();
+  if (get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'Email already in use' });
+  const pRole = ['Owner','Admin','Member'].includes(permRole) ? permRole : 'Member';
+  const hash = bcrypt.hashSync(password, 10);
+  const info = run('INSERT INTO users (name,email,password_hash,role,dept,perm_role) VALUES (?,?,?,?,?,?)',
+    name.trim(), norm, hash, role?.trim() || 'Team Member', dept?.trim() || 'General', pRole);
+  const u = getUser(Number(info.lastInsertRowid));
+  res.json({ id: u.id, name: u.name, email: u.email, role: u.role, dept: u.dept, permRole: u.perm_role });
+});
+
+// ── Admin: delete user ────────────────────────────────────────────────────────
+app.delete('/api/admin/users/:id', requireAdmin, (req, res) => {
+  const target = get('SELECT id,perm_role FROM users WHERE id=?', req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.perm_role === 'Owner') return res.status(403).json({ error: 'Cannot delete the owner account' });
+  if (target.id === req.session.userId) return res.status(400).json({ error: 'Cannot delete your own account' });
+  run('DELETE FROM users WHERE id=?', req.params.id);
+  res.json({ ok: true });
+});
+
+// ── Departments ───────────────────────────────────────────────────────────────
+app.get('/api/departments', requireAuth, (req, res) => {
+  const rows = all('SELECT name FROM departments ORDER BY name ASC');
+  res.json(rows.map(r => r.name));
+});
+
+app.post('/api/departments', requireAdmin, (req, res) => {
+  const name = req.body.name?.trim();
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  if (get('SELECT id FROM departments WHERE name=?', name)) return res.status(409).json({ error: 'Department already exists' });
+  run('INSERT INTO departments (name) VALUES (?)', name);
+  res.json({ ok: true, name });
+});
+
+app.delete('/api/departments/:name', requireAdmin, (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const inUse = get('SELECT id FROM users WHERE dept=? LIMIT 1', name) ||
+                get('SELECT id FROM tickets WHERE dept=? LIMIT 1', name);
+  if (inUse) return res.status(400).json({ error: 'Department is in use — reassign users and tickets first' });
+  run('DELETE FROM departments WHERE name=?', name);
+  res.json({ ok: true });
+});
+
+// ── Reset all data (admin/owner only) ─────────────────────────────────────────
+app.post('/api/reset', requireAdmin, (req, res) => {
   run('DELETE FROM ticket_comments');
   run('DELETE FROM attachments');
   run('DELETE FROM ticket_timelines');

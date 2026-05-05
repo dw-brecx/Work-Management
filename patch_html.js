@@ -888,6 +888,27 @@ html = html.replace(
     <!-- ========== SETTINGS ========== -->`
 );
 
+// ── Settings: patch profile panel with dynamic header + dept dropdown ─────────
+html = html.replace(
+  `<div class="avatar" style="width:60px;height:60px;font-size:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6)">JD</div>
+            <div><div style="font-size:14px;font-weight:500">John Doe</div><div style="font-size:12px;color:var(--text3)">Product Designer · Acme Solutions</div><button class="btn-sec" style="margin-top:6px;font-size:11px" onclick="alert('Photo upload would open here.')">Change Photo</button></div>`,
+  `<div class="avatar" id="prof-avatar" style="width:60px;height:60px;font-size:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6)">?</div>
+            <div>
+              <div style="font-size:15px;font-weight:600" id="prof-header-name">—</div>
+              <div style="font-size:12px;color:var(--text3)" id="prof-header-sub">—</div>
+            </div>`
+);
+// Add dept select + fix email readonly + remove hardcoded values
+html = html.replace(
+  `<div class="form-row"><label>Full Name</label><input type="text" id="prof-name" value="John Doe"/></div>
+            <div class="form-row"><label>Role</label><input type="text" id="prof-role" value="Product Designer"/></div>
+            <div class="form-row"><label>Email</label><input type="email" id="prof-email" value="john.doe@acme.com"/></div>`,
+  `<div class="form-row"><label>Full Name</label><input type="text" id="prof-name" placeholder="Your name"/></div>
+            <div class="form-row"><label>Job Title</label><input type="text" id="prof-role" placeholder="e.g. Developer"/></div>
+            <div class="form-row"><label>Email</label><input type="email" id="prof-email" readonly style="opacity:.65;cursor:default" title="Email cannot be changed"/></div>
+            <div class="form-row"><label>Department</label><select id="prof-dept"><option value="">— Select —</option></select></div>`
+);
+
 // ── Settings: add Reset Data + Admin tabs to sidebar ─────────────────────────
 html = html.replace(
   `            <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
@@ -896,58 +917,81 @@ html = html.replace(
   `            <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
               <span class="stab-icon">🛡️</span> Permissions
             </div>
-            <div class="settings-tab" data-stab="reset" onclick="switchSettingsTab('reset')" style="color:#dc2626">
-              <span class="stab-icon">⚠️</span> Reset Data
-            </div>
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
               <span class="stab-icon">🔧</span> Admin
+            </div>
+            <div class="settings-tab" data-stab="reset" onclick="switchSettingsTab('reset')" id="reset-settings-tab" style="display:none;color:#dc2626">
+              <span class="stab-icon">⚠️</span> Reset Data
             </div>`
 );
 
-// ── Settings: add Reset Data + Admin sections ────────────────────────────────
+// ── Settings: add Reset Data + Admin panels ───────────────────────────────────
 html = html.replace(
   '<!-- Permissions panel (matrix) -->',
-  `<!-- Reset Data panel -->
-        <div class="card settings-panel" id="settings-panel-reset" style="display:none">
-          <div style="margin-bottom:14px">
-            <h2 style="font-size:14px;font-weight:600;margin-bottom:4px;color:#dc2626">Reset Application Data</h2>
-            <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Permanently delete all tickets, comments, attachments, plans, events, and notifications.</p>
-            <p style="font-size:12px;color:var(--text2);margin-bottom:16px"><strong>User accounts are kept.</strong> This cannot be undone.</p>
-            <button onclick="confirmResetData()" style="padding:10px 20px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Reset All Data</button>
-          </div>
-        </div>
-
-        <!-- Admin panel -->
+  `<!-- Admin panel -->
         <div class="card settings-panel" id="settings-panel-admin" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-            <div>
-              <h2 style="font-size:14px;font-weight:600;margin-bottom:2px">User Management</h2>
-              <p style="font-size:12px;color:var(--text3);margin:0">All registered users in your workspace</p>
-            </div>
+
+          <!-- Users section -->
+          <div style="margin-bottom:24px">
+            <h2 style="font-size:14px;font-weight:700;margin-bottom:2px">Users</h2>
+            <p style="font-size:12px;color:var(--text3);margin:0 0 14px">All accounts in this workspace</p>
+            <div id="admin-users-list" style="font-size:12px;color:var(--text3)">Loading...</div>
           </div>
-          <div id="admin-users-list" style="font-size:12px;color:var(--text3);margin-bottom:20px">Loading users...</div>
-          <div style="padding-top:16px;border-top:1px solid var(--border)">
-            <h3 style="font-size:13px;font-weight:600;margin-bottom:12px">Invite New User</h3>
+
+          <!-- Add user section -->
+          <div style="padding-top:20px;border-top:1px solid var(--border);margin-bottom:24px">
+            <h3 style="font-size:13px;font-weight:700;margin-bottom:12px">Add New User</h3>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
               <div>
-                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Full Name</label>
-                <input type="text" id="admin-inv-name" placeholder="Full name" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Full Name *</label>
+                <input type="text" id="au-name" placeholder="Full name" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
               </div>
               <div>
-                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Email Address</label>
-                <input type="email" id="admin-inv-email" placeholder="email@example.com" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Email Address *</label>
+                <input type="email" id="au-email" placeholder="user@example.com" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
+              </div>
+              <div>
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Password *</label>
+                <input type="password" id="au-password" placeholder="Min. 6 characters" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
               </div>
               <div>
                 <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Job Title</label>
-                <input type="text" id="admin-inv-role" placeholder="e.g. Developer" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <input type="text" id="au-role" placeholder="e.g. Developer" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
               </div>
               <div>
                 <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Department</label>
-                <input type="text" id="admin-inv-dept" placeholder="e.g. Engineering" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+                <select id="au-dept" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
+                  <option value="General">General</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Access Level</label>
+                <select id="au-perm" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
+                  <option value="Member">Member</option>
+                  <option value="Admin">Admin</option>
+                </select>
               </div>
             </div>
-            <button onclick="adminSendInvite()" style="padding:9px 20px;background:var(--accent);color:#fff;border:none;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
+            <button onclick="adminCreateUser()" style="padding:9px 20px;background:var(--accent);color:#fff;border:none;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer">Create User</button>
           </div>
+
+          <!-- Departments section -->
+          <div style="padding-top:20px;border-top:1px solid var(--border)">
+            <h3 style="font-size:13px;font-weight:700;margin-bottom:12px">Departments</h3>
+            <div id="admin-dept-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">Loading...</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" id="au-new-dept" placeholder="New department name" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+              <button onclick="adminAddDepartment()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Add Department</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reset Data panel (admin only) -->
+        <div class="card settings-panel" id="settings-panel-reset" style="display:none">
+          <h2 style="font-size:14px;font-weight:700;margin-bottom:4px;color:#dc2626">Reset All Data</h2>
+          <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Permanently deletes all tickets, comments, attachments, plans, calendar events, and notifications.</p>
+          <p style="font-size:12px;color:var(--text2);margin-bottom:20px"><strong>User accounts and departments are kept.</strong> This cannot be undone.</p>
+          <button onclick="confirmResetData()" style="padding:10px 24px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Reset All Data</button>
         </div>
 
         <!-- Permissions panel (matrix) -->`
@@ -1071,28 +1115,33 @@ html = html.replace('</body>', `<script>
     });
   });
 
-  /* ── 3. Settings + profile menu: patch applyUserToUI to populate email field ── */
+  /* ── 3. Settings profile panel: populate from real user on every applyUserToUI call ── */
+  function fillProfilePanelFromUser(u) {
+    if (!u || !u.name) return;
+    var initials = u.name.split(' ').map(function(w){ return w[0]||''; }).join('').slice(0,2).toUpperCase();
+    var av = document.getElementById('prof-avatar');
+    if (av) { av.textContent = initials; av.style.background = 'linear-gradient(135deg,' + (u.color||'#6366f1') + ',' + (u.color||'#8b5cf6') + ')'; }
+    var hn = document.getElementById('prof-header-name'); if (hn) hn.textContent = u.name;
+    var hs = document.getElementById('prof-header-sub');  if (hs) hs.textContent = (u.role||'') + (u.dept ? ' · ' + u.dept : '');
+    var fn = document.getElementById('prof-name');  if (fn) fn.value = u.name;
+    var fr = document.getElementById('prof-role');  if (fr) fr.value = u.role||'';
+    var fe = document.getElementById('prof-email'); if (fe) fe.value = u.email||'';
+    // Load departments and set the dept dropdown
+    if (window.loadDepartments) {
+      window.loadDepartments().then(function() {
+        var fd = document.getElementById('prof-dept'); if (fd && u.dept) fd.value = u.dept;
+      });
+    }
+    // Update profile dropdown menu
+    var pmEmail = document.getElementById('pm-email'); if (pmEmail && u.email) pmEmail.textContent = u.email;
+    var pmName = document.querySelector('.profile-menu-name'); if (pmName) pmName.textContent = u.name;
+  }
+
   var _origApplyUser = window.applyUserToUI;
   window.applyUserToUI = function(u) {
     if (_origApplyUser) _origApplyUser.call(this, u);
-    var emailEl = document.getElementById('prof-email');
-    if (emailEl && u && u.email) emailEl.value = u.email;
-    var nameEl = document.getElementById('prof-name');
-    if (nameEl && u && u.name) nameEl.value = u.name;
-    // Update profile dropdown menu email
-    var pmEmail = document.getElementById('pm-email');
-    if (pmEmail && u && u.email) pmEmail.textContent = u.email;
+    fillProfilePanelFromUser(u);
   };
-  // Also fetch current user immediately and populate
-  fetch('/api/auth/me').then(function(r){ return r.ok ? r.json() : null; }).then(function(u) {
-    if (!u) return;
-    var emailEl = document.getElementById('prof-email');
-    if (emailEl && u.email) emailEl.value = u.email;
-    var nameEl = document.getElementById('prof-name');
-    if (nameEl && u.name) nameEl.value = u.name;
-    var roleEl = document.getElementById('prof-role');
-    if (roleEl && u.role) roleEl.value = u.role;
-  }).catch(function(){});
 
   /* ── 4. Reports + Dashboard: load real stats from API with optional filters ── */
   function buildStatsUrl(periodId, deptId, assigneeId) {
@@ -1318,18 +1367,9 @@ html = html.replace('</body>', `<script>
               t.classList.toggle('active', t.dataset.stab === 'profile');
             });
           }
-          // Populate profile form with current user data
-          if (window.CURRENT_USER) {
-            var u = window.CURRENT_USER;
-            var n = document.getElementById('prof-name');    if (n) n.value = u.name || '';
-            var r2 = document.getElementById('prof-role');   if (r2) r2.value = u.role || '';
-            var d = document.getElementById('prof-dept');    if (d) d.value = u.dept || '';
-            var e = document.getElementById('prof-email');   if (e) e.value = u.email || '';
-            // Update the avatar/name shown in the profile card header
-            var pn = document.querySelector('#settings-panel-profile .profile-name, #settings-panel-profile [style*="font-size:14px"]');
-            if (pn) pn.textContent = u.name;
-            var av = document.querySelector('#settings-panel-profile .avatar');
-            if (av) av.textContent = (u.name||'A').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase();
+          // Fill profile panel — uses shared fillProfilePanelFromUser function
+          if (typeof fillProfilePanelFromUser === 'function') {
+            fillProfilePanelFromUser(window.CURRENT_USER || {});
           }
         }, 50);
       }
@@ -1341,16 +1381,23 @@ html = html.replace('</body>', `<script>
   (function patchSettingsAPI() {
     var _origSaveProf = window.saveProfileSettings;
     window.saveProfileSettings = async function() {
-      var name = document.getElementById('prof-name')?.value?.trim();
-      var role = document.getElementById('prof-role')?.value?.trim();
-      var dept = document.getElementById('prof-dept')?.value?.trim();
+      var name = (document.getElementById('prof-name')?.value||'').trim();
+      var role = (document.getElementById('prof-role')?.value||'').trim();
+      var dept = document.getElementById('prof-dept')?.value||'';
       if (!name) { alert('Full name is required.'); return; }
       try {
         var updated = await apiPut('/api/profile', { name, role, dept });
-        if (window.CURRENT_USER) { window.CURRENT_USER.name = updated.name; }
-        applyUserToUI(updated);
-      } catch(e) { console.warn('[settings] profile save failed', e); }
-      if (_origSaveProf) _origSaveProf();
+        if (updated.error) { alert(updated.error); return; }
+        if (window.CURRENT_USER) { window.CURRENT_USER.name = updated.name; window.CURRENT_USER.role = updated.role; window.CURRENT_USER.dept = updated.dept; }
+        if (window.applyUserToUI) window.applyUserToUI(updated); else applyUserToUI(updated);
+        // Refresh header
+        var hn = document.getElementById('prof-header-name'); if (hn) hn.textContent = updated.name;
+        var hs = document.getElementById('prof-header-sub');  if (hs) hs.textContent = (updated.role||'') + (updated.dept ? ' · ' + updated.dept : '');
+        var av = document.getElementById('prof-avatar');
+        if (av) av.textContent = (updated.name||'?').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase();
+        if (typeof settingsToast === 'function') settingsToast('Profile saved');
+        else { var t=document.createElement('div'); t.textContent='✓ Saved'; t.style.cssText='position:fixed;bottom:24px;right:24px;background:#16a34a;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;font-weight:600;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.2)'; document.body.appendChild(t); setTimeout(function(){ t.remove(); }, 2500); }
+      } catch(e) { alert('Failed to save profile. Please try again.'); }
     };
 
     var _origChangePw = window.changePassword;
@@ -1379,76 +1426,141 @@ html = html.replace('</body>', `<script>
 
   /* ── Admin Settings tab ── */
   (function initAdminTab() {
+
+    // Load and render user list with delete buttons
     function loadAdminUsers() {
+      var list = document.getElementById('admin-users-list');
+      if (!list) return;
       fetch('/api/team').then(function(r){ return r.json(); }).then(function(team) {
-        var list = document.getElementById('admin-users-list');
-        if (!list) return;
-        if (!team.length) { list.innerHTML = '<div style="color:var(--text3);padding:8px 0">No users found.</div>'; return; }
+        if (!team.length) { list.innerHTML = '<p style="color:var(--text3);font-size:12px">No users yet.</p>'; return; }
+        var me = (window.CURRENT_USER || {}).id;
         list.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
           '<thead><tr style="background:#f8fafc;border-bottom:1px solid #eef1f9">' +
-          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Name</th>' +
-          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Email</th>' +
-          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Role</th>' +
-          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Dept</th>' +
-          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Access</th>' +
+          '<th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Name</th>' +
+          '<th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Email</th>' +
+          '<th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Dept</th>' +
+          '<th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Access</th>' +
+          '<th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b"></th>' +
           '</tr></thead><tbody>' +
           team.map(function(m) {
-            var badgeBg = m.permRole === 'Owner' ? '#fef9c3' : m.permRole === 'Admin' ? '#dde4ff' : '#f0fdf4';
-            var badgeCol = m.permRole === 'Owner' ? '#854d0e' : m.permRole === 'Admin' ? '#3730a3' : '#166534';
+            var bbg = m.permRole==='Owner' ? '#fef9c3' : m.permRole==='Admin' ? '#dde4ff' : '#f0fdf4';
+            var bc  = m.permRole==='Owner' ? '#854d0e' : m.permRole==='Admin' ? '#3730a3' : '#166534';
+            var canDel = m.permRole !== 'Owner' && m.id !== me;
+            var delBtn = canDel
+              ? '<button onclick="adminDeleteUser(' + m.id + ',\'' + m.name.replace(/'/g,'') + '\')" style="padding:4px 10px;background:#fee2e2;color:#dc2626;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Delete</button>'
+              : '<span style="font-size:11px;color:#cbd5e1">' + (m.id === me ? 'You' : 'Protected') + '</span>';
             return '<tr style="border-bottom:1px solid #f3f5fb">' +
-              '<td style="padding:8px 12px;font-weight:500">' + (m.name || '') + '</td>' +
-              '<td style="padding:8px 12px;color:#6b7280">' + (m.email || '') + '</td>' +
-              '<td style="padding:8px 12px">' + (m.role || '') + '</td>' +
-              '<td style="padding:8px 12px">' + (m.dept || '') + '</td>' +
-              '<td style="padding:8px 12px"><span style="padding:2px 9px;border-radius:99px;font-size:10px;font-weight:600;background:' + badgeBg + ';color:' + badgeCol + '">' + (m.permRole || 'Member') + '</span></td>' +
-              '</tr>';
+              '<td style="padding:9px 12px;font-weight:500">' + (m.name||'') + '</td>' +
+              '<td style="padding:9px 12px;color:#6b7280">' + (m.email||'') + '</td>' +
+              '<td style="padding:9px 12px">' + (m.dept||'') + '</td>' +
+              '<td style="padding:9px 12px"><span style="padding:2px 9px;border-radius:99px;font-size:10px;font-weight:600;background:' + bbg + ';color:' + bc + '">' + (m.permRole||'Member') + '</span></td>' +
+              '<td style="padding:9px 12px">' + delBtn + '</td></tr>';
           }).join('') + '</tbody></table></div>';
       }).catch(function() {
-        var list = document.getElementById('admin-users-list');
-        if (list) list.innerHTML = '<div style="color:#ef4444">Failed to load users.</div>';
+        if (list) list.innerHTML = '<p style="color:#ef4444;font-size:12px">Failed to load users.</p>';
       });
     }
 
-    window.adminSendInvite = async function() {
-      var name = document.getElementById('admin-inv-name')?.value?.trim();
-      var email = document.getElementById('admin-inv-email')?.value?.trim();
-      var role = document.getElementById('admin-inv-role')?.value?.trim();
-      var dept = document.getElementById('admin-inv-dept')?.value?.trim();
-      if (!name || !email) { alert('Name and email are required.'); return; }
-      try {
-        var res = await apiPost('/api/invites', { name, email, role, dept });
-        if (res.error) { alert(res.error); return; }
-        alert('Invite created!\\n\\nShare this link with ' + name + ':\\n\\n' + (res.inviteUrl || 'Check your email system for the invite link.'));
-        ['admin-inv-name','admin-inv-email','admin-inv-role','admin-inv-dept'].forEach(function(id) {
-          var el = document.getElementById(id); if (el) el.value = '';
+    // Load departments into the admin dept list and all dept dropdowns
+    window.loadDepartments = function() {
+      return fetch('/api/departments').then(function(r){ return r.json(); }).then(function(depts) {
+        // Render admin dept tags
+        var deptList = document.getElementById('admin-dept-list');
+        if (deptList) {
+          deptList.innerHTML = depts.map(function(d) {
+            return '<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:#f0f5ff;border:1px solid #c7d7fe;border-radius:99px;font-size:12px;color:#2563eb">' +
+              d + '<button onclick="adminDeleteDepartment(\'' + d.replace(/'/g,'') + '\')" style="background:none;border:none;color:#93c5fd;cursor:pointer;font-size:13px;line-height:1;padding:0">×</button></span>';
+          }).join('');
+        }
+        // Populate every dept dropdown in the page
+        ['prof-dept','au-dept'].forEach(function(id) {
+          var sel = document.getElementById(id);
+          if (!sel) return;
+          var cur = sel.value;
+          sel.innerHTML = '<option value="">— Select —</option>' + depts.map(function(d){ return '<option value="' + d + '">' + d + '</option>'; }).join('');
+          if (cur) sel.value = cur;
         });
-        loadAdminUsers();
-      } catch(e) { alert('Failed to send invite. Please try again.'); }
+        return depts;
+      }).catch(function(){ return []; });
     };
 
-    function showAdminTabIfAllowed() {
+    // Create user directly
+    window.adminCreateUser = async function() {
+      var name  = (document.getElementById('au-name')?.value||'').trim();
+      var email = (document.getElementById('au-email')?.value||'').trim();
+      var pw    = document.getElementById('au-password')?.value||'';
+      var role  = (document.getElementById('au-role')?.value||'').trim();
+      var dept  = document.getElementById('au-dept')?.value||'General';
+      var perm  = document.getElementById('au-perm')?.value||'Member';
+      if (!name || !email || !pw) { alert('Name, email and password are required.'); return; }
+      if (pw.length < 6) { alert('Password must be at least 6 characters.'); return; }
+      try {
+        var res = await apiPost('/api/admin/users', { name, email, password: pw, role, dept, permRole: perm });
+        if (res.error) { alert(res.error); return; }
+        alert('User created! ' + name + ' can now log in with their email and password.');
+        ['au-name','au-email','au-password','au-role'].forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
+        loadAdminUsers();
+      } catch(e) { alert('Failed to create user. Try again.'); }
+    };
+
+    // Delete user
+    window.adminDeleteUser = async function(id, name) {
+      if (!confirm('Delete user ' + name + '? This cannot be undone.')) return;
+      try {
+        var res = await apiDel('/api/admin/users/' + id);
+        if (res.error) { alert(res.error); return; }
+        loadAdminUsers();
+      } catch(e) { alert('Failed to delete user.'); }
+    };
+
+    // Add department
+    window.adminAddDepartment = async function() {
+      var name = (document.getElementById('au-new-dept')?.value||'').trim();
+      if (!name) { alert('Enter a department name.'); return; }
+      try {
+        var res = await apiPost('/api/departments', { name });
+        if (res.error) { alert(res.error); return; }
+        document.getElementById('au-new-dept').value = '';
+        window.loadDepartments();
+      } catch(e) { alert('Failed to add department.'); }
+    };
+
+    // Delete department
+    window.adminDeleteDepartment = async function(name) {
+      if (!confirm('Delete department "' + name + '"?\nOnly possible if no users or tickets use it.')) return;
+      try {
+        var r = await fetch('/api/departments/' + encodeURIComponent(name), { method: 'DELETE' });
+        var res = await r.json();
+        if (res.error) { alert(res.error); return; }
+        window.loadDepartments();
+      } catch(e) { alert('Failed to delete department.'); }
+    };
+
+    // Show admin + reset tabs only for Owner/Admin
+    function showAdminTabsIfAllowed() {
       var u = window.CURRENT_USER;
-      if (u && ['Owner','Admin'].includes(u.permRole)) {
-        var tab = document.getElementById('admin-settings-tab');
-        if (tab) tab.style.display = '';
-      }
+      if (!u || !['Owner','Admin'].includes(u.permRole)) return;
+      var at = document.getElementById('admin-settings-tab');
+      var rt = document.getElementById('reset-settings-tab');
+      if (at) at.style.display = '';
+      if (rt) rt.style.display = '';
     }
 
-    // Patch switchSettingsTab to load users when admin tab opens
+    // Patch switchSettingsTab to load data when admin tab opens
     var _origSST = window.switchSettingsTab;
     window.switchSettingsTab = function(tab) {
       if (_origSST) _origSST(tab);
-      if (tab === 'admin') setTimeout(loadAdminUsers, 100);
+      if (tab === 'admin') {
+        setTimeout(function(){ loadAdminUsers(); window.loadDepartments(); }, 60);
+      }
     };
 
-    // Show tab after user data is available
+    // Wire up after user loads
     setTimeout(function() {
-      showAdminTabIfAllowed();
-      if (!window.CURRENT_USER) {
-        var _origAU = window.applyUserToUI;
-        window.applyUserToUI = function(u) { if (_origAU) _origAU(u); showAdminTabIfAllowed(); };
-      }
-    }, 800);
+      showAdminTabsIfAllowed();
+      var _origAU = window.applyUserToUI;
+      window.applyUserToUI = function(u) { if (_origAU) _origAU(u); showAdminTabsIfAllowed(); };
+    }, 600);
   })();
 
 })();
@@ -1776,7 +1888,7 @@ function patchTeamMutations() {
       try {
         const updated = await apiPut('/api/profile', { name, role, dept });
         if (window.CURRENT_USER) { window.CURRENT_USER.name = updated.name; window.CURRENT_USER.role = updated.role; }
-        applyUserToUI(updated);
+        if (window.applyUserToUI) window.applyUserToUI(updated); else applyUserToUI(updated);
       } catch {}
       return r;
     };
@@ -1930,7 +2042,8 @@ async function initApp() {
   const me = await checkAuth();
   if (!me) return;
   window.CURRENT_USER = me;
-  applyUserToUI(me);
+  // Call via window so IIFE wrappers (profile panel, admin tabs) are triggered
+  if (window.applyUserToUI) window.applyUserToUI(me); else applyUserToUI(me);
 
   let tickets, team, invites, events, plans, workTasks;
   try {
