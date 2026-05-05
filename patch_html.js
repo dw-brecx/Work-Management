@@ -845,7 +845,7 @@ html = html.replace(
     <!-- ========== SETTINGS ========== -->`
 );
 
-// ── Settings: add Reset Data tab to sidebar ──────────────────────────────────
+// ── Settings: add Reset Data + Admin tabs to sidebar ─────────────────────────
 html = html.replace(
   `            <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
               <span class="stab-icon">🛡️</span> Permissions
@@ -855,18 +855,55 @@ html = html.replace(
             </div>
             <div class="settings-tab" data-stab="reset" onclick="switchSettingsTab('reset')" style="color:#dc2626">
               <span class="stab-icon">⚠️</span> Reset Data
+            </div>
+            <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
+              <span class="stab-icon">🔧</span> Admin
             </div>`
 );
 
-// ── Settings: add Reset Data section ─────────────────────────────────────────
+// ── Settings: add Reset Data + Admin sections ────────────────────────────────
 html = html.replace(
   '<!-- Permissions panel (matrix) -->',
   `<!-- Reset Data panel -->
         <div class="card settings-panel" id="settings-panel-reset" style="display:none">
           <div style="margin-bottom:14px">
             <h2 style="font-size:14px;font-weight:600;margin-bottom:4px;color:#dc2626">Reset Application Data</h2>
-            <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Permanently delete all tickets, comments, attachments, plans, events, and notifications. User accounts are kept. This cannot be undone.</p>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Permanently delete all tickets, comments, attachments, plans, events, and notifications.</p>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:16px"><strong>User accounts are kept.</strong> This cannot be undone.</p>
             <button onclick="confirmResetData()" style="padding:10px 20px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Reset All Data</button>
+          </div>
+        </div>
+
+        <!-- Admin panel -->
+        <div class="card settings-panel" id="settings-panel-admin" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <div>
+              <h2 style="font-size:14px;font-weight:600;margin-bottom:2px">User Management</h2>
+              <p style="font-size:12px;color:var(--text3);margin:0">All registered users in your workspace</p>
+            </div>
+          </div>
+          <div id="admin-users-list" style="font-size:12px;color:var(--text3);margin-bottom:20px">Loading users...</div>
+          <div style="padding-top:16px;border-top:1px solid var(--border)">
+            <h3 style="font-size:13px;font-weight:600;margin-bottom:12px">Invite New User</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+              <div>
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Full Name</label>
+                <input type="text" id="admin-inv-name" placeholder="Full name" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Email Address</label>
+                <input type="email" id="admin-inv-email" placeholder="email@example.com" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Job Title</label>
+                <input type="text" id="admin-inv-role" placeholder="e.g. Developer" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Department</label>
+                <input type="text" id="admin-inv-dept" placeholder="e.g. Engineering" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px">
+              </div>
+            </div>
+            <button onclick="adminSendInvite()" style="padding:9px 20px;background:var(--accent);color:#fff;border:none;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer">Send Invite</button>
           </div>
         </div>
 
@@ -1186,16 +1223,130 @@ html = html.replace('</body>', `<script>
 
   /* ── Reset data ── */
   window.confirmResetData = function() {
-    if (!confirm('This will permanently delete ALL tickets, comments, attachments, plans, events and notifications. User accounts are kept.\\n\\nAre you sure?')) return;
-    if (!confirm('Are you absolutely sure? This CANNOT be undone.')) return;
+    if (!confirm('⚠️ RESET ALL DATA\\n\\nThis will permanently delete:\\n• All tickets & comments\\n• Attachments & voice notes\\n• Plans & calendar events\\n• Notifications\\n\\nUser accounts are NOT deleted.\\n\\nContinue?')) return;
+    if (!confirm('Final confirmation: delete all data? This CANNOT be undone.')) return;
     fetch('/api/reset', { method: 'POST' })
       .then(function(r){ return r.json(); })
       .then(function(d) {
-        if (d.ok) { alert('All data has been reset. The page will reload.'); location.reload(); }
+        if (d.ok) { alert('All data has been reset. User accounts are kept.\\nThe page will reload.'); location.reload(); }
         else alert('Reset failed.');
       })
       .catch(function(){ alert('Reset failed. Please try again.'); });
   };
+
+  /* ── Settings: wire saveProfileSettings and changePassword to real API ── */
+  (function patchSettingsAPI() {
+    var _origSaveProf = window.saveProfileSettings;
+    window.saveProfileSettings = async function() {
+      var name = document.getElementById('prof-name')?.value?.trim();
+      var role = document.getElementById('prof-role')?.value?.trim();
+      var dept = document.getElementById('prof-dept')?.value?.trim();
+      if (!name) { alert('Full name is required.'); return; }
+      try {
+        var updated = await apiPut('/api/profile', { name, role, dept });
+        if (window.CURRENT_USER) { window.CURRENT_USER.name = updated.name; }
+        applyUserToUI(updated);
+      } catch(e) { console.warn('[settings] profile save failed', e); }
+      if (_origSaveProf) _origSaveProf();
+    };
+
+    var _origChangePw = window.changePassword;
+    window.changePassword = async function() {
+      var cur = document.getElementById('pw-current')?.value;
+      var nw = document.getElementById('pw-new')?.value;
+      var cf = document.getElementById('pw-confirm')?.value;
+      if (!cur || !nw || !cf) { alert('Please fill in all password fields.'); return; }
+      if (nw !== cf) { alert('New passwords do not match.'); return; }
+      if (nw.length < 6) { alert('Password must be at least 6 characters.'); return; }
+      try {
+        var r = await fetch('/api/profile/password', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword: cur, newPassword: nw })
+        });
+        var data = await r.json();
+        if (!r.ok) { alert(data.error || 'Failed to update password.'); return; }
+        ['pw-current','pw-new','pw-confirm'].forEach(function(id) {
+          var el = document.getElementById(id); if (el) { el.value = ''; el.type = 'password'; }
+        });
+        if (typeof settingsToast === 'function') settingsToast('Password updated successfully');
+        else alert('Password updated!');
+      } catch(e) { alert('Failed to update password. Please try again.'); }
+    };
+  })();
+
+  /* ── Admin Settings tab ── */
+  (function initAdminTab() {
+    function loadAdminUsers() {
+      fetch('/api/team').then(function(r){ return r.json(); }).then(function(team) {
+        var list = document.getElementById('admin-users-list');
+        if (!list) return;
+        if (!team.length) { list.innerHTML = '<div style="color:var(--text3);padding:8px 0">No users found.</div>'; return; }
+        list.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+          '<thead><tr style="background:#f8fafc;border-bottom:1px solid #eef1f9">' +
+          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Name</th>' +
+          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Email</th>' +
+          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Role</th>' +
+          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Dept</th>' +
+          '<th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b">Access</th>' +
+          '</tr></thead><tbody>' +
+          team.map(function(m) {
+            var badgeBg = m.permRole === 'Owner' ? '#fef9c3' : m.permRole === 'Admin' ? '#dde4ff' : '#f0fdf4';
+            var badgeCol = m.permRole === 'Owner' ? '#854d0e' : m.permRole === 'Admin' ? '#3730a3' : '#166534';
+            return '<tr style="border-bottom:1px solid #f3f5fb">' +
+              '<td style="padding:8px 12px;font-weight:500">' + (m.name || '') + '</td>' +
+              '<td style="padding:8px 12px;color:#6b7280">' + (m.email || '') + '</td>' +
+              '<td style="padding:8px 12px">' + (m.role || '') + '</td>' +
+              '<td style="padding:8px 12px">' + (m.dept || '') + '</td>' +
+              '<td style="padding:8px 12px"><span style="padding:2px 9px;border-radius:99px;font-size:10px;font-weight:600;background:' + badgeBg + ';color:' + badgeCol + '">' + (m.permRole || 'Member') + '</span></td>' +
+              '</tr>';
+          }).join('') + '</tbody></table></div>';
+      }).catch(function() {
+        var list = document.getElementById('admin-users-list');
+        if (list) list.innerHTML = '<div style="color:#ef4444">Failed to load users.</div>';
+      });
+    }
+
+    window.adminSendInvite = async function() {
+      var name = document.getElementById('admin-inv-name')?.value?.trim();
+      var email = document.getElementById('admin-inv-email')?.value?.trim();
+      var role = document.getElementById('admin-inv-role')?.value?.trim();
+      var dept = document.getElementById('admin-inv-dept')?.value?.trim();
+      if (!name || !email) { alert('Name and email are required.'); return; }
+      try {
+        var res = await apiPost('/api/invites', { name, email, role, dept });
+        if (res.error) { alert(res.error); return; }
+        alert('Invite created!\\n\\nShare this link with ' + name + ':\\n\\n' + (res.inviteUrl || 'Check your email system for the invite link.'));
+        ['admin-inv-name','admin-inv-email','admin-inv-role','admin-inv-dept'].forEach(function(id) {
+          var el = document.getElementById(id); if (el) el.value = '';
+        });
+        loadAdminUsers();
+      } catch(e) { alert('Failed to send invite. Please try again.'); }
+    };
+
+    function showAdminTabIfAllowed() {
+      var u = window.CURRENT_USER;
+      if (u && ['Owner','Admin'].includes(u.permRole)) {
+        var tab = document.getElementById('admin-settings-tab');
+        if (tab) tab.style.display = '';
+      }
+    }
+
+    // Patch switchSettingsTab to load users when admin tab opens
+    var _origSST = window.switchSettingsTab;
+    window.switchSettingsTab = function(tab) {
+      if (_origSST) _origSST(tab);
+      if (tab === 'admin') setTimeout(loadAdminUsers, 100);
+    };
+
+    // Show tab after user data is available
+    setTimeout(function() {
+      showAdminTabIfAllowed();
+      if (!window.CURRENT_USER) {
+        var _origAU = window.applyUserToUI;
+        window.applyUserToUI = function(u) { if (_origAU) _origAU(u); showAdminTabIfAllowed(); };
+      }
+    }, 800);
+  })();
 
 })();
 </script>

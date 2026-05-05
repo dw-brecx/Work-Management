@@ -195,6 +195,16 @@ app.post('/api/tickets', requireAuth, (req, res) => {
     dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId);
   run('INSERT OR IGNORE INTO ticket_details (ticket_id) VALUES (?)', id);
   for (const a of (assignees||[])) run('INSERT OR IGNORE INTO ticket_assignees (ticket_id,user_name) VALUES (?,?)', id, a);
+  // Notify assigned users
+  const creator = getUser(req.session.userId);
+  for (const a of (assignees||[])) {
+    const target = get('SELECT id FROM users WHERE name=?', a);
+    if (target && target.id !== req.session.userId) {
+      run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        target.id, 'assigned', '👤',
+        `${creator?.name || 'Someone'} assigned you to "${title}"`, id);
+    }
+  }
   res.status(201).json(buildTicket(get('SELECT * FROM tickets WHERE id=?', id)));
 });
 
@@ -214,8 +224,23 @@ app.put('/api/tickets/:id', requireAuth, (req, res) => {
   if (tags!==undefined)     { u.push('tags_json=?');  v.push(JSON.stringify(tags)); }
   if (u.length) { v.push(req.params.id); run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
   if (assignees!==undefined) {
+    const oldAssignees = all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id).map(a => a.user_name);
     run('DELETE FROM ticket_assignees WHERE ticket_id=?', req.params.id);
     for (const a of assignees) run('INSERT OR IGNORE INTO ticket_assignees (ticket_id,user_name) VALUES (?,?)', req.params.id, a);
+    // Notify newly added assignees
+    const newAssignees = assignees.filter(a => !oldAssignees.includes(a));
+    if (newAssignees.length) {
+      const assigner = getUser(req.session.userId);
+      const tkt = get('SELECT title FROM tickets WHERE id=?', req.params.id);
+      newAssignees.forEach(name => {
+        const target = get('SELECT id FROM users WHERE name=?', name);
+        if (target && target.id !== req.session.userId) {
+          run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+            target.id, 'assigned', '👤',
+            `${assigner?.name || 'Someone'} assigned you to "${tkt?.title || req.params.id}"`, req.params.id);
+        }
+      });
+    }
   }
   res.json(buildTicket(get('SELECT * FROM tickets WHERE id=?', req.params.id)));
 });
@@ -254,6 +279,17 @@ app.post('/api/tickets/:id/comments', requireAuth, (req, res) => {
   const info = run(`INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text) VALUES (?,?,?,?,?,?)`,
     req.params.id, u.name, init, bg, col, text.trim());
   run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
+  // Parse @mentions and notify mentioned users
+  const tkt = get('SELECT title FROM tickets WHERE id=?', req.params.id);
+  const mentions = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
+  mentions.forEach(name => {
+    const mentioned = get('SELECT id FROM users WHERE name=?', name);
+    if (mentioned && mentioned.id !== req.session.userId) {
+      run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        mentioned.id, 'mention', '💬',
+        `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id);
+    }
+  });
   res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, init, bg, col, text:text.trim(), time:'Just now' });
 });
 
