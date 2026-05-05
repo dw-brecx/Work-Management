@@ -645,6 +645,11 @@ html = html.replace(
   /const CAL_EVENTS = \{[\s\S]*?\};/,
   'const CAL_EVENTS = {};'
 );
+// Clear fake NOTIFICATIONS array — real ones come from /api/notifications
+html = html.replace(
+  /let NOTIFICATIONS = \[[\s\S]*?\];/,
+  'let NOTIFICATIONS = [];'
+);
 
 // ── Remove hardcoded badge "8" from Tickets nav ──────────────────────────────
 html = html.replace(
@@ -1990,9 +1995,57 @@ async function initApp() {
   // Wire up voice + file attachments
   initAttachmentFeature();
 
+  // Load real notifications and start polling
+  loadRealNotifications();
+  setInterval(loadRealNotifications, 30000);
+
   // Signal that the app is ready — triggers URL routing from initial path
   window.dispatchEvent(new Event('_wnReady'));
 }
+
+// ── Real notifications ────────────────────────────────────────────────────────
+async function loadRealNotifications() {
+  try {
+    const rows = await apiGet('/api/notifications');
+    // Map DB rows to the UI format the template expects
+    NOTIFICATIONS.length = 0;
+    rows.forEach(function(n) {
+      NOTIFICATIONS.push({
+        id:       n.id,
+        type:     n.type || 'mention',
+        icon:     n.icon || '🔔',
+        unread:   !!n.unread,
+        time:     n.time_label || 'Just now',
+        text:     n.text || '',
+        ticketId: n.ticket_id || '',
+      });
+    });
+    syncNotifBadge();
+    // Re-render if panel is currently open
+    var panel = document.getElementById('notif-panel');
+    if (panel && panel.classList.contains('open')) renderNotifPanel();
+  } catch(e) {
+    if (e.message !== 'unauth') console.warn('[notif] fetch failed', e);
+  }
+}
+
+// Wrap markAllNotifsRead to also persist to the API
+(function() {
+  var _origMark = window.markAllNotifsRead;
+  window.markAllNotifsRead = function() {
+    if (_origMark) _origMark();
+    fetch('/api/notifications/read-all', { method:'PUT' }).catch(function(){});
+  };
+})();
+
+// Wrap openNotif to also mark as read on the server
+(function() {
+  var _origOpen = window.openNotif;
+  window.openNotif = function(id) {
+    fetch('/api/notifications/' + id + '/read', { method:'PUT' }).catch(function(){});
+    if (_origOpen) _origOpen(id);
+  };
+})();
 
 // ── Voice Notes & File Attachments ────────────────────────────────────────────
 

@@ -8403,18 +8403,7 @@ function convertPlanToTicket(id) {
 }
 
 let pendingPlanIdToArchive = null;
-let NOTIFICATIONS = [
-  {id:1, type:'mention',  icon:'@',  unread:true,  time:'5 min ago',  text:'<strong>Sarah Johnson</strong> mentioned you in a comment on <strong>TKT-1042</strong>',   ticketId:'TKT-1042'},
-  {id:2, type:'assigned', icon:'👤', unread:true,  time:'12 min ago', text:'<strong>TKT-1040</strong> · Design: New Landing Page was assigned to you',                ticketId:'TKT-1040'},
-  {id:3, type:'due',      icon:'⏰', unread:true,  time:'30 min ago', text:'<strong>TKT-1036</strong> · Inventory Sync Error is overdue by 1 day',                  ticketId:'TKT-1036'},
-  {id:4, type:'status',   icon:'✓',  unread:true,  time:'1 hr ago',   text:'<strong>Mike Peters</strong> moved <strong>TKT-1041</strong> to In Review',              ticketId:'TKT-1041'},
-  {id:5, type:'comment',  icon:'💬', unread:true,  time:'2 hr ago',   text:'<strong>David Lee</strong> added a note to <strong>TKT-1039</strong>',                  ticketId:'TKT-1039'},
-  {id:6, type:'worktrack',icon:'📤', unread:true,  time:'3 hr ago',   text:'<strong>Sadia Islam</strong> started the linked WorkTrack task on <strong>TKT-1042</strong>', ticketId:'TKT-1042'},
-  {id:7, type:'mention',  icon:'@',  unread:true,  time:'Yesterday',  text:'<strong>Emily Davis</strong> mentioned you in <strong>TKT-1038</strong>',                ticketId:'TKT-1038'},
-  {id:8, type:'assigned', icon:'👤', unread:true,  time:'Yesterday',  text:'<strong>TKT-0998</strong> was reassigned to you',                                       ticketId:'TKT-0998'},
-  {id:9, type:'status',   icon:'✓',  unread:false, time:'2 days ago', text:'<strong>TKT-1037</strong> moved to Closed',                                              ticketId:'TKT-1037'},
-  {id:10,type:'due',      icon:'⏰', unread:false, time:'3 days ago', text:'<strong>TKT-1035</strong> · Mobile App Crash on Login is approaching due date',          ticketId:'TKT-1035'},
-];
+let NOTIFICATIONS = [];
 
 // Generate plan reminder notifications for any plan whose reminder is now due.
 // This runs on app start and on any plan update — items aren't duplicated because
@@ -9692,9 +9681,57 @@ async function initApp() {
   // Wire up voice + file attachments
   initAttachmentFeature();
 
+  // Load real notifications and start polling
+  loadRealNotifications();
+  setInterval(loadRealNotifications, 30000);
+
   // Signal that the app is ready — triggers URL routing from initial path
   window.dispatchEvent(new Event('_wnReady'));
 }
+
+// ── Real notifications ────────────────────────────────────────────────────────
+async function loadRealNotifications() {
+  try {
+    const rows = await apiGet('/api/notifications');
+    // Map DB rows to the UI format the template expects
+    NOTIFICATIONS.length = 0;
+    rows.forEach(function(n) {
+      NOTIFICATIONS.push({
+        id:       n.id,
+        type:     n.type || 'mention',
+        icon:     n.icon || '🔔',
+        unread:   !!n.unread,
+        time:     n.time_label || 'Just now',
+        text:     n.text || '',
+        ticketId: n.ticket_id || '',
+      });
+    });
+    syncNotifBadge();
+    // Re-render if panel is currently open
+    var panel = document.getElementById('notif-panel');
+    if (panel && panel.classList.contains('open')) renderNotifPanel();
+  } catch(e) {
+    if (e.message !== 'unauth') console.warn('[notif] fetch failed', e);
+  }
+}
+
+// Wrap markAllNotifsRead to also persist to the API
+(function() {
+  var _origMark = window.markAllNotifsRead;
+  window.markAllNotifsRead = function() {
+    if (_origMark) _origMark();
+    fetch('/api/notifications/read-all', { method:'PUT' }).catch(function(){});
+  };
+})();
+
+// Wrap openNotif to also mark as read on the server
+(function() {
+  var _origOpen = window.openNotif;
+  window.openNotif = function(id) {
+    fetch('/api/notifications/' + id + '/read', { method:'PUT' }).catch(function(){});
+    if (_origOpen) _origOpen(id);
+  };
+})();
 
 // ── Voice Notes & File Attachments ────────────────────────────────────────────
 
