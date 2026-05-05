@@ -9645,6 +9645,7 @@ async function initApp() {
   window.CURRENT_USER = me;
   // Call via window so IIFE wrappers (profile panel, admin tabs) are triggered
   if (window.applyUserToUI) window.applyUserToUI(me); else applyUserToUI(me);
+  if (window.showAdminTabsIfAllowed) window.showAdminTabsIfAllowed();
 
   let tickets, team, invites, events, plans, workTasks;
   try {
@@ -10870,7 +10871,7 @@ initApp();
             var bc  = m.permRole==='Owner' ? '#854d0e' : m.permRole==='Admin' ? '#3730a3' : '#166534';
             var canDel = m.permRole !== 'Owner' && m.id !== me;
             var delBtn = canDel
-              ? '<button onclick="adminDeleteUser(' + m.id + ','' + m.name.replace(/'/g,'') + '')" style="padding:4px 10px;background:#fee2e2;color:#dc2626;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Delete</button>'
+              ? '<button onclick="adminDeleteUser(' + m.id + ')" data-uname="' + (m.name||'').replace(/"/g,'') + '" style="padding:4px 10px;background:#fee2e2;color:#dc2626;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Delete</button>'
               : '<span style="font-size:11px;color:#cbd5e1">' + (m.id === me ? 'You' : 'Protected') + '</span>';
             return '<tr style="border-bottom:1px solid #f3f5fb">' +
               '<td style="padding:9px 12px;font-weight:500">' + (m.name||'') + '</td>' +
@@ -10892,7 +10893,7 @@ initApp();
         if (deptList) {
           deptList.innerHTML = depts.map(function(d) {
             return '<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;background:#f0f5ff;border:1px solid #c7d7fe;border-radius:99px;font-size:12px;color:#2563eb">' +
-              d + '<button onclick="adminDeleteDepartment('' + d.replace(/'/g,'') + '')" style="background:none;border:none;color:#93c5fd;cursor:pointer;font-size:13px;line-height:1;padding:0">×</button></span>';
+              d + '<button onclick="adminDeleteDepartment(this)" data-dname="' + d.replace(/"/g,'') + '" style="background:none;border:none;color:#93c5fd;cursor:pointer;font-size:13px;line-height:1;padding:0">×</button></span>';
           }).join('');
         }
         // Populate every dept dropdown in the page
@@ -10926,8 +10927,10 @@ initApp();
       } catch(e) { alert('Failed to create user. Try again.'); }
     };
 
-    // Delete user
-    window.adminDeleteUser = async function(id, name) {
+    // Delete user — id only, name read from button data attribute
+    window.adminDeleteUser = async function(id) {
+      var btn = document.querySelector('button[onclick="adminDeleteUser(' + id + ')"]');
+      var name = btn ? btn.dataset.uname : 'this user';
       if (!confirm('Delete user ' + name + '? This cannot be undone.')) return;
       try {
         var res = await apiDel('/api/admin/users/' + id);
@@ -10948,10 +10951,10 @@ initApp();
       } catch(e) { alert('Failed to add department.'); }
     };
 
-    // Delete department
-    window.adminDeleteDepartment = async function(name) {
-      if (!confirm('Delete department "' + name + '"?
-Only possible if no users or tickets use it.')) return;
+    // Delete department — btn element passed from onclick
+    window.adminDeleteDepartment = async function(btn) {
+      var name = btn.dataset ? btn.dataset.dname : btn;
+      if (!confirm('Delete department "' + name + '"? Only possible if no users or tickets use it.')) return;
       try {
         var r = await fetch('/api/departments/' + encodeURIComponent(name), { method: 'DELETE' });
         var res = await r.json();
@@ -10961,14 +10964,14 @@ Only possible if no users or tickets use it.')) return;
     };
 
     // Show admin + reset tabs only for Owner/Admin
-    function showAdminTabsIfAllowed() {
+    window.showAdminTabsIfAllowed = function() {
       var u = window.CURRENT_USER;
       if (!u || !['Owner','Admin'].includes(u.permRole)) return;
       var at = document.getElementById('admin-settings-tab');
       var rt = document.getElementById('reset-settings-tab');
       if (at) at.style.display = '';
       if (rt) rt.style.display = '';
-    }
+    };
 
     // Patch switchSettingsTab to load data when admin tab opens
     var _origSST = window.switchSettingsTab;
@@ -10979,12 +10982,9 @@ Only possible if no users or tickets use it.')) return;
       }
     };
 
-    // Wire up after user loads
-    setTimeout(function() {
-      showAdminTabsIfAllowed();
-      var _origAU = window.applyUserToUI;
-      window.applyUserToUI = function(u) { if (_origAU) _origAU(u); showAdminTabsIfAllowed(); };
-    }, 600);
+    // Wrap applyUserToUI immediately (no setTimeout race)
+    var _origAU = window.applyUserToUI;
+    window.applyUserToUI = function(u) { if (_origAU) _origAU(u); window.showAdminTabsIfAllowed(); };
   })();
 
 })();
