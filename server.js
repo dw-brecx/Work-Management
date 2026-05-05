@@ -4,9 +4,31 @@ const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const fs = require('fs');
 const { randomUUID } = require('crypto');
+const multer = require('multer');
 const { init: initDb, get, all, run } = require('./db');
 const { sendInviteEmail } = require('./email');
+
+const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || '';
+    cb(null, randomUUID() + ext);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^(image\/|audio\/|application\/pdf|text\/)/.test(file.mimetype)
+      || ['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.mimetype);
+    cb(null, ok);
+  }
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -409,6 +431,45 @@ function timeAgo(iso) {
     return d === 1 ? 'Yesterday' : `${d}d ago`;
   } catch { return 'Just now'; }
 }
+
+// ── Attachments ───────────────────────────────────────────────────────────────
+app.post('/api/upload', requireAuth, upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const u = getUser(req.session.userId);
+  const { ticketId, commentId } = req.body;
+  const info = run(
+    'INSERT INTO attachments (ticket_id,comment_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?)',
+    ticketId || null, commentId ? Number(commentId) : null,
+    req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
+  );
+  res.json({
+    id: Number(info.lastInsertRowid),
+    filename: req.file.filename,
+    originalName: req.file.originalname,
+    mimeType: req.file.mimetype,
+    size: req.file.size,
+    url: `/uploads/${req.file.filename}`,
+  });
+});
+
+app.get('/api/tickets/:id/attachments', requireAuth, (req, res) => {
+  const rows = all('SELECT * FROM attachments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
+  res.json(rows.map(r => ({
+    id: r.id, filename: r.filename, originalName: r.original_name,
+    mimeType: r.mime_type, size: r.size, uploader: r.uploader,
+    commentId: r.comment_id, createdAt: r.created_at,
+    url: `/uploads/${r.filename}`,
+  })));
+});
+
+app.delete('/api/attachments/:id', requireAuth, (req, res) => {
+  const att = get('SELECT filename FROM attachments WHERE id=?', req.params.id);
+  if (att) {
+    try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
+    run('DELETE FROM attachments WHERE id=?', req.params.id);
+  }
+  res.json({ ok: true });
+});
 
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {

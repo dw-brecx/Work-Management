@@ -9360,8 +9360,397 @@ async function initApp() {
   patchCalMutations();
   patchTeamMutations();
 
+  // Wire up voice + file attachments
+  initAttachmentFeature();
+
   // Signal that the app is ready — triggers URL routing from initial path
   window.dispatchEvent(new Event('_wnReady'));
+}
+
+// ── Voice Notes & File Attachments ────────────────────────────────────────────
+function initAttachmentFeature() {
+  injectAttachmentStyles();
+  patchCreateTicketModal();
+  patchCommentSection();
+}
+
+function injectAttachmentStyles() {
+  if (document.getElementById('wn-attach-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'wn-attach-styles';
+  s.textContent = `
+    .attach-bar { display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap; }
+    .attach-btn {
+      display:inline-flex; align-items:center; gap:5px;
+      background:#f0f5ff; border:1px solid #c7d7fe; color:#2563eb;
+      border-radius:8px; padding:5px 11px; font-size:12px; font-weight:500;
+      cursor:pointer; transition:all .15s;
+    }
+    .attach-btn:hover { background:#dbeafe; border-color:#93c5fd; }
+    .attach-btn.recording { background:#fee2e2; border-color:#fca5a5; color:#dc2626; animation:rec-pulse 1.2s infinite; }
+    @keyframes rec-pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
+    .attach-preview-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .attach-preview-item {
+      position:relative; border-radius:10px; overflow:hidden;
+      border:1px solid #e4e9f2; background:#f9fafb;
+    }
+    .attach-preview-item img { width:80px; height:80px; object-fit:cover; display:block; }
+    .attach-preview-item audio { max-width:220px; height:32px; display:block; margin:6px; }
+    .attach-preview-item .attach-file-info {
+      display:flex; align-items:center; gap:6px; padding:8px 10px;
+      font-size:11px; color:#4b5563; max-width:200px;
+    }
+    .attach-preview-item .attach-remove {
+      position:absolute; top:3px; right:3px; width:18px; height:18px;
+      background:rgba(0,0,0,.5); color:#fff; border-radius:50%; border:none;
+      font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    }
+    .ticket-attachments-section { margin-top:20px; }
+    .ticket-attachments-section h4 { font-size:12px; font-weight:600; color:#6b7280; margin:0 0 10px; text-transform:uppercase; letter-spacing:.04em; }
+    .ticket-attach-grid { display:flex; flex-wrap:wrap; gap:10px; }
+    .ticket-attach-item {
+      border-radius:12px; border:1px solid #e4e9f2; overflow:hidden;
+      background:#f9fafb; cursor:pointer; transition:box-shadow .15s;
+    }
+    .ticket-attach-item:hover { box-shadow:0 4px 12px rgba(0,0,0,.1); }
+    .ticket-attach-item img { width:120px; height:90px; object-fit:cover; display:block; }
+    .ticket-attach-item .attach-meta {
+      padding:6px 10px; font-size:10.5px; color:#6b7280; max-width:120px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .ticket-attach-item audio { display:block; margin:8px; max-width:200px; height:32px; }
+    .ticket-attach-item .attach-doc { padding:12px 14px; display:flex; align-items:center; gap:8px; font-size:12px; color:#374151; }
+    .rec-timer { font-size:11px; font-weight:600; color:#dc2626; min-width:35px; }
+  `;
+  document.head.appendChild(s);
+}
+
+// ── Create Ticket modal patch ────────────────────────────────────────────────
+function patchCreateTicketModal() {
+  // Observe DOM for the modal opening
+  const observer = new MutationObserver(() => {
+    const modal = document.querySelector('.modal-overlay .modal, .modal-overlay .modal-box');
+    if (!modal || modal.dataset.attachPatched) return;
+    const header = modal.querySelector('.modal-header, h2, h3');
+    if (!header || !/create.*ticket/i.test(header.textContent)) return;
+    modal.dataset.attachPatched = '1';
+    setupTicketModalAttachments(modal);
+  });
+  observer.observe(document.body, { childList:true, subtree:true });
+}
+
+function setupTicketModalAttachments(modal) {
+  let pendingFiles = [];
+  let voiceBlob = null;
+  let recorder = null;
+  let recInterval = null;
+  let recSeconds = 0;
+
+  // Find or create attach zone (existing attachments box or append after checklist)
+  let attachBox = modal.querySelector('.ticket-extra-box:last-of-type');
+  if (!attachBox) attachBox = modal;
+
+  // Build UI
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'margin-top:12px;';
+  wrap.innerHTML = `
+    <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:8px;">Attachments & Voice Notes</div>
+    <div class="attach-bar">
+      <label class="attach-btn" style="cursor:pointer">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+        Add Files
+        <input type="file" multiple accept="image/*,.pdf,.doc,.docx" style="display:none" id="modal-file-input">
+      </label>
+      <button class="attach-btn" id="modal-voice-btn" type="button">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+        Record Voice
+      </button>
+      <span class="rec-timer" id="modal-rec-timer" style="display:none"></span>
+    </div>
+    <div class="attach-preview-list" id="modal-attach-previews"></div>
+  `;
+
+  // Insert before the submit button
+  const submitBtn = modal.querySelector('button.btn-primary');
+  if (submitBtn) submitBtn.parentNode.insertBefore(wrap, submitBtn);
+  else attachBox.appendChild(wrap);
+
+  // File input handler
+  document.getElementById('modal-file-input').addEventListener('change', function() {
+    Array.from(this.files).forEach(f => { pendingFiles.push(f); addPreview(f); });
+    this.value = '';
+  });
+
+  // Voice recording handler
+  const voiceBtn = document.getElementById('modal-voice-btn');
+  const recTimer = document.getElementById('modal-rec-timer');
+  voiceBtn.addEventListener('click', async () => {
+    if (recorder && recorder.state === 'recording') {
+      recorder.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      const chunks = [];
+      recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        clearInterval(recInterval);
+        recTimer.style.display = 'none';
+        voiceBtn.classList.remove('recording');
+        voiceBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Record Voice`;
+        voiceBlob = new Blob(chunks, { type:'audio/webm' });
+        voiceBlob.name = `voice-note-${Date.now()}.webm`;
+        pendingFiles.push(voiceBlob);
+        addPreview(voiceBlob, true);
+      };
+      recorder.start();
+      recSeconds = 0;
+      recTimer.style.display = 'inline';
+      recTimer.textContent = '0:00';
+      recInterval = setInterval(() => {
+        recSeconds++;
+        recTimer.textContent = Math.floor(recSeconds/60) + ':' + String(recSeconds%60).padStart(2,'0');
+      }, 1000);
+      voiceBtn.classList.add('recording');
+      voiceBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop Recording`;
+    } catch(e) {
+      alert('Microphone access denied. Please allow microphone access to record voice notes.');
+    }
+  });
+
+  function addPreview(file, isAudio) {
+    const list = document.getElementById('modal-attach-previews');
+    const item = document.createElement('div');
+    item.className = 'attach-preview-item';
+    const idx = pendingFiles.length - 1;
+
+    if (isAudio || file.type?.startsWith('audio/')) {
+      const url = URL.createObjectURL(file);
+      item.innerHTML = `<audio controls src="${url}"></audio><div class="attach-file-info">🎤 Voice note</div>`;
+    } else if (file.type?.startsWith('image/')) {
+      const url = URL.createObjectURL(file);
+      item.innerHTML = `<img src="${url}" alt="${file.name}">`;
+    } else {
+      item.innerHTML = `<div class="attach-file-info">📄 ${file.name}</div>`;
+    }
+
+    const rm = document.createElement('button');
+    rm.className = 'attach-remove';
+    rm.textContent = '×';
+    rm.onclick = () => { pendingFiles.splice(idx, 1); item.remove(); };
+    item.appendChild(rm);
+    list.appendChild(item);
+  }
+
+  // Patch the submit button to upload files after ticket creation
+  const origSubmit = submitBtn?.onclick;
+  if (submitBtn) {
+    submitBtn.addEventListener('click', async () => {
+      if (pendingFiles.length === 0) return;
+      // Wait briefly for the ticket to be created, then find the newest ticket and upload
+      await new Promise(r => setTimeout(r, 800));
+      const newest = TICKETS_DATA[TICKETS_DATA.length - 1];
+      if (!newest) return;
+      for (const file of pendingFiles) {
+        try {
+          const form = new FormData();
+          form.append('file', file, file.name || 'voice-note.webm');
+          form.append('ticketId', newest.id);
+          await fetch('/api/upload', { method:'POST', body:form });
+        } catch(e) { console.warn('Upload failed:', e); }
+      }
+      pendingFiles = [];
+    }, true);
+  }
+}
+
+// ── Comment section patch ────────────────────────────────────────────────────
+function patchCommentSection() {
+  // Observe for ticket detail panel opening
+  const observer = new MutationObserver(() => {
+    document.querySelectorAll('.comment-input-wrap, .cmt-input-wrap, [class*="comment"] textarea').forEach(el => {
+      if (el.dataset.attachPatched) return;
+      el.dataset.attachPatched = '1';
+      setupCommentAttachments(el);
+    });
+    // Also watch for the send comment button area
+    document.querySelectorAll('.add-comment-row, .comment-row, .cmt-row').forEach(el => {
+      if (el.dataset.attachPatched) return;
+      el.dataset.attachPatched = '1';
+      setupCommentAttachments(el);
+    });
+  });
+  observer.observe(document.body, { childList:true, subtree:true });
+}
+
+function setupCommentAttachments(container) {
+  if (!container.querySelector('textarea, input[type="text"]')) return;
+  let pendingFiles = [];
+  let recorder = null;
+  let recInterval = null;
+  let recSeconds = 0;
+
+  const bar = document.createElement('div');
+  bar.className = 'attach-bar';
+  bar.style.marginTop = '6px';
+  bar.innerHTML = `
+    <label class="attach-btn" style="font-size:11px;padding:4px 9px;cursor:pointer">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+      File
+      <input type="file" multiple accept="image/*,.pdf,.doc,.docx" style="display:none" class="cmt-file-input">
+    </label>
+    <button class="attach-btn cmt-voice-btn" type="button" style="font-size:11px;padding:4px 9px;">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+      Voice
+    </button>
+    <span class="rec-timer cmt-rec-timer" style="display:none"></span>
+  `;
+
+  const previews = document.createElement('div');
+  previews.className = 'attach-preview-list';
+
+  container.appendChild(bar);
+  container.appendChild(previews);
+
+  bar.querySelector('.cmt-file-input').addEventListener('change', function() {
+    Array.from(this.files).forEach(f => { pendingFiles.push(f); addCmtPreview(f); });
+    this.value = '';
+  });
+
+  const voiceBtn = bar.querySelector('.cmt-voice-btn');
+  const timer = bar.querySelector('.cmt-rec-timer');
+
+  voiceBtn.addEventListener('click', async () => {
+    if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      const chunks = [];
+      recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = e => chunks.push(e.data);
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        clearInterval(recInterval);
+        timer.style.display = 'none';
+        voiceBtn.classList.remove('recording');
+        voiceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Voice`;
+        const blob = new Blob(chunks, { type:'audio/webm' });
+        blob.name = `voice-note-${Date.now()}.webm`;
+        pendingFiles.push(blob);
+        addCmtPreview(blob, true);
+      };
+      recorder.start();
+      recSeconds = 0;
+      timer.style.display = 'inline';
+      timer.textContent = '0:00';
+      recInterval = setInterval(() => {
+        recSeconds++;
+        timer.textContent = Math.floor(recSeconds/60) + ':' + String(recSeconds%60).padStart(2,'0');
+      }, 1000);
+      voiceBtn.classList.add('recording');
+      voiceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop`;
+    } catch(e) { alert('Microphone access denied.'); }
+  });
+
+  function addCmtPreview(file, isAudio) {
+    const item = document.createElement('div');
+    item.className = 'attach-preview-item';
+    const idx = pendingFiles.length - 1;
+    if (isAudio || file.type?.startsWith('audio/')) {
+      item.innerHTML = `<audio controls src="${URL.createObjectURL(file)}"></audio><div class="attach-file-info" style="font-size:10px;padding:2px 6px">🎤 Voice note</div>`;
+    } else if (file.type?.startsWith('image/')) {
+      item.innerHTML = `<img src="${URL.createObjectURL(file)}" style="width:60px;height:60px;object-fit:cover;display:block">`;
+    } else {
+      item.innerHTML = `<div class="attach-file-info">📄 ${file.name}</div>`;
+    }
+    const rm = document.createElement('button');
+    rm.className = 'attach-remove';
+    rm.textContent = '×';
+    rm.onclick = () => { pendingFiles.splice(idx, 1); item.remove(); };
+    item.appendChild(rm);
+    previews.appendChild(item);
+  }
+
+  // Patch the send button inside the same container or parent
+  function findSendBtn() {
+    return container.querySelector('button[onclick*="addComment"], button.btn-primary, button[class*="send"]')
+      || container.parentElement?.querySelector('button[onclick*="addComment"], button.cmt-send');
+  }
+
+  // Poll for send button and patch it
+  let patchAttempts = 0;
+  const patchInterval = setInterval(() => {
+    const sendBtn = findSendBtn();
+    if (sendBtn && !sendBtn.dataset.attachPatched) {
+      sendBtn.dataset.attachPatched = '1';
+      sendBtn.addEventListener('click', async () => {
+        if (pendingFiles.length === 0) return;
+        await new Promise(r => setTimeout(r, 600));
+        // Get the most recent comment for this ticket
+        const ticketId = window.currentDetailTicketId || window.currentOpenTicket?.id;
+        if (!ticketId) return;
+        const cmts = document.querySelectorAll('.cmt-item, .comment-item, [class*="cmt-"]');
+        const lastCmt = cmts[cmts.length - 1];
+        for (const file of [...pendingFiles]) {
+          try {
+            const form = new FormData();
+            form.append('file', file, file.name || 'voice-note.webm');
+            form.append('ticketId', ticketId);
+            await fetch('/api/upload', { method:'POST', body:form });
+          } catch(e) { console.warn('Upload failed:', e); }
+        }
+        pendingFiles = [];
+        previews.innerHTML = '';
+      }, true);
+      clearInterval(patchInterval);
+    }
+    if (++patchAttempts > 20) clearInterval(patchInterval);
+  }, 300);
+}
+
+// ── Load + display attachments in ticket detail ──────────────────────────────
+async function loadTicketAttachments(ticketId, container) {
+  try {
+    const atts = await apiGet(`/api/tickets/${ticketId}/attachments`);
+    if (!atts.length) return;
+    let section = container.querySelector('.ticket-attachments-section');
+    if (!section) {
+      section = document.createElement('div');
+      section.className = 'ticket-attachments-section';
+      container.appendChild(section);
+    }
+    section.innerHTML = `<h4>Attachments (${atts.length})</h4><div class="ticket-attach-grid"></div>`;
+    const grid = section.querySelector('.ticket-attach-grid');
+    atts.forEach(att => {
+      const item = document.createElement('div');
+      item.className = 'ticket-attach-item';
+      if (att.mimeType.startsWith('image/')) {
+        item.innerHTML = `<img src="${att.url}" alt="${att.originalName}"><div class="attach-meta">${att.originalName}</div>`;
+        item.onclick = () => window.open(att.url, '_blank');
+      } else if (att.mimeType.startsWith('audio/')) {
+        item.innerHTML = `<div style="padding:8px 10px;font-size:11px;color:#6b7280;font-weight:500">🎤 ${att.uploader}</div><audio controls src="${att.url}"></audio>`;
+      } else {
+        item.innerHTML = `<div class="attach-doc">📄 <span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${att.originalName}</span></div>`;
+        item.onclick = () => window.open(att.url, '_blank');
+      }
+      grid.appendChild(item);
+    });
+  } catch(e) {}
+}
+
+// Hook into ticket detail open to load attachments
+const _origOpenTicketDetail = window.openTicketDetail;
+if (typeof _origOpenTicketDetail === 'function') {
+  window.openTicketDetail = function(id, ...args) {
+    window.currentDetailTicketId = id;
+    const r = _origOpenTicketDetail.call(this, id, ...args);
+    setTimeout(() => {
+      const panel = document.querySelector('.right-panel, .detail-panel, [class*="detail"]');
+      if (panel) loadTicketAttachments(id, panel);
+    }, 400);
+    return r;
+  };
 }
 
 // ── Bootstrap: fast local render, then API overwrite ─────────────────────────
