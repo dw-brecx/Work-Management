@@ -505,6 +505,34 @@ const DESIGN_CSS = `
     .sb-collapse-btn:hover { color: #2563eb !important; background: #eff6ff !important; }
     #sidebar.collapsed .sb-collapse-btn { margin: 0 auto !important; }
 
+    /* ── Collapsed sidebar: nav item tooltips ── */
+    #sidebar.collapsed .nav-item {
+      position: relative !important;
+    }
+    #sidebar.collapsed .nav-item::after {
+      content: attr(data-tooltip);
+      position: absolute !important;
+      left: 60px !important;
+      top: 50% !important;
+      transform: translateY(-50%) !important;
+      background: #1e293b !important;
+      color: #fff !important;
+      font-size: 11.5px !important;
+      font-weight: 500 !important;
+      padding: 5px 10px !important;
+      border-radius: 7px !important;
+      white-space: nowrap !important;
+      pointer-events: none !important;
+      opacity: 0 !important;
+      transition: opacity .12s !important;
+      z-index: 999 !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,.2) !important;
+    }
+    #sidebar.collapsed .nav-item:hover::after { opacity: 1 !important; }
+    /* Collapsed: user area only shows avatar */
+    #sidebar.collapsed .sb-user { justify-content: center !important; padding: 8px 0 !important; }
+    #sidebar.collapsed .sb-bottom { padding: 10px 0 !important; }
+
     /* ── Mobile sidebar overlay ── */
     #sb-overlay {
       display: none;
@@ -616,6 +644,12 @@ html = html.replace(
 html = html.replace(
   /const CAL_EVENTS = \{[\s\S]*?\};/,
   'const CAL_EVENTS = {};'
+);
+
+// ── Remove hardcoded badge "8" from Tickets nav ──────────────────────────────
+html = html.replace(
+  'Tickets <span class="badge">8</span>',
+  'Tickets <span class="badge" id="nav-tickets-badge" style="display:none"></span>'
 );
 
 // ── Targeted patches ──────────────────────────────────────────────────────────
@@ -1015,10 +1049,13 @@ html = html.replace('</body>', `<script>
     return _fct ? _fct.call(this, raw) : (raw || '');
   };
 
-  /* ── 2. Wrap nav item bare text nodes in .nav-label spans ── */
+  /* ── 2. Wrap nav item bare text nodes in .nav-label spans + set tooltips ── */
   document.querySelectorAll('#nav .nav-item').forEach(function(item) {
     item.childNodes.forEach(function(node) {
       if (node.nodeType === 3 && node.textContent.trim()) {
+        var label = node.textContent.trim();
+        // Set tooltip for collapsed state
+        if (!item.getAttribute('data-tooltip')) item.setAttribute('data-tooltip', label);
         var span = document.createElement('span');
         span.className = 'nav-label';
         span.style.cssText = 'flex:1;overflow:hidden;text-overflow:clip;white-space:nowrap;';
@@ -1236,6 +1273,63 @@ html = html.replace('</body>', `<script>
       })
       .catch(function(){ alert('Reset failed. Please try again.'); });
   };
+
+  /* ── Nav tickets badge: dynamic from real count ── */
+  function updateNavBadge() {
+    var badge = document.getElementById('nav-tickets-badge');
+    if (!badge) return;
+    var open = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : [])
+      .filter(function(t){ return t.status !== 'Closed' && t.status !== 'Archived'; }).length;
+    badge.textContent = open;
+    badge.style.display = open > 0 ? '' : 'none';
+  }
+  // Hook into renderTickets and initDashboard to keep it current
+  var _origRenderTickets2 = window.renderTickets;
+  window.renderTickets = function() {
+    var r = _origRenderTickets2 ? _origRenderTickets2.apply(this, arguments) : undefined;
+    updateNavBadge();
+    return r;
+  };
+  // Also update after app init loads tickets
+  setTimeout(updateNavBadge, 1000);
+
+  /* ── Settings: always show profile tab when navigating to settings ── */
+  (function patchSettingsNav() {
+    var _origNavForSettings = window.navigate;
+    window.navigate = function(page) {
+      var r = _origNavForSettings ? _origNavForSettings.apply(this, arguments) : undefined;
+      if (page === 'settings') {
+        setTimeout(function() {
+          // Ensure profile panel is visible and active
+          if (typeof window.switchSettingsTab === 'function') {
+            window.switchSettingsTab('profile');
+          } else {
+            // Manual fallback: show profile, hide others
+            document.querySelectorAll('.settings-panel').forEach(function(p) {
+              p.style.display = p.id === 'settings-panel-profile' ? 'block' : 'none';
+            });
+            document.querySelectorAll('.settings-tab').forEach(function(t) {
+              t.classList.toggle('active', t.dataset.stab === 'profile');
+            });
+          }
+          // Populate profile form with current user data
+          if (window.CURRENT_USER) {
+            var u = window.CURRENT_USER;
+            var n = document.getElementById('prof-name');    if (n) n.value = u.name || '';
+            var r2 = document.getElementById('prof-role');   if (r2) r2.value = u.role || '';
+            var d = document.getElementById('prof-dept');    if (d) d.value = u.dept || '';
+            var e = document.getElementById('prof-email');   if (e) e.value = u.email || '';
+            // Update the avatar/name shown in the profile card header
+            var pn = document.querySelector('#settings-panel-profile .profile-name, #settings-panel-profile [style*="font-size:14px"]');
+            if (pn) pn.textContent = u.name;
+            var av = document.querySelector('#settings-panel-profile .avatar');
+            if (av) av.textContent = (u.name||'A').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase();
+          }
+        }, 50);
+      }
+      return r;
+    };
+  })();
 
   /* ── Settings: wire saveProfileSettings and changePassword to real API ── */
   (function patchSettingsAPI() {
