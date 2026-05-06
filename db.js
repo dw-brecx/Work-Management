@@ -222,6 +222,21 @@ async function init() {
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS announcements (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      require_ack INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE TABLE IF NOT EXISTS announcement_seen (
+      announcement_id INTEGER REFERENCES announcements(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      acknowledged_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      PRIMARY KEY (announcement_id, user_id)
+    )`,
     `CREATE TABLE IF NOT EXISTS ticket_subtasks (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,

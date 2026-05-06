@@ -3003,6 +3003,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div class="settings-tab admin-only" data-stab="flavor-tasks" onclick="switchSettingsTab('flavor-tasks')" id="flavor-tasks-settings-tab">
               <span class="stab-icon">🍓</span> Flavor Tasks
             </div>
+            <div class="settings-tab admin-only" data-stab="announcements" onclick="switchSettingsTab('announcements')" id="announcements-settings-tab">
+              <span class="stab-icon">📣</span> Announcements
+            </div>
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
               <span class="stab-icon">🔧</span> Admin
             </div>
@@ -3190,6 +3193,30 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <button class="btn-primary" style="font-size:12px;padding:8px 14px" onclick="saveFlavorTasks()">Save</button>
             </div>
           </div>
+        </div>
+
+        <!-- Announcements panel -->
+        <div class="card settings-panel" id="settings-panel-announcements" style="display:none">
+          <h2 style="font-size:14px;font-weight:700;margin-bottom:2px">Announcements</h2>
+          <p style="font-size:12px;color:var(--text3);margin:0 0 14px">A pop-up shown to every user when they enter the app. If <b>Require acknowledgement</b> is on, the pop-up keeps appearing on every page until the user clicks "I acknowledge". Otherwise it shows once and dismisses.</p>
+
+          <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px;background:var(--bg2)">
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px">Create new announcement</div>
+            <input type="text" id="ann-new-title" placeholder="Title (optional)" style="width:100%;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;margin-bottom:8px"/>
+            <textarea id="ann-new-body" placeholder="Message…" style="width:100%;min-height:90px;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;resize:vertical;font-family:inherit"></textarea>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px">
+              <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer">
+                <input type="checkbox" id="ann-new-ack"/> Require acknowledgement (else: shown once)
+              </label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <span id="ann-new-status" style="font-size:11px;color:var(--text3)"></span>
+                <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="createAnnouncement()">Publish</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text2)">Existing announcements</div>
+          <div id="announcements-list" style="display:flex;flex-direction:column;gap:8px"></div>
         </div>
 
         <!-- Admin panel -->
@@ -3563,6 +3590,27 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <div style="display:flex;gap:8px;margin-left:auto">
         <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('plan')">Cancel</button>
         <button class="btn-primary" style="font-size:12px;padding:9px 16px" onclick="savePlan()">Save Plan</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ANNOUNCEMENT POPUP -->
+<div id="ann-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:14px;max-width:520px;width:100%;box-shadow:0 30px 60px rgba(0,0,0,.25);overflow:hidden">
+    <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+      <span style="font-size:22px">📣</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;font-weight:600">Announcement</div>
+        <div id="ann-pop-title" style="font-size:16px;font-weight:700;color:var(--text)">—</div>
+      </div>
+    </div>
+    <div id="ann-pop-body" style="padding:18px 22px;font-size:13px;line-height:1.55;color:var(--text2);white-space:pre-wrap;max-height:50vh;overflow:auto">—</div>
+    <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg2)">
+      <div id="ann-pop-meta" style="font-size:11px;color:var(--text3)"></div>
+      <div style="display:flex;gap:8px">
+        <button id="ann-pop-close" onclick="closeAnnouncement(false)" style="font-size:12px;padding:8px 14px;background:none;border:1px solid var(--border);border-radius:7px;color:var(--text2);cursor:pointer">Remind me later</button>
+        <button id="ann-pop-ack" onclick="closeAnnouncement(true)" class="btn-primary" style="font-size:12px;padding:8px 16px">Got it</button>
       </div>
     </div>
   </div>
@@ -11758,6 +11806,193 @@ initApp();
     window.applyUserToUI = function(u) { if (_origAU) _origAU(u); window.showAdminTabsIfAllowed(); };
   })();
 
+})();
+
+// ── Announcements feature ─────────────────────────────────────────────────────
+(function() {
+  // Popup state — pulled from /api/announcements/active and shown one-at-a-time.
+  let _annQueue = [];
+  let _annCurrent = null;
+  let _annLoading = false;
+
+  async function fetchAndShowActiveAnnouncements() {
+    if (_annLoading || _annCurrent) return; // don't stack popups
+    _annLoading = true;
+    try {
+      const list = await apiGet('/api/announcements/active');
+      _annQueue = Array.isArray(list) ? list.slice() : [];
+      showNextAnnouncement();
+    } catch { /* ignore */ } finally {
+      _annLoading = false;
+    }
+  }
+
+  function showNextAnnouncement() {
+    if (_annCurrent) return;
+    const next = _annQueue.shift();
+    if (!next) return;
+    _annCurrent = next;
+    const ov = document.getElementById('ann-overlay');
+    document.getElementById('ann-pop-title').textContent = next.title || 'Notice';
+    document.getElementById('ann-pop-body').textContent = next.body || '';
+    document.getElementById('ann-pop-meta').textContent = next.requireAck
+      ? 'Acknowledgement required.'
+      : 'Tap Got it to dismiss.';
+    const ackBtn = document.getElementById('ann-pop-ack');
+    const closeBtn = document.getElementById('ann-pop-close');
+    if (next.requireAck) {
+      ackBtn.textContent = 'I acknowledge';
+      closeBtn.style.display = ''; // remind-me-later available
+    } else {
+      ackBtn.textContent = 'Got it';
+      closeBtn.style.display = 'none';
+    }
+    if (ov) ov.style.display = 'flex';
+  }
+
+  // ack=true → record on server (so it never shows again); ack=false → just close (will show again next navigate)
+  async function closeAnnouncement(ack) {
+    const cur = _annCurrent;
+    const ov = document.getElementById('ann-overlay');
+    if (ov) ov.style.display = 'none';
+    _annCurrent = null;
+    if (cur && ack) {
+      try { await apiPost('/api/announcements/' + cur.id + '/ack', {}); } catch {}
+    }
+    // Show the next one (if any), or stop. Server will re-include unack'd ones on next fetch.
+    if (_annQueue.length) {
+      showNextAnnouncement();
+    }
+  }
+
+  // ── Admin: manage announcements (Settings panel) ───────────────────────────
+  async function loadAnnouncementsTab() {
+    const el = document.getElementById('announcements-list');
+    if (!el) return;
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">Loading…</div>';
+    try {
+      const list = await apiGet('/api/announcements');
+      if (!list.length) {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px;text-align:center">No announcements yet.</div>';
+        return;
+      }
+      el.innerHTML = list.map(a => announcementRowHtml(a)).join('');
+    } catch {
+      el.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px">Could not load announcements.</div>';
+    }
+  }
+
+  function announcementRowHtml(a) {
+    const date = a.createdAt ? new Date(String(a.createdAt).replace(' ','T') + 'Z').toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '';
+    const ackLabel = a.requireAck ? 'Ack required' : 'One-time';
+    return `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:#fff" data-aid="${a.id}">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:4px">
+              <span style="font-weight:600;font-size:13px">${escapeHtml(a.title || '(no title)')}</span>
+              <span style="font-size:10px;color:${a.active ? '#15803d' : 'var(--text3)'};background:${a.active ? '#f0fdf4' : 'var(--bg2)'};padding:2px 7px;border-radius:5px;border:1px solid ${a.active ? '#bbf7d0' : 'var(--border)'}">${a.active ? 'Active' : 'Inactive'}</span>
+              <span style="font-size:10px;color:#5b21b6;background:#ede9fe;padding:2px 7px;border-radius:5px">${ackLabel}</span>
+              <span style="font-size:10.5px;color:var(--text3)">${escapeHtml(date)}</span>
+              <span style="font-size:10.5px;color:var(--text3)">· ${a.ackCount} ack${a.ackCount === 1 ? '' : 's'}</span>
+            </div>
+            <div style="font-size:12px;color:var(--text2);white-space:pre-wrap">${escapeHtml(a.body || '')}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
+            <button onclick="toggleAnnouncementActive(${a.id}, ${a.active ? 'false' : 'true'})" style="font-size:11px;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;color:var(--text2)">${a.active ? 'Deactivate' : 'Activate'}</button>
+            <button onclick="resendAnnouncement(${a.id})" title="Reset 'seen' state so everyone sees it again" style="font-size:11px;padding:4px 9px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;color:var(--text2)">Re-send</button>
+            <button onclick="deleteAnnouncement(${a.id})" style="font-size:11px;padding:4px 9px;border:1px solid #fecaca;border-radius:6px;background:#fff;cursor:pointer;color:var(--red)">Delete</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function createAnnouncement() {
+    const title = document.getElementById('ann-new-title').value.trim();
+    const body = document.getElementById('ann-new-body').value.trim();
+    const requireAck = document.getElementById('ann-new-ack').checked;
+    const status = document.getElementById('ann-new-status');
+    if (!title && !body) { alert('Add a title or message before publishing.'); return; }
+    if (status) status.textContent = 'Publishing…';
+    try {
+      const r = await apiPost('/api/announcements', { title, body, requireAck });
+      if (r && r.error) { if (status) status.textContent = r.error; return; }
+      document.getElementById('ann-new-title').value = '';
+      document.getElementById('ann-new-body').value = '';
+      document.getElementById('ann-new-ack').checked = false;
+      if (status) { status.textContent = 'Published.'; setTimeout(() => status.textContent = '', 2000); }
+      loadAnnouncementsTab();
+    } catch {
+      if (status) status.textContent = 'Could not publish — check connection.';
+    }
+  }
+
+  async function toggleAnnouncementActive(id, makeActive) {
+    try { await apiPut('/api/announcements/' + id, { active: makeActive }); }
+    catch {}
+    loadAnnouncementsTab();
+  }
+
+  async function resendAnnouncement(id) {
+    if (!confirm('Re-send this announcement? Everyone who already saw it will see it again.')) return;
+    try { await apiPut('/api/announcements/' + id, { resetSeen: true }); }
+    catch {}
+    loadAnnouncementsTab();
+  }
+
+  async function deleteAnnouncement(id) {
+    if (!confirm('Delete this announcement? This cannot be undone.')) return;
+    try { await apiDel('/api/announcements/' + id); }
+    catch {}
+    loadAnnouncementsTab();
+  }
+
+  // ── Hooks: load on app start, on every navigate(), and when admin tab opens ─
+  function _hookAnnouncements() {
+    // After auth is loaded — fire on first paint
+    if (window.CURRENT_USER) fetchAndShowActiveAnnouncements();
+    // Hook navigate() so require-ack popups re-appear on every page change
+    const _origNav = window.navigate;
+    if (typeof _origNav === 'function' && !_origNav._annPatched) {
+      const patched = function(...args) {
+        const r = _origNav.apply(this, args);
+        // Defer so the page renders before the modal appears
+        setTimeout(fetchAndShowActiveAnnouncements, 50);
+        return r;
+      };
+      patched._annPatched = true;
+      window.navigate = patched;
+    }
+    // Hook switchSettingsTab to load the admin list when the panel opens
+    const _origSST = window.switchSettingsTab;
+    if (typeof _origSST === 'function' && !_origSST._annPatched) {
+      const patched = function(tab) {
+        const r = _origSST.apply(this, arguments);
+        if (tab === 'announcements') loadAnnouncementsTab();
+        return r;
+      };
+      patched._annPatched = true;
+      window.switchSettingsTab = patched;
+    }
+  }
+
+  // Try to hook now if everything's ready, otherwise wait for the auth bootstrap
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    setTimeout(_hookAnnouncements, 200);
+  } else {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_hookAnnouncements, 200));
+  }
+  // Also try again after a longer delay so we run after auth+team have loaded
+  setTimeout(() => { _hookAnnouncements(); fetchAndShowActiveAnnouncements(); }, 1200);
+
+  // Export onclick handlers + functions other code may need
+  window.closeAnnouncement = closeAnnouncement;
+  window.createAnnouncement = createAnnouncement;
+  window.toggleAnnouncementActive = toggleAnnouncementActive;
+  window.resendAnnouncement = resendAnnouncement;
+  window.deleteAnnouncement = deleteAnnouncement;
+  window.fetchAndShowActiveAnnouncements = fetchAndShowActiveAnnouncements;
 })();
 
 // ── Flavor launch feature ─────────────────────────────────────────────────────

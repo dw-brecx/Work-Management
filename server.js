@@ -392,6 +392,92 @@ app.post('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Announcements ────────────────────────────────────────────────────────────
+// Active, unacknowledged announcements for the current user.
+app.get('/api/announcements/active', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT a.* FROM announcements a
+        WHERE a.active = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM announcement_seen s
+             WHERE s.announcement_id = a.id AND s.user_id = ?
+          )
+        ORDER BY a.created_at DESC, a.id DESC`,
+      req.session.userId
+    );
+    res.json(rows.map(r => ({
+      id: r.id, title: r.title || '', body: r.body || '',
+      requireAck: !!r.require_ack, createdAt: r.created_at
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark an announcement as seen / acknowledged for the current user.
+app.post('/api/announcements/:id/ack', requireAuth, async (req, res) => {
+  try {
+    await run(
+      `INSERT INTO announcement_seen (announcement_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+      Number(req.params.id), req.session.userId
+    );
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin CRUD
+app.get('/api/announcements', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT a.*, (SELECT COUNT(*) FROM announcement_seen s WHERE s.announcement_id = a.id) AS ack_count
+      FROM announcements a ORDER BY a.created_at DESC, a.id DESC`);
+    res.json(rows.map(r => ({
+      id: r.id, title: r.title || '', body: r.body || '',
+      requireAck: !!r.require_ack, active: !!r.active,
+      createdAt: r.created_at, ackCount: parseInt(r.ack_count || 0, 10)
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/announcements', requireAdmin, async (req, res) => {
+  try {
+    const { title, body, requireAck } = req.body || {};
+    const t = String(title || '').trim();
+    const b = String(body || '').trim();
+    if (!t && !b) return res.status(400).json({ error: 'Title or body required' });
+    const info = await run(
+      `INSERT INTO announcements (title, body, require_ack, active, created_by) VALUES (?,?,?,1,?) RETURNING id`,
+      t, b, requireAck ? 1 : 0, req.session.userId
+    );
+    const row = await get('SELECT * FROM announcements WHERE id=?', Number(info.lastInsertRowid));
+    res.status(201).json({
+      id: row.id, title: row.title || '', body: row.body || '',
+      requireAck: !!row.require_ack, active: !!row.active, createdAt: row.created_at, ackCount: 0
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/announcements/:id', requireAdmin, async (req, res) => {
+  try {
+    const { title, body, requireAck, active, resetSeen } = req.body || {};
+    const u = []; const v = [];
+    if (title !== undefined)      { u.push('title=?');       v.push(String(title || '').trim()); }
+    if (body !== undefined)       { u.push('body=?');        v.push(String(body || '').trim()); }
+    if (requireAck !== undefined) { u.push('require_ack=?'); v.push(requireAck ? 1 : 0); }
+    if (active !== undefined)     { u.push('active=?');      v.push(active ? 1 : 0); }
+    if (u.length) { v.push(Number(req.params.id)); await run(`UPDATE announcements SET ${u.join(',')} WHERE id=?`, ...v); }
+    if (resetSeen) await run('DELETE FROM announcement_seen WHERE announcement_id=?', Number(req.params.id));
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/announcements/:id', requireAdmin, async (req, res) => {
+  try {
+    await run('DELETE FROM announcement_seen WHERE announcement_id=?', Number(req.params.id));
+    await run('DELETE FROM announcements WHERE id=?', Number(req.params.id));
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Ticket subtasks ──────────────────────────────────────────────────────────
 function buildSubtask(r) {
   return {
