@@ -204,7 +204,21 @@ async function buildTicket(row) {
 
 app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const rows = await all('SELECT * FROM tickets ORDER BY id DESC');
+    const u = await getUser(req.session.userId);
+    const isAdmin = u && ['Owner','Admin'].includes(u.perm_role);
+    let rows;
+    if (isAdmin) {
+      rows = await all('SELECT * FROM tickets ORDER BY id DESC');
+    } else {
+      // Members see only tickets they are assigned to (primary or via ticket_assignees)
+      rows = await all(
+        `SELECT t.* FROM tickets t
+           WHERE t.assignee = ?
+              OR EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND ta.user_name = ?)
+           ORDER BY t.id DESC`,
+        u.name, u.name
+      );
+    }
     res.json(await Promise.all(rows.map(buildTicket)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

@@ -2104,7 +2104,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     </div>
     <div class="topbar-right">
       <button class="btn-soft" onclick="openPlanModal()" style="font-size:12px;padding:8px 12px">+ New Plan</button>
-      <button class="btn-soft" onclick="openNewFlavorModal()" style="font-size:12px;padding:8px 12px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc">+ New Flavor</button>
+      <button class="btn-soft admin-only" id="new-flavor-btn" onclick="openNewFlavorModal()" style="font-size:12px;padding:8px 12px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc">+ New Flavor</button>
       <button class="btn-primary" onclick="openModal('create-ticket')">+ Create Ticket</button>
       <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel(event)" aria-label="Open notifications">
         <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
@@ -2992,13 +2992,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             </div>
             <div class="settings-divider"></div>
             <div class="settings-section-label">Workspace</div>
-            <div class="settings-tab" data-stab="users" onclick="switchSettingsTab('users')">
+            <div class="settings-tab admin-only" data-stab="users" onclick="switchSettingsTab('users')" id="users-settings-tab">
               <span class="stab-icon">👥</span> Users
             </div>
-            <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
+            <div class="settings-tab admin-only" data-stab="permissions" onclick="switchSettingsTab('permissions')" id="permissions-settings-tab">
               <span class="stab-icon">🛡️</span> Permissions
             </div>
-            <div class="settings-tab" data-stab="flavor-tasks" onclick="switchSettingsTab('flavor-tasks')">
+            <div class="settings-tab admin-only" data-stab="flavor-tasks" onclick="switchSettingsTab('flavor-tasks')" id="flavor-tasks-settings-tab">
               <span class="stab-icon">🍓</span> Flavor Tasks
             </div>
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
@@ -11657,14 +11657,20 @@ initApp();
       } catch(e) { alert('Failed to delete department.'); }
     };
 
-    // Show admin + reset tabs only for Owner/Admin
+    // Apply role-based visibility: hide every .admin-only element for Members,
+    // and reveal the always-hidden admin/reset settings tabs for Owner/Admin.
     window.showAdminTabsIfAllowed = function() {
       var u = window.CURRENT_USER;
-      if (!u || !['Owner','Admin'].includes(u.permRole)) return;
+      var isAdmin = !!(u && ['Owner','Admin'].includes(u.permRole));
+      // Toggle every admin-only element
+      document.querySelectorAll('.admin-only').forEach(function(el) {
+        el.style.display = isAdmin ? '' : 'none';
+      });
+      // Always-hidden tabs (admin + reset) reveal only for admins
       var at = document.getElementById('admin-settings-tab');
       var rt = document.getElementById('reset-settings-tab');
-      if (at) at.style.display = '';
-      if (rt) rt.style.display = '';
+      if (at) at.style.display = isAdmin ? '' : 'none';
+      if (rt) rt.style.display = isAdmin ? '' : 'none';
     };
 
     // Patch switchSettingsTab to load data when admin tab opens
