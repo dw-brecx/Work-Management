@@ -9792,9 +9792,18 @@ async function apiDel(p) {
 // ── Update DOM with logged-in user info ───────────────────────────────────────
 function applyUserToUI(u) {
   document.querySelectorAll('.profile-name, .profile-menu-name').forEach(el => el.textContent = u.name);
+  // Header role label (was hardcoded "Product Designer")
+  document.querySelectorAll('.profile-role').forEach(el => el.textContent = (u.role || u.dept || ''));
   const pn = document.getElementById('prof-name'); if (pn) pn.value = u.name;
   const pr = document.getElementById('prof-role'); if (pr) pr.value = u.role || '';
   const pd = document.getElementById('prof-dept'); if (pd) pd.value = u.dept || '';
+  // Time zone dropdown — pick the saved value if present
+  const ptz = document.getElementById('prof-tz');
+  if (ptz && u.tz) {
+    const opt = Array.from(ptz.options).find(o => o.value === u.tz || o.textContent === u.tz);
+    if (opt) ptz.value = opt.value;
+    else { const o = document.createElement('option'); o.value = u.tz; o.textContent = u.tz; ptz.insertBefore(o, ptz.firstChild); ptz.value = u.tz; }
+  }
   document.querySelectorAll('.sb-user .avatar').forEach(el => {
     el.textContent = u.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     el.style.background = 'linear-gradient(135deg,' + (u.color||'#3b82f6') + ',' + (u.color||'#3b82f6') + 'aa)';
@@ -11621,17 +11630,23 @@ initApp();
       var name = (document.getElementById('prof-name')?.value||'').trim();
       var role = (document.getElementById('prof-role')?.value||'').trim();
       var dept = document.getElementById('prof-dept')?.value||'';
+      var tz   = document.getElementById('prof-tz')?.value||'';
       if (!name) { alert('Full name is required.'); return; }
       try {
-        var updated = await apiPut('/api/profile', { name, role, dept });
+        var updated = await apiPut('/api/profile', { name, role, dept, tz });
         if (updated.error) { alert(updated.error); return; }
-        if (window.CURRENT_USER) { window.CURRENT_USER.name = updated.name; window.CURRENT_USER.role = updated.role; window.CURRENT_USER.dept = updated.dept; }
+        if (window.CURRENT_USER) {
+          window.CURRENT_USER.name = updated.name;
+          window.CURRENT_USER.role = updated.role;
+          window.CURRENT_USER.dept = updated.dept;
+          window.CURRENT_USER.tz   = updated.tz;
+        }
         if (window.applyUserToUI) window.applyUserToUI(updated); else applyUserToUI(updated);
-        // Refresh header
+        // Refresh header on the profile page
         var hn = document.getElementById('prof-header-name'); if (hn) hn.textContent = updated.name;
         var hs = document.getElementById('prof-header-sub');  if (hs) hs.textContent = (updated.role||'') + (updated.dept ? ' · ' + updated.dept : '');
-        var av = document.getElementById('prof-avatar');
-        if (av) av.textContent = (updated.name||'?').split(' ').map(function(w){ return w[0]; }).join('').slice(0,2).toUpperCase();
+        // Top-right header role label
+        document.querySelectorAll('.profile-role').forEach(function(el){ el.textContent = (updated.role || updated.dept || ''); });
         if (typeof settingsToast === 'function') settingsToast('Profile saved');
         else { var t=document.createElement('div'); t.textContent='✓ Saved'; t.style.cssText='position:fixed;bottom:24px;right:24px;background:#16a34a;color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;font-weight:600;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.2)'; document.body.appendChild(t); setTimeout(function(){ t.remove(); }, 2500); }
       } catch(e) { alert('Failed to save profile. Please try again.'); }

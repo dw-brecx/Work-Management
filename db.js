@@ -287,6 +287,8 @@ async function init() {
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
   // Profile avatar (existing installs)
   await safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''");
+  // Time zone preference (existing installs)
+  await safeAlter("ALTER TABLE users ADD COLUMN tz TEXT DEFAULT ''");
 
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');

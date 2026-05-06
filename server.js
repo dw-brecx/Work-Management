@@ -56,7 +56,7 @@ function requireAuth(req, res, next) {
 }
 
 async function getUser(userId) {
-  return get('SELECT id,name,email,role,dept,color,perm_role,avatar_url FROM users WHERE id=?', userId);
+  return get('SELECT id,name,email,role,dept,color,perm_role,avatar_url,tz FROM users WHERE id=?', userId);
 }
 
 async function requireAdmin(req, res, next) {
@@ -77,7 +77,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash))
       return res.status(401).json({ error: 'Invalid email or password' });
     req.session.userId = user.id;
-    res.json({ id:user.id, name:user.name, email:user.email, role:user.role, dept:user.dept, color:user.color, permRole:user.perm_role, avatarUrl:user.avatar_url || '' });
+    res.json({ id:user.id, name:user.name, email:user.email, role:user.role, dept:user.dept, color:user.color, permRole:user.perm_role, avatarUrl:user.avatar_url || '', tz:user.tz || '' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -112,7 +112,7 @@ app.get('/api/auth/me', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
     const u = await getUser(req.session.userId);
     if (!u) return res.status(401).json({ error: 'User not found' });
-    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color, permRole:u.perm_role, avatarUrl:u.avatar_url || '' });
+    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color, permRole:u.perm_role, avatarUrl:u.avatar_url || '', tz:u.tz || '' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -849,12 +849,13 @@ app.delete('/api/plan-files/:id', requireAuth, async (req, res) => {
 // ── Profile ───────────────────────────────────────────────────────────────────
 app.put('/api/profile', requireAuth, async (req, res) => {
   try {
-    const { name, role, dept } = req.body;
-    if (name) await run('UPDATE users SET name=? WHERE id=?', name.trim(), req.session.userId);
-    if (role) await run('UPDATE users SET role=? WHERE id=?', role.trim(), req.session.userId);
-    if (dept) await run('UPDATE users SET dept=? WHERE id=?', dept.trim(), req.session.userId);
+    const { name, role, dept, tz } = req.body;
+    if (name !== undefined) await run('UPDATE users SET name=? WHERE id=?', String(name).trim(), req.session.userId);
+    if (role !== undefined) await run('UPDATE users SET role=? WHERE id=?', String(role).trim(), req.session.userId);
+    if (dept !== undefined) await run('UPDATE users SET dept=? WHERE id=?', String(dept).trim(), req.session.userId);
+    if (tz   !== undefined) await run('UPDATE users SET tz=? WHERE id=?',   String(tz).trim(),   req.session.userId);
     const u = await getUser(req.session.userId);
-    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color });
+    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color, avatarUrl:u.avatar_url || '', tz:u.tz || '' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
