@@ -1,13 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const MongoStore = require('connect-mongo');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
-const { col, init: initDb, ObjectId, nowStr } = require('./db');
+const { pool, init: initDb, get, all, run, safeAlter } = require('./db');
 const { sendInviteEmail } = require('./email');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'public', 'uploads');
@@ -32,13 +31,14 @@ const upload = multer({
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/syruvia';
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Session store — uses PostgreSQL so sessions persist across deploys
+const PgSession = require('connect-pg-simple')(session);
 app.use(session({
-  store: MongoStore.create({ mongoUrl: MONGO_URI, dbName: 'syruvia', ttl: 7 * 24 * 60 * 60 }),
+  store: new PgSession({ pool, tableName: 'session', createTableIfMissing: false }),
   secret: process.env.SESSION_SECRET || 'syruvia-dev-secret',
   resave: false,
   saveUninitialized: false,
@@ -49,29 +49,6 @@ app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders(res) { res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); }
 }));
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function toOid(id) { try { return new ObjectId(id); } catch { return null; } }
-
-function numHash(id) {
-  const s = id.toString();
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0x7fffffff;
-  return h;
-}
-
-function timeAgo(iso) {
-  try {
-    const diff = Date.now() - new Date(iso).getTime();
-    const m = Math.floor(diff / 60000);
-    if (m < 1) return 'Just now';
-    if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m / 60);
-    if (h < 24) return `${h}h ago`;
-    const d = Math.floor(h / 24);
-    return d === 1 ? 'Yesterday' : `${d}d ago`;
-  } catch { return 'Just now'; }
-}
-
 // ── Auth middleware ────────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
@@ -79,19 +56,14 @@ function requireAuth(req, res, next) {
 }
 
 async function getUser(userId) {
-  const oid = toOid(userId);
-  if (!oid) return null;
-  const u = await col('users').findOne({ _id: oid }, { projection: { password_hash: 0 } });
-  if (!u) return null;
-  return { id: u._id.toString(), name: u.name, email: u.email, role: u.role, dept: u.dept, color: u.color, perm_role: u.perm_role };
+  return get('SELECT id,name,email,role,dept,color,perm_role FROM users WHERE id=?', userId);
 }
 
 async function requireAdmin(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
   try {
-    const oid = toOid(req.session.userId);
-    const u = oid ? await col('users').findOne({ _id: oid }, { projection: { perm_role: 1 } }) : null;
-    if (!u || !['Owner', 'Admin'].includes(u.perm_role)) return res.status(403).json({ error: 'Admin access required' });
+    const u = await get('SELECT perm_role FROM users WHERE id=?', req.session.userId);
+    if (!u || !['Owner','Admin'].includes(u.perm_role)) return res.status(403).json({ error: 'Admin access required' });
     next();
   } catch(e) { next(e); }
 }
@@ -101,11 +73,11 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    const user = await col('users').findOne({ email: email.toLowerCase().trim() });
+    const user = await get('SELECT * FROM users WHERE email=?', email.toLowerCase().trim());
     if (!user || !bcrypt.compareSync(password, user.password_hash))
       return res.status(401).json({ error: 'Invalid email or password' });
-    req.session.userId = user._id.toString();
-    res.json({ id: user._id.toString(), name: user.name, email: user.email, role: user.role, dept: user.dept, color: user.color, permRole: user.perm_role });
+    req.session.userId = user.id;
+    res.json({ id:user.id, name:user.name, email:user.email, role:user.role, dept:user.dept, color:user.color, permRole:user.perm_role });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -116,19 +88,18 @@ app.post('/api/auth/register', async (req, res) => {
     if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password required' });
     if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
     const norm = email.toLowerCase().trim();
-    const invite = await col('invites').findOne({ token, status: 'Pending' });
+    const invite = await get("SELECT * FROM invites WHERE token=? AND status='Pending'", token);
     if (!invite) return res.status(400).json({ error: 'This invite link is invalid or has already been used.' });
     if (invite.email.toLowerCase() !== norm) return res.status(400).json({ error: 'Email does not match this invite.' });
-    if (await col('users').findOne({ email: norm })) return res.status(409).json({ error: 'This email is already registered.' });
+    if (await get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'This email is already registered.' });
     const role = invite.role || 'Team Member';
     const dept = invite.dept || 'General';
-    await col('invites').updateOne({ token }, { $set: { status: 'Accepted' } });
-    const { insertedId } = await col('users').insertOne({
-      name: name.trim(), email: norm, password_hash: bcrypt.hashSync(password, 10),
-      role, dept, color: '#2563eb', perm_role: 'Member', created_at: nowStr()
-    });
-    req.session.userId = insertedId.toString();
-    res.json({ id: insertedId.toString(), name: name.trim(), email: norm, role, dept, permRole: 'Member' });
+    await run("UPDATE invites SET status='Accepted' WHERE token=?", token);
+    const hash = bcrypt.hashSync(password, 10);
+    const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role) VALUES (?,?,?,?,?,?) RETURNING id',
+      name.trim(), norm, hash, role, dept, 'Member');
+    req.session.userId = Number(info.lastInsertRowid);
+    res.json({ id:Number(info.lastInsertRowid), name:name.trim(), email:norm, role, dept, permRole:'Member' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -141,375 +112,300 @@ app.get('/api/auth/me', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
     const u = await getUser(req.session.userId);
     if (!u) return res.status(401).json({ error: 'User not found' });
-    res.json({ id: u.id, name: u.name, email: u.email, role: u.role, dept: u.dept, color: u.color, permRole: u.perm_role });
+    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color, permRole:u.perm_role });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Team ──────────────────────────────────────────────────────────────────────
 app.get('/api/team', requireAuth, async (req, res) => {
   try {
-    const members = await col('users').find({}, { projection: { password_hash: 0 } }).sort({ _id: 1 }).toArray();
-    const openTickets = await col('tickets').find({ status: { $ne: 'Closed' } }, { projection: { _id: 1 } }).toArray();
-    const openIds = openTickets.map(t => t._id);
-    const counts = await col('ticket_assignees').aggregate([
-      { $match: { ticket_id: { $in: openIds } } },
-      { $group: { _id: '$user_name', cnt: { $sum: 1 } } }
-    ]).toArray();
+    const members = await all('SELECT id,name,email,role,dept,color,perm_role FROM users ORDER BY id');
+    const counts = await all(`SELECT user_name,COUNT(*) as cnt FROM ticket_assignees ta
+      JOIN tickets t ON t.id=ta.ticket_id AND t.status!='Closed' GROUP BY user_name`);
     const cm = {};
-    counts.forEach(r => { cm[r._id] = r.cnt; });
+    counts.forEach(r => { cm[r.user_name] = parseInt(r.cnt, 10); });
     res.json(members.map(m => ({
-      id: m._id.toString(), name: m.name, email: m.email, role: m.role,
-      dept: m.dept, color: m.color, permRole: m.perm_role,
-      workload: Math.min(100, (cm[m.name] || 0) * 10), tickets: cm[m.name] || 0
+      id:m.id, name:m.name, email:m.email, role:m.role, dept:m.dept, color:m.color,
+      permRole:m.perm_role, workload:Math.min(100,(cm[m.name]||0)*10), tickets:cm[m.name]||0
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/team/:id/role', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) await col('users').updateOne({ _id: oid }, { $set: { perm_role: req.body.permRole } });
-    res.json({ ok: true });
+    await run('UPDATE users SET perm_role=? WHERE id=?', req.body.permRole, req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/team/:id', requireAuth, async (req, res) => {
   try {
-    const meOid = toOid(req.session.userId);
-    const me = meOid ? await col('users').findOne({ _id: meOid }, { projection: { perm_role: 1 } }) : null;
-    if (!['Owner', 'Admin'].includes(me?.perm_role)) return res.status(403).json({ error: 'Insufficient permissions' });
-    const targetOid = toOid(req.params.id);
-    const target = targetOid ? await col('users').findOne({ _id: targetOid }, { projection: { perm_role: 1 } }) : null;
-    if (target?.perm_role === 'Owner') return res.status(403).json({ error: 'Cannot remove owner' });
-    if (targetOid) await col('users').deleteOne({ _id: targetOid });
-    res.json({ ok: true });
+    const me = await get('SELECT perm_role FROM users WHERE id=?', req.session.userId);
+    if (!['Owner','Admin'].includes(me?.perm_role)) return res.status(403).json({ error:'Insufficient permissions' });
+    const target = await get('SELECT perm_role FROM users WHERE id=?', req.params.id);
+    if (target?.perm_role === 'Owner') return res.status(403).json({ error:'Cannot remove owner' });
+    await run('DELETE FROM users WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Invites ───────────────────────────────────────────────────────────────────
 app.get('/api/invites', requireAuth, async (req, res) => {
   try {
-    const rows = await col('invites').find({}).sort({ created_at: -1 }).toArray();
-    res.json(rows.map(r => { const { _id, ...rest } = r; return { id: _id.toString(), ...rest }; }));
+    res.json(await all('SELECT * FROM invites ORDER BY created_at DESC'));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/invites', requireAuth, async (req, res) => {
   try {
     const { email, name, role, dept } = req.body;
-    if (!email || !name) return res.status(400).json({ error: 'Email and name required' });
+    if (!email || !name) return res.status(400).json({ error:'Email and name required' });
     const norm = email.toLowerCase().trim();
-    if (await col('users').findOne({ email: norm })) return res.status(409).json({ error: 'User already exists' });
-    if (await col('invites').findOne({ email: norm, status: 'Pending' }))
-      return res.status(409).json({ error: 'Invite already pending for this email' });
+    if (await get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error:'User already exists' });
+    if (await get("SELECT id FROM invites WHERE email=? AND status='Pending'", norm))
+      return res.status(409).json({ error:'Invite already pending for this email' });
     const token = randomUUID();
-    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { insertedId } = await col('invites').insertOne({
-      email: norm, name: name.trim(), role: role || '', dept: dept || '',
-      token, status: 'Pending', invited_by: req.session.userId,
-      expires_at: expires, created_at: nowStr()
-    });
-    const invite = await col('invites').findOne({ _id: insertedId });
-    const inviter = await col('users').findOne({ _id: toOid(req.session.userId) }, { projection: { name: 1 } });
+    const expires = new Date(Date.now() + 7*24*60*60*1000).toISOString();
+    const info = await run(`INSERT INTO invites (email,name,role,dept,token,status,invited_by,expires_at)
+      VALUES (?,?,?,?,?,'Pending',?,?) RETURNING id`, norm, name.trim(), role||'', dept||'', token, req.session.userId, expires);
+    const invite = await get('SELECT * FROM invites WHERE id=?', Number(info.lastInsertRowid));
+    const inviter = await get('SELECT name FROM users WHERE id=?', req.session.userId);
     try {
       await sendInviteEmail({ toEmail: norm, toName: name.trim(), inviterName: inviter?.name || 'Your team', role, dept, token });
-    } catch(e) { console.error('[email] Failed to send invite:', e.message); }
-    const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
-    const { _id, ...rest } = invite;
-    res.json({ id: _id.toString(), ...rest, inviteUrl: `${appUrl}/invite.html?token=${token}` });
+    } catch(e) {
+      console.error('[email] Failed to send invite:', e.message);
+    }
+    res.json({ ...invite, inviteUrl:`${process.env.APP_URL || `http://localhost:${PORT}`}/invite.html?token=${token}` });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/invites/:id', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) await col('invites').updateOne({ _id: oid }, { $set: { status: 'Cancelled' } });
-    res.json({ ok: true });
+    await run("UPDATE invites SET status='Cancelled' WHERE id=?", req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/invites/token/:token', async (req, res) => {
   try {
-    const inv = await col('invites').findOne({ token: req.params.token });
-    if (!inv) return res.status(404).json({ error: 'Invite not found' });
-    if (inv.status !== 'Pending') return res.status(410).json({ error: 'Invite already used or cancelled' });
-    res.json({ name: inv.name, email: inv.email, role: inv.role, dept: inv.dept });
+    const inv = await get('SELECT * FROM invites WHERE token=?', req.params.token);
+    if (!inv) return res.status(404).json({ error:'Invite not found' });
+    if (inv.status !== 'Pending') return res.status(410).json({ error:'Invite already used or cancelled' });
+    res.json({ name:inv.name, email:inv.email, role:inv.role, dept:inv.dept });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Tickets ───────────────────────────────────────────────────────────────────
 async function buildTicket(row) {
   if (!row) return null;
-  const ticketId = (row._id || row.id).toString();
-  const assignees = await col('ticket_assignees').find({ ticket_id: ticketId }).toArray();
-  const { _id, ...rest } = row;
-  return {
-    ...rest, id: ticketId,
-    tags: JSON.parse(row.tags_json || '[]'),
-    assignees: assignees.map(a => a.user_name),
-    overdue: !!row.overdue,
-    comments: row.comments_count
-  };
+  const assignees = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', row.id);
+  return { ...row, tags:JSON.parse(row.tags_json||'[]'), assignees:assignees.map(a=>a.user_name), overdue:!!row.overdue, comments:row.comments_count };
 }
 
 app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const rows = await col('tickets').find({}).sort({ _id: -1 }).toArray();
+    const rows = await all('SELECT * FROM tickets ORDER BY id DESC');
     res.json(await Promise.all(rows.map(buildTicket)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/tickets/:id', requireAuth, async (req, res) => {
   try {
-    const row = await col('tickets').findOne({ _id: req.params.id });
-    if (!row) return res.status(404).json({ error: 'Not found' });
+    const row = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+    if (!row) return res.status(404).json({ error:'Not found' });
     res.json(await buildTicket(row));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const { id, title, req: reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags } = req.body;
-    if (!id || !title) return res.status(400).json({ error: 'id and title required' });
-    await col('tickets').updateOne({ _id: id }, {
-      $setOnInsert: {
-        _id: id, title, req: reqName || '', assignee: assignee || '', reporter: reporter || '',
-        priority: priority || 'Medium', status: status || 'Open', dept: dept || 'Engineering',
-        due: due || '', created: created || '', overdue: overdue ? 1 : 0,
-        tags_json: JSON.stringify(tags || []), comments_count: 0,
-        created_by: req.session.userId, created_at: nowStr()
-      }
-    }, { upsert: true });
-    await col('ticket_details').updateOne(
-      { ticket_id: id },
-      { $setOnInsert: { ticket_id: id, description: '', checklist_json: '[]' } },
-      { upsert: true }
-    );
-    for (const a of (assignees || [])) {
-      await col('ticket_assignees').updateOne(
-        { ticket_id: id, user_name: a },
-        { $setOnInsert: { ticket_id: id, user_name: a } },
-        { upsert: true }
-      );
-    }
+    const { id, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags } = req.body;
+    if (!id || !title) return res.status(400).json({ error:'id and title required' });
+    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?) ON CONFLICT DO NOTHING`,
+      id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
+      dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId);
+    await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', id);
+    for (const a of (assignees||[])) await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', id, a);
     const creator = await getUser(req.session.userId);
-    for (const a of (assignees || [])) {
-      const target = await col('users').findOne({ name: a }, { projection: { _id: 1 } });
-      if (target && target._id.toString() !== req.session.userId) {
-        await col('notifications').insertOne({
-          user_id: target._id.toString(), type: 'assigned', icon: '👤',
-          text: `${creator?.name || 'Someone'} assigned you to "${title}"`,
-          ticket_id: id, unread: 1, created_at: nowStr()
-        });
+    for (const a of (assignees||[])) {
+      const target = await get('SELECT id FROM users WHERE name=?', a);
+      if (target && target.id !== req.session.userId) {
+        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+          target.id, 'assigned', '👤', `${creator?.name || 'Someone'} assigned you to "${title}"`, id);
       }
     }
-    res.status(201).json(await buildTicket(await col('tickets').findOne({ _id: id })));
+    res.status(201).json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/tickets/:id', requireAuth, async (req, res) => {
   try {
-    const { title, req: reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags } = req.body;
-    if (!await col('tickets').findOne({ _id: req.params.id })) return res.status(404).json({ error: 'Not found' });
-    const upd = {};
-    if (title !== undefined)    upd.title = title;
-    if (reqName !== undefined)  upd.req = reqName;
-    if (assignee !== undefined) upd.assignee = assignee;
-    if (reporter !== undefined) upd.reporter = reporter;
-    if (priority !== undefined) upd.priority = priority;
-    if (status !== undefined)   upd.status = status;
-    if (dept !== undefined)     upd.dept = dept;
-    if (due !== undefined)      upd.due = due;
-    if (overdue !== undefined)  upd.overdue = overdue ? 1 : 0;
-    if (tags !== undefined)     upd.tags_json = JSON.stringify(tags);
-    if (Object.keys(upd).length) await col('tickets').updateOne({ _id: req.params.id }, { $set: upd });
-    if (assignees !== undefined) {
-      const oldDocs = await col('ticket_assignees').find({ ticket_id: req.params.id }).toArray();
-      const oldAssignees = oldDocs.map(a => a.user_name);
-      await col('ticket_assignees').deleteMany({ ticket_id: req.params.id });
-      for (const a of assignees) {
-        await col('ticket_assignees').updateOne(
-          { ticket_id: req.params.id, user_name: a },
-          { $setOnInsert: { ticket_id: req.params.id, user_name: a } },
-          { upsert: true }
-        );
-      }
+    const { title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags } = req.body;
+    if (!await get('SELECT id FROM tickets WHERE id=?', req.params.id)) return res.status(404).json({ error:'Not found' });
+    const u=[]; const v=[];
+    if (title!==undefined)    { u.push('title=?');      v.push(title); }
+    if (reqName!==undefined)  { u.push('req=?');        v.push(reqName); }
+    if (assignee!==undefined) { u.push('assignee=?');   v.push(assignee); }
+    if (reporter!==undefined) { u.push('reporter=?');   v.push(reporter); }
+    if (priority!==undefined) { u.push('priority=?');   v.push(priority); }
+    if (status!==undefined)   { u.push('status=?');     v.push(status); }
+    if (dept!==undefined)     { u.push('dept=?');       v.push(dept); }
+    if (due!==undefined)      { u.push('due=?');        v.push(due); }
+    if (overdue!==undefined)  { u.push('overdue=?');    v.push(overdue?1:0); }
+    if (tags!==undefined)     { u.push('tags_json=?');  v.push(JSON.stringify(tags)); }
+    if (u.length) { v.push(req.params.id); await run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
+    if (assignees!==undefined) {
+      const oldAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
+      await run('DELETE FROM ticket_assignees WHERE ticket_id=?', req.params.id);
+      for (const a of assignees) await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', req.params.id, a);
       const newAssignees = assignees.filter(a => !oldAssignees.includes(a));
       if (newAssignees.length) {
         const assigner = await getUser(req.session.userId);
-        const tkt = await col('tickets').findOne({ _id: req.params.id }, { projection: { title: 1 } });
+        const tkt = await get('SELECT title FROM tickets WHERE id=?', req.params.id);
         for (const name of newAssignees) {
-          const target = await col('users').findOne({ name }, { projection: { _id: 1 } });
-          if (target && target._id.toString() !== req.session.userId) {
-            await col('notifications').insertOne({
-              user_id: target._id.toString(), type: 'assigned', icon: '👤',
-              text: `${assigner?.name || 'Someone'} assigned you to "${tkt?.title || req.params.id}"`,
-              ticket_id: req.params.id, unread: 1, created_at: nowStr()
-            });
+          const target = await get('SELECT id FROM users WHERE name=?', name);
+          if (target && target.id !== req.session.userId) {
+            await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+              target.id, 'assigned', '👤', `${assigner?.name || 'Someone'} assigned you to "${tkt?.title || req.params.id}"`, req.params.id);
           }
         }
       }
     }
-    res.json(await buildTicket(await col('tickets').findOne({ _id: req.params.id })));
+    res.json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', req.params.id)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/tickets/:id', requireAuth, async (req, res) => {
   try {
-    await col('tickets').deleteOne({ _id: req.params.id });
-    await col('ticket_assignees').deleteMany({ ticket_id: req.params.id });
-    await col('ticket_details').deleteOne({ ticket_id: req.params.id });
-    await col('ticket_comments').deleteMany({ ticket_id: req.params.id });
-    await col('ticket_timelines').deleteMany({ ticket_id: req.params.id });
-    await col('attachments').deleteMany({ ticket_id: req.params.id });
-    res.json({ ok: true });
+    await run('DELETE FROM tickets WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/tickets/:id/details', requireAuth, async (req, res) => {
   try {
-    const row = await col('ticket_details').findOne({ ticket_id: req.params.id });
-    if (!row) return res.json({ description: '', checklist: [] });
-    res.json({ description: row.description, checklist: JSON.parse(row.checklist_json || '[]') });
+    const row = await get('SELECT * FROM ticket_details WHERE ticket_id=?', req.params.id);
+    if (!row) return res.json({ description:'', checklist:[] });
+    res.json({ description:row.description, checklist:JSON.parse(row.checklist_json||'[]') });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/tickets/:id/details', requireAuth, async (req, res) => {
   try {
     const { description, checklist } = req.body;
-    await col('ticket_details').updateOne(
-      { ticket_id: req.params.id },
-      { $set: { ticket_id: req.params.id, description: description || '', checklist_json: JSON.stringify(checklist || []) } },
-      { upsert: true }
-    );
-    res.json({ ok: true });
+    await run(`INSERT INTO ticket_details (ticket_id,description,checklist_json) VALUES (?,?,?)
+         ON CONFLICT(ticket_id) DO UPDATE SET description=EXCLUDED.description,checklist_json=EXCLUDED.checklist_json`,
+      req.params.id, description||'', JSON.stringify(checklist||[]));
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/tickets/:id/comments', requireAuth, async (req, res) => {
   try {
-    const rows = await col('ticket_comments').find({ ticket_id: req.params.id }).sort({ created_at: 1 }).toArray();
-    res.json(rows.map(r => ({ id: r._id.toString(), author: r.author, init: r.author_init, bg: r.author_bg, col: r.author_col, text: r.text, time: timeAgo(r.created_at) })));
+    const rows = await all('SELECT * FROM ticket_comments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
+    res.json(rows.map(r => ({ id:r.id, author:r.author, init:r.author_init, bg:r.author_bg, col:r.author_col, text:r.text, time:timeAgo(r.created_at) })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
   try {
     const { text } = req.body;
-    if (!text?.trim()) return res.status(400).json({ error: 'Text required' });
+    if (!text?.trim()) return res.status(400).json({ error:'Text required' });
     const u = await getUser(req.session.userId);
-    const init = u.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-    const palette = ['#ede9fe|#5b21b6', '#dde4ff|#3730a3', '#dcfce7|#166534', '#fef9c3|#854d0e'];
-    const [bg, clr] = (palette[numHash(u.id) % palette.length] || palette[0]).split('|');
-    const { insertedId } = await col('ticket_comments').insertOne({
-      ticket_id: req.params.id, author: u.name, author_init: init,
-      author_bg: bg, author_col: clr, text: text.trim(), created_at: nowStr()
-    });
-    await col('tickets').updateOne({ _id: req.params.id }, { $inc: { comments_count: 1 } });
-    const tkt = await col('tickets').findOne({ _id: req.params.id }, { projection: { title: 1 } });
+    const init = u.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    const palette = ['#ede9fe|#5b21b6','#dde4ff|#3730a3','#dcfce7|#166534','#fef9c3|#854d0e'];
+    const [bg,col] = (palette[u.id % palette.length]||palette[0]).split('|');
+    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text) VALUES (?,?,?,?,?,?) RETURNING id`,
+      req.params.id, u.name, init, bg, col, text.trim());
+    await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
+    const tkt = await get('SELECT title FROM tickets WHERE id=?', req.params.id);
     const mentions = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
     for (const name of mentions) {
-      const mentioned = await col('users').findOne({ name }, { projection: { _id: 1 } });
-      if (mentioned && mentioned._id.toString() !== req.session.userId) {
-        await col('notifications').insertOne({
-          user_id: mentioned._id.toString(), type: 'mention', icon: '💬',
-          text: `${u.name} mentioned you in "${tkt?.title || req.params.id}"`,
-          ticket_id: req.params.id, unread: 1, created_at: nowStr()
-        });
+      const mentioned = await get('SELECT id FROM users WHERE name=?', name);
+      if (mentioned && mentioned.id !== req.session.userId) {
+        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+          mentioned.id, 'mention', '💬', `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id);
       }
     }
-    res.status(201).json({ id: insertedId.toString(), author: u.name, init, bg, col: clr, text: text.trim(), time: 'Just now' });
+    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, init, bg, col, text:text.trim(), time:'Just now' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/tickets/:id/comments/:commentId', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.commentId);
-    if (!oid) return res.status(404).json({ error: 'Comment not found' });
-    const comment = await col('ticket_comments').findOne({ _id: oid, ticket_id: req.params.id });
-    if (!comment) return res.status(404).json({ error: 'Comment not found' });
-    await col('ticket_comments').deleteOne({ _id: oid });
-    await col('tickets').updateOne({ _id: req.params.id }, { $inc: { comments_count: -1 } });
-    await col('tickets').updateOne({ _id: req.params.id, comments_count: { $lt: 0 } }, { $set: { comments_count: 0 } });
-    res.json({ ok: true });
+    const comment = await get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
+    if (!comment) return res.status(404).json({ error:'Comment not found' });
+    await run('DELETE FROM ticket_comments WHERE id=?', req.params.commentId);
+    await run('UPDATE tickets SET comments_count=GREATEST(0,comments_count-1) WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
   try {
-    const rows = await col('ticket_timelines').find({ ticket_id: req.params.id }).sort({ created_at: -1 }).toArray();
+    const rows = await all('SELECT * FROM ticket_timelines WHERE ticket_id=? ORDER BY created_at DESC', req.params.id);
     if (!rows.length) {
-      const t = await col('tickets').findOne({ _id: req.params.id });
-      if (t) return res.json([{ dot: 'var(--green)', text: 'Ticket created', sub: t.created }]);
+      const t = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+      if (t) return res.json([{ dot:'var(--green)', text:'Ticket created', sub:t.created }]);
     }
-    res.json(rows.map(r => ({ id: r._id.toString(), dot: r.dot, text: r.text, sub: r.sub })));
+    res.json(rows.map(r=>({ id:r.id, dot:r.dot, text:r.text, sub:r.sub })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
   try {
     const { dot, text, sub } = req.body;
-    await col('ticket_timelines').insertOne({
-      ticket_id: req.params.id, dot: dot || 'var(--accent)', text, sub: sub || 'Just now', created_at: nowStr()
-    });
-    res.json({ ok: true });
+    await run('INSERT INTO ticket_timelines (ticket_id,dot,text,sub) VALUES (?,?,?,?)', req.params.id, dot||'var(--accent)', text, sub||'Just now');
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Work tasks ────────────────────────────────────────────────────────────────
 app.get('/api/worktasks', requireAuth, async (req, res) => {
   try {
-    const rows = await col('work_tasks').find({}).sort({ created_at: -1 }).toArray();
-    res.json(rows.map(r => { const { _id, ...rest } = r; return { id: _id.toString(), ...rest }; }));
+    res.json(await all('SELECT * FROM work_tasks ORDER BY created_at DESC'));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/worktasks', requireAuth, async (req, res) => {
   try {
     const { ticketId, worker, estimate, notes } = req.body;
-    const { insertedId } = await col('work_tasks').insertOne({
-      ticket_id: ticketId || '', worker: worker || '', estimate: estimate || '',
-      notes: notes || '', status: 'pending', timer_running: 0, timer_elapsed: 0,
-      user_id: req.session.userId, created_at: nowStr()
-    });
-    const doc = await col('work_tasks').findOne({ _id: insertedId });
-    const { _id, ...rest } = doc;
-    res.status(201).json({ id: _id.toString(), ...rest });
+    const info = await run('INSERT INTO work_tasks (ticket_id,worker,estimate,notes,user_id) VALUES (?,?,?,?,?) RETURNING id',
+      ticketId||'', worker||'', estimate||'', notes||'', req.session.userId);
+    res.status(201).json(await get('SELECT * FROM work_tasks WHERE id=?', Number(info.lastInsertRowid)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/worktasks/:id', requireAuth, async (req, res) => {
   try {
     const { status, timer_running, timer_elapsed } = req.body;
-    const upd = {};
-    if (status !== undefined)        upd.status = status;
-    if (timer_running !== undefined) upd.timer_running = timer_running ? 1 : 0;
-    if (timer_elapsed !== undefined) upd.timer_elapsed = timer_elapsed;
-    const oid = toOid(req.params.id);
-    if (oid && Object.keys(upd).length) await col('work_tasks').updateOne({ _id: oid }, { $set: upd });
-    res.json({ ok: true });
+    const u=[]; const v=[];
+    if (status!==undefined)        { u.push('status=?');        v.push(status); }
+    if (timer_running!==undefined) { u.push('timer_running=?'); v.push(timer_running?1:0); }
+    if (timer_elapsed!==undefined) { u.push('timer_elapsed=?'); v.push(timer_elapsed); }
+    if (u.length) { v.push(req.params.id); await run(`UPDATE work_tasks SET ${u.join(',')} WHERE id=?`, ...v); }
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/worktasks/:id', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) await col('work_tasks').deleteOne({ _id: oid });
-    res.json({ ok: true });
+    await run('DELETE FROM work_tasks WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Calendar events ───────────────────────────────────────────────────────────
 app.get('/api/events', requireAuth, async (req, res) => {
   try {
-    const rows = await col('cal_events').find({
-      $or: [{ user_id: req.session.userId }, { source: 'syruvia' }]
-    }).sort({ date_key: 1 }).toArray();
+    await safeAlter('ALTER TABLE cal_events ADD COLUMN source TEXT DEFAULT \'personal\'');
+    const rows = await all("SELECT * FROM cal_events WHERE user_id=? OR source='syruvia' ORDER BY date_key ASC", req.session.userId);
     res.json(rows.map(r => ({
-      id: r._id.toString(), dateKey: r.date_key, type: r.type, label: r.label, title: r.title,
-      desc: r.description, allDay: !!r.all_day, startTime: r.start_time, endTime: r.end_time,
-      linkedTicketId: r.linked_ticket_id, attendees: JSON.parse(r.attendees_json || '[]'),
-      location: r.location, assignee: r.assignee, completed: !!r.completed, syncsTicket: !!r.syncs_ticket,
+      id:r.id, dateKey:r.date_key, type:r.type, label:r.label, title:r.title,
+      desc:r.description, allDay:!!r.all_day, startTime:r.start_time, endTime:r.end_time,
+      linkedTicketId:r.linked_ticket_id, attendees:JSON.parse(r.attendees_json||'[]'),
+      location:r.location, assignee:r.assignee, completed:!!r.completed, syncsTicket:!!r.syncs_ticket,
       source: r.source || 'personal', userId: r.user_id
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -518,60 +414,45 @@ app.get('/api/events', requireAuth, async (req, res) => {
 app.post('/api/events', requireAuth, async (req, res) => {
   try {
     const { dateKey, type, label, title, desc, allDay, startTime, endTime, linkedTicketId, attendees, location, assignee, completed, syncsTicket, source } = req.body;
-    const { insertedId } = await col('cal_events').insertOne({
-      date_key: dateKey, type: type || 'meeting', label: label || title || '',
-      title: title || '', description: desc || '', all_day: allDay ? 1 : 0,
-      start_time: startTime || '', end_time: endTime || '',
-      linked_ticket_id: linkedTicketId || '', attendees_json: JSON.stringify(attendees || []),
-      location: location || '', assignee: assignee || '', completed: completed ? 1 : 0,
-      syncs_ticket: syncsTicket ? 1 : 0, user_id: req.session.userId,
-      source: source || 'personal', created_at: nowStr()
-    });
-    res.status(201).json({ id: insertedId.toString() });
+    const info = await run(`INSERT INTO cal_events (date_key,type,label,title,description,all_day,start_time,end_time,linked_ticket_id,attendees_json,location,assignee,completed,syncs_ticket,user_id,source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+      dateKey, type||'meeting', label||title||'', title||'', desc||'', allDay?1:0,
+      startTime||'', endTime||'', linkedTicketId||'', JSON.stringify(attendees||[]),
+      location||'', assignee||'', completed?1:0, syncsTicket?1:0, req.session.userId, source||'personal');
+    res.status(201).json({ id:Number(info.lastInsertRowid) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/events/:id', requireAuth, async (req, res) => {
   try {
     const { dateKey, type, label, title, desc, allDay, startTime, endTime, linkedTicketId, attendees, location, assignee, completed, source } = req.body;
-    const oid = toOid(req.params.id);
-    if (oid) await col('cal_events').updateOne({ _id: oid }, { $set: {
-      date_key: dateKey, type, label: label || title || '', title: title || '',
-      description: desc || '', all_day: allDay ? 1 : 0,
-      start_time: startTime || '', end_time: endTime || '',
-      linked_ticket_id: linkedTicketId || '', attendees_json: JSON.stringify(attendees || []),
-      location: location || '', assignee: assignee || '', completed: completed ? 1 : 0,
-      source: source || 'personal'
-    }});
-    res.json({ ok: true });
+    await run(`UPDATE cal_events SET date_key=?,type=?,label=?,title=?,description=?,all_day=?,start_time=?,end_time=?,linked_ticket_id=?,attendees_json=?,location=?,assignee=?,completed=?,source=? WHERE id=?`,
+      dateKey, type, label||title||'', title||'', desc||'', allDay?1:0,
+      startTime||'', endTime||'', linkedTicketId||'', JSON.stringify(attendees||[]),
+      location||'', assignee||'', completed?1:0, source||'personal', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/events/:id', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) await col('cal_events').deleteOne({ _id: oid });
-    res.json({ ok: true });
+    await run('DELETE FROM cal_events WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Plans ─────────────────────────────────────────────────────────────────────
 async function buildPlan(row) {
   if (!row) return null;
-  const planId = (row._id || row.id).toString();
-  const files = await col('plan_files').find({ plan_id: planId }).toArray();
-  const { _id, ...rest } = row;
-  return {
-    ...rest, id: planId,
-    files: files.map(f => ({ id: f._id.toString(), name: f.filename, size: f.size })),
-    promotedTicketId: row.promoted_ticket_id, reminderAt: row.reminder_at,
-    reminderTriggered: !!row.reminder_triggered, createdAt: row.created_at, updatedAt: row.updated_at
-  };
+  const files = await all('SELECT * FROM plan_files WHERE plan_id=?', row.id);
+  return { ...row, files:files.map(f=>({id:f.id,name:f.filename,size:f.size})),
+    promotedTicketId:row.promoted_ticket_id, reminderAt:row.reminder_at,
+    reminderTriggered:!!row.reminder_triggered, createdAt:row.created_at, updatedAt:row.updated_at };
 }
 
 app.get('/api/plans', requireAuth, async (req, res) => {
   try {
-    const rows = await col('plans').find({}).sort({ created_at: -1 }).toArray();
+    const rows = await all('SELECT * FROM plans ORDER BY created_at DESC');
     res.json(await Promise.all(rows.map(buildPlan)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -579,89 +460,80 @@ app.get('/api/plans', requireAuth, async (req, res) => {
 app.post('/api/plans', requireAuth, async (req, res) => {
   try {
     const { id, title, notes, status, reminderAt } = req.body;
-    if (!id || !title) return res.status(400).json({ error: 'id and title required' });
-    const now = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-    await col('plans').updateOne({ _id: id }, {
-      $setOnInsert: {
-        _id: id, title, notes: notes || '', status: status || 'draft',
-        reminder_at: reminderAt || '', reminder_triggered: 0, promoted_ticket_id: '',
-        user_id: req.session.userId, created_at: now, updated_at: now
-      }
-    }, { upsert: true });
-    res.status(201).json(await buildPlan(await col('plans').findOne({ _id: id })));
+    if (!id || !title) return res.status(400).json({ error:'id and title required' });
+    const now = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+    await run('INSERT INTO plans (id,title,notes,status,reminder_at,user_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)',
+      id, title, notes||'', status||'draft', reminderAt||'', req.session.userId, now, now);
+    res.status(201).json(await buildPlan(await get('SELECT * FROM plans WHERE id=?', id)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/plans/:id', requireAuth, async (req, res) => {
   try {
     const { title, notes, status, reminderAt, reminderTriggered, promotedTicketId } = req.body;
-    const upd = {};
-    if (title !== undefined)             upd.title = title;
-    if (notes !== undefined)             upd.notes = notes;
-    if (status !== undefined)            upd.status = status;
-    if (reminderAt !== undefined)        upd.reminder_at = reminderAt;
-    if (reminderTriggered !== undefined) upd.reminder_triggered = reminderTriggered ? 1 : 0;
-    if (promotedTicketId !== undefined)  upd.promoted_ticket_id = promotedTicketId;
-    upd.updated_at = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-    await col('plans').updateOne({ _id: req.params.id }, { $set: upd });
-    res.json(await buildPlan(await col('plans').findOne({ _id: req.params.id })));
+    const u=[]; const v=[];
+    if (title!==undefined)             { u.push('title=?');              v.push(title); }
+    if (notes!==undefined)             { u.push('notes=?');              v.push(notes); }
+    if (status!==undefined)            { u.push('status=?');             v.push(status); }
+    if (reminderAt!==undefined)        { u.push('reminder_at=?');        v.push(reminderAt); }
+    if (reminderTriggered!==undefined) { u.push('reminder_triggered=?'); v.push(reminderTriggered?1:0); }
+    if (promotedTicketId!==undefined)  { u.push('promoted_ticket_id=?'); v.push(promotedTicketId); }
+    u.push('updated_at=?');
+    v.push(new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}));
+    v.push(req.params.id);
+    await run(`UPDATE plans SET ${u.join(',')} WHERE id=?`, ...v);
+    res.json(await buildPlan(await get('SELECT * FROM plans WHERE id=?', req.params.id)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/plans/:id', requireAuth, async (req, res) => {
   try {
-    await col('plans').deleteOne({ _id: req.params.id });
-    await col('plan_files').deleteMany({ plan_id: req.params.id });
-    await col('plan_comments').deleteMany({ plan_id: req.params.id });
-    res.json({ ok: true });
+    await run('DELETE FROM plans WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/plans/:id/comments', requireAuth, async (req, res) => {
   try {
-    const rows = await col('plan_comments').find({ plan_id: req.params.id }).sort({ created_at: 1 }).toArray();
-    res.json(rows.map(r => ({ id: r._id.toString(), author: r.author, bg: r.author_bg, col: r.author_col, text: r.text, time: timeAgo(r.created_at) })));
+    const rows = await all('SELECT * FROM plan_comments WHERE plan_id=? ORDER BY created_at ASC', req.params.id);
+    res.json(rows.map(r=>({ id:r.id, author:r.author, bg:r.author_bg, col:r.author_col, text:r.text, time:timeAgo(r.created_at) })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/plans/:id/comments', requireAuth, async (req, res) => {
   try {
     const { text } = req.body;
-    if (!text?.trim()) return res.status(400).json({ error: 'Text required' });
+    if (!text?.trim()) return res.status(400).json({ error:'Text required' });
     const u = await getUser(req.session.userId);
-    const palette = ['#ede9fe|#5b21b6', '#dde4ff|#3730a3', '#dcfce7|#166634'];
-    const [bg, clr] = (palette[numHash(u.id) % palette.length] || palette[0]).split('|');
-    const { insertedId } = await col('plan_comments').insertOne({
-      plan_id: req.params.id, author: u.name, author_bg: bg, author_col: clr,
-      text: text.trim(), created_at: nowStr()
-    });
-    res.status(201).json({ id: insertedId.toString(), author: u.name, bg, col: clr, text: text.trim(), time: 'Just now' });
+    const palette = ['#ede9fe|#5b21b6','#dde4ff|#3730a3','#dcfce7|#166634'];
+    const [bg,col] = (palette[u.id % palette.length]||palette[0]).split('|');
+    const info = await run('INSERT INTO plan_comments (plan_id,author,author_bg,author_col,text) VALUES (?,?,?,?,?) RETURNING id',
+      req.params.id, u.name, bg, col, text.trim());
+    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, bg, col, text:text.trim(), time:'Just now' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Plan files ────────────────────────────────────────────────────────────────
 app.get('/api/plans/:id/files', requireAuth, async (req, res) => {
   try {
-    const rows = await col('plan_files').find({ plan_id: req.params.id }).sort({ created_at: 1 }).toArray();
-    res.json(rows.map(r => ({ id: r._id.toString(), name: r.filename, size: r.size, createdAt: r.created_at })));
+    const rows = await all('SELECT * FROM plan_files WHERE plan_id=? ORDER BY created_at ASC', req.params.id);
+    res.json(rows.map(r => ({ id:r.id, name:r.filename, size:r.size, createdAt:r.created_at })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/plans/:id/files', requireAuth, upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file' });
-    const { insertedId } = await col('plan_files').insertOne({
-      plan_id: req.params.id, filename: req.file.originalname, size: req.file.size, created_at: nowStr()
-    });
-    res.status(201).json({ id: insertedId.toString(), name: req.file.originalname, size: req.file.size });
+    if (!req.file) return res.status(400).json({ error:'No file' });
+    const info = await run('INSERT INTO plan_files (plan_id,filename,size) VALUES (?,?,?) RETURNING id',
+      req.params.id, req.file.originalname, req.file.size);
+    res.status(201).json({ id:Number(info.lastInsertRowid), name:req.file.originalname, size:req.file.size });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/plan-files/:id', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) await col('plan_files').deleteOne({ _id: oid });
-    res.json({ ok: true });
+    await run('DELETE FROM plan_files WHERE id=?', req.params.id);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -669,69 +541,78 @@ app.delete('/api/plan-files/:id', requireAuth, async (req, res) => {
 app.put('/api/profile', requireAuth, async (req, res) => {
   try {
     const { name, role, dept } = req.body;
-    const upd = {};
-    if (name) upd.name = name.trim();
-    if (role) upd.role = role.trim();
-    if (dept) upd.dept = dept.trim();
-    const oid = toOid(req.session.userId);
-    if (oid && Object.keys(upd).length) await col('users').updateOne({ _id: oid }, { $set: upd });
+    if (name) await run('UPDATE users SET name=? WHERE id=?', name.trim(), req.session.userId);
+    if (role) await run('UPDATE users SET role=? WHERE id=?', role.trim(), req.session.userId);
+    if (dept) await run('UPDATE users SET dept=? WHERE id=?', dept.trim(), req.session.userId);
     const u = await getUser(req.session.userId);
-    res.json({ id: u.id, name: u.name, email: u.email, role: u.role, dept: u.dept, color: u.color });
+    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/profile/password', requireAuth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Both passwords required' });
-    if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    const oid = toOid(req.session.userId);
-    const user = oid ? await col('users').findOne({ _id: oid }, { projection: { password_hash: 1 } }) : null;
-    if (!user || !bcrypt.compareSync(currentPassword, user.password_hash))
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    await col('users').updateOne({ _id: oid }, { $set: { password_hash: bcrypt.hashSync(newPassword, 10) } });
-    res.json({ ok: true });
+    if (!currentPassword || !newPassword) return res.status(400).json({ error:'Both passwords required' });
+    if (newPassword.length < 6) return res.status(400).json({ error:'Password must be at least 6 characters' });
+    const user = await get('SELECT password_hash FROM users WHERE id=?', req.session.userId);
+    if (!bcrypt.compareSync(currentPassword, user.password_hash))
+      return res.status(401).json({ error:'Current password is incorrect' });
+    await run('UPDATE users SET password_hash=? WHERE id=?', bcrypt.hashSync(newPassword, 10), req.session.userId);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 app.get('/api/notifications', requireAuth, async (req, res) => {
   try {
-    const rows = await col('notifications').find({ user_id: req.session.userId }).sort({ created_at: -1 }).limit(50).toArray();
-    res.json(rows.map(r => { const { _id, ...rest } = r; return { id: _id.toString(), ...rest }; }));
+    res.json(await all('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50', req.session.userId));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/notifications/read-all', requireAuth, async (req, res) => {
   try {
-    await col('notifications').updateMany({ user_id: req.session.userId }, { $set: { unread: 0 } });
-    res.json({ ok: true });
+    await run('UPDATE notifications SET unread=0 WHERE user_id=?', req.session.userId);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/notifications/:id/read', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) await col('notifications').updateOne({ _id: oid, user_id: req.session.userId }, { $set: { unread: 0 } });
-    res.json({ ok: true });
+    await run('UPDATE notifications SET unread=0 WHERE id=? AND user_id=?', req.params.id, req.session.userId);
+    res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Activity feed ─────────────────────────────────────────────────────────────
 app.get('/api/activity', requireAuth, async (req, res) => {
   try {
-    const timelines = await col('ticket_timelines').find({}).sort({ created_at: -1 }).limit(20).toArray();
-    const ticketIds = [...new Set(timelines.map(t => t.ticket_id))];
-    const tickets = await col('tickets').find({ _id: { $in: ticketIds } }, { projection: { title: 1 } }).toArray();
-    const titleMap = {};
-    tickets.forEach(t => { titleMap[t._id] = t.title; });
-    res.json(timelines.map(r => ({
-      id: r._id.toString(), ticketId: r.ticket_id,
-      ticketTitle: titleMap[r.ticket_id] || '',
+    const rows = await all(`
+      SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
+             t.title as ticket_title
+      FROM ticket_timelines tt
+      LEFT JOIN tickets t ON t.id = tt.ticket_id
+      ORDER BY tt.created_at DESC LIMIT 20
+    `);
+    res.json(rows.map(r => ({
+      id: r.id, ticketId: r.ticket_id, ticketTitle: r.ticket_title || '',
       text: r.text, dot: r.dot, timeAgo: timeAgo(r.created_at)
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function timeAgo(iso) {
+  try {
+    const diff = Date.now() - new Date(iso).getTime();
+    const m = Math.floor(diff/60000);
+    if (m < 1)  return 'Just now';
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m/60);
+    if (h < 24) return `${h}h ago`;
+    const d = Math.floor(h/24);
+    return d === 1 ? 'Yesterday' : `${d}d ago`;
+  } catch { return 'Just now'; }
+}
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => {
@@ -739,39 +620,36 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
     if (!req.file) return res.status(400).json({ error: 'No file' });
     const u = await getUser(req.session.userId);
     const { ticketId, commentId } = req.body;
-    const { insertedId } = await col('attachments').insertOne({
-      ticket_id: ticketId || null, comment_id: commentId || null,
-      filename: req.file.filename, original_name: req.file.originalname,
-      mime_type: req.file.mimetype, size: req.file.size, uploader: u.name, created_at: nowStr()
-    });
+    const info = await run(
+      'INSERT INTO attachments (ticket_id,comment_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?) RETURNING id',
+      ticketId || null, commentId ? Number(commentId) : null,
+      req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
+    );
     res.json({
-      id: insertedId.toString(), filename: req.file.filename,
-      originalName: req.file.originalname, mimeType: req.file.mimetype,
-      size: req.file.size, url: `/uploads/${req.file.filename}`
+      id: Number(info.lastInsertRowid),
+      filename: req.file.filename, originalName: req.file.originalname,
+      mimeType: req.file.mimetype, size: req.file.size, url: `/uploads/${req.file.filename}`,
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/tickets/:id/attachments', requireAuth, async (req, res) => {
   try {
-    const rows = await col('attachments').find({ ticket_id: req.params.id }).sort({ created_at: 1 }).toArray();
+    const rows = await all('SELECT * FROM attachments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
     res.json(rows.map(r => ({
-      id: r._id.toString(), filename: r.filename, originalName: r.original_name,
+      id: r.id, filename: r.filename, originalName: r.original_name,
       mimeType: r.mime_type, size: r.size, uploader: r.uploader,
-      commentId: r.comment_id, createdAt: r.created_at, url: `/uploads/${r.filename}`
+      commentId: r.comment_id, createdAt: r.created_at, url: `/uploads/${r.filename}`,
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (oid) {
-      const att = await col('attachments').findOne({ _id: oid }, { projection: { filename: 1 } });
-      if (att) {
-        try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
-        await col('attachments').deleteOne({ _id: oid });
-      }
+    const att = await get('SELECT filename FROM attachments WHERE id=?', req.params.id);
+    if (att) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
+      await run('DELETE FROM attachments WHERE id=?', req.params.id);
     }
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -782,40 +660,34 @@ app.get('/api/stats', requireAuth, async (req, res) => {
   try {
     const { period, dept, assignee } = req.query;
     const now = new Date();
-    const match = {};
-
+    let dateClause = '';
     if (period === 'week') {
-      match.created_at = { $gte: new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 19) };
+      const since = new Date(now - 7 * 86400000).toISOString().slice(0, 10);
+      dateClause = `AND created_at >= '${since}'`;
     } else if (period === 'month') {
       const y = now.getFullYear(), m = String(now.getMonth() + 1).padStart(2, '0');
-      match.created_at = { $regex: `^${y}-${m}` };
+      dateClause = `AND created_at LIKE '${y}-${m}%'`;
     } else if (period === 'quarter') {
-      match.created_at = { $gte: new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19) };
+      const since = new Date(now - 90 * 86400000).toISOString().slice(0, 10);
+      dateClause = `AND created_at >= '${since}'`;
     } else if (period === 'year') {
-      match.created_at = { $regex: `^${now.getFullYear()}` };
+      dateClause = `AND created_at LIKE '${now.getFullYear()}%'`;
     }
-    if (dept) match.dept = dept;
+    const deptClause = dept ? `AND dept = '${dept.replace(/'/g, "''")}'` : '';
+    const assigneeClause = assignee
+      ? `AND id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${assignee.replace(/'/g, "''")}')`
+      : '';
+    const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
 
-    let ticketIds = null;
-    if (assignee) {
-      const docs = await col('ticket_assignees').find({ user_name: assignee }, { projection: { ticket_id: 1 } }).toArray();
-      ticketIds = docs.map(a => a.ticket_id);
-      match._id = { $in: ticketIds };
-    }
-
-    const [total, open, ip, ov, cl, byDeptRaw, allDeptsRaw, allAssigneesRaw] = await Promise.all([
-      col('tickets').countDocuments(match),
-      col('tickets').countDocuments({ ...match, status: 'Open' }),
-      col('tickets').countDocuments({ ...match, status: 'In Progress' }),
-      col('tickets').countDocuments({ ...match, overdue: 1 }),
-      col('tickets').countDocuments({ ...match, status: 'Closed' }),
-      col('tickets').aggregate([
-        { $match: match },
-        { $group: { _id: '$dept', c: { $sum: 1 } } },
-        { $sort: { c: -1 } }
-      ]).toArray(),
-      col('tickets').distinct('dept', { dept: { $nin: [null, ''] } }),
-      col('ticket_assignees').distinct('user_name', { user_name: { $nin: [null, ''] } }),
+    const [totalRow, openRow, ipRow, ovRow, clRow, byDept, allDepts, allAssignees] = await Promise.all([
+      get(`SELECT COUNT(*) as c FROM tickets ${where}`),
+      get(`SELECT COUNT(*) as c FROM tickets ${where} AND status='Open'`),
+      get(`SELECT COUNT(*) as c FROM tickets ${where} AND status='In Progress'`),
+      get(`SELECT COUNT(*) as c FROM tickets ${where} AND overdue=1`),
+      get(`SELECT COUNT(*) as c FROM tickets ${where} AND status='Closed'`),
+      all(`SELECT dept, COUNT(*) as c FROM tickets ${where} GROUP BY dept ORDER BY c DESC`),
+      all("SELECT DISTINCT dept FROM tickets WHERE dept IS NOT NULL AND dept != '' ORDER BY dept"),
+      all("SELECT DISTINCT user_name as name FROM ticket_assignees WHERE user_name IS NOT NULL AND user_name != '' ORDER BY user_name"),
     ]);
 
     const monthly = [];
@@ -823,33 +695,31 @@ app.get('/api/stats', requireAuth, async (req, res) => {
       const d = new Date(); d.setMonth(d.getMonth() - i);
       const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0');
       const label = d.toLocaleString('default', { month: 'short' });
-      const mm = { created_at: { $regex: `^${y}-${m}` } };
-      if (dept) mm.dept = dept;
-      if (ticketIds) mm._id = { $in: ticketIds };
-      const count = await col('tickets').countDocuments(mm);
-      monthly.push({ label, count });
+      let q = `SELECT COUNT(*) as c FROM tickets WHERE created_at LIKE '${y}-${m}%'`;
+      if (deptClause) q += ` ${deptClause}`;
+      if (assigneeClause) q += ` ${assigneeClause}`;
+      const row = await get(q);
+      monthly.push({ label, count: parseInt(row?.c || 0, 10) });
     }
 
     const todayStr = now.toISOString().slice(0, 10);
-    const completedToday = await col('tickets').countDocuments({ status: 'Closed', created_at: { $regex: `^${todayStr}` } });
+    const completedTodayRow = await get(`SELECT COUNT(*) as c FROM tickets WHERE status='Closed' AND created_at LIKE '${todayStr}%'`);
     const prevNow = new Date(); prevNow.setMonth(prevNow.getMonth() - 1);
     const py = prevNow.getFullYear(), pm = String(prevNow.getMonth() + 1).padStart(2, '0');
-    const prevMatch = { created_at: { $regex: `^${py}-${pm}` } };
-    if (dept) prevMatch.dept = dept;
-    if (ticketIds) prevMatch._id = { $in: ticketIds };
-    const [prevTotal, prevIP, prevOv] = await Promise.all([
-      col('tickets').countDocuments(prevMatch),
-      col('tickets').countDocuments({ ...prevMatch, status: 'In Progress' }),
-      col('tickets').countDocuments({ ...prevMatch, overdue: 1 }),
+    const prevWhere = `WHERE 1=1 AND created_at LIKE '${py}-${pm}%' ${deptClause} ${assigneeClause}`;
+    const [prevTotalRow, prevIPRow, prevOvRow] = await Promise.all([
+      get(`SELECT COUNT(*) as c FROM tickets ${prevWhere}`),
+      get(`SELECT COUNT(*) as c FROM tickets ${prevWhere} AND status='In Progress'`),
+      get(`SELECT COUNT(*) as c FROM tickets ${prevWhere} AND overdue=1`),
     ]);
 
     res.json({
-      total, open, inProgress: ip, overdue: ov, closed: cl, completedToday,
-      byDept: byDeptRaw.map(r => ({ dept: r._id, c: r.c })),
-      monthly,
-      allDepts: allDeptsRaw.sort().map(d => ({ dept: d })),
-      allAssignees: allAssigneesRaw.sort().map(name => ({ name })),
-      prevTotal, prevInProgress: prevIP, prevOverdue: prevOv
+      total: parseInt(totalRow?.c||0,10), open: parseInt(openRow?.c||0,10),
+      inProgress: parseInt(ipRow?.c||0,10), overdue: parseInt(ovRow?.c||0,10),
+      closed: parseInt(clRow?.c||0,10), completedToday: parseInt(completedTodayRow?.c||0,10),
+      byDept, monthly, allDepts, allAssignees,
+      prevTotal: parseInt(prevTotalRow?.c||0,10), prevInProgress: parseInt(prevIPRow?.c||0,10),
+      prevOverdue: parseInt(prevOvRow?.c||0,10),
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -861,14 +731,12 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
     if (!name?.trim() || !email?.trim() || !password) return res.status(400).json({ error: 'Name, email and password required' });
     if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
     const norm = email.toLowerCase().trim();
-    if (await col('users').findOne({ email: norm })) return res.status(409).json({ error: 'Email already in use' });
-    const pRole = ['Owner', 'Admin', 'Member'].includes(permRole) ? permRole : 'Member';
-    const { insertedId } = await col('users').insertOne({
-      name: name.trim(), email: norm, password_hash: bcrypt.hashSync(password, 10),
-      role: role?.trim() || 'Team Member', dept: dept?.trim() || 'General',
-      color: '#2563eb', perm_role: pRole, created_at: nowStr()
-    });
-    const u = await getUser(insertedId.toString());
+    if (await get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'Email already in use' });
+    const pRole = ['Owner','Admin','Member'].includes(permRole) ? permRole : 'Member';
+    const hash = bcrypt.hashSync(password, 10);
+    const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role) VALUES (?,?,?,?,?,?) RETURNING id',
+      name.trim(), norm, hash, role?.trim() || 'Team Member', dept?.trim() || 'General', pRole);
+    const u = await getUser(Number(info.lastInsertRowid));
     res.json({ id: u.id, name: u.name, email: u.email, role: u.role, dept: u.dept, permRole: u.perm_role });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -876,13 +744,11 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
 // ── Admin: delete user ────────────────────────────────────────────────────────
 app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
   try {
-    const oid = toOid(req.params.id);
-    if (!oid) return res.status(404).json({ error: 'User not found' });
-    const target = await col('users').findOne({ _id: oid }, { projection: { perm_role: 1 } });
+    const target = await get('SELECT id,perm_role FROM users WHERE id=?', req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
     if (target.perm_role === 'Owner') return res.status(403).json({ error: 'Cannot delete the owner account' });
-    if (oid.toString() === req.session.userId) return res.status(400).json({ error: 'Cannot delete your own account' });
-    await col('users').deleteOne({ _id: oid });
+    if (target.id === req.session.userId) return res.status(400).json({ error: 'Cannot delete your own account' });
+    await run('DELETE FROM users WHERE id=?', req.params.id);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -890,8 +756,7 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
 // ── Departments ───────────────────────────────────────────────────────────────
 app.get('/api/departments', requireAuth, async (req, res) => {
   try {
-    const rows = await col('departments').find({}).sort({ name: 1 }).toArray();
-    res.json(rows.map(r => r.name));
+    res.json((await all('SELECT name FROM departments ORDER BY name ASC')).map(r => r.name));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -899,8 +764,8 @@ app.post('/api/departments', requireAdmin, async (req, res) => {
   try {
     const name = req.body.name?.trim();
     if (!name) return res.status(400).json({ error: 'Name required' });
-    if (await col('departments').findOne({ name })) return res.status(409).json({ error: 'Department already exists' });
-    await col('departments').insertOne({ name });
+    if (await get('SELECT id FROM departments WHERE name=?', name)) return res.status(409).json({ error: 'Department already exists' });
+    await run('INSERT INTO departments (name) VALUES (?)', name);
     res.json({ ok: true, name });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -908,9 +773,10 @@ app.post('/api/departments', requireAdmin, async (req, res) => {
 app.delete('/api/departments/:name', requireAdmin, async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
-    const inUse = await col('users').findOne({ dept: name }) || await col('tickets').findOne({ dept: name });
+    const inUse = await get('SELECT id FROM users WHERE dept=? LIMIT 1', name) ||
+                  await get('SELECT id FROM tickets WHERE dept=? LIMIT 1', name);
     if (inUse) return res.status(400).json({ error: 'Department is in use — reassign users and tickets first' });
-    await col('departments').deleteOne({ name });
+    await run('DELETE FROM departments WHERE name=?', name);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -918,32 +784,30 @@ app.delete('/api/departments/:name', requireAdmin, async (req, res) => {
 // ── Reset all data ────────────────────────────────────────────────────────────
 app.post('/api/reset', requireAdmin, async (req, res) => {
   try {
-    await Promise.all([
-      col('ticket_comments').deleteMany({}),
-      col('attachments').deleteMany({}),
-      col('ticket_timelines').deleteMany({}),
-      col('notifications').deleteMany({}),
-      col('ticket_assignees').deleteMany({}),
-      col('ticket_details').deleteMany({}),
-      col('tickets').deleteMany({}),
-      col('plans').deleteMany({}),
-      col('plan_files').deleteMany({}),
-      col('plan_comments').deleteMany({}),
-      col('cal_events').deleteMany({}),
-      col('work_tasks').deleteMany({}),
-    ]);
+    await run('DELETE FROM ticket_comments');
+    await run('DELETE FROM attachments');
+    await run('DELETE FROM ticket_timelines');
+    await run('DELETE FROM notifications');
+    await run('DELETE FROM ticket_assignees');
+    await run('DELETE FROM ticket_details');
+    await run('DELETE FROM tickets');
+    await run('DELETE FROM plans');
+    await run('DELETE FROM plan_files');
+    await run('DELETE FROM plan_comments');
+    await run('DELETE FROM cal_events');
+    await run('DELETE FROM work_tasks');
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, ts: new Date().toISOString() });
+  res.json({ ok:true, ts: new Date().toISOString() });
 });
 
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
-  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
@@ -954,11 +818,11 @@ app.get('*', (req, res) => {
     console.log('✅  Database initialized');
 
     try {
-      await col('users').deleteMany({ email: { $in: ['sarah@worknest.com', 'mike@worknest.com', 'emily@worknest.com', 'david@worknest.com', 'priya@worknest.com'] } });
-      await col('tickets').deleteMany({ _id: { $in: ['TKT-1042','TKT-1041','TKT-1040','TKT-1039','TKT-1038','TKT-1037','TKT-1036','TKT-1035','TKT-0998'] } });
-      await col('plans').deleteMany({ _id: { $in: ['PLN-001', 'PLN-002', 'PLN-003'] } });
-      await col('invites').deleteMany({ email: { $in: ['ariana@worknest.com', 'daniel@worknest.com'] } });
-      await col('users').updateOne({ email: 'admin@worknest.com', name: 'John Doe' }, { $set: { name: 'Admin', role: 'Administrator' } });
+      await run("DELETE FROM users WHERE email IN ('sarah@worknest.com','mike@worknest.com','emily@worknest.com','david@worknest.com','priya@worknest.com')");
+      await run("DELETE FROM tickets WHERE id IN ('TKT-1042','TKT-1041','TKT-1040','TKT-1039','TKT-1038','TKT-1037','TKT-1036','TKT-1035','TKT-0998')");
+      await run("DELETE FROM plans WHERE id IN ('PLN-001','PLN-002','PLN-003')");
+      await run("DELETE FROM invites WHERE email IN ('ariana@worknest.com','daniel@worknest.com')");
+      await run("UPDATE users SET name='Admin', role='Administrator' WHERE email='admin@worknest.com' AND name='John Doe'");
     } catch(e) { console.warn('[cleanup]', e.message); }
 
     app.listen(PORT, () => {
