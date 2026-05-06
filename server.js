@@ -217,13 +217,16 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
     if (isAdmin) {
       rows = await all('SELECT * FROM tickets ORDER BY id DESC');
     } else {
-      // Members see only tickets they are assigned to (primary or via ticket_assignees)
+      // Members see tickets they are assigned to (primary or via ticket_assignees)
+      // OR tickets they created (so a ticket they raised never disappears even if
+      // assigned to someone else).
       rows = await all(
         `SELECT t.* FROM tickets t
            WHERE t.assignee = ?
               OR EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND ta.user_name = ?)
+              OR t.created_by = ?
            ORDER BY t.id DESC`,
-        u.name, u.name
+        u.name, u.name, u.id
       );
     }
     res.json(await Promise.all(rows.map(buildTicket)));
@@ -1032,15 +1035,20 @@ app.get('/api/stats', requireAuth, async (req, res) => {
     } else if (period === 'year') {
       dateClause = `AND created_at LIKE '${now.getFullYear()}%'`;
     }
-    // Members see stats limited to their own assigned tickets — overrides any client-supplied assignee filter.
+    // Members see stats limited to tickets they are assigned to OR tickets they created —
+    // overrides any client-supplied assignee filter.
     const me = await getUser(req.session.userId);
     const isAdmin = me && ['Owner','Admin'].includes(me.perm_role);
     const effectiveAssignee = isAdmin ? assignee : (me?.name || '__none__');
     const deptClause = dept ? `AND dept = '${dept.replace(/'/g, "''")}'` : '';
-    const assigneeClause = effectiveAssignee
-      ? `AND (assignee = '${effectiveAssignee.replace(/'/g, "''")}'
-             OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${effectiveAssignee.replace(/'/g, "''")}'))`
-      : '';
+    let assigneeClause = '';
+    if (effectiveAssignee) {
+      const safeName = effectiveAssignee.replace(/'/g, "''");
+      const createdByClause = (!isAdmin && me?.id) ? ` OR created_by = ${Number(me.id)}` : '';
+      assigneeClause =
+        `AND (assignee = '${safeName}'
+              OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${safeName}')${createdByClause})`;
+    }
     const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
 
     const [totalRow, openRow, ipRow, ovRow, clRow, byDept, allDepts, allAssignees] = await Promise.all([
