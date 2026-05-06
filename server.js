@@ -79,25 +79,23 @@ app.post('/api/auth/login', (req, res) => {
 
 app.post('/api/auth/register', (req, res) => {
   const { name, email, password, token } = req.body;
+  // Invite token is required — no open sign-up
+  if (!token) return res.status(403).json({ error: 'Registration requires a valid invite link.' });
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password required' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
   const norm = email.toLowerCase().trim();
-  if (get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'Email already registered' });
-
-  let role='Team Member', dept='General', permRole='Member';
-  if (token) {
-    const invite = get("SELECT * FROM invites WHERE token=? AND status='Pending'", token);
-    if (!invite) return res.status(400).json({ error: 'Invalid or expired invite token' });
-    if (invite.email.toLowerCase() !== norm) return res.status(400).json({ error: 'Email does not match invite' });
-    role = invite.role || role;
-    dept = invite.dept || dept;
-    run("UPDATE invites SET status='Accepted' WHERE token=?", token);
-  }
+  const invite = get("SELECT * FROM invites WHERE token=? AND status='Pending'", token);
+  if (!invite) return res.status(400).json({ error: 'This invite link is invalid or has already been used.' });
+  if (invite.email.toLowerCase() !== norm) return res.status(400).json({ error: 'Email does not match this invite.' });
+  if (get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'This email is already registered.' });
+  const role = invite.role || 'Team Member';
+  const dept = invite.dept || 'General';
+  run("UPDATE invites SET status='Accepted' WHERE token=?", token);
   const hash = bcrypt.hashSync(password, 10);
   const info = run('INSERT INTO users (name,email,password_hash,role,dept,perm_role) VALUES (?,?,?,?,?,?)',
-    name.trim(), norm, hash, role, dept, permRole);
+    name.trim(), norm, hash, role, dept, 'Member');
   req.session.userId = Number(info.lastInsertRowid);
-  res.json({ id:Number(info.lastInsertRowid), name:name.trim(), email:norm, role, dept, permRole });
+  res.json({ id:Number(info.lastInsertRowid), name:name.trim(), email:norm, role, dept, permRole:'Member' });
 });
 
 app.post('/api/auth/logout', (req, res) => {

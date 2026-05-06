@@ -1900,6 +1900,121 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     .pw-toggle { font-size: 0 !important; }
     .pw-toggle svg { width: 16px; height: 16px; display: inline-block; }
 
+    /* ════════════════════════════════════════════════════════
+       SYRUVIA COLOR SYSTEM — vivid status, priority, dates
+       ════════════════════════════════════════════════════════ */
+
+    /* ── Sidebar nav ── */
+    #sidebar { background: linear-gradient(180deg,#0f0f23 0%,#1a1040 100%) !important; border-right: none !important; }
+    #sidebar .nav-item { color: rgba(255,255,255,.55) !important; border-radius: 10px !important; margin-bottom: 2px !important; transition: all .15s !important; }
+    #sidebar .nav-item:hover { color: #fff !important; background: rgba(255,255,255,.1) !important; }
+    #sidebar .nav-item.active { color: #fff !important; background: linear-gradient(135deg,rgba(99,102,241,.7),rgba(124,58,237,.5)) !important; box-shadow: 0 4px 12px rgba(99,102,241,.3) !important; }
+    #sidebar .nav-item svg { opacity: .7 !important; }
+    #sidebar .nav-item:hover svg, #sidebar .nav-item.active svg { opacity: 1 !important; }
+    .sb-logo-text { color: #fff !important; }
+    .sb-user-name { color: rgba(255,255,255,.9) !important; }
+    .sb-user-role { color: rgba(255,255,255,.45) !important; }
+    .sb-divider { background: rgba(255,255,255,.08) !important; }
+    #sidebar .sb-section-title { color: rgba(255,255,255,.3) !important; }
+    .sb-collapse-btn { color: rgba(255,255,255,.4) !important; }
+    .sb-collapse-btn:hover { color: #fff !important; background: rgba(255,255,255,.1) !important; }
+    /* sidebar badge (ticket count) */
+    #sidebar .nav-badge { background: #6366f1 !important; color: #fff !important; }
+
+    /* ── Topbar ── */
+    #topbar { background: rgba(255,255,255,.95) !important; border-bottom: 1px solid #e8e5ff !important; backdrop-filter: blur(12px) !important; }
+
+    /* ── Stat cards — vivid hover ── */
+    .stat-card { transition: transform .18s,box-shadow .18s,border-color .18s !important; border: 1.5px solid transparent !important; cursor: default !important; }
+    .stat-card:hover { transform: translateY(-3px) !important; box-shadow: 0 12px 32px rgba(99,102,241,.14) !important; border-color: #c7d2fe !important; }
+    .stat-card .stat-icon { border-radius: 14px !important; }
+    /* Stat icon accent colors */
+    .stat-card:nth-child(1) .stat-icon { background: linear-gradient(135deg,#eff6ff,#dbeafe) !important; }
+    .stat-card:nth-child(2) .stat-icon { background: linear-gradient(135deg,#fefce8,#fef9c3) !important; }
+    .stat-card:nth-child(3) .stat-icon { background: linear-gradient(135deg,#fef2f2,#fee2e2) !important; }
+    .stat-card:nth-child(4) .stat-icon { background: linear-gradient(135deg,#f0fdf4,#dcfce7) !important; }
+    .stat-card .stat-change { font-size: 11px !important; font-weight: 600 !important; }
+    .stat-card .stat-change.up { color: #16a34a !important; }
+    .stat-card .stat-change.dn { color: #dc2626 !important; }
+
+    /* ── Status badges — vivid ── */
+    .badge-status,
+    span[class*="s-open"], span[class*="s-ip"], span[class*="s-pr"],
+    span[class*="s-oh"], span[class*="s-cl"], span[class*="s-ov"], span[class*="s-ir"] {
+      font-weight: 700 !important; letter-spacing: .02em !important;
+      border-radius: 6px !important; padding: 3px 9px !important; font-size: 10.5px !important;
+    }
+    .s-open  { background: #eff6ff !important; color: #1d4ed8 !important; border: 1px solid #bfdbfe !important; }
+    .s-ip    { background: #fffbeb !important; color: #b45309 !important; border: 1px solid #fde68a !important; }
+    .s-pr    { background: #f5f3ff !important; color: #6d28d9 !important; border: 1px solid #ddd6fe !important; }
+    .s-oh    { background: #f8fafc !important; color: #475569 !important; border: 1px solid #cbd5e1 !important; }
+    .s-cl    { background: #f0fdf4 !important; color: #15803d !important; border: 1px solid #bbf7d0 !important; }
+    .s-ov    { background: #fef2f2 !important; color: #b91c1c !important; border: 1px solid #fecaca !important; }
+    .s-ir    { background: #eef2ff !important; color: #4338ca !important; border: 1px solid #c7d2fe !important; }
+
+    /* ── Priority badges — vivid ── */
+    .p-h { background: #fef2f2 !important; color: #b91c1c !important; border: 1px solid #fecaca !important; font-weight: 700 !important; }
+    .p-m { background: #fff7ed !important; color: #c2410c !important; border: 1px solid #fed7aa !important; font-weight: 700 !important; }
+    .p-l { background: #f0fdf4 !important; color: #15803d !important; border: 1px solid #bbf7d0 !important; font-weight: 700 !important; }
+    .p-u { background: #fef2f2 !important; color: #991b1b !important; border: 1px solid #fca5a5 !important; font-weight: 700 !important; }
+
+    /* ── Ticket table rows ── */
+    .tbl tbody tr { transition: background .12s !important; }
+    .tbl tbody tr:hover td { background: #f5f3ff !important; }
+    .tbl tbody tr:hover td:first-child { border-left: 3px solid #6366f1 !important; padding-left: 9px !important; }
+
+    /* ── Due date colors ── */
+    .due-overdue  { color: #dc2626 !important; font-weight: 700 !important; }
+    .due-soon     { color: #d97706 !important; font-weight: 600 !important; }
+    .due-ok       { color: #16a34a !important; }
+    .due-none     { color: #94a3b8 !important; }
+
+    /* ── Cards ── */
+    .card { border: 1px solid #ede9ff !important; }
+    .card:hover { box-shadow: 0 8px 32px rgba(99,102,241,.08) !important; }
+
+    /* ── Kanban cards ── */
+    .kanban-card { border: 1.5px solid #ede9ff !important; transition: all .18s !important; }
+    .kanban-card:hover { transform: translateY(-3px) !important; box-shadow: 0 10px 28px rgba(99,102,241,.15) !important; border-color: #a5b4fc !important; }
+    .kanban-card .k-id { color: #6366f1 !important; }
+
+    /* ── Buttons ── */
+    .btn-primary { background: linear-gradient(135deg,#4f46e5,#7c3aed) !important; box-shadow: 0 4px 14px rgba(79,70,229,.3) !important; border: none !important; }
+    .btn-primary:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 20px rgba(79,70,229,.4) !important; }
+    button[class*="btn-primary"] { background: linear-gradient(135deg,#4f46e5,#7c3aed) !important; }
+
+    /* ── Progress bars ── */
+    .progress-fill { background: linear-gradient(90deg,#6366f1,#8b5cf6) !important; }
+    .workload-bar .progress-fill { height: 7px !important; }
+
+    /* ── Notification badge ── */
+    .notif-badge { background: linear-gradient(135deg,#ef4444,#dc2626) !important; box-shadow: 0 2px 8px rgba(239,68,68,.4) !important; }
+
+    /* ── Ticket ID links ── */
+    .ticket-id, [class*="tkt-id"], .k-id { color: #6366f1 !important; }
+
+    /* ── Dashboard donut center text ── */
+    #page-dashboard svg text { fill: #1e1b4b !important; }
+
+    /* ── Settings tabs active ── */
+    .settings-tab.active { background: linear-gradient(135deg,#eff6ff,#eef2ff) !important; color: #4f46e5 !important; border-left: 3px solid #6366f1 !important; font-weight: 700 !important; }
+    .settings-tab:hover:not(.active) { background: #f9f8ff !important; color: #6366f1 !important; }
+
+    /* ── Team workload bars ── */
+    .workload-bar { background: #f0edff !important; }
+
+    /* ── Search bar focus ── */
+    .search-wrap input:focus { border-color: #6366f1 !important; box-shadow: 0 0 0 4px rgba(99,102,241,.1) !important; }
+
+    /* ── Activity timeline dots ── */
+    .timeline-dot { border-color: #6366f1 !important; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #c7d2fe; border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: #818cf8; }
+
   </style>
 
 </head>
