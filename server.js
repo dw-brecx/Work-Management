@@ -45,6 +45,12 @@ app.use(session({
   cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
 
+// Serve uploaded files (avatars, attachments, voice notes) from UPLOADS_DIR.
+// In production UPLOADS_DIR is /data/uploads (outside public/), so this route
+// is required for /uploads/<filename> to resolve. Locally it harmlessly mirrors
+// public/uploads.
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
+
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders(res) { res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); }
 }));
