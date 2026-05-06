@@ -219,7 +219,7 @@ app.get('/api/tickets/:id', requireAuth, async (req, res) => {
 
 app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const { id, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags } = req.body;
+    const { id, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist } = req.body;
     if (!id || !title) return res.status(400).json({ error:'id and title required' });
     if (await get('SELECT id FROM tickets WHERE id=?', id)) {
       return res.status(409).json({ error: `Ticket ${id} already exists`, code: 'duplicate_id' });
@@ -230,6 +230,19 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
       dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId);
     await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', id);
     for (const a of (assignees||[])) await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', id, a);
+    // Persist any checklist items from the create modal as real subtasks (default-assigned to the ticket assignee)
+    if (Array.isArray(checklist) && checklist.length) {
+      let pos = 1;
+      for (const item of checklist) {
+        const text = typeof item === 'string' ? item : (item?.text || '');
+        const trimmed = String(text).trim();
+        if (!trimmed) continue;
+        await run(
+          `INSERT INTO ticket_subtasks (ticket_id, position, text, done, assignee) VALUES (?,?,?,?,?)`,
+          id, pos++, trimmed, item?.done ? 1 : 0, assignee || ''
+        );
+      }
+    }
     const creator = await getUser(req.session.userId);
     for (const a of (assignees||[])) {
       const target = await get('SELECT id FROM users WHERE name=?', a);
@@ -377,7 +390,29 @@ function buildSubtask(r) {
 
 app.get('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
   try {
-    const rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
+    let rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
+    // One-time migration: if no subtask rows yet, but legacy checklist_json on ticket_details has items, lift them in.
+    if (!rows.length) {
+      const det = await get('SELECT checklist_json FROM ticket_details WHERE ticket_id=?', req.params.id);
+      let legacy = [];
+      try { legacy = JSON.parse(det?.checklist_json || '[]'); } catch {}
+      if (Array.isArray(legacy) && legacy.length) {
+        const tk = await get('SELECT assignee FROM tickets WHERE id=?', req.params.id);
+        let pos = 1;
+        for (const item of legacy) {
+          const text = typeof item === 'string' ? item : (item?.text || '');
+          const trimmed = String(text).trim();
+          if (!trimmed) continue;
+          await run(
+            'INSERT INTO ticket_subtasks (ticket_id, position, text, done, assignee) VALUES (?,?,?,?,?)',
+            req.params.id, pos++, trimmed, item?.done ? 1 : 0, tk?.assignee || ''
+          );
+        }
+        // Clear the legacy field so this only runs once
+        await run('UPDATE ticket_details SET checklist_json=? WHERE ticket_id=?', '[]', req.params.id);
+        rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
+      }
+    }
     res.json(rows.map(buildSubtask));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

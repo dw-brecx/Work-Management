@@ -2424,7 +2424,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               </button>
             </div>
-            <h1 style="font-size:20px!important;font-weight:600!important;letter-spacing:-.02em!important;margin-bottom:8px;line-height:1.3;color:var(--text)" id="det-title">API Integration for Payment Gateway</h1>
+            <h1 id="det-title" onclick="startEditDetTitle()" title="Click to edit"
+                style="font-size:20px!important;font-weight:600!important;letter-spacing:-.02em!important;margin-bottom:8px;line-height:1.3;color:var(--text);cursor:pointer;border-radius:6px;padding:2px 4px;transition:background .12s"
+                onmouseenter="this.style.background='#f5f3ff'" onmouseleave="this.style.background=''">API Integration for Payment Gateway</h1>
             <div id="det-badges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
           </div>
           <div class="td-action-bar" id="td-action-bar">
@@ -4860,6 +4862,64 @@ function renderInfoGridEdit(t) {
   renderEditAssigneeChips();
 }
 
+// Inline-edit ticket title from the detail page
+function startEditDetTitle() {
+  const t = getCurrentTicket();
+  if (!t) return;
+  const h1 = document.getElementById('det-title');
+  if (!h1 || h1.dataset.editing === '1') return;
+  h1.dataset.editing = '1';
+  const original = t.title || '';
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px';
+  wrap.innerHTML = `
+    <input type="text" id="det-title-input" value="${escapeHtml(original)}"
+           style="flex:1;font-size:18px;font-weight:600;padding:5px 9px;border:1px solid var(--accent);border-radius:6px;outline:none"/>
+    <button id="det-title-save" style="background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px">Save</button>
+    <button id="det-title-cancel" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px;color:var(--text2)">Cancel</button>
+  `;
+  h1.replaceWith(wrap);
+  const input = document.getElementById('det-title-input');
+  input.focus(); input.select();
+  const saveBtn = document.getElementById('det-title-save');
+  const cancelBtn = document.getElementById('det-title-cancel');
+  const restore = (newTitle) => {
+    const newH1 = document.createElement('h1');
+    newH1.id = 'det-title';
+    newH1.title = 'Click to edit';
+    newH1.setAttribute('onclick', 'startEditDetTitle()');
+    newH1.setAttribute('onmouseenter', "this.style.background='#f5f3ff'");
+    newH1.setAttribute('onmouseleave', "this.style.background=''");
+    newH1.style.cssText = 'font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:8px;line-height:1.3;color:var(--text);cursor:pointer;border-radius:6px;padding:2px 4px;transition:background .12s';
+    newH1.textContent = newTitle;
+    wrap.replaceWith(newH1);
+  };
+  const doSave = async () => {
+    const newTitle = input.value.trim();
+    if (!newTitle) { alert('Title cannot be empty.'); input.focus(); return; }
+    if (newTitle === original) { restore(original); return; }
+    saveBtn.disabled = true; saveBtn.textContent = '…';
+    try {
+      const r = await apiPut('/api/tickets/' + encodeURIComponent(t.id), { title: newTitle });
+      if (r && r.error) { alert(r.error); saveBtn.disabled = false; saveBtn.textContent = 'Save'; return; }
+      t.title = newTitle;
+      restore(newTitle);
+      // Refresh dependent views
+      if (typeof renderTickets === 'function') renderTickets();
+      if (typeof renderFlavors === 'function' && currentPage === 'flavors') renderFlavors();
+    } catch {
+      alert('Could not save — check connection.');
+      saveBtn.disabled = false; saveBtn.textContent = 'Save';
+    }
+  };
+  saveBtn.onclick = doSave;
+  cancelBtn.onclick = () => restore(original);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); doSave(); }
+    else if (e.key === 'Escape') { e.preventDefault(); restore(original); }
+  });
+}
+
 function renderDetailsToolbar() {
   const el = document.getElementById('details-actions');
   if (!el) return;
@@ -5232,7 +5292,16 @@ function renderChecklist() {
   const list = SUBTASKS[t.id] || [];
   const el = document.getElementById('checklist-items');
   if (!el) return;
-  el.innerHTML = list.map(s => renderSubtaskRow(s)).join('');
+  if (list.length === 0) {
+    el.innerHTML = `
+      <div style="text-align:center;padding:18px 12px;color:var(--text3);font-size:12px;border:1px dashed var(--border);border-radius:8px">
+        <div style="font-size:22px;margin-bottom:4px">✅</div>
+        No subtasks yet. Click <b>+ Add subtask</b> below to break this ticket into steps.
+      </div>
+    `;
+  } else {
+    el.innerHTML = list.map(s => renderSubtaskRow(s)).join('');
+  }
   const done = list.filter(x => x.done).length;
   const total = list.length;
   const prog = document.getElementById('chk-progress');
