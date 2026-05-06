@@ -82,8 +82,8 @@ async function safeAlter(sql) {
 }
 
 async function init() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
+  const tables = [
+    `CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
@@ -93,9 +93,8 @@ async function init() {
       color TEXT DEFAULT '#2563eb',
       perm_role TEXT DEFAULT 'Member',
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS invites (
+    )`,
+    `CREATE TABLE IF NOT EXISTS invites (
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -106,9 +105,8 @@ async function init() {
       invited_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
       expires_at TEXT DEFAULT '',
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS tickets (
+    )`,
+    `CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       req TEXT DEFAULT '',
@@ -124,21 +122,18 @@ async function init() {
       comments_count INTEGER DEFAULT 0,
       created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS ticket_assignees (
+    )`,
+    `CREATE TABLE IF NOT EXISTS ticket_assignees (
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
       user_name TEXT NOT NULL,
       PRIMARY KEY (ticket_id, user_name)
-    );
-
-    CREATE TABLE IF NOT EXISTS ticket_details (
+    )`,
+    `CREATE TABLE IF NOT EXISTS ticket_details (
       ticket_id TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
       description TEXT DEFAULT '',
       checklist_json TEXT DEFAULT '[]'
-    );
-
-    CREATE TABLE IF NOT EXISTS ticket_comments (
+    )`,
+    `CREATE TABLE IF NOT EXISTS ticket_comments (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
       author TEXT NOT NULL,
@@ -147,18 +142,16 @@ async function init() {
       author_col TEXT DEFAULT '#5b21b6',
       text TEXT NOT NULL,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS ticket_timelines (
+    )`,
+    `CREATE TABLE IF NOT EXISTS ticket_timelines (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
       dot TEXT DEFAULT 'var(--accent)',
       text TEXT DEFAULT '',
       sub TEXT DEFAULT '',
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS notifications (
+    )`,
+    `CREATE TABLE IF NOT EXISTS notifications (
       id SERIAL PRIMARY KEY,
       user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       type TEXT DEFAULT 'info',
@@ -167,9 +160,8 @@ async function init() {
       ticket_id TEXT DEFAULT '',
       unread INTEGER DEFAULT 1,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS plans (
+    )`,
+    `CREATE TABLE IF NOT EXISTS plans (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       notes TEXT DEFAULT '',
@@ -180,9 +172,8 @@ async function init() {
       user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
       updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS plan_comments (
+    )`,
+    `CREATE TABLE IF NOT EXISTS plan_comments (
       id SERIAL PRIMARY KEY,
       plan_id TEXT REFERENCES plans(id) ON DELETE CASCADE,
       author TEXT DEFAULT '',
@@ -190,17 +181,15 @@ async function init() {
       author_col TEXT DEFAULT '#5b21b6',
       text TEXT NOT NULL,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS plan_files (
+    )`,
+    `CREATE TABLE IF NOT EXISTS plan_files (
       id SERIAL PRIMARY KEY,
       plan_id TEXT REFERENCES plans(id) ON DELETE CASCADE,
       filename TEXT NOT NULL,
       size INTEGER DEFAULT 0,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS cal_events (
+    )`,
+    `CREATE TABLE IF NOT EXISTS cal_events (
       id SERIAL PRIMARY KEY,
       date_key TEXT NOT NULL,
       type TEXT DEFAULT 'meeting',
@@ -219,9 +208,8 @@ async function init() {
       user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       source TEXT DEFAULT 'personal',
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS work_tasks (
+    )`,
+    `CREATE TABLE IF NOT EXISTS work_tasks (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT DEFAULT '',
       worker TEXT DEFAULT '',
@@ -232,14 +220,12 @@ async function init() {
       timer_elapsed INTEGER DEFAULT 0,
       user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS departments (
+    )`,
+    `CREATE TABLE IF NOT EXISTS departments (
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS attachments (
+    )`,
+    `CREATE TABLE IF NOT EXISTS attachments (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
       comment_id INTEGER REFERENCES ticket_comments(id) ON DELETE SET NULL,
@@ -249,16 +235,20 @@ async function init() {
       size INTEGER DEFAULT 0,
       uploader TEXT DEFAULT '',
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-    );
-
-    CREATE TABLE IF NOT EXISTS session (
-      sid VARCHAR NOT NULL COLLATE "default",
+    )`,
+    // Session table for connect-pg-simple
+    `CREATE TABLE IF NOT EXISTS session (
+      sid VARCHAR NOT NULL,
       sess JSON NOT NULL,
       expire TIMESTAMP(6) NOT NULL,
       CONSTRAINT session_pkey PRIMARY KEY (sid) NOT DEFERRABLE INITIALLY IMMEDIATE
-    );
-    CREATE INDEX IF NOT EXISTS idx_session_expire ON session (expire);
-  `);
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_session_expire ON session (expire)`,
+  ];
+
+  for (const sql of tables) {
+    await pool.query(sql);
+  }
 
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');
