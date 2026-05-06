@@ -2436,6 +2436,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
               Status
             </button>
+            <button class="td-action-btn" id="schedule-event-trigger" onclick="scheduleEventForCurrentTicket()" title="Create a calendar event for this ticket">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              Schedule
+            </button>
             <button class="td-action-btn" id="assign-trigger" onclick="openHeaderActionMenu('assign', this)" title="Assign ticket">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m22 11-3 3-2-2"/></svg>
               Assign
@@ -3740,8 +3744,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         </div>
       </div>
       <div class="form-row">
-        <label>Location / Meet link <span style="color:var(--text3);font-weight:400">(optional)</span></label>
-        <input type="text" id="ev-location" placeholder="Google Meet URL, Zoom link, Conf Room A…"/>
+        <label>Meeting link / Location <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="ev-location" placeholder="Paste a Google Meet / Zoom / Slack call URL — or a room name" style="flex:1"/>
+          <button type="button" onclick="generateGoogleMeet()" title="Open meet.new — copy the URL it creates and paste it back here"
+                  style="font-size:11px;padding:6px 12px;border:1px solid var(--border);background:#fff;border-radius:8px;cursor:pointer;color:var(--accent);font-weight:500;white-space:nowrap">+ Google Meet</button>
+        </div>
+        <span style="font-size:10.5px;color:var(--text3);margin-top:3px">Tip: clicking <b>+ Google Meet</b> opens a fresh meeting in a new tab — copy the URL and paste it above so attendees can join.</span>
       </div>
     </div>
 
@@ -8339,6 +8348,7 @@ function renderDayEventsModal() {
             ${e.assignee ? `<span>· ${escapeHtml(e.assignee)}</span>` : ''}
             ${attendeesText ? `<span>${attendeesText}</span>` : ''}
             ${linkedChip}
+            ${(e.location && /^https?:\/\//i.test(e.location)) ? `<a href="${escapeAttr(e.location)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;font-weight:500" title="${escapeAttr(e.location)}">🎥 Join</a>` : ''}
           </div>
         </div>
         ${trailing}
@@ -10092,6 +10102,9 @@ window.buildCalTodayPanel = function() {
     const tickClick = (e._synthetic && e.ticketId)
       ? ' onclick="openTicketDetail(\'' + (e.ticketId.replace(/'/g, '\\\'')) + '\')" style="cursor:pointer"'
       : '';
+    const joinLink = (e.location && /^https?:\/\//i.test(e.location))
+      ? '<a href="' + e.location.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Join meeting" style="font-size:10px;color:' + color + ';font-weight:600;background:' + color + '18;padding:2px 7px;border-radius:20px;flex-shrink:0;text-decoration:none;margin-right:4px">🎥 Join</a>'
+      : '';
     return '<div' + tickClick + ' style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:10px;background:' + bg + ';border:1px solid ' + color + '22' + (e._synthetic && e.ticketId ? ';cursor:pointer' : '') + '">' +
       '<span style="font-size:10px;color:#6b7280;min-width:50px;flex-shrink:0;padding-top:1px">' + timeStr + '</span>' +
       '<div style="width:7px;height:7px;border-radius:50%;background:' + color + ';flex-shrink:0;margin-top:4px"></div>' +
@@ -10099,6 +10112,7 @@ window.buildCalTodayPanel = function() {
         '<div style="font-size:12px;font-weight:600;color:#1e1b4b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (e.title||e.label||'Untitled') + srcDot + '</div>' +
         (e.desc ? '<div style="font-size:10px;color:#6b7280;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + e.desc + '</div>' : '') +
       '</div>' +
+      joinLink +
       '<span style="font-size:9px;font-weight:600;color:' + color + ';background:' + color + '18;padding:2px 7px;border-radius:20px;flex-shrink:0;text-transform:capitalize">' + (e.type||'event') + '</span>' +
     '</div>';
   }).join('');
@@ -11867,6 +11881,45 @@ initApp();
   })();
 
 })();
+
+// ── Calendar event helpers: Generate Meet, Schedule from ticket ─────────────
+window.generateGoogleMeet = function() {
+  const win = window.open('https://meet.new', '_blank', 'noopener');
+  if (!win) {
+    alert('Could not open meet.new — your browser may have blocked the pop-up. Allow pop-ups for this site or visit https://meet.new manually, then paste the URL into the field.');
+    return;
+  }
+  // Soft hint after a moment
+  setTimeout(() => {
+    const input = document.getElementById('ev-location');
+    if (input) input.placeholder = 'Paste the Meet URL from the new tab…';
+  }, 500);
+};
+
+window.scheduleEventForCurrentTicket = function() {
+  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+  if (!t) { alert('No ticket selected.'); return; }
+  // Pick a date: ticket's due date if parseable, otherwise today
+  let presetKey = null;
+  const due = (typeof parseTicketDate === 'function') ? parseTicketDate(t.due) : null;
+  if (due) presetKey = due.getFullYear() + '-' + due.getMonth() + '-' + due.getDate();
+  // Open the create-event modal — it'll reset state, so pre-fill afterwards
+  if (typeof openCreateEventModal !== 'function') return;
+  openCreateEventModal(presetKey);
+  // Pre-fill linked ticket
+  setTimeout(() => {
+    try {
+      evSelectedTicketId = t.id;
+      const inp = document.getElementById('ev-ticket-search');
+      const wrap = document.getElementById('ev-ticket-wrap');
+      if (inp) inp.value = t.id + ' — ' + (t.title || '');
+      if (wrap) wrap.classList.add('has-selection');
+      // Default the title to something useful
+      const titleInp = document.getElementById('ev-title');
+      if (titleInp && !titleInp.value) titleInp.value = 'Sync on ' + t.id;
+    } catch {}
+  }, 80);
+};
 
 // ── Announcements feature ─────────────────────────────────────────────────────
 (function() {
