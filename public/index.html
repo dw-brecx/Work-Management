@@ -6820,7 +6820,7 @@ function buildCalendar() {
     const _td = new Date(); const isToday = isThis && dayNum === _td.getDate() && calMonth === _td.getMonth() && calYear === _td.getFullYear();
     let displayNum = isThis ? dayNum : (dayNum < 1 ? prevDays + dayNum : dayNum - days);
     const key = isThis ? `${calYear}-${calMonth}-${dayNum}` : null;
-    const evts = key && CAL_EVENTS[key] ? CAL_EVENTS[key] : [];
+    const evts = key ? (window._calEventsForKey ? window._calEventsForKey(key) : (CAL_EVENTS[key] || [])) : [];
     const filtered = calFilter === 'all' ? evts : evts.filter(e => e.type === calFilter);
     const cls = ['cal-td', !isThis ? 'other' : '', isToday ? 'today' : '', filtered.length ? 'has-events' : ''].filter(Boolean).join(' ');
     const numEl = isToday ? `<div class="day-num today-num">${displayNum}</div>` : `<div class="day-num" style="${!isThis?'color:var(--text3)':''}">${displayNum}</div>`;
@@ -6833,7 +6833,12 @@ function buildCalendar() {
     html += `<td class="${cls}" ${cellClick}>
       ${plusBtn}
       ${numEl}
-      ${filtered.slice(0,3).map(e => `<div class="cal-evt e-${e.type}">${escapeHtml(e.label)}</div>`).join('')}
+      ${filtered.slice(0,3).map(e => {
+        const click = e._synthetic && e.ticketId
+          ? `onclick="event.stopPropagation();openTicketDetail('${escapeAttr(e.ticketId)}')" title="Open ${escapeHtml(e.ticketId)}" style="cursor:pointer"`
+          : '';
+        return `<div class="cal-evt e-${e.type}" ${click}>${escapeHtml(e.label)}</div>`;
+      }).join('')}
       ${filtered.length > 3 ? `<div style="font-size:9px;color:var(--text3)">+${filtered.length-3} more</div>` : ''}
     </td>`;
     if (cell % 7 === 6) html += '</tr>';
@@ -8276,7 +8281,7 @@ function openDayEventsModal(key) {
 
 function renderDayEventsModal() {
   if (!selectedDayKey) return;
-  const evts = CAL_EVENTS[selectedDayKey] || [];
+  const evts = window._calEventsForKey ? window._calEventsForKey(selectedDayKey) : (CAL_EVENTS[selectedDayKey] || []);
   const filtered = calFilter === 'all' ? evts : evts.filter(e => e.type === calFilter);
 
   // Title with formatted date
@@ -10019,6 +10024,47 @@ window.refreshCalSources = function() {
   buildCalWeekStats();
 };
 
+// Build synthetic events from tickets the current user is assigned to (placed on their due date).
+// Keyed as 'YYYY-M-D' (M is 0-indexed) to match how CAL_EVENTS keys are written elsewhere.
+window._ticketCalEvents = function() {
+  const out = {};
+  if (window._calSources && window._calSources.personal === false) return out;
+  const me = (window.CURRENT_USER && window.CURRENT_USER.name) || '';
+  if (!me) return out;
+  const tickets = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []);
+  for (const t of tickets) {
+    if (!t || !t.due) continue;
+    if (t.status === 'Closed' || t.status === 'Archived') continue;
+    const isMine = t.assignee === me || (Array.isArray(t.assignees) && t.assignees.includes(me));
+    if (!isMine) continue;
+    const d = (typeof parseTicketDate === 'function') ? parseTicketDate(t.due) : null;
+    if (!d) continue;
+    const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+    if (!out[key]) out[key] = [];
+    out[key].push({
+      type: 'ticket',
+      label: t.id + ' · ' + (t.title || ''),
+      title: t.title || t.id,
+      desc: '',
+      ticketId: t.id,
+      source: 'personal',
+      _synthetic: true,
+      startTime: '', endTime: '', allDay: true,
+    });
+  }
+  return out;
+};
+
+// Combined events for a given day-key, after applying source toggles.
+window._calEventsForKey = function(key) {
+  const stored = (CAL_EVENTS[key] || []).filter(e => {
+    const src = e.source || 'personal';
+    return window._calSources?.[src] !== false;
+  });
+  const syn = (window._ticketCalEvents()[key] || []);
+  return [...stored, ...syn];
+};
+
 window.buildCalTodayPanel = function() {
   const now = new Date();
   const pad = n => String(n).padStart(2,'0');
@@ -10029,10 +10075,7 @@ window.buildCalTodayPanel = function() {
   if (lbl) lbl.textContent = DAYS[now.getDay()] + ', ' + MONS[now.getMonth()] + ' ' + now.getDate();
   const panel = document.getElementById('cal-today-events');
   if (!panel) return;
-  const evts = (CAL_EVENTS[todayKey] || []).filter(e => {
-    const src = e.source || 'personal';
-    return window._calSources[src] !== false;
-  });
+  const evts = (window._calEventsForKey ? window._calEventsForKey(todayKey) : []);
   if (!evts.length) { panel.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:12px 0;text-align:center">No events today</div>'; return; }
   const TYPE_COLOR = { meeting:'#8b5cf6', task:'#22c55e', deadline:'#ef4444', ticket:'#2563eb' };
   const TYPE_BG    = { meeting:'#f5f3ff', task:'#f0fdf4', deadline:'#fef2f2', ticket:'#eff6ff' };
@@ -10046,7 +10089,10 @@ window.buildCalTodayPanel = function() {
       const [h,m] = e.startTime.split(':').map(Number);
       timeStr = (h > 12 ? h-12 : (h||12)) + ':' + pad(m||0) + ' ' + (h >= 12 ? 'PM' : 'AM');
     } else { timeStr = 'All day'; }
-    return '<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:10px;background:' + bg + ';border:1px solid ' + color + '22">' +
+    const tickClick = (e._synthetic && e.ticketId)
+      ? ' onclick="openTicketDetail(\'' + (e.ticketId.replace(/'/g, '\\\'')) + '\')" style="cursor:pointer"'
+      : '';
+    return '<div' + tickClick + ' style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:10px;background:' + bg + ';border:1px solid ' + color + '22' + (e._synthetic && e.ticketId ? ';cursor:pointer' : '') + '">' +
       '<span style="font-size:10px;color:#6b7280;min-width:50px;flex-shrink:0;padding-top:1px">' + timeStr + '</span>' +
       '<div style="width:7px;height:7px;border-radius:50%;background:' + color + ';flex-shrink:0;margin-top:4px"></div>' +
       '<div style="flex:1;min-width:0">' +
@@ -10063,15 +10109,14 @@ window.buildCalWeekStats = function() {
   const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay());
   const weekEnd   = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
   let meetings = 0, tasks = 0, deadlines = 0;
-  for (const [key, arr] of Object.entries(CAL_EVENTS)) {
-    const parts = key.split('-').map(Number);
-    const d = new Date(parts[0], parts[1], parts[2]);
-    if (d < weekStart || d > weekEnd) continue;
+  // Walk the 7 days of this week and pull combined events (stored + ticket-due) for each
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+    const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+    const arr = window._calEventsForKey ? window._calEventsForKey(key) : (CAL_EVENTS[key] || []);
     for (const e of arr) {
-      const src = e.source || 'personal';
-      if (window._calSources[src] === false) continue;
       if (e.type === 'meeting')  meetings++;
-      else if (e.type === 'task') tasks++;
+      else if (e.type === 'task' || e.type === 'ticket') tasks++;
       else if (e.type === 'deadline') deadlines++;
     }
   }
