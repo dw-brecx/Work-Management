@@ -313,10 +313,22 @@ const DESIGN_CSS = `
     .plan-card:hover { transform: translateY(-2px) !important; box-shadow: var(--shadow-md) !important; }
 
     /* ── Calendar ── */
-    .cal-day { border-radius: 12px !important; transition: background .12s !important; }
-    .cal-day:hover { background: #f0f5ff !important; }
-    .cal-day.today { background: #eff6ff !important; border: 2px solid #93c5fd !important; border-radius: 12px !important; }
-    .cal-stat-card { border-radius: 16px !important; }
+    .cal-table { border-collapse: separate !important; border-spacing: 3px !important; }
+    .cal-th { font-size: 11px !important; font-weight: 600 !important; color: #9ca3af !important; text-transform: uppercase !important; letter-spacing: .05em !important; padding: 6px 4px !important; text-align: center !important; }
+    .cal-day { border-radius: 10px !important; transition: background .12s, box-shadow .12s !important; border: 1.5px solid transparent !important; min-height: 80px !important; vertical-align: top !important; }
+    .cal-day:hover { background: #f0f5ff !important; border-color: #c7d2fe !important; }
+    .cal-day.today { background: #eff6ff !important; border: 2px solid #6366f1 !important; }
+    .cal-day.today .cal-day-num { color: #4f46e5 !important; font-weight: 800 !important; background: #4f46e5 !important; color: #fff !important; border-radius: 50% !important; width: 22px !important; height: 22px !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; }
+    .cal-day.other-month { opacity: .4 !important; }
+    .cal-evt { border-radius: 6px !important; font-size: 10px !important; font-weight: 600 !important; padding: 2px 6px !important; margin-bottom: 2px !important; }
+    .cal-evt.meeting { background: #ede9fe !important; color: #7c3aed !important; }
+    .cal-evt.task { background: #dcfce7 !important; color: #166534 !important; }
+    .cal-evt.deadline { background: #fee2e2 !important; color: #991b1b !important; }
+    .cal-evt.ticket { background: #dbeafe !important; color: #1d4ed8 !important; }
+    .cal-stat-card:hover { transform: translateY(-2px) !important; box-shadow: 0 4px 12px rgba(0,0,0,.08) !important; }
+    .pill-filters { gap: 6px !important; }
+    .pill { border-radius: 20px !important; font-size: 11.5px !important; font-weight: 600 !important; padding: 5px 14px !important; border: 1.5px solid #e0e7ff !important; background: #fff !important; color: #6b7280 !important; transition: all .15s !important; }
+    .pill.active, .pill:hover { background: #4f46e5 !important; color: #fff !important; border-color: #4f46e5 !important; }
 
     /* ── Team cards ── */
     .team-card { border-radius: 20px !important; }
@@ -1986,6 +1998,81 @@ function patchPlanMutations() {
   }
 }
 
+// ── Calendar: source filtering + today panel + week stats ────────────────────
+window._calSources = { personal: true, syruvia: true };
+
+window.refreshCalSources = function() {
+  window._calSources.personal = document.getElementById('cal-src-personal')?.checked !== false;
+  window._calSources.syruvia  = document.getElementById('cal-src-syruvia')?.checked !== false;
+  buildCalendar();
+  buildCalTodayPanel();
+  buildCalWeekStats();
+};
+
+window.buildCalTodayPanel = function() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const todayKey = now.getFullYear() + '-' + now.getMonth() + '-' + now.getDate();
+  const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const MONS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const lbl = document.getElementById('cal-today-label');
+  if (lbl) lbl.textContent = DAYS[now.getDay()] + ', ' + MONS[now.getMonth()] + ' ' + now.getDate();
+  const panel = document.getElementById('cal-today-events');
+  if (!panel) return;
+  const evts = (CAL_EVENTS[todayKey] || []).filter(e => {
+    const src = e.source || 'personal';
+    return window._calSources[src] !== false;
+  });
+  if (!evts.length) { panel.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:12px 0;text-align:center">No events today</div>'; return; }
+  const TYPE_COLOR = { meeting:'#8b5cf6', task:'#22c55e', deadline:'#ef4444', ticket:'#2563eb' };
+  const TYPE_BG    = { meeting:'#f5f3ff', task:'#f0fdf4', deadline:'#fef2f2', ticket:'#eff6ff' };
+  const sortedEvts = [...evts].sort((a,b) => (a.startTime||'').localeCompare(b.startTime||''));
+  panel.innerHTML = sortedEvts.map(e => {
+    const color = TYPE_COLOR[e.type] || '#6b7280';
+    const bg    = TYPE_BG[e.type] || '#f9fafb';
+    const srcDot = (e.source === 'syruvia') ? '<span style="width:6px;height:6px;border-radius:50%;background:#0ea5e9;flex-shrink:0;display:inline-block;margin-left:4px" title="Syruvia Calendar"></span>' : '';
+    let timeStr = '';
+    if (e.startTime) {
+      const [h,m] = e.startTime.split(':').map(Number);
+      timeStr = (h > 12 ? h-12 : (h||12)) + ':' + pad(m||0) + ' ' + (h >= 12 ? 'PM' : 'AM');
+    } else { timeStr = 'All day'; }
+    return '<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:10px;background:' + bg + ';border:1px solid ' + color + '22">' +
+      '<span style="font-size:10px;color:#6b7280;min-width:50px;flex-shrink:0;padding-top:1px">' + timeStr + '</span>' +
+      '<div style="width:7px;height:7px;border-radius:50%;background:' + color + ';flex-shrink:0;margin-top:4px"></div>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:12px;font-weight:600;color:#1e1b4b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (e.title||e.label||'Untitled') + srcDot + '</div>' +
+        (e.desc ? '<div style="font-size:10px;color:#6b7280;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + e.desc + '</div>' : '') +
+      '</div>' +
+      '<span style="font-size:9px;font-weight:600;color:' + color + ';background:' + color + '18;padding:2px 7px;border-radius:20px;flex-shrink:0;text-transform:capitalize">' + (e.type||'event') + '</span>' +
+    '</div>';
+  }).join('');
+};
+
+window.buildCalWeekStats = function() {
+  const now = new Date();
+  const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay());
+  const weekEnd   = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+  let meetings = 0, tasks = 0, deadlines = 0;
+  for (const [key, arr] of Object.entries(CAL_EVENTS)) {
+    const parts = key.split('-').map(Number);
+    const d = new Date(parts[0], parts[1], parts[2]);
+    if (d < weekStart || d > weekEnd) continue;
+    for (const e of arr) {
+      const src = e.source || 'personal';
+      if (window._calSources[src] === false) continue;
+      if (e.type === 'meeting')  meetings++;
+      else if (e.type === 'task') tasks++;
+      else if (e.type === 'deadline') deadlines++;
+    }
+  }
+  const wm = document.getElementById('cal-wk-meetings');
+  const wt = document.getElementById('cal-wk-tasks');
+  const wd = document.getElementById('cal-wk-deadlines');
+  if (wm) wm.textContent = meetings;
+  if (wt) wt.textContent = tasks;
+  if (wd) wd.textContent = deadlines;
+};
+
 // ── Calendar mutations → API ──────────────────────────────────────────────────
 function patchCalMutations() {
   const origSaveEv = window.saveEvent;
@@ -2000,6 +2087,8 @@ function patchCalMutations() {
             }
           }
         }
+        if (window.buildCalTodayPanel) window.buildCalTodayPanel();
+        if (window.buildCalWeekStats) window.buildCalWeekStats();
       }, 60);
       return r;
     };
@@ -2254,9 +2343,12 @@ async function initApp() {
   events.forEach(e => {
     if (!CAL_EVENTS[e.dateKey]) CAL_EVENTS[e.dateKey] = [];
     if (!CAL_EVENTS[e.dateKey].some(x=>x._id===e.id)) {
-      CAL_EVENTS[e.dateKey].push({ _id:e.id, type:e.type, label:e.label, title:e.title, desc:e.desc, allDay:e.allDay, startTime:e.startTime, endTime:e.endTime, linkedTicketId:e.linkedTicketId, attendees:e.attendees||[], location:e.location, assignee:e.assignee, completed:e.completed, syncsTicket:e.syncsTicket });
+      CAL_EVENTS[e.dateKey].push({ _id:e.id, type:e.type, label:e.label, title:e.title, desc:e.desc, allDay:e.allDay, startTime:e.startTime, endTime:e.endTime, linkedTicketId:e.linkedTicketId, attendees:e.attendees||[], location:e.location, assignee:e.assignee, completed:e.completed, syncsTicket:e.syncsTicket, source:e.source||'personal', userId:e.userId });
     }
   });
+  // Populate dynamic calendar right panel
+  if (window.buildCalTodayPanel) window.buildCalTodayPanel();
+  if (window.buildCalWeekStats) window.buildCalWeekStats();
 
   PLANS.length = 0;
   plans.forEach(p => PLANS.push({ id:p.id, title:p.title, notes:p.notes||'', files:p.files||[], status:p.status||'draft', createdAt:p.createdAt||'', updatedAt:p.updatedAt||'', promotedTicketId:p.promotedTicketId||null, reminderAt:p.reminderAt||null, reminderTriggered:!!p.reminderTriggered }));
@@ -3006,6 +3098,99 @@ if (!html.includes(OLD_INIT)) {
 }
 
 html = html.replace(OLD_INIT, NEW_INIT);
+
+// ── Calendar: fix hardcoded 2024 date to real current date ───────────────────
+html = html.replace(
+  'let calYear = 2024, calMonth = 4;',
+  'let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();'
+);
+// Fix goToday() to navigate to real current month
+html = html.replace(
+  'function goToday() { if (calMonth === 0) { calMonth = 11; calYear--; } else calMonth--; buildCalendar(); }',
+  'function goToday() { calMonth = new Date().getMonth(); calYear = new Date().getFullYear(); buildCalendar(); }'
+);
+html = html.replace(
+  "function goToday() { calMonth = 4; calYear = 2024; buildCalendar(); }",
+  "function goToday() { calMonth = new Date().getMonth(); calYear = new Date().getFullYear(); buildCalendar(); }"
+);
+// Fix hardcoded isToday check (day === 21, month === 4, year === 2024)
+html = html.replace(
+  'const isToday = isThis && dayNum === 21 && calMonth === 4 && calYear === 2024;',
+  'const _td = new Date(); const isToday = isThis && dayNum === _td.getDate() && calMonth === _td.getMonth() && calYear === _td.getFullYear();'
+);
+
+// ── Calendar: replace fake static right panel with dynamic one ───────────────
+html = html.replace(
+  `      <div class="right-panel" style="padding:0">
+        <div style="padding:14px;border-bottom:1px solid var(--border)">
+          <div style="font-size:13px;font-weight:500;margin-bottom:10px">Tuesday, May 21, 2024</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;gap:8px;align-items:flex-start"><span style="font-size:10px;color:var(--text3);min-width:52px">09:00 AM</span><div style="width:6px;height:6px;background:#8b5cf6;border-radius:50%;margin-top:4px;flex-shrink:0"></div><div style="flex:1"><div style="font-size:11px;font-weight:500">Client Call</div><div style="font-size:10px;color:var(--text3)">Google Meet</div></div><span class="badge-status s-pr" style="font-size:9px;padding:2px 6px">Meeting</span></div>
+            <div style="display:flex;gap:8px;align-items:flex-start"><span style="font-size:10px;color:var(--text3);min-width:52px">10:30 AM</span><div style="width:6px;height:6px;background:#22c55e;border-radius:50%;margin-top:4px;flex-shrink:0"></div><div style="flex:1"><div style="font-size:11px;font-weight:500">UI Review</div><div style="font-size:10px;color:var(--text3)">TKT-1042</div></div><span class="badge-status s-cl" style="font-size:9px;padding:2px 6px">Task</span></div>
+            <div style="display:flex;gap:8px;align-items:flex-start"><span style="font-size:10px;color:var(--text3);min-width:52px">01:00 PM</span><div style="width:6px;height:6px;background:#ef4444;border-radius:50%;margin-top:4px;flex-shrink:0"></div><div style="flex:1"><div style="font-size:11px;font-weight:500">Deadline: Wireframes</div><div style="font-size:10px;color:var(--text3)">Website Redesign</div></div><span class="badge-status s-ov" style="font-size:9px;padding:2px 6px">Deadline</span></div>
+            <div style="display:flex;gap:8px;align-items:flex-start"><span style="font-size:10px;color:var(--text3);min-width:52px">03:00 PM</span><div style="width:6px;height:6px;background:#8b5cf6;border-radius:50%;margin-top:4px;flex-shrink:0"></div><div style="flex:1"><div style="font-size:11px;font-weight:500">Team Sync</div><div style="font-size:10px;color:var(--text3)">Internal Meeting</div></div><span class="badge-status s-pr" style="font-size:9px;padding:2px 6px">Meeting</span></div>
+          </div>
+        </div>
+        <div style="padding:14px;border-bottom:1px solid var(--border)">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <button class="cal-stat-card" onclick="openCalStatsModal('meetings')" style="text-align:center;padding:10px 6px;background:var(--bg2);border:1px solid transparent;border-radius:8px;cursor:pointer;font-family:inherit;transition:all .15s ease"><div style="font-size:18px;font-weight:600;color:var(--accent)">8</div><div style="font-size:9px;color:var(--text3)">Meetings<br>This Week</div></button>
+            <button class="cal-stat-card" onclick="openCalStatsModal('tasks')" style="text-align:center;padding:10px 6px;background:var(--bg2);border:1px solid transparent;border-radius:8px;cursor:pointer;font-family:inherit;transition:all .15s ease"><div style="font-size:18px;font-weight:600;color:var(--green)">12</div><div style="font-size:9px;color:var(--text3)">Tasks Due<br>This Week</div></button>
+            <button class="cal-stat-card" onclick="openCalStatsModal('deadlines')" style="text-align:center;padding:10px 6px;background:var(--bg2);border:1px solid transparent;border-radius:8px;cursor:pointer;font-family:inherit;transition:all .15s ease"><div style="font-size:18px;font-weight:600;color:var(--red)">3</div><div style="font-size:9px;color:var(--text3)">Deadlines<br>This Week</div></button>
+          </div>
+        </div>
+        <div style="padding:14px">
+          <div style="font-size:12px;font-weight:500;margin-bottom:8px;display:flex;justify-content:space-between"><span>Mini Calendar</span><div style="display:flex;gap:4px"><button onclick="prevMonth()" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--text3)">‹</button><button onclick="nextMonth()" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--text3)">›</button></div></div>
+          <div class="mini-grid" style="margin-bottom:4px">
+            <div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Su</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Mo</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Tu</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">We</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Th</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Fr</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Sa</div>
+          </div>
+          <div class="mini-grid" id="mini-cal"></div>
+          <button class="btn-primary" style="width:100%;justify-content:center;margin-top:12px;padding:9px" onclick="openCreateEventModal()">+ Create Event</button>
+        </div>
+      </div>`,
+  `      <div class="right-panel" style="padding:0;display:flex;flex-direction:column">
+        <!-- Calendar sources toggles -->
+        <div style="padding:14px 16px 10px;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Calendars</div>
+          <div style="display:flex;flex-direction:column;gap:6px" id="cal-sources">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;font-weight:500;color:var(--text)">
+              <input type="checkbox" id="cal-src-personal" checked onchange="refreshCalSources()" style="width:14px;height:14px;accent-color:#4f46e5;cursor:pointer">
+              <span style="width:10px;height:10px;border-radius:50%;background:#4f46e5;flex-shrink:0"></span>
+              My Calendar
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;font-weight:500;color:var(--text)">
+              <input type="checkbox" id="cal-src-syruvia" checked onchange="refreshCalSources()" style="width:14px;height:14px;accent-color:#0ea5e9;cursor:pointer">
+              <span style="width:10px;height:10px;border-radius:50%;background:#0ea5e9;flex-shrink:0"></span>
+              Syruvia Calendar
+            </label>
+          </div>
+        </div>
+        <!-- Today events -->
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px" id="cal-today-label">Today</div>
+          <div id="cal-today-events" style="display:flex;flex-direction:column;gap:6px">
+            <div style="font-size:12px;color:var(--text3);padding:12px 0;text-align:center">No events today</div>
+          </div>
+        </div>
+        <!-- Week stats -->
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">This Week</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <button class="cal-stat-card" onclick="openCalStatsModal('meetings')" style="text-align:center;padding:10px 6px;background:#f8faff;border:1px solid #e0e7ff;border-radius:12px;cursor:pointer;font-family:inherit;transition:all .15s ease"><div id="cal-wk-meetings" style="font-size:18px;font-weight:700;color:#4f46e5">0</div><div style="font-size:9px;color:var(--text3);margin-top:2px">Meetings</div></button>
+            <button class="cal-stat-card" onclick="openCalStatsModal('tasks')" style="text-align:center;padding:10px 6px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;cursor:pointer;font-family:inherit;transition:all .15s ease"><div id="cal-wk-tasks" style="font-size:18px;font-weight:700;color:#16a34a">0</div><div style="font-size:9px;color:var(--text3);margin-top:2px">Tasks</div></button>
+            <button class="cal-stat-card" onclick="openCalStatsModal('deadlines')" style="text-align:center;padding:10px 6px;background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;cursor:pointer;font-family:inherit;transition:all .15s ease"><div id="cal-wk-deadlines" style="font-size:18px;font-weight:700;color:#ea580c">0</div><div style="font-size:9px;color:var(--text3);margin-top:2px">Deadlines</div></button>
+          </div>
+        </div>
+        <!-- Mini calendar -->
+        <div style="padding:14px 16px">
+          <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center"><span>Mini Calendar</span><div style="display:flex;gap:4px"><button onclick="prevMonth()" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--text3);line-height:1;padding:2px 4px">‹</button><button onclick="nextMonth()" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--text3);line-height:1;padding:2px 4px">›</button></div></div>
+          <div class="mini-grid" style="margin-bottom:4px">
+            <div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Su</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Mo</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Tu</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">We</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Th</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Fr</div><div style="font-size:9px;color:var(--text3);padding:2px;text-align:center">Sa</div>
+          </div>
+          <div class="mini-grid" id="mini-cal"></div>
+          <button class="btn-primary" style="width:100%;justify-content:center;margin-top:12px;padding:9px" onclick="openCreateEventModal()">+ Create Event</button>
+        </div>
+      </div>`
+);
 
 fs.mkdirSync(path.dirname(DEST), { recursive: true });
 fs.writeFileSync(DEST, html, 'utf8');

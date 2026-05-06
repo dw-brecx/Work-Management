@@ -104,6 +104,7 @@ function init() {
       completed INTEGER DEFAULT 0,
       syncs_ticket INTEGER DEFAULT 0,
       user_id INTEGER REFERENCES users(id),
+      source TEXT DEFAULT 'personal',
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -213,4 +214,6 @@ function seedDefaultDepartments() {
   });
 }
 
-module.exports = { db, init, get, all, run };
+function safeAlter(sql) { try { db.exec(sql); } catch(e) { if (!String(e.message).includes('duplicate column')) throw e; } }
+
+module.exports = { db, init, get, all, run, safeAlter };

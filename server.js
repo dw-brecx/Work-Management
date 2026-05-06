@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
-const { init: initDb, get, all, run } = require('./db');
+const { init: initDb, get, all, run, safeAlter } = require('./db');
 const { sendInviteEmail } = require('./email');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'public', 'uploads');
@@ -350,30 +350,34 @@ app.delete('/api/worktasks/:id', requireAuth, (req, res) => {
 
 // ── Calendar events ───────────────────────────────────────────────────────────
 app.get('/api/events', requireAuth, (req, res) => {
-  res.json(all('SELECT * FROM cal_events ORDER BY date_key ASC').map(r => ({
+  safeAlter('ALTER TABLE cal_events ADD COLUMN source TEXT DEFAULT "personal"');
+  const rows = all("SELECT * FROM cal_events WHERE user_id=? OR source='syruvia' ORDER BY date_key ASC", req.session.userId);
+  res.json(rows.map(r => ({
     id:r.id, dateKey:r.date_key, type:r.type, label:r.label, title:r.title,
     desc:r.description, allDay:!!r.all_day, startTime:r.start_time, endTime:r.end_time,
     linkedTicketId:r.linked_ticket_id, attendees:JSON.parse(r.attendees_json||'[]'),
-    location:r.location, assignee:r.assignee, completed:!!r.completed, syncsTicket:!!r.syncs_ticket
+    location:r.location, assignee:r.assignee, completed:!!r.completed, syncsTicket:!!r.syncs_ticket,
+    source: r.source || 'personal', userId: r.user_id
   })));
 });
 
 app.post('/api/events', requireAuth, (req, res) => {
-  const { dateKey, type, label, title, desc, allDay, startTime, endTime, linkedTicketId, attendees, location, assignee, completed, syncsTicket } = req.body;
-  const info = run(`INSERT INTO cal_events (date_key,type,label,title,description,all_day,start_time,end_time,linked_ticket_id,attendees_json,location,assignee,completed,syncs_ticket,user_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  safeAlter('ALTER TABLE cal_events ADD COLUMN source TEXT DEFAULT "personal"');
+  const { dateKey, type, label, title, desc, allDay, startTime, endTime, linkedTicketId, attendees, location, assignee, completed, syncsTicket, source } = req.body;
+  const info = run(`INSERT INTO cal_events (date_key,type,label,title,description,all_day,start_time,end_time,linked_ticket_id,attendees_json,location,assignee,completed,syncs_ticket,user_id,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     dateKey, type||'meeting', label||title||'', title||'', desc||'', allDay?1:0,
     startTime||'', endTime||'', linkedTicketId||'', JSON.stringify(attendees||[]),
-    location||'', assignee||'', completed?1:0, syncsTicket?1:0, req.session.userId);
+    location||'', assignee||'', completed?1:0, syncsTicket?1:0, req.session.userId, source||'personal');
   res.status(201).json({ id:Number(info.lastInsertRowid) });
 });
 
 app.put('/api/events/:id', requireAuth, (req, res) => {
-  const { dateKey, type, label, title, desc, allDay, startTime, endTime, linkedTicketId, attendees, location, assignee, completed } = req.body;
-  run(`UPDATE cal_events SET date_key=?,type=?,label=?,title=?,description=?,all_day=?,start_time=?,end_time=?,linked_ticket_id=?,attendees_json=?,location=?,assignee=?,completed=? WHERE id=?`,
+  const { dateKey, type, label, title, desc, allDay, startTime, endTime, linkedTicketId, attendees, location, assignee, completed, source } = req.body;
+  run(`UPDATE cal_events SET date_key=?,type=?,label=?,title=?,description=?,all_day=?,start_time=?,end_time=?,linked_ticket_id=?,attendees_json=?,location=?,assignee=?,completed=?,source=? WHERE id=?`,
     dateKey, type, label||title||'', title||'', desc||'', allDay?1:0,
     startTime||'', endTime||'', linkedTicketId||'', JSON.stringify(attendees||[]),
-    location||'', assignee||'', completed?1:0, req.params.id);
+    location||'', assignee||'', completed?1:0, source||'personal', req.params.id);
   res.json({ ok:true });
 });
 
