@@ -364,6 +364,88 @@ app.post('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Ticket subtasks ──────────────────────────────────────────────────────────
+function buildSubtask(r) {
+  return {
+    id: r.id, ticketId: r.ticket_id, position: r.position,
+    text: r.text || '', description: r.description || '',
+    done: !!r.done, assignee: r.assignee || '',
+    due: r.due || '', priority: r.priority || '',
+    createdAt: r.created_at,
+  };
+}
+
+app.get('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
+  try {
+    const rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
+    res.json(rows.map(buildSubtask));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
+  try {
+    if (!await get('SELECT id FROM tickets WHERE id=?', req.params.id))
+      return res.status(404).json({ error: 'Ticket not found' });
+    const { text, assignee, due, priority, description } = req.body || {};
+    const posRow = await get('SELECT COALESCE(MAX(position),0) AS p FROM ticket_subtasks WHERE ticket_id=?', req.params.id);
+    const nextPos = Number(posRow?.p || 0) + 1;
+    const info = await run(
+      `INSERT INTO ticket_subtasks (ticket_id, position, text, description, done, assignee, due, priority)
+       VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+      req.params.id, nextPos, String(text || '').trim() || 'New subtask',
+      String(description || ''), 0, assignee || '', due || '', priority || ''
+    );
+    const row = await get('SELECT * FROM ticket_subtasks WHERE id=?', Number(info.lastInsertRowid));
+    res.status(201).json(buildSubtask(row));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/subtasks/:sid', requireAuth, async (req, res) => {
+  try {
+    const sid = Number(req.params.sid);
+    if (!await get('SELECT id FROM ticket_subtasks WHERE id=?', sid))
+      return res.status(404).json({ error: 'Subtask not found' });
+    const { text, description, done, assignee, due, priority, position } = req.body || {};
+    const u = []; const v = [];
+    if (text !== undefined)        { u.push('text=?');        v.push(String(text || '').trim()); }
+    if (description !== undefined) { u.push('description=?'); v.push(String(description || '')); }
+    if (done !== undefined)        { u.push('done=?');        v.push(done ? 1 : 0); }
+    if (assignee !== undefined)    { u.push('assignee=?');    v.push(assignee || ''); }
+    if (due !== undefined)         { u.push('due=?');         v.push(due || ''); }
+    if (priority !== undefined)    { u.push('priority=?');    v.push(priority || ''); }
+    if (position !== undefined)    { u.push('position=?');    v.push(Number(position) || 0); }
+    if (u.length) { v.push(sid); await run(`UPDATE ticket_subtasks SET ${u.join(',')} WHERE id=?`, ...v); }
+    const row = await get('SELECT * FROM ticket_subtasks WHERE id=?', sid);
+    res.json(buildSubtask(row));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/subtasks/:sid', requireAuth, async (req, res) => {
+  try {
+    const sid = Number(req.params.sid);
+    // Delete attached files from disk before cascading
+    const atts = await all('SELECT filename FROM attachments WHERE subtask_id=?', sid);
+    for (const a of atts) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {}
+    }
+    await run('DELETE FROM attachments WHERE subtask_id=?', sid);
+    await run('DELETE FROM ticket_subtasks WHERE id=?', sid);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/subtasks/:sid/attachments', requireAuth, async (req, res) => {
+  try {
+    const rows = await all('SELECT * FROM attachments WHERE subtask_id=? ORDER BY created_at ASC', Number(req.params.sid));
+    res.json(rows.map(r => ({
+      id: r.id, filename: r.filename, originalName: r.original_name,
+      mimeType: r.mime_type, size: r.size, uploader: r.uploader,
+      subtaskId: r.subtask_id, createdAt: r.created_at,
+      url: `/uploads/${r.filename}`,
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Flavor launch template + flavor creation ─────────────────────────────────
 // Template: rows in flavor_tasks. Editable from settings.
 app.get('/api/flavor-tasks', requireAuth, async (req, res) => {
@@ -721,10 +803,10 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
   try {
     if (!req.file) return res.status(400).json({ error: 'No file' });
     const u = await getUser(req.session.userId);
-    const { ticketId, commentId } = req.body;
+    const { ticketId, commentId, subtaskId } = req.body;
     const info = await run(
-      'INSERT INTO attachments (ticket_id,comment_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?) RETURNING id',
-      ticketId || null, commentId ? Number(commentId) : null,
+      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?) RETURNING id',
+      ticketId || null, commentId ? Number(commentId) : null, subtaskId ? Number(subtaskId) : null,
       req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
     );
     res.json({
@@ -888,6 +970,7 @@ app.post('/api/reset', requireAdmin, async (req, res) => {
   try {
     await run('DELETE FROM ticket_comments');
     await run('DELETE FROM attachments');
+    await run('DELETE FROM ticket_subtasks');
     await run('DELETE FROM ticket_timelines');
     await run('DELETE FROM notifications');
     await run('DELETE FROM ticket_assignees');

@@ -2061,6 +2061,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 2h6l4 4v14a2 2 0 01-2 2H7a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
       Planning
     </div>
+    <div class="nav-item" data-page="flavors">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M12 2c-1.5 4-4 5-4 8a4 4 0 008 0c0-3-2.5-4-4-8z"/><path d="M5 14a7 7 0 0014 0"/></svg>
+      Flavors
+    </div>
     <div class="nav-item" data-page="calendar">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       Calendar
@@ -2470,14 +2474,22 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
         </div>
 
-        <!-- Activity tabs -->
+        <!-- Activity / Subtasks / Attachments tabs -->
         <div class="card td-card">
           <div class="tabs" style="margin-bottom:10px">
             <button class="tab active" onclick="switchDetailTab(this,'activity')">Activity</button>
+            <button class="tab" onclick="switchDetailTab(this,'subtasks')">Subtasks <span class="tab-count" id="subtasks-tab-count">0</span></button>
             <button class="tab" onclick="switchDetailTab(this,'attachments')">Attachments <span class="tab-count">3</span></button>
           </div>
           <div id="det-panel-activity">
             <div id="activity-feed" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+          <div id="det-panel-subtasks" style="display:none">
+            <div id="checklist-items"></div>
+            <button id="chk-add-btn" onclick="addChecklistRow()"
+                    style="margin-top:8px;background:#f0f5ff;border:1px dashed #c7d7fe;color:#2563eb;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;cursor:pointer;width:100%;text-align:left">
+              + Add subtask
+            </button>
           </div>
           <div id="det-panel-attachments" style="display:none">
             <div style="display:flex;flex-direction:column;gap:6px">
@@ -2490,17 +2502,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
       <!-- Ticket detail right panel -->
       <div class="right-panel td-right">
-        <!-- Checklist -->
-        <div class="td-side-block" id="td-checklist-block">
-          <div class="td-side-head">
-            <span class="td-side-title">Checklist</span>
-            <span class="td-side-progress" id="chk-progress">0 / 0</span>
-          </div>
-          <div id="checklist-items" class="td-side-checklist"></div>
-          <button id="chk-add-btn" class="td-side-add" onclick="addChecklistRow()">+ Add item</button>
-        </div>
-        <div style="border-top:1px solid var(--border);margin:12px 0"></div>
-
         <!-- Comments (always visible) -->
         <div class="td-side-block">
           <div class="td-side-head">
@@ -2745,6 +2746,27 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
 
           <div class="td-comment-list" id="pd-comment-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== FLAVORS ========== -->
+    <div id="page-flavors" class="page">
+      <div class="page-content" style="padding:24px 28px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div>
+            <h1 style="font-size:18px;font-weight:700;margin:0">Flavors</h1>
+            <p style="font-size:12px;color:var(--text3);margin:2px 0 0">All product launches and their tickets. Click a flavor to expand.</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="flavors-search" placeholder="Search flavors…" oninput="renderFlavors()" style="font-size:12px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;width:180px"/>
+            <button class="btn-primary" onclick="openNewFlavorModal()" style="font-size:12px;padding:8px 14px">+ New Flavor</button>
+          </div>
+        </div>
+        <div id="flavors-list" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div id="flavors-empty" style="display:none;text-align:center;padding:48px 16px;color:var(--text3);font-size:13px">
+          <div style="font-size:30px;margin-bottom:8px">🍓</div>
+          No flavors yet. Click <b>+ New Flavor</b> to create one.
         </div>
       </div>
     </div>
@@ -3921,6 +3943,7 @@ function navigate(page) {
   if (page === 'teams') renderTeams();
   if (page === 'calendar') buildCalendar();
   if (page === 'planning') renderPlans();
+  if (page === 'flavors') renderFlavors();
 }
 
 document.querySelectorAll('.nav-item').forEach(el => {
@@ -4633,6 +4656,7 @@ function renderTicketDetail() {
 
   renderDescription();
   renderChecklist();
+  loadSubtasks(getCurrentTicket()?.id); // async; will re-render when fetched
   renderTimeline();
 }
 
@@ -5171,76 +5195,287 @@ function saveDescription() {
 function cancelEditDescription() { renderDescription(); }
 
 // ===== Checklist (rendered + editable) =====
+// ── Subtasks (server-backed, with description + attachments) ────────────────
+// Each subtask: { id, ticketId, position, text, description, done, assignee, due, priority }
+// Cached per-ticket; loaded from /api/tickets/:id/subtasks when a ticket opens.
+const SUBTASKS = {};            // ticketId → array of subtask objects
+const SUBTASK_ATTS = {};        // subtaskId → array of attachment objects
+const SUBTASK_EXPANDED = new Set(); // ids that are currently expanded
+
+function _subtaskTeamOptions(selected) {
+  const names = (typeof TEAM_DATA !== 'undefined' ? TEAM_DATA : []).map(m => m.name).filter(Boolean);
+  const opts = ['<option value="">— unassigned —</option>'];
+  for (const n of names) opts.push(`<option value="${escapeHtml(n)}"${n === (selected||'') ? ' selected' : ''}>${escapeHtml(n)}</option>`);
+  return opts.join('');
+}
+
+function _subtaskPriorityChip(p) {
+  return p === 'Urgent' ? 'p-u' : p === 'High' ? 'p-h' : p === 'Low' ? 'p-l' : p === 'Medium' ? 'p-m' : '';
+}
+
+async function loadSubtasks(ticketId) {
+  if (!ticketId) return;
+  try {
+    SUBTASKS[ticketId] = await apiGet('/api/tickets/' + encodeURIComponent(ticketId) + '/subtasks');
+  } catch { SUBTASKS[ticketId] = []; }
+  renderChecklist();
+}
+
+async function loadSubtaskAttachments(sid) {
+  try { SUBTASK_ATTS[sid] = await apiGet('/api/subtasks/' + sid + '/attachments'); }
+  catch { SUBTASK_ATTS[sid] = []; }
+}
+
 function renderChecklist() {
   const t = getCurrentTicket();
   if (!t) return;
-  const d = getTicketDetails(t.id);
+  const list = SUBTASKS[t.id] || [];
   const el = document.getElementById('checklist-items');
   if (!el) return;
-  el.innerHTML = d.checklist.map((item, i) => `
-    <div class="chk-row ${item.done ? 'done' : ''}">
-      <input type="checkbox" ${item.done ? 'checked' : ''} onchange="toggleChecklistItem(${i})"/>
-      <div class="chk-row-text" contenteditable="true" data-idx="${i}"
-           onblur="updateChecklistItemText(${i}, this.textContent)"
-           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(item.text)}</div>
-      <button class="chk-delete" onclick="deleteChecklistItem(${i})" title="Delete">×</button>
+  el.innerHTML = list.map(s => renderSubtaskRow(s)).join('');
+  const done = list.filter(x => x.done).length;
+  const total = list.length;
+  const prog = document.getElementById('chk-progress');
+  if (prog) prog.textContent = `${done} / ${total}`;
+  const tabCount = document.getElementById('subtasks-tab-count');
+  if (tabCount) tabCount.textContent = total ? `${done}/${total}` : '0';
+}
+
+function renderSubtaskRow(s) {
+  const done = !!s.done;
+  const dueColor = s.due ? (parseTicketDate(s.due) && parseTicketDate(s.due) < APP_TODAY && !done ? 'var(--red)' : 'var(--text2)') : 'var(--text3)';
+  const isOpen = SUBTASK_EXPANDED.has(s.id);
+  return `
+    <div class="subtask-row ${done ? 'done' : ''}" data-sid="${s.id}" style="display:flex;flex-direction:column;gap:4px;padding:8px 6px;border-bottom:1px solid var(--border);background:${isOpen?'var(--bg2)':'transparent'};border-radius:8px;margin-bottom:4px">
+      <div style="display:flex;align-items:flex-start;gap:7px">
+        <input type="checkbox" ${done ? 'checked' : ''} onchange="toggleSubtask(${s.id})" style="margin-top:3px;flex-shrink:0;cursor:pointer"/>
+        <div class="chk-row-text" contenteditable="true"
+             style="flex:1;min-width:0;font-size:12px;line-height:1.4;outline:none;${done ? 'text-decoration:line-through;color:var(--text3)' : ''}"
+             onblur="updateSubtaskText(${s.id}, this.textContent)"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">${escapeHtml(s.text)}</div>
+        <button onclick="toggleSubtaskExpand(${s.id})" title="${isOpen?'Hide details':'Show details'}"
+                style="background:none;border:none;color:var(--text3);cursor:pointer;padding:0 4px;font-size:11px;flex-shrink:0">${isOpen?'▴':'▾'}</button>
+        <button onclick="deleteSubtask(${s.id})" title="Delete subtask"
+                style="background:none;border:none;color:var(--text3);cursor:pointer;padding:0 2px;font-size:14px;flex-shrink:0">×</button>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;padding-left:22px;align-items:center">
+        <select onchange="setSubtaskField(${s.id},'assignee',this.value)" title="Assignee"
+                style="font-size:10.5px;padding:2px 4px;border:1px solid var(--border);border-radius:5px;background:#fff;max-width:140px">${_subtaskTeamOptions(s.assignee)}</select>
+        <input type="date" value="${escapeHtml(s.due || '')}" onchange="setSubtaskField(${s.id},'due',this.value)" title="Due date (optional)"
+               style="font-size:10.5px;padding:2px 4px;border:1px solid var(--border);border-radius:5px;background:#fff;color:${dueColor}"/>
+        <select onchange="setSubtaskField(${s.id},'priority',this.value)" title="Priority (optional)"
+                style="font-size:10.5px;padding:2px 4px;border:1px solid var(--border);border-radius:5px;background:#fff">
+          <option value=""${!s.priority ? ' selected' : ''}>— priority —</option>
+          <option value="Low"${s.priority === 'Low' ? ' selected' : ''}>Low</option>
+          <option value="Medium"${s.priority === 'Medium' ? ' selected' : ''}>Medium</option>
+          <option value="High"${s.priority === 'High' ? ' selected' : ''}>High</option>
+          <option value="Urgent"${s.priority === 'Urgent' ? ' selected' : ''}>Urgent</option>
+        </select>
+        ${s.priority ? `<span class="${_subtaskPriorityChip(s.priority)}" style="font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:600">${escapeHtml(s.priority)}</span>` : ''}
+      </div>
+      ${isOpen ? renderSubtaskExpanded(s) : ''}
     </div>
-  `).join('');
-  const done = d.checklist.filter(x => x.done).length;
-  const total = d.checklist.length;
-  document.getElementById('chk-progress').textContent = `${done} / ${total}`;
+  `;
 }
 
-function toggleChecklistItem(i) {
-  const t = getCurrentTicket();
-  if (!t) return;
-  const d = getTicketDetails(t.id);
-  d.checklist[i].done = !d.checklist[i].done;
-  renderChecklist();
+function renderSubtaskExpanded(s) {
+  const atts = SUBTASK_ATTS[s.id] || [];
+  const attsHtml = atts.length === 0
+    ? `<div style="font-size:11px;color:var(--text3);padding:6px 0">No attachments yet.</div>`
+    : atts.map(a => {
+      const isImg = a.mimeType?.startsWith('image/');
+      const isAud = a.mimeType?.startsWith('audio/');
+      const inner = isImg
+        ? `<img src="${escapeHtml(a.url)}" style="width:60px;height:60px;object-fit:cover;display:block;border-radius:6px"/>`
+        : isAud
+          ? `<audio controls src="${escapeHtml(a.url)}" style="height:28px;display:block;margin:6px"></audio><div style="font-size:10px;color:var(--text3);padding:0 6px 4px">🎤 Voice note</div>`
+          : `<div style="padding:8px 12px;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text2)">📄 <a href="${escapeHtml(a.url)}" download="${escapeHtml(a.originalName || a.filename)}" style="color:var(--accent);text-decoration:none">${escapeHtml(a.originalName || a.filename)}</a></div>`;
+      return `<div style="position:relative;border:1px solid var(--border);background:#fff;border-radius:8px;overflow:hidden">
+                ${inner}
+                <button onclick="deleteSubtaskAtt(${a.id}, ${s.id})" title="Delete"
+                        style="position:absolute;top:3px;right:3px;width:18px;height:18px;background:rgba(0,0,0,.5);color:#fff;border-radius:50%;border:none;font-size:10px;cursor:pointer">×</button>
+              </div>`;
+    }).join('');
+
+  return `
+    <div style="margin-top:8px;padding:10px 6px 6px;border-top:1px dashed var(--border)">
+      <div style="font-size:10.5px;color:var(--text3);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Description</div>
+      <textarea id="sub-desc-${s.id}" placeholder="Add details, links, context…"
+                onblur="setSubtaskField(${s.id},'description',this.value)"
+                style="width:100%;min-height:60px;font-size:12px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:#fff;resize:vertical;font-family:inherit">${escapeHtml(s.description || '')}</textarea>
+      <div style="font-size:10.5px;color:var(--text3);font-weight:600;margin:10px 0 4px;text-transform:uppercase;letter-spacing:.04em">Attachments</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+        <label style="display:inline-flex;align-items:center;gap:4px;background:#f0f5ff;border:1px solid #c7d7fe;color:#2563eb;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer">
+          📎 Add file
+          <input type="file" multiple accept="image/*,audio/*,.pdf,.doc,.docx" style="display:none" onchange="onSubtaskFileInput(${s.id}, this)"/>
+        </label>
+        <button onclick="toggleSubtaskRecord(${s.id}, this)" id="sub-rec-${s.id}"
+                style="background:#f0f5ff;border:1px solid #c7d7fe;color:#2563eb;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer">🎤 Record voice</button>
+        <span id="sub-rec-timer-${s.id}" style="font-size:10.5px;color:var(--red);font-weight:600"></span>
+        <span style="font-size:10.5px;color:var(--text3);align-self:center">or paste with Ctrl+V</span>
+      </div>
+      <div id="sub-atts-${s.id}" style="display:flex;flex-wrap:wrap;gap:6px">${attsHtml}</div>
+    </div>
+  `;
 }
 
-function updateChecklistItemText(i, text) {
-  const t = getCurrentTicket();
-  if (!t) return;
-  const d = getTicketDetails(t.id);
-  const trimmed = String(text).trim();
-  if (trimmed && trimmed !== d.checklist[i].text) {
-    d.checklist[i].text = trimmed;
-    // No need to re-render — contenteditable already shows the change
-  } else if (!trimmed) {
-    // Empty → delete
-    d.checklist.splice(i, 1);
+async function toggleSubtaskExpand(sid) {
+  if (SUBTASK_EXPANDED.has(sid)) {
+    SUBTASK_EXPANDED.delete(sid);
     renderChecklist();
+  } else {
+    SUBTASK_EXPANDED.add(sid);
+    await loadSubtaskAttachments(sid);
+    renderChecklist();
+    // Wire paste-to-attach for the description textarea / row
+    const row = document.querySelector(`.subtask-row[data-sid="${sid}"]`);
+    if (row && !row._pastePatched) {
+      row._pastePatched = true;
+      row.addEventListener('paste', (e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        let handled = false;
+        for (const it of items) {
+          if (it.kind !== 'file' || !it.type.startsWith('image/')) continue;
+          const blob = it.getAsFile();
+          if (!blob) continue;
+          const ext = (blob.type.split('/')[1] || 'png').split(';')[0];
+          const named = new File([blob], `screenshot-${Date.now()}.${ext}`, { type: blob.type });
+          handled = true;
+          uploadSubtaskFile(sid, named);
+        }
+        if (handled) e.preventDefault();
+      });
+    }
   }
 }
 
-function deleteChecklistItem(i) {
+function _findSubtask(sid) {
+  for (const k of Object.keys(SUBTASKS)) {
+    const s = SUBTASKS[k].find(x => x.id === sid);
+    if (s) return { ticketId: k, sub: s };
+  }
+  return null;
+}
+
+async function toggleSubtask(sid) {
+  const f = _findSubtask(sid); if (!f) return;
+  f.sub.done = !f.sub.done;
+  renderChecklist();
+  try { await apiPut('/api/subtasks/' + sid, { done: f.sub.done }); } catch {}
+}
+
+async function updateSubtaskText(sid, text) {
+  const f = _findSubtask(sid); if (!f) return;
+  const trimmed = String(text || '').trim();
+  if (!trimmed) { return deleteSubtask(sid); }
+  if (trimmed === f.sub.text) return;
+  f.sub.text = trimmed;
+  try { await apiPut('/api/subtasks/' + sid, { text: trimmed }); } catch {}
+}
+
+async function setSubtaskField(sid, field, value) {
+  const f = _findSubtask(sid); if (!f) return;
+  f.sub[field] = value;
+  if (field === 'priority' || field === 'due') renderChecklist();
+  try { await apiPut('/api/subtasks/' + sid, { [field]: value }); } catch {}
+}
+
+async function deleteSubtask(sid) {
+  const f = _findSubtask(sid); if (!f) return;
+  SUBTASKS[f.ticketId] = SUBTASKS[f.ticketId].filter(x => x.id !== sid);
+  SUBTASK_EXPANDED.delete(sid);
+  delete SUBTASK_ATTS[sid];
+  renderChecklist();
+  try { await apiDel('/api/subtasks/' + sid); } catch {}
+}
+
+async function addChecklistRow() {
   const t = getCurrentTicket();
   if (!t) return;
-  const d = getTicketDetails(t.id);
-  d.checklist.splice(i, 1);
+  try {
+    const created = await apiPost('/api/tickets/' + encodeURIComponent(t.id) + '/subtasks', {
+      text: 'New subtask',
+      assignee: t.assignee || '',
+    });
+    if (created && created.error) { alert(created.error); return; }
+    if (!SUBTASKS[t.id]) SUBTASKS[t.id] = [];
+    SUBTASKS[t.id].push(created);
+    renderChecklist();
+    setTimeout(() => {
+      const items = document.querySelectorAll('#checklist-items .chk-row-text');
+      const last = items[items.length - 1];
+      if (last) {
+        last.focus();
+        const range = document.createRange();
+        range.selectNodeContents(last);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }, 30);
+  } catch(e) { alert('Could not add subtask.'); }
+}
+
+// ── Subtask attachments ────────────────────────────────────────────────────
+async function uploadSubtaskFile(sid, file) {
+  const fd = new FormData();
+  fd.append('file', file, file.name || 'attachment');
+  fd.append('subtaskId', String(sid));
+  try {
+    const r = await fetch('/api/upload', { method:'POST', body: fd });
+    if (!r.ok) throw new Error('upload-failed');
+    await loadSubtaskAttachments(sid);
+    renderChecklist();
+  } catch { alert('Could not upload — check connection.'); }
+}
+
+function onSubtaskFileInput(sid, input) {
+  const files = Array.from(input.files || []);
+  input.value = '';
+  for (const f of files) uploadSubtaskFile(sid, f);
+}
+
+async function deleteSubtaskAtt(attId, sid) {
+  try { await apiDel('/api/attachments/' + attId); } catch {}
+  await loadSubtaskAttachments(sid);
   renderChecklist();
 }
 
-function addChecklistRow() {
-  const t = getCurrentTicket();
-  if (!t) return;
-  const d = getTicketDetails(t.id);
-  d.checklist.push({text:'New item', done:false});
-  renderChecklist();
-  // Auto-focus the new item for editing
-  setTimeout(() => {
-    const items = document.querySelectorAll('#checklist-items .chk-row-text');
-    const last = items[items.length - 1];
-    if (last) {
-      last.focus();
-      const range = document.createRange();
-      range.selectNodeContents(last);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }, 30);
+// Voice recording per-subtask
+const _subRec = {}; // sid -> { recorder, stream, chunks, intervalId, seconds }
+function toggleSubtaskRecord(sid, btn) {
+  const state = _subRec[sid];
+  if (state && state.recorder && state.recorder.state === 'recording') {
+    state.recorder.stop();
+    return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    const chunks = [];
+    const recorder = new MediaRecorder(stream);
+    const timerEl = document.getElementById('sub-rec-timer-' + sid);
+    let seconds = 0;
+    const intervalId = setInterval(() => {
+      seconds++;
+      if (timerEl) timerEl.textContent = `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
+    }, 1000);
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(intervalId);
+      if (timerEl) timerEl.textContent = '';
+      btn.textContent = '🎤 Record voice';
+      btn.style.background = '#f0f5ff';
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const file = new File([blob], `voice-note-${Date.now()}.webm`, { type: 'audio/webm' });
+      await uploadSubtaskFile(sid, file);
+      delete _subRec[sid];
+    };
+    recorder.start();
+    _subRec[sid] = { recorder, stream, chunks, intervalId, seconds };
+    btn.textContent = '⏹ Stop';
+    btn.style.background = '#fee2e2';
+  }).catch(() => alert('Microphone access denied.'));
 }
 
 // Mock "today" — keeps demo data dates meaningful
@@ -5823,7 +6058,7 @@ function confirmCloseTicket() {
 function switchDetailTab(el, tab) {
   document.querySelectorAll('#page-ticket-detail .tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
-  ['activity','attachments'].forEach(p => {
+  ['activity','subtasks','attachments'].forEach(p => {
     const panel = document.getElementById('det-panel-' + p);
     if (panel) panel.style.display = p === tab ? 'block' : 'none';
   });
@@ -11546,6 +11781,199 @@ initApp();
     };
   }
 
+  // ── Flavors page: list of all launches (derived from "Launch:" tag on tickets) ──
+  const _flavorsExpanded = new Set(); // remember which cards are open across re-renders
+
+  function statusDot(status) {
+    const colors = {
+      'Open': '#3b82f6', 'In Progress': '#f59e0b', 'Pending Review': '#a855f7',
+      'In Review': '#a855f7', 'On Hold': '#6b7280', 'Closed': '#10b981',
+      'Overdue': '#ef4444', 'Archived': '#9ca3af',
+    };
+    return colors[status] || '#6b7280';
+  }
+
+  function priorityClass(p) {
+    return p === 'Urgent' ? 'p-u' : p === 'High' ? 'p-h' : p === 'Low' ? 'p-l' : 'p-m';
+  }
+
+  function flavorsFromTickets() {
+    const map = new Map(); // tag -> { name, tag, tickets: [] }
+    const all = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []);
+    for (const t of all) {
+      const tags = Array.isArray(t.tags) ? t.tags : [];
+      for (const tag of tags) {
+        const m = /^Launch:\s*(.+)$/.exec(String(tag));
+        if (!m) continue;
+        const name = m[1].trim();
+        const key = `Launch: ${name}`;
+        if (!map.has(key)) map.set(key, { name, tag: key, tickets: [] });
+        map.get(key).tickets.push(t);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function renderFlavors() {
+    const listEl = document.getElementById('flavors-list');
+    const emptyEl = document.getElementById('flavors-empty');
+    if (!listEl) return;
+
+    const search = (document.getElementById('flavors-search')?.value || '').trim().toLowerCase();
+    let flavors = flavorsFromTickets();
+    if (search) flavors = flavors.filter(f => f.name.toLowerCase().includes(search));
+
+    if (!flavors.length) {
+      listEl.innerHTML = '';
+      if (emptyEl) emptyEl.style.display = 'block';
+      return;
+    }
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    listEl.innerHTML = flavors.map(f => flavorCardHtml(f)).join('');
+  }
+
+  function flavorCardHtml(f) {
+    const tickets = f.tickets;
+    const total = tickets.length;
+    const open    = tickets.filter(t => t.status === 'Open').length;
+    const wip     = tickets.filter(t => t.status === 'In Progress').length;
+    const review  = tickets.filter(t => t.status === 'Pending Review' || t.status === 'In Review').length;
+    const closed  = tickets.filter(t => t.status === 'Closed').length;
+    const overdue = tickets.filter(t => t.overdue && t.status !== 'Closed').length;
+    const completion = total ? Math.round((closed / total) * 100) : 0;
+    const isOpen = _flavorsExpanded.has(f.tag);
+
+    const statusChip = (label, count, color) => count > 0
+      ? `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);background:${color}22;padding:3px 9px;border-radius:999px"><span style="width:6px;height:6px;border-radius:50%;background:${color}"></span>${label} ${count}</span>`
+      : '';
+
+    const ticketRows = tickets.map(t => `
+      <tr data-tid="${escapeHtml(t.id)}" style="border-bottom:1px solid var(--border);transition:background .12s"
+          onmouseenter="this.style.background='#f5f3ff';this.querySelector('.ft-edit-btn').style.opacity=1"
+          onmouseleave="this.style.background='';this.querySelector('.ft-edit-btn').style.opacity=0">
+        <td onclick="openFlavorTicket('${escapeHtml(t.id)}')" style="padding:9px 10px;font-size:12px;font-weight:600;color:var(--accent);white-space:nowrap;cursor:pointer">${escapeHtml(t.id)}</td>
+        <td style="padding:9px 10px;font-size:12px;color:var(--text1)">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="ft-title-text" onclick="openFlavorTicket('${escapeHtml(t.id)}')" style="cursor:pointer;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.title)}</span>
+            <button class="ft-edit-btn" onclick="startEditFlavorTicketTitle(this, '${escapeHtml(t.id)}')" title="Edit title"
+                    style="opacity:0;transition:opacity .15s;background:none;border:none;cursor:pointer;color:var(--text3);padding:0;font-size:13px;flex-shrink:0">✎</button>
+          </div>
+        </td>
+        <td onclick="openFlavorTicket('${escapeHtml(t.id)}')" style="padding:9px 10px;white-space:nowrap;cursor:pointer"><span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text2)"><span style="width:7px;height:7px;border-radius:50%;background:${statusDot(t.status)}"></span>${escapeHtml(t.status)}</span></td>
+        <td onclick="openFlavorTicket('${escapeHtml(t.id)}')" style="padding:9px 10px;white-space:nowrap;cursor:pointer"><span class="${priorityClass(t.priority)}" style="font-size:10.5px;padding:2px 7px;border-radius:5px">${escapeHtml(t.priority || '')}</span></td>
+        <td onclick="openFlavorTicket('${escapeHtml(t.id)}')" style="padding:9px 10px;font-size:11.5px;color:var(--text2);white-space:nowrap;cursor:pointer">${escapeHtml(t.assignee || '—')}</td>
+        <td onclick="openFlavorTicket('${escapeHtml(t.id)}')" style="padding:9px 10px;font-size:11.5px;color:${t.overdue && t.status !== 'Closed' ? 'var(--red)' : 'var(--text2)'};white-space:nowrap;cursor:pointer">${escapeHtml(t.due || '—')}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <div class="card" style="padding:0;overflow:hidden">
+        <div onclick="toggleFlavorCard('${escapeHtml(f.tag)}')" style="cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:14px">
+          <span style="font-size:13px;color:var(--text3);transition:transform .15s;transform:rotate(${isOpen ? 90 : 0}deg)">▶</span>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+              <span style="font-weight:700;font-size:14px">🍓 ${escapeHtml(f.name)}</span>
+              <span style="font-size:11px;color:var(--text3)">${total} ticket${total === 1 ? '' : 's'}</span>
+              ${overdue > 0 ? `<span style="font-size:10.5px;color:var(--red);background:#fee2e2;padding:2px 7px;border-radius:5px;font-weight:600">${overdue} overdue</span>` : ''}
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              ${statusChip('Open', open, '#3b82f6')}
+              ${statusChip('In Progress', wip, '#f59e0b')}
+              ${statusChip('Review', review, '#a855f7')}
+              ${statusChip('Closed', closed, '#10b981')}
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:130px">
+            <div style="font-size:10.5px;color:var(--text3)">${completion}% complete</div>
+            <div style="width:120px;height:5px;background:var(--bg2);border-radius:99px;overflow:hidden">
+              <div style="width:${completion}%;height:100%;background:linear-gradient(90deg,#3b82f6,#10b981)"></div>
+            </div>
+          </div>
+        </div>
+        ${isOpen ? `
+          <div style="border-top:1px solid var(--border)">
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="background:var(--bg2);font-size:10.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">
+                  <th style="text-align:left;padding:8px 10px;font-weight:600">ID</th>
+                  <th style="text-align:left;padding:8px 10px;font-weight:600">Title</th>
+                  <th style="text-align:left;padding:8px 10px;font-weight:600">Status</th>
+                  <th style="text-align:left;padding:8px 10px;font-weight:600">Priority</th>
+                  <th style="text-align:left;padding:8px 10px;font-weight:600">Assignee</th>
+                  <th style="text-align:left;padding:8px 10px;font-weight:600">Due</th>
+                </tr>
+              </thead>
+              <tbody>${ticketRows}</tbody>
+            </table>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  function toggleFlavorCard(tag) {
+    if (_flavorsExpanded.has(tag)) _flavorsExpanded.delete(tag);
+    else _flavorsExpanded.add(tag);
+    renderFlavors();
+  }
+
+  function openFlavorTicket(id) {
+    if (typeof openTicketDetail === 'function') openTicketDetail(id);
+  }
+
+  // Inline edit ticket title from a flavor row
+  function startEditFlavorTicketTitle(btn, tid) {
+    const tr = btn.closest('tr');
+    if (!tr) return;
+    const titleSpan = tr.querySelector('.ft-title-text');
+    if (!titleSpan) return;
+    const current = titleSpan.textContent;
+    const cell = titleSpan.parentElement;
+    cell.innerHTML = `
+      <input type="text" class="ft-title-edit" value="${escapeHtml(current)}" style="flex:1;font-size:12px;padding:5px 8px;border:1px solid var(--accent);border-radius:6px"/>
+      <button onclick="saveEditFlavorTicketTitle(this, '${escapeHtml(tid)}')" title="Save" style="background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;padding:4px 8px;font-size:11px;flex-shrink:0">Save</button>
+      <button onclick="cancelEditFlavorTicketTitle()" title="Cancel" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:4px 8px;font-size:11px;color:var(--text2);flex-shrink:0">Cancel</button>
+    `;
+    cell.style.display = 'flex'; cell.style.gap = '6px'; cell.style.alignItems = 'center';
+    const input = cell.querySelector('.ft-title-edit');
+    input.focus(); input.select();
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveEditFlavorTicketTitle(input.parentElement.querySelector('button'), tid); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancelEditFlavorTicketTitle(); }
+    });
+    // Stop the click events on save/cancel from bubbling to the row
+    cell.addEventListener('click', e => e.stopPropagation());
+  }
+
+  async function saveEditFlavorTicketTitle(btn, tid) {
+    const cell = btn.closest('td');
+    const input = cell?.querySelector('.ft-title-edit');
+    if (!input) return;
+    const newTitle = input.value.trim();
+    if (!newTitle) { alert('Title cannot be empty.'); input.focus(); return; }
+    btn.disabled = true; btn.textContent = '…';
+    try {
+      const r = await apiPut('/api/tickets/' + tid, { title: newTitle });
+      if (r && r.error) { alert(r.error); btn.disabled = false; btn.textContent = 'Save'; return; }
+      // Reflect in local TICKETS_DATA so the next render shows the update
+      const t = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []).find(x => x.id === tid);
+      if (t) t.title = newTitle;
+      renderFlavors();
+    } catch(e) {
+      alert('Could not save — check connection.');
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  function cancelEditFlavorTicketTitle() {
+    renderFlavors(); // simplest: just re-render the card from current state
+  }
+
+  // After creating new flavor tickets, refresh the Flavors page if it's the active one
+  const _origSubmitNewFlavor = submitNewFlavor;
+  // (no-op: submitNewFlavor already refreshes TICKETS_DATA + renderTickets; we hook navigate too)
+
   // Export inline-onclick handlers
   window.openNewFlavorModal = openNewFlavorModal;
   window.closeNewFlavorModal = closeNewFlavorModal;
@@ -11553,6 +11981,12 @@ initApp();
   window.addFlavorTaskRow = addFlavorTaskRow;
   window.removeFlavorTaskRow = removeFlavorTaskRow;
   window.saveFlavorTasks = saveFlavorTasks;
+  window.renderFlavors = renderFlavors;
+  window.toggleFlavorCard = toggleFlavorCard;
+  window.openFlavorTicket = openFlavorTicket;
+  window.startEditFlavorTicketTitle = startEditFlavorTicketTitle;
+  window.saveEditFlavorTicketTitle = saveEditFlavorTicketTitle;
+  window.cancelEditFlavorTicketTitle = cancelEditFlavorTicketTitle;
 })();
 </script>
 </body>

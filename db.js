@@ -222,6 +222,18 @@ async function init() {
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS ticket_subtasks (
+      id SERIAL PRIMARY KEY,
+      ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+      position INTEGER DEFAULT 0,
+      text TEXT NOT NULL DEFAULT '',
+      description TEXT DEFAULT '',
+      done INTEGER DEFAULT 0,
+      assignee TEXT DEFAULT '',
+      due TEXT DEFAULT '',
+      priority TEXT DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
     `CREATE TABLE IF NOT EXISTS flavor_tasks (
       id SERIAL PRIMARY KEY,
       position INTEGER DEFAULT 0,
@@ -255,6 +267,9 @@ async function init() {
   for (const sql of tables) {
     await pool.query(sql);
   }
+
+  // Add subtask linkage to attachments (existing installs)
+  await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
 
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');
