@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Syruvia</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -2099,6 +2100,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     </div>
     <div class="topbar-right">
       <button class="btn-soft" onclick="openPlanModal()" style="font-size:12px;padding:8px 12px">+ New Plan</button>
+      <button class="btn-soft" onclick="openNewFlavorModal()" style="font-size:12px;padding:8px 12px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc">+ New Flavor</button>
       <button class="btn-primary" onclick="openModal('create-ticket')">+ Create Ticket</button>
       <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel(event)" aria-label="Open notifications">
         <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
@@ -2972,6 +2974,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div class="settings-tab" data-stab="permissions" onclick="switchSettingsTab('permissions')">
               <span class="stab-icon">🛡️</span> Permissions
             </div>
+            <div class="settings-tab" data-stab="flavor-tasks" onclick="switchSettingsTab('flavor-tasks')">
+              <span class="stab-icon">🍓</span> Flavor Tasks
+            </div>
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
               <span class="stab-icon">🔧</span> Admin
             </div>
@@ -3137,6 +3142,20 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           <div id="pending-invites-block" style="margin-top:18px;display:none">
             <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Pending invites <span id="pending-count" style="background:var(--bg2);color:var(--text2);padding:1px 6px;border-radius:8px;font-size:10px;margin-left:4px"></span></div>
             <div id="pending-invites-list"></div>
+          </div>
+        </div>
+
+        <!-- Flavor Tasks panel -->
+        <div class="card settings-panel" id="settings-panel-flavor-tasks" style="display:none">
+          <h2 style="font-size:14px;font-weight:700;margin-bottom:2px">Flavor Launch Tasks</h2>
+          <p style="font-size:12px;color:var(--text3);margin:0 0 14px">When you create a new flavor, one ticket is created per row below. Use <code style="background:var(--bg2);padding:1px 5px;border-radius:4px">{flavor}</code> in the title to insert the flavor name.</p>
+          <div id="flavor-tasks-list" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div style="display:flex;gap:8px;margin-top:14px;justify-content:space-between;align-items:center">
+            <button class="btn-sec" style="font-size:12px;padding:8px 14px" onclick="addFlavorTaskRow()">+ Add task</button>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span id="flavor-tasks-status" style="font-size:11px;color:var(--text3)"></span>
+              <button class="btn-primary" style="font-size:12px;padding:8px 14px" onclick="saveFlavorTasks()">Save</button>
+            </div>
           </div>
         </div>
 
@@ -3512,6 +3531,34 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('plan')">Cancel</button>
         <button class="btn-primary" style="font-size:12px;padding:9px 16px" onclick="savePlan()">Save Plan</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- NEW FLAVOR MODAL -->
+<div id="modal-new-flavor" class="modal-overlay">
+  <div class="modal" style="width:480px">
+    <div class="modal-header">
+      <span class="modal-title">+ New Flavor Launch</span>
+      <button class="modal-close" onclick="closeNewFlavorModal()">×</button>
+    </div>
+    <p style="font-size:12px;color:var(--text3);line-height:1.55;margin-bottom:14px">
+      Adds a list of tickets for everyone involved in the launch. Edit the task list in
+      <a onclick="navigate('settings');setTimeout(()=>switchSettingsTab('flavor-tasks'),50)" style="color:var(--accent);cursor:pointer;text-decoration:underline">Settings → Flavor Tasks</a>.
+    </p>
+    <div class="form-row">
+      <label>Flavor name *</label>
+      <input type="text" id="nf-name" placeholder="e.g. Mango Mint" autocomplete="off"/>
+    </div>
+    <div class="form-row">
+      <label>Launch date *</label>
+      <input type="date" id="nf-launch"/>
+      <span style="font-size:11px;color:var(--text3)">Each task's due date is computed as launch + the offset configured in Settings.</span>
+    </div>
+    <div id="nf-task-preview" style="margin-top:6px;font-size:12px;color:var(--text2);max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg2);display:none"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeNewFlavorModal()">Cancel</button>
+      <button class="btn-primary" style="font-size:12px;padding:9px 16px" id="nf-create-btn" onclick="submitNewFlavor()">Create launch tickets</button>
     </div>
   </div>
 </div>
@@ -4458,7 +4505,7 @@ function openTicketDetail(id) {
   // Ensure a timeline exists for this ticket
   if (!TICKET_TIMELINES[t.id]) {
     TICKET_TIMELINES[t.id] = [
-      {dot:'var(--green)', text:`Ticket created by ${t.req}`, sub:'Just now'},
+      {dot:'var(--green)', text:`Ticket created by ${t.req}`, sub: formatNowUS()},
     ];
   }
   closeAllActionPanels();
@@ -5197,7 +5244,7 @@ function addChecklistRow() {
 }
 
 // Mock "today" — keeps demo data dates meaningful
-const APP_TODAY = new Date(2024, 4, 21); // May 21, 2024 (month is 0-indexed)
+const APP_TODAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; })(); // today, midnight-aligned for whole-day comparisons
 
 function parseTicketDate(s) {
   if (!s) return null;
@@ -5208,6 +5255,21 @@ function parseTicketDate(s) {
 
 function formatDateLong(d) {
   return d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+}
+
+// US-format "now" for activity/comment timestamps: "May 5, 2:33 PM" (year shown only for prior years).
+function formatNowUS(d) {
+  const dt = d instanceof Date ? d : new Date();
+  const month = dt.toLocaleString('en-US', { month: 'short' });
+  const day = dt.getDate();
+  const h = dt.getHours();
+  const hour12 = (h % 12) || 12;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const minute = String(dt.getMinutes()).padStart(2, '0');
+  const sameYear = dt.getFullYear() === new Date().getFullYear();
+  return sameYear
+    ? `${month} ${day}, ${hour12}:${minute} ${ampm}`
+    : `${month} ${day}, ${dt.getFullYear()}, ${hour12}:${minute} ${ampm}`;
 }
 
 function computeSLA(t) {
@@ -5269,7 +5331,7 @@ function renderTimeline() {
 function logActivity(text, dot='var(--accent)') {
   if (!currentTicketId) return;
   if (!TICKET_TIMELINES[currentTicketId]) TICKET_TIMELINES[currentTicketId] = [];
-  TICKET_TIMELINES[currentTicketId].unshift({dot, text, sub:'Just now'});
+  TICKET_TIMELINES[currentTicketId].unshift({dot, text, sub: formatNowUS()});
   renderTimeline();
 }
 
@@ -5624,14 +5686,14 @@ function registerBridgeListeners() {
       TICKET_TIMELINES[t.id].unshift({
         dot: 'var(--yellow)',
         text: `Status auto-changed to In Progress — ${worker || 'a worker'} started the task in WorkTrack`,
-        sub: 'Just now',
+        sub: formatNowUS(),
       });
     } else {
       if (!TICKET_TIMELINES[t.id]) TICKET_TIMELINES[t.id] = [];
       TICKET_TIMELINES[t.id].unshift({
         dot: '#0ea5e9',
         text: `${worker || 'A worker'} started the linked WorkTrack task`,
-        sub: 'Just now',
+        sub: formatNowUS(),
       });
     }
     // Refresh whatever's visible
@@ -5659,7 +5721,7 @@ function registerBridgeListeners() {
     TICKET_TIMELINES[t.id].unshift({
       dot: 'var(--accent)',
       text: `${worker || 'Worker'} stopped tracking — logged ${hoursLogged || '—'} in WorkTrack`,
-      sub: 'Just now',
+      sub: formatNowUS(),
     });
     if (currentTicketId === t.id) renderTicketDetail();
   });
@@ -5674,7 +5736,7 @@ function registerBridgeListeners() {
     TICKET_TIMELINES[t.id].unshift({
       dot: 'var(--green)',
       text: `${worker || 'Worker'} marked the WorkTrack task done — ready for review`,
-      sub: 'Just now',
+      sub: formatNowUS(),
     });
     // Move ticket to Pending Review (manager attention)
     if (t.status === 'In Progress') {
@@ -5834,7 +5896,7 @@ function addComment() {
     const re = new RegExp(`@${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
     if (re.test(text)) mentioned.push(n);
   });
-  localComments.unshift({author:'John Doe',init:'JD',bg:'#dcfce7',col:'#166534',time:'Just now',text});
+  localComments.unshift({author:'John Doe',init:'JD',bg:'#dcfce7',col:'#166534',time: formatNowUS(),text});
   input.value = '';
   closeMentionDropdown();
   renderComments();
@@ -6653,7 +6715,7 @@ function confirmAssignTicket() {
     logActivity(`Reassigned from ${old} to ${newAssignee}`, 'var(--accent)');
   } else {
     if (!TICKET_TIMELINES[t.id]) TICKET_TIMELINES[t.id] = [];
-    TICKET_TIMELINES[t.id].unshift({dot:'var(--accent)', text:`Reassigned from ${old} to ${newAssignee}`, sub:'Just now'});
+    TICKET_TIMELINES[t.id].unshift({dot:'var(--accent)', text:`Reassigned from ${old} to ${newAssignee}`, sub: formatNowUS()});
   }
   closeModal('assign-ticket');
   if (currentPage === 'tickets') renderTickets();
@@ -6793,7 +6855,16 @@ function saveTicket() {
     tagInput.value = '';
   }
 
-  nextTktId--;
+  // Compute next ID as max(existing) + 1 so we never collide with seeded/older tickets.
+  // TICKETS_DATA is hydrated from /api/tickets on init, so this stays in sync with the DB.
+  let _maxTkt = 0;
+  for (const t of TICKETS_DATA) {
+    const m = /^TKT-(\d+)$/.exec(t.id || '');
+    if (m) { const n = parseInt(m[1], 10); if (n > _maxTkt) _maxTkt = n; }
+  }
+  const newId = 'TKT-' + (_maxTkt + 1);
+  nextTktId = _maxTkt + 1; // keep legacy counter in sync for any stale references
+
   const checklist = Array.from(document.querySelectorAll('.create-checklist-input'))
     .map(input => input.value.trim())
     .filter(Boolean);
@@ -6802,7 +6873,7 @@ function saveTicket() {
   const dueFormatted = dueDate ? formatDateLong(dueDate) : dueRaw;
 
   TICKETS_DATA.unshift({
-    id: 'TKT-' + nextTktId,
+    id: newId,
     title,
     req: requester,
     assignee: pendingCreateAssignees[0],
@@ -6822,33 +6893,31 @@ function saveTicket() {
   closeModal('create-ticket');
   resetCreateTicketForm();
   // Prepend a dashboard activity entry so the feed reflects the new ticket
-  const newId = 'TKT-' + nextTktId;
   DASH_ACTIVITY.unshift({
     dot: 'var(--accent)',
     text: `You created <strong>${escapeHtml(newId)}</strong> · ${escapeHtml(title)}`,
-    sub: 'Just now'
+    sub: formatNowUS()
   });
   if (currentPage === 'tickets') renderTickets();
   if (currentPage === 'my-tickets') renderKanban();
   initDashboard();
 
   // If this ticket came from a plan, archive the plan
-  const newTicketId = 'TKT-' + nextTktId;
   if (pendingPlanIdToArchive) {
     const p = PLANS.find(x => x.id === pendingPlanIdToArchive);
     if (p) {
       p.status = 'promoted';
-      p.promotedTicketId = newTicketId;
+      p.promotedTicketId = newId;
       p.updatedAt = formatDateLong(APP_TODAY);
     }
     pendingPlanIdToArchive = null;
     if (currentPage === 'planning') renderPlans();
     if (currentPage === 'plan-detail') renderPlanDetail();
-    alert(`Ticket ${newTicketId} created successfully — plan archived.`);
+    alert(`Ticket ${newId} created successfully — plan archived.`);
     return;
   }
 
-  alert('Ticket TKT-' + nextTktId + ' created successfully!');
+  alert(`Ticket ${newId} created successfully!`);
 }
 
 
@@ -7986,7 +8055,7 @@ function saveEvent() {
       TICKET_TIMELINES[t.id].unshift({
         dot: evCurrentType === 'deadline' ? 'var(--red)' : 'var(--accent2)',
         text: `${evLabel} scheduled — "${escapeHtml(title)}" on ${formatDateLong(parseTicketDate(dateRaw))}`,
-        sub: 'Just now',
+        sub: formatNowUS(),
       });
     }
   }
@@ -8349,7 +8418,7 @@ function applyBulkPlanStatus(status) {
     p.status = status;
     p.updatedAt = formatDateLong(APP_TODAY);
     if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Status changed from <b>${old}</b> to <b>${status}</b> via bulk action`, time: 'Just now' });
+    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Status changed from <b>${old}</b> to <b>${status}</b> via bulk action`, time: formatNowUS() });
   });
   closePlanBulkMenu();
   settingsToast(`Status set to ${status} on ${planSelectedIds.size} plan${planSelectedIds.size === 1 ? '' : 's'}`);
@@ -8373,7 +8442,7 @@ function applyBulkPlanReminder(preset) {
     p.updatedAt = formatDateLong(APP_TODAY);
     if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
     const txt = iso ? `Reminder set for <b>${formatReminderShort(iso)}</b> via bulk action` : 'Reminder cleared via bulk action';
-    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: txt, time: 'Just now' });
+    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: txt, time: formatNowUS() });
   });
   closePlanBulkMenu();
   settingsToast(iso ? `Reminder set on ${planSelectedIds.size} plan${planSelectedIds.size === 1 ? '' : 's'}` : `Reminder cleared on ${planSelectedIds.size} plan${planSelectedIds.size === 1 ? '' : 's'}`);
@@ -8388,7 +8457,7 @@ function applyBulkPlanReminderDate() {
     p.reminderTriggered = false;
     p.updatedAt = formatDateLong(APP_TODAY);
     if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Reminder set for <b>${formatReminderShort(iso)}</b> via bulk action`, time: 'Just now' });
+    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Reminder set for <b>${formatReminderShort(iso)}</b> via bulk action`, time: formatNowUS() });
   });
   closePlanBulkMenu();
   settingsToast(`Reminder set on ${planSelectedIds.size} plan${planSelectedIds.size === 1 ? '' : 's'}`);
@@ -8403,7 +8472,7 @@ function bulkArchivePlans() {
     p.status = 'archived';
     p.updatedAt = formatDateLong(APP_TODAY);
     if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-    PLAN_ACTIVITY[p.id].unshift({ dot: 'gray', text: 'Archived via bulk action', time: 'Just now' });
+    PLAN_ACTIVITY[p.id].unshift({ dot: 'gray', text: 'Archived via bulk action', time: formatNowUS() });
   });
   settingsToast(`Archived ${n} plan${n === 1 ? '' : 's'}`);
   renderPlans();
@@ -8769,7 +8838,7 @@ const PLAN_ACTIVITY = {
 
 function ensurePlanData(id) {
   if (!PLAN_COMMENTS[id]) PLAN_COMMENTS[id] = [];
-  if (!PLAN_ACTIVITY[id]) PLAN_ACTIVITY[id] = [{ dot:'gray', text:'Plan created', time:'Just now' }];
+  if (!PLAN_ACTIVITY[id]) PLAN_ACTIVITY[id] = [{ dot:'gray', text:'Plan created', time: formatNowUS() }];
 }
 
 function openPlanDetail(id) {
@@ -8897,7 +8966,7 @@ function setPlanStatus(newStatus) {
   p.status = newStatus;
   p.updatedAt = formatDateLong(APP_TODAY);
   if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-  PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Status changed from <b>${escapeHtml(old)}</b> to <b>${escapeHtml(newStatus)}</b>`, time: 'Just now' });
+  PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Status changed from <b>${escapeHtml(old)}</b> to <b>${escapeHtml(newStatus)}</b>`, time: formatNowUS() });
   closePlanMoreMenu();
   renderPlanDetail();
   if (currentPage === 'planning') renderPlans();
@@ -8937,7 +9006,7 @@ function savePlanReminder() {
   p.reminderTriggered = false;
   p.updatedAt = formatDateLong(APP_TODAY);
   if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-  PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Reminder set for <b>${formatReminderShort(date)}</b>`, time: 'Just now' });
+  PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: `Reminder set for <b>${formatReminderShort(date)}</b>`, time: formatNowUS() });
   closeModal('plan-reminder');
   renderPlanDetail();
   if (currentPage === 'planning') renderPlans();
@@ -8952,7 +9021,7 @@ function clearPlanReminder() {
   p.reminderTriggered = false;
   p.updatedAt = formatDateLong(APP_TODAY);
   if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-  PLAN_ACTIVITY[p.id].unshift({ dot: 'gray', text: `Reminder cleared (was ${formatReminderShort(oldDate)})`, time: 'Just now' });
+  PLAN_ACTIVITY[p.id].unshift({ dot: 'gray', text: `Reminder cleared (was ${formatReminderShort(oldDate)})`, time: formatNowUS() });
   closePlanMoreMenu();
   renderPlanDetail();
   if (currentPage === 'planning') renderPlans();
@@ -9126,7 +9195,7 @@ function savePlanNotes() {
   if (changed) {
     p.updatedAt = formatDateLong(APP_TODAY);
     if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: 'Notes updated', time: 'Just now' });
+    PLAN_ACTIVITY[p.id].unshift({ dot: 'blue', text: 'Notes updated', time: formatNowUS() });
   }
   planNotesEditing = false;
   renderPlanDetail();
@@ -9148,7 +9217,7 @@ function uploadPlanAttachments(files) {
     p.updatedAt = formatDateLong(APP_TODAY);
     if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
     added.forEach(name => {
-      PLAN_ACTIVITY[p.id].unshift({ dot: 'green', text: `Attached <b>${escapeHtml(name)}</b>`, time: 'Just now' });
+      PLAN_ACTIVITY[p.id].unshift({ dot: 'green', text: `Attached <b>${escapeHtml(name)}</b>`, time: formatNowUS() });
     });
   }
   // Clear input so re-uploading the same file fires change again
@@ -9166,7 +9235,7 @@ function removePlanAttachment(idx) {
   p.files.splice(idx, 1);
   p.updatedAt = formatDateLong(APP_TODAY);
   if (!PLAN_ACTIVITY[p.id]) PLAN_ACTIVITY[p.id] = [];
-  PLAN_ACTIVITY[p.id].unshift({ dot: 'gray', text: `Removed <b>${escapeHtml(name)}</b>`, time: 'Just now' });
+  PLAN_ACTIVITY[p.id].unshift({ dot: 'gray', text: `Removed <b>${escapeHtml(name)}</b>`, time: formatNowUS() });
   renderPlanDetail();
 }
 
@@ -9177,10 +9246,10 @@ function addPlanComment() {
   ensurePlanData(currentPlanId);
   PLAN_COMMENTS[currentPlanId].unshift({
     author:'John Doe', initials:'JD', color:'#6366f1',
-    time:'Just now', text,
+    time: formatNowUS(), text,
   });
   PLAN_ACTIVITY[currentPlanId].unshift({
-    dot:'', text:`<b>John Doe</b> commented`, time:'Just now'
+    dot:'', text:`<b>John Doe</b> commented`, time: formatNowUS()
   });
   ta.value = '';
   renderPlanComments();
@@ -9960,7 +10029,7 @@ async function loadRealNotifications() {
         type:     n.type || 'mention',
         icon:     n.icon || '🔔',
         unread:   !!n.unread,
-        time:     n.time_label || 'Just now',
+        time:     n.time_label || (n.created_at ? formatNowUS(new Date(String(n.created_at).replace(' ','T') + 'Z')) : formatNowUS()),
         text:     n.text || '',
         ticketId: n.ticket_id || '',
       });
@@ -10134,6 +10203,7 @@ function setupTicketModalAttachments(modal) {
         Record Voice
       </button>
       <span class="rec-timer" id="modal-rec-timer" style="display:none"></span>
+      <span style="font-size:11px;color:#6b7280">or paste an image with <kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:4px;padding:1px 5px;font-size:10px">Ctrl</kbd>+<kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:4px;padding:1px 5px;font-size:10px">V</kbd></span>
     </div>
     <div class="attach-preview-list" id="modal-attach-previews"></div>
   `;
@@ -10212,6 +10282,24 @@ function setupTicketModalAttachments(modal) {
     list.appendChild(item);
   }
 
+  // Paste handler — capture clipboard images (e.g. Snipping Tool screenshots)
+  modal.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    let handled = false;
+    for (const it of items) {
+      if (it.kind !== 'file' || !it.type.startsWith('image/')) continue;
+      const blob = it.getAsFile();
+      if (!blob) continue;
+      const ext = (blob.type.split('/')[1] || 'png').split(';')[0];
+      const named = new File([blob], `screenshot-${Date.now()}.${ext}`, { type: blob.type });
+      pendingFiles.push(named);
+      addPreview(named);
+      handled = true;
+    }
+    if (handled) e.preventDefault();
+  });
+
   // Stage files into global queue — fetch intercept uploads them with the real ticket ID
   if (submitBtn) {
     submitBtn.addEventListener('click', () => {
@@ -10263,6 +10351,7 @@ function setupCommentAttachments(container) {
       Voice
     </button>
     <span class="rec-timer cmt-rec-timer" style="display:none"></span>
+    <span style="font-size:10.5px;color:#6b7280">or paste with <kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:3px;padding:0 4px;font-size:10px">Ctrl+V</kbd></span>
   `;
 
   const previews = document.createElement('div');
@@ -10501,6 +10590,7 @@ function setupCommentAttachBar() {
       Voice Note
     </button>
     <span class="rec-timer" id="cmt-rec-timer" style="display:none"></span>
+    <span style="font-size:10.5px;color:#6b7280">or paste image with <kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:3px;padding:0 4px;font-size:10px">Ctrl+V</kbd></span>
     <div class="attach-preview-list" id="cmt-previews" style="width:100%;margin-top:4px"></div>
   `;
   const actions = box.querySelector('.td-composer-actions');
@@ -10545,6 +10635,24 @@ function setupCommentAttachBar() {
       voiceBtn.classList.add('recording');
       voiceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop`;
     } catch(e) { alert('Microphone access denied.'); }
+  });
+
+  // Paste handler — capture clipboard images on the composer box
+  box.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    let handled = false;
+    for (const it of items) {
+      if (it.kind !== 'file' || !it.type.startsWith('image/')) continue;
+      const blob = it.getAsFile();
+      if (!blob) continue;
+      const ext = (blob.type.split('/')[1] || 'png').split(';')[0];
+      const named = new File([blob], `screenshot-${Date.now()}.${ext}`, { type: blob.type });
+      cmtPendingFiles.push(named);
+      addCmtPreview(named);
+      handled = true;
+    }
+    if (handled) e.preventDefault();
   });
 
   function addCmtPreview(file, isAudio) {
@@ -11269,6 +11377,182 @@ initApp();
     window.applyUserToUI = function(u) { if (_origAU) _origAU(u); window.showAdminTabsIfAllowed(); };
   })();
 
+})();
+
+// ── Flavor launch feature ─────────────────────────────────────────────────────
+(function() {
+  const DEPTS = ['Engineering','Design','Support','Operations','Management','General'];
+  const PRIORITIES = ['Low','Medium','High','Urgent'];
+  let _flavorTasksCache = null;
+
+  function teamOptions(selected) {
+    const names = (typeof TEAM_DATA !== 'undefined' ? TEAM_DATA : []).map(m => m.name).filter(Boolean);
+    const opts = ['<option value="">— unassigned —</option>'];
+    for (const n of names) {
+      const sel = (n === selected) ? ' selected' : '';
+      opts.push(`<option value="${escapeHtml(n)}"${sel}>${escapeHtml(n)}</option>`);
+    }
+    return opts.join('');
+  }
+  function selectOptions(values, selected) {
+    return values.map(v => `<option value="${v}"${v===selected?' selected':''}>${v}</option>`).join('');
+  }
+
+  function flavorTaskRowHtml(t, idx) {
+    return `
+      <div class="flavor-task-row" style="display:grid;grid-template-columns:1.6fr 1.1fr 0.9fr 0.8fr 0.6fr 28px;gap:6px;align-items:center" data-idx="${idx}">
+        <input type="text" class="ft-title" value="${escapeHtml(t.title || '')}" placeholder="e.g. Design label for {flavor}" style="font-size:12px;padding:7px 9px"/>
+        <select class="ft-assignee" style="font-size:12px;padding:7px 9px">${teamOptions(t.assignee)}</select>
+        <select class="ft-dept" style="font-size:12px;padding:7px 9px">${selectOptions(DEPTS, t.dept || 'General')}</select>
+        <select class="ft-priority" style="font-size:12px;padding:7px 9px">${selectOptions(PRIORITIES, t.priority || 'Medium')}</select>
+        <input type="number" class="ft-days" value="${Number(t.daysOffset)||0}" min="0" max="365" placeholder="days" title="Days after launch date" style="font-size:12px;padding:7px 9px"/>
+        <button onclick="removeFlavorTaskRow(this)" title="Remove task" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:16px;padding:0">×</button>
+      </div>
+    `;
+  }
+
+  async function loadFlavorTasksTab() {
+    const list = document.getElementById('flavor-tasks-list');
+    const status = document.getElementById('flavor-tasks-status');
+    if (!list) return;
+    list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">Loading…</div>';
+    if (status) status.textContent = '';
+    try {
+      const tasks = await apiGet('/api/flavor-tasks');
+      _flavorTasksCache = tasks;
+      const headerHtml = `
+        <div style="display:grid;grid-template-columns:1.6fr 1.1fr 0.9fr 0.8fr 0.6fr 28px;gap:6px;font-size:10.5px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:0 4px">
+          <div>Task title</div><div>Assignee</div><div>Dept</div><div>Priority</div><div>Days&nbsp;after</div><div></div>
+        </div>
+      `;
+      list.innerHTML = headerHtml + tasks.map((t,i) => flavorTaskRowHtml(t, i)).join('');
+    } catch(e) {
+      list.innerHTML = '<div style="color:var(--red);font-size:12px;padding:8px">Could not load tasks. Please refresh.</div>';
+    }
+  }
+
+  function addFlavorTaskRow() {
+    const list = document.getElementById('flavor-tasks-list');
+    if (!list) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = flavorTaskRowHtml({ title:'', assignee:'', dept:'General', priority:'Medium', daysOffset:7 }, list.querySelectorAll('.flavor-task-row').length);
+    list.appendChild(wrap.firstElementChild);
+  }
+
+  function removeFlavorTaskRow(btn) {
+    const row = btn.closest('.flavor-task-row');
+    if (row) row.remove();
+  }
+
+  async function saveFlavorTasks() {
+    const list = document.getElementById('flavor-tasks-list');
+    const status = document.getElementById('flavor-tasks-status');
+    if (!list) return;
+    const rows = list.querySelectorAll('.flavor-task-row');
+    const tasks = [];
+    rows.forEach(r => {
+      const title = r.querySelector('.ft-title').value.trim();
+      if (!title) return;
+      tasks.push({
+        title,
+        assignee: r.querySelector('.ft-assignee').value || '',
+        dept:     r.querySelector('.ft-dept').value || 'General',
+        priority: r.querySelector('.ft-priority').value || 'Medium',
+        daysOffset: parseInt(r.querySelector('.ft-days').value, 10) || 0,
+      });
+    });
+    if (status) status.textContent = 'Saving…';
+    try {
+      const r = await apiPut('/api/flavor-tasks', { tasks });
+      if (r && r.ok) {
+        if (status) { status.textContent = `Saved ${r.count} task${r.count===1?'':'s'}`; setTimeout(()=>status.textContent='', 2500); }
+      } else {
+        if (status) status.textContent = (r && r.error) || 'Save failed';
+      }
+    } catch(e) {
+      if (status) status.textContent = 'Save failed — check connection';
+    }
+  }
+
+  // ── New Flavor modal ────────────────────────────────────────────────────────
+  function openNewFlavorModal() {
+    const m = document.getElementById('modal-new-flavor');
+    if (!m) return;
+    document.getElementById('nf-name').value = '';
+    document.getElementById('nf-launch').value = '';
+    document.getElementById('nf-task-preview').style.display = 'none';
+    document.getElementById('nf-create-btn').disabled = false;
+    m.classList.add('open');
+    // Preload template count for preview
+    apiGet('/api/flavor-tasks').then(tasks => {
+      const preview = document.getElementById('nf-task-preview');
+      if (!preview) return;
+      if (!tasks.length) {
+        preview.style.display = 'block';
+        preview.innerHTML = '<span style="color:var(--red)">No template tasks yet. Add some in <a onclick="closeNewFlavorModal();navigate(\'settings\');setTimeout(()=>switchSettingsTab(\'flavor-tasks\'),50)" style="color:var(--accent);cursor:pointer;text-decoration:underline">Settings → Flavor Tasks</a> first.</span>';
+        return;
+      }
+      preview.style.display = 'block';
+      preview.innerHTML = `<div style="font-weight:600;margin-bottom:4px">Will create ${tasks.length} ticket${tasks.length===1?'':'s'}:</div>` +
+        tasks.map(t => `<div>• ${escapeHtml(t.title)}${t.assignee ? ` <span style="color:var(--text3)">→ ${escapeHtml(t.assignee)}</span>` : ''}</div>`).join('');
+    }).catch(()=>{});
+  }
+  function closeNewFlavorModal() {
+    document.getElementById('modal-new-flavor')?.classList.remove('open');
+  }
+  async function submitNewFlavor() {
+    const name = document.getElementById('nf-name').value.trim();
+    const launchDate = document.getElementById('nf-launch').value;
+    if (!name) { alert('Please enter a flavor name.'); return; }
+    if (!launchDate) { alert('Please pick a launch date.'); return; }
+    const btn = document.getElementById('nf-create-btn');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    try {
+      const r = await apiPost('/api/flavors', { name, launchDate });
+      if (r && r.ok) {
+        closeNewFlavorModal();
+        alert(`Created ${r.tickets.length} ticket${r.tickets.length===1?'':'s'} for "${name}" — tagged "${r.tag}".`);
+        // Refresh the ticket list view if loaded
+        if (typeof loadAndRenderTickets === 'function') loadAndRenderTickets();
+        else if (typeof renderTickets === 'function') {
+          // Refetch tickets from server and render
+          try {
+            const tickets = await apiGet('/api/tickets');
+            TICKETS_DATA.length = 0;
+            tickets.forEach(t => TICKETS_DATA.push(t));
+            renderTickets();
+            if (typeof initDashboard === 'function') initDashboard();
+          } catch {}
+        }
+      } else {
+        alert((r && r.error) || 'Could not create launch tickets.');
+      }
+    } catch(e) {
+      alert('Could not create launch tickets — check connection.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Create launch tickets';
+    }
+  }
+
+  // Hook into switchSettingsTab so the panel loads its data when opened
+  const _origSwitchSettings = window.switchSettingsTab;
+  if (typeof _origSwitchSettings === 'function') {
+    window.switchSettingsTab = function(tab) {
+      const r = _origSwitchSettings.apply(this, arguments);
+      if (tab === 'flavor-tasks') loadFlavorTasksTab();
+      return r;
+    };
+  }
+
+  // Export inline-onclick handlers
+  window.openNewFlavorModal = openNewFlavorModal;
+  window.closeNewFlavorModal = closeNewFlavorModal;
+  window.submitNewFlavor = submitNewFlavor;
+  window.addFlavorTaskRow = addFlavorTaskRow;
+  window.removeFlavorTaskRow = removeFlavorTaskRow;
+  window.saveFlavorTasks = saveFlavorTasks;
 })();
 </script>
 </body>

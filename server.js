@@ -221,8 +221,11 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
     const { id, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags } = req.body;
     if (!id || !title) return res.status(400).json({ error:'id and title required' });
+    if (await get('SELECT id FROM tickets WHERE id=?', id)) {
+      return res.status(409).json({ error: `Ticket ${id} already exists`, code: 'duplicate_id' });
+    }
     await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?) ON CONFLICT DO NOTHING`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
       dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId);
     await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', id);
@@ -328,7 +331,7 @@ app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
           mentioned.id, 'mention', '💬', `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id);
       }
     }
-    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, init, bg, col, text:text.trim(), time:'Just now' });
+    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, init, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -347,9 +350,9 @@ app.get('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
     const rows = await all('SELECT * FROM ticket_timelines WHERE ticket_id=? ORDER BY created_at DESC', req.params.id);
     if (!rows.length) {
       const t = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
-      if (t) return res.json([{ dot:'var(--green)', text:'Ticket created', sub:t.created }]);
+      if (t) return res.json([{ dot:'var(--green)', text:'Ticket created', sub: formatUSDateTime(t.created_at) || t.created }]);
     }
-    res.json(rows.map(r=>({ id:r.id, dot:r.dot, text:r.text, sub:r.sub })));
+    res.json(rows.map(r=>({ id:r.id, dot:r.dot, text:r.text, sub: formatUSDateTime(r.created_at) || r.sub })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -358,6 +361,94 @@ app.post('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
     const { dot, text, sub } = req.body;
     await run('INSERT INTO ticket_timelines (ticket_id,dot,text,sub) VALUES (?,?,?,?)', req.params.id, dot||'var(--accent)', text, sub||'Just now');
     res.json({ ok:true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Flavor launch template + flavor creation ─────────────────────────────────
+// Template: rows in flavor_tasks. Editable from settings.
+app.get('/api/flavor-tasks', requireAuth, async (req, res) => {
+  try {
+    const rows = await all('SELECT * FROM flavor_tasks ORDER BY position ASC, id ASC');
+    res.json(rows.map(r => ({
+      id: r.id, position: r.position, title: r.title_template,
+      assignee: r.assignee || '', dept: r.dept || '', priority: r.priority || 'Medium',
+      daysOffset: r.days_offset
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Replace the entire template list. Body: { tasks: [{ title, assignee, dept, priority, daysOffset }] }
+app.put('/api/flavor-tasks', requireAuth, async (req, res) => {
+  try {
+    const tasks = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+    await run('DELETE FROM flavor_tasks');
+    let pos = 1;
+    for (const t of tasks) {
+      const title = String(t.title || '').trim();
+      if (!title) continue;
+      await run(
+        'INSERT INTO flavor_tasks (position, title_template, assignee, dept, priority, days_offset) VALUES (?,?,?,?,?,?)',
+        pos++, title, t.assignee || '', t.dept || 'General', t.priority || 'Medium',
+        Number.isFinite(Number(t.daysOffset)) ? Number(t.daysOffset) : 7
+      );
+    }
+    res.json({ ok: true, count: pos - 1 });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Create one ticket per template row for a new flavor.
+// Body: { name: 'Mango Mint', launchDate: 'YYYY-MM-DD' }
+app.post('/api/flavors', requireAuth, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const launchDate = String(req.body?.launchDate || '').trim();
+    if (!name) return res.status(400).json({ error: 'Flavor name required' });
+    if (!launchDate || !/^\d{4}-\d{2}-\d{2}$/.test(launchDate))
+      return res.status(400).json({ error: 'launchDate must be YYYY-MM-DD' });
+
+    const tmpl = await all('SELECT * FROM flavor_tasks ORDER BY position ASC, id ASC');
+    if (!tmpl.length) return res.status(409).json({ error: 'No template tasks. Add some in Settings → Flavor Tasks first.' });
+
+    const u = await getUser(req.session.userId);
+    const launchMs = new Date(launchDate + 'T00:00:00').getTime();
+
+    // Compute next ticket id from current max — server-side avoids race conditions.
+    const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+    let nextNum = 1000;
+    if (maxRow?.id) {
+      const m = /^TKT-(\d+)$/.exec(maxRow.id);
+      if (m) nextNum = parseInt(m[1], 10);
+    }
+
+    const tag = `Launch: ${name}`;
+    const created = []; // returned to client
+
+    for (const row of tmpl) {
+      nextNum += 1;
+      const tktId = 'TKT-' + nextNum;
+      const title = (row.title_template || '').replace(/\{flavor\}/gi, name);
+      const dueMs = launchMs + Number(row.days_offset || 0) * 86400000;
+      const due = new Date(dueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+      await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+        tktId, title, u?.name || '', row.assignee || '', u?.name || '',
+        row.priority || 'Medium', 'Open', row.dept || 'General',
+        due, createdStr, 0, JSON.stringify([tag]), req.session.userId);
+      await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', tktId);
+      if (row.assignee) {
+        await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', tktId, row.assignee);
+        const target = await get('SELECT id FROM users WHERE name=?', row.assignee);
+        if (target && target.id !== req.session.userId) {
+          await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+            target.id, 'assigned', '👤', `${u?.name || 'Someone'} assigned you to "${title}"`, tktId);
+        }
+      }
+      created.push({ id: tktId, title, assignee: row.assignee || '', dept: row.dept || '', due });
+    }
+
+    res.status(201).json({ ok: true, flavor: name, tag, tickets: created });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -509,7 +600,7 @@ app.post('/api/plans/:id/comments', requireAuth, async (req, res) => {
     const [bg,col] = (palette[u.id % palette.length]||palette[0]).split('|');
     const info = await run('INSERT INTO plan_comments (plan_id,author,author_bg,author_col,text) VALUES (?,?,?,?,?) RETURNING id',
       req.params.id, u.name, bg, col, text.trim());
-    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, bg, col, text:text.trim(), time:'Just now' });
+    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -565,7 +656,8 @@ app.put('/api/profile/password', requireAuth, async (req, res) => {
 // ── Notifications ─────────────────────────────────────────────────────────────
 app.get('/api/notifications', requireAuth, async (req, res) => {
   try {
-    res.json(await all('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50', req.session.userId));
+    const rows = await all('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50', req.session.userId);
+    res.json(rows.map(n => ({ ...n, time_label: formatUSDateTime(n.created_at) })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -601,18 +693,28 @@ app.get('/api/activity', requireAuth, async (req, res) => {
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function timeAgo(iso) {
+// US-format date/time: "May 5, 2:33 PM" (year shown only for prior years).
+// Stored timestamps are 'YYYY-MM-DD HH:MM:SS' in UTC; we treat them as UTC.
+function formatUSDateTime(iso) {
   try {
-    const diff = Date.now() - new Date(iso).getTime();
-    const m = Math.floor(diff/60000);
-    if (m < 1)  return 'Just now';
-    if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m/60);
-    if (h < 24) return `${h}h ago`;
-    const d = Math.floor(h/24);
-    return d === 1 ? 'Yesterday' : `${d}d ago`;
-  } catch { return 'Just now'; }
+    const s = String(iso || '');
+    const isoZ = s.includes('T') ? s : s.replace(' ', 'T') + 'Z';
+    const d = new Date(isoZ);
+    if (isNaN(d.getTime())) return '';
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const day = d.getDate();
+    const h = d.getHours();
+    const hour12 = (h % 12) || 12;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const minute = String(d.getMinutes()).padStart(2, '0');
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return sameYear
+      ? `${month} ${day}, ${hour12}:${minute} ${ampm}`
+      : `${month} ${day}, ${d.getFullYear()}, ${hour12}:${minute} ${ampm}`;
+  } catch { return ''; }
 }
+
+function timeAgo(iso) { return formatUSDateTime(iso); }
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => {

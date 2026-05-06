@@ -222,6 +222,16 @@ async function init() {
       id SERIAL PRIMARY KEY,
       name TEXT UNIQUE NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS flavor_tasks (
+      id SERIAL PRIMARY KEY,
+      position INTEGER DEFAULT 0,
+      title_template TEXT NOT NULL,
+      assignee TEXT DEFAULT '',
+      dept TEXT DEFAULT 'General',
+      priority TEXT DEFAULT 'Medium',
+      days_offset INTEGER DEFAULT 7,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
     `CREATE TABLE IF NOT EXISTS attachments (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
@@ -259,6 +269,24 @@ async function init() {
   for (const name of defaults) {
     if (!await get('SELECT id FROM departments WHERE name=?', name))
       await run('INSERT INTO departments (name) VALUES (?)', name);
+  }
+
+  // Seed default flavor-launch tasks (template). Only inserted if the table is empty.
+  const flavorRows = await get('SELECT COUNT(*) AS n FROM flavor_tasks');
+  if (!flavorRows || Number(flavorRows.n) === 0) {
+    const seeds = [
+      { pos: 1, title: 'Design label for {flavor}',                          dept: 'Design',     priority: 'High',   days: 7  },
+      { pos: 2, title: 'Design Amazon listing images for {flavor}',          dept: 'Design',     priority: 'Medium', days: 14 },
+      { pos: 3, title: 'Design website page for {flavor}',                   dept: 'Design',     priority: 'Medium', days: 14 },
+      { pos: 4, title: 'Write product content / copy for {flavor}',          dept: 'Operations', priority: 'Medium', days: 10 },
+      { pos: 5, title: 'List {flavor} on all marketplaces',                  dept: 'Operations', priority: 'High',   days: 21 },
+    ];
+    for (const s of seeds) {
+      await run(
+        'INSERT INTO flavor_tasks (position, title_template, assignee, dept, priority, days_offset) VALUES (?,?,?,?,?,?)',
+        s.pos, s.title, '', s.dept, s.priority, s.days
+      );
+    }
   }
 }
 
