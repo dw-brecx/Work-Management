@@ -2238,17 +2238,19 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <table class="tbl" id="dash-ticket-table"></table>
       </div>
 
-      <!-- Bottom row -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <!-- Team workload -->
-        <div class="card">
-          <div style="font-size:13px;font-weight:500;margin-bottom:14px">Team Workload</div>
-          <div id="workload-list"></div>
-        </div>
-        <!-- Activity -->
-        <div class="card">
-          <div style="font-size:13px;font-weight:500;margin-bottom:14px">Recent Activity</div>
-          <div class="timeline" id="dash-activity"></div>
+      <!-- Bottom row (admin/owner only) -->
+      <div class="admin-only">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <!-- Team workload -->
+          <div class="card">
+            <div style="font-size:13px;font-weight:500;margin-bottom:14px">Team Workload</div>
+            <div id="workload-list"></div>
+          </div>
+          <!-- Activity -->
+          <div class="card">
+            <div style="font-size:13px;font-weight:500;margin-bottom:14px">Recent Activity</div>
+            <div class="timeline" id="dash-activity"></div>
+          </div>
         </div>
       </div>
     </div>
