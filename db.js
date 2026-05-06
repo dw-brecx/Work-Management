@@ -270,6 +270,8 @@ async function init() {
 
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
+  // Profile avatar (existing installs)
+  await safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''");
 
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');

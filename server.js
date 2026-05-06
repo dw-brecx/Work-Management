@@ -56,7 +56,7 @@ function requireAuth(req, res, next) {
 }
 
 async function getUser(userId) {
-  return get('SELECT id,name,email,role,dept,color,perm_role FROM users WHERE id=?', userId);
+  return get('SELECT id,name,email,role,dept,color,perm_role,avatar_url FROM users WHERE id=?', userId);
 }
 
 async function requireAdmin(req, res, next) {
@@ -77,7 +77,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash))
       return res.status(401).json({ error: 'Invalid email or password' });
     req.session.userId = user.id;
-    res.json({ id:user.id, name:user.name, email:user.email, role:user.role, dept:user.dept, color:user.color, permRole:user.perm_role });
+    res.json({ id:user.id, name:user.name, email:user.email, role:user.role, dept:user.dept, color:user.color, permRole:user.perm_role, avatarUrl:user.avatar_url || '' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -112,21 +112,22 @@ app.get('/api/auth/me', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
     const u = await getUser(req.session.userId);
     if (!u) return res.status(401).json({ error: 'User not found' });
-    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color, permRole:u.perm_role });
+    res.json({ id:u.id, name:u.name, email:u.email, role:u.role, dept:u.dept, color:u.color, permRole:u.perm_role, avatarUrl:u.avatar_url || '' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Team ──────────────────────────────────────────────────────────────────────
 app.get('/api/team', requireAuth, async (req, res) => {
   try {
-    const members = await all('SELECT id,name,email,role,dept,color,perm_role FROM users ORDER BY id');
+    const members = await all('SELECT id,name,email,role,dept,color,perm_role,avatar_url FROM users ORDER BY id');
     const counts = await all(`SELECT user_name,COUNT(*) as cnt FROM ticket_assignees ta
       JOIN tickets t ON t.id=ta.ticket_id AND t.status!='Closed' GROUP BY user_name`);
     const cm = {};
     counts.forEach(r => { cm[r.user_name] = parseInt(r.cnt, 10); });
     res.json(members.map(m => ({
       id:m.id, name:m.name, email:m.email, role:m.role, dept:m.dept, color:m.color,
-      permRole:m.perm_role, workload:Math.min(100,(cm[m.name]||0)*10), tickets:cm[m.name]||0
+      permRole:m.perm_role, avatarUrl:m.avatar_url || '',
+      workload:Math.min(100,(cm[m.name]||0)*10), tickets:cm[m.name]||0
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -848,6 +849,38 @@ function formatUSDateTime(iso) {
 function timeAgo(iso) { return formatUSDateTime(iso); }
 
 // ── Attachments ───────────────────────────────────────────────────────────────
+// Profile avatar upload — stores filename in users.avatar_url and returns the public url
+app.post('/api/profile/avatar', requireAuth, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    if (!req.file.mimetype?.startsWith('image/')) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+      return res.status(400).json({ error: 'Only image files allowed' });
+    }
+    // Remove the previous avatar file if any
+    const prev = await get('SELECT avatar_url FROM users WHERE id=?', req.session.userId);
+    if (prev?.avatar_url) {
+      const oldName = String(prev.avatar_url).replace(/^\/uploads\//, '');
+      if (oldName) try { fs.unlinkSync(path.join(UPLOADS_DIR, oldName)); } catch {}
+    }
+    const url = '/uploads/' + req.file.filename;
+    await run('UPDATE users SET avatar_url=? WHERE id=?', url, req.session.userId);
+    res.json({ ok: true, avatarUrl: url });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/profile/avatar', requireAuth, async (req, res) => {
+  try {
+    const prev = await get('SELECT avatar_url FROM users WHERE id=?', req.session.userId);
+    if (prev?.avatar_url) {
+      const oldName = String(prev.avatar_url).replace(/^\/uploads\//, '');
+      if (oldName) try { fs.unlinkSync(path.join(UPLOADS_DIR, oldName)); } catch {}
+    }
+    await run("UPDATE users SET avatar_url='' WHERE id=?", req.session.userId);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file' });

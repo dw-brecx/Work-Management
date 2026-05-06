@@ -2113,7 +2113,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <div id="notif-panel" class="notif-panel" role="dialog" aria-label="Notifications"></div>
       <div class="profile-wrap">
         <button class="profile-trigger" onclick="toggleProfileMenu(event)" aria-label="Open profile menu">
-          <div class="avatar profile-avatar">JD</div>
+          <div class="avatar profile-avatar" id="header-profile-avatar" style="overflow:hidden">JD</div>
           <div class="profile-namebox">
             <div class="profile-name">John Doe</div>
             <div class="profile-role">Product Designer</div>
@@ -3016,10 +3016,17 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <div class="card settings-panel" id="settings-panel-profile">
           <h2 style="font-size:14px;font-weight:500;margin-bottom:16px">Profile Settings</h2>
           <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
-            <div class="avatar" id="prof-avatar" style="width:60px;height:60px;font-size:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6)">?</div>
+            <div style="position:relative;flex-shrink:0">
+              <div class="avatar" id="prof-avatar" onclick="document.getElementById('prof-avatar-input').click()" title="Click to change profile photo"
+                   style="width:60px;height:60px;font-size:20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);cursor:pointer;overflow:hidden">?</div>
+              <button id="prof-avatar-remove" onclick="removeProfileAvatar()" title="Remove photo"
+                      style="display:none;position:absolute;top:-4px;right:-4px;width:20px;height:20px;border-radius:50%;border:1px solid #fecaca;background:#fff;color:#dc2626;cursor:pointer;font-size:11px;line-height:1;padding:0">×</button>
+              <input type="file" id="prof-avatar-input" accept="image/*" style="display:none" onchange="onProfileAvatarSelected(this)"/>
+            </div>
             <div>
               <div style="font-size:15px;font-weight:600" id="prof-header-name">—</div>
               <div style="font-size:12px;color:var(--text3)" id="prof-header-sub">—</div>
+              <div style="font-size:10.5px;color:var(--text3);margin-top:3px"><a onclick="document.getElementById('prof-avatar-input').click()" style="color:var(--accent);cursor:pointer">Change photo</a></div>
             </div>
           </div>
           <div class="form-grid" style="margin-bottom:12px">
@@ -11193,7 +11200,24 @@ initApp();
     if (!u || !u.name) return;
     var initials = u.name.split(' ').map(function(w){ return w[0]||''; }).join('').slice(0,2).toUpperCase();
     var av = document.getElementById('prof-avatar');
-    if (av) { av.textContent = initials; av.style.background = 'linear-gradient(135deg,' + (u.color||'#6366f1') + ',' + (u.color||'#8b5cf6') + ')'; }
+    var rmBtn = document.getElementById('prof-avatar-remove');
+    if (av) {
+      if (u.avatarUrl) {
+        av.innerHTML = '<img src="' + u.avatarUrl + '" alt="' + initials + '" style="width:100%;height:100%;object-fit:cover;display:block"/>';
+        av.style.background = '';
+        if (rmBtn) rmBtn.style.display = '';
+      } else {
+        av.textContent = initials;
+        av.style.background = 'linear-gradient(135deg,' + (u.color||'#6366f1') + ',' + (u.color||'#8b5cf6') + ')';
+        if (rmBtn) rmBtn.style.display = 'none';
+      }
+    }
+    // Header (top-right) avatar mirrors the profile photo if set
+    var hav = document.getElementById('header-profile-avatar');
+    if (hav) {
+      if (u.avatarUrl) hav.innerHTML = '<img src="' + u.avatarUrl + '" alt="' + initials + '" style="width:100%;height:100%;object-fit:cover;display:block"/>';
+      else hav.textContent = initials;
+    }
     var hn = document.getElementById('prof-header-name'); if (hn) hn.textContent = u.name;
     var hs = document.getElementById('prof-header-sub');  if (hs) hs.textContent = (u.role||'') + (u.dept ? ' · ' + u.dept : '');
     var fn = document.getElementById('prof-name');  if (fn) fn.value = u.name;
@@ -11214,6 +11238,45 @@ initApp();
   window.applyUserToUI = function(u) {
     if (_origApplyUser) _origApplyUser.call(this, u);
     fillProfilePanelFromUser(u);
+  };
+
+  /* ── 3b. Avatar upload from Profile Settings ── */
+  window.onProfileAvatarSelected = async function(input) {
+    var file = input && input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    if (!file.type || !file.type.startsWith('image/')) { alert('Please choose an image file.'); return; }
+    if (file.size > 8 * 1024 * 1024) { alert('Image is over 8 MB — please choose a smaller one.'); return; }
+    var fd = new FormData();
+    fd.append('file', file, file.name || 'avatar');
+    try {
+      var r = await fetch('/api/profile/avatar', { method: 'POST', body: fd });
+      var data = await r.json().catch(function() { return null; });
+      if (!r.ok || !data || !data.ok) {
+        alert((data && data.error) || 'Upload failed.');
+        return;
+      }
+      if (window.CURRENT_USER) window.CURRENT_USER.avatarUrl = data.avatarUrl;
+      fillProfilePanelFromUser(window.CURRENT_USER || {});
+    } catch (e) {
+      alert('Could not upload — check connection.');
+    }
+  };
+
+  window.removeProfileAvatar = async function() {
+    if (!confirm('Remove your profile photo?')) return;
+    try {
+      var r = await fetch('/api/profile/avatar', { method: 'DELETE' });
+      var data = await r.json().catch(function() { return null; });
+      if (!r.ok || !data || !data.ok) {
+        alert((data && data.error) || 'Could not remove photo.');
+        return;
+      }
+      if (window.CURRENT_USER) window.CURRENT_USER.avatarUrl = '';
+      fillProfilePanelFromUser(window.CURRENT_USER || {});
+    } catch (e) {
+      alert('Could not remove — check connection.');
+    }
   };
 
   /* ── 4. Reports + Dashboard: load real stats from API with optional filters ── */
