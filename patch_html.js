@@ -760,11 +760,6 @@ html = html.replace(
             <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
             Account Settings
           </button>
-          <div class="profile-menu-line"></div>
-          <button onclick="closeProfileMenu();confirmResetData();">
-            <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>
-            Reset All Data
-          </button>
           <button class="danger" onclick="closeProfileMenu();window.logoutUser&&window.logoutUser();">
             <svg class="pm-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
             Sign Out
@@ -1177,18 +1172,34 @@ html = html.replace('</body>', `<script>
     }
   }
 
+  function pctDelta(cur, prev) {
+    if (!prev) return cur > 0 ? 'New this period' : '—';
+    var pct = Math.round(((cur - prev) / prev) * 100);
+    return (pct >= 0 ? '↑ ' : '↓ ') + Math.abs(pct) + '% vs last month';
+  }
+
   function applyStatsToUI(d) {
-    // Dashboard stat cards
-    if (document.getElementById('dash-stat-total')) document.getElementById('dash-stat-total').textContent = d.total;
-    if (document.getElementById('dash-stat-inprogress')) document.getElementById('dash-stat-inprogress').textContent = d.inProgress;
-    if (document.getElementById('dash-stat-overdue')) document.getElementById('dash-stat-overdue').textContent = d.overdue;
+    // Dashboard stat cards — values
+    var set = function(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+    set('dash-stat-total', d.total);
+    set('dash-stat-inprogress', d.inProgress);
+    set('dash-stat-overdue', d.overdue);
+    set('dash-stat-completed', d.completedToday !== undefined ? d.completedToday : '');
+    // Dashboard delta labels — real percentages
+    set('dash-stat-total-delta', pctDelta(d.total, d.prevTotal));
+    // Hide the other fake deltas (no ids on them — patch their content via class)
+    document.querySelectorAll('.stat-change:not(#dash-stat-total-delta)').forEach(function(el, i) {
+      if (i === 0) el.textContent = pctDelta(d.inProgress, d.prevInProgress);
+      if (i === 1) el.textContent = pctDelta(d.overdue, d.prevOverdue);
+      if (i === 2) el.textContent = d.completedToday > 0 ? d.completedToday + ' closed today' : 'None closed today';
+    });
     // Reports stat cards
-    if (document.getElementById('rpt-total')) document.getElementById('rpt-total').textContent = d.total;
-    if (document.getElementById('rpt-total-delta')) document.getElementById('rpt-total-delta').textContent = d.open + ' open · ' + d.closed + ' closed';
-    if (document.getElementById('rpt-open')) document.getElementById('rpt-open').textContent = d.open;
-    if (document.getElementById('rpt-open-delta')) document.getElementById('rpt-open-delta').textContent = d.inProgress + ' in progress';
-    if (document.getElementById('rpt-overdue')) document.getElementById('rpt-overdue').textContent = d.overdue;
-    if (document.getElementById('rpt-overdue-delta')) document.getElementById('rpt-overdue-delta').textContent = d.overdue > 0 ? 'Needs attention' : 'All on track';
+    set('rpt-total', d.total);
+    set('rpt-total-delta', d.open + ' open · ' + d.closed + ' closed');
+    set('rpt-open', d.open);
+    set('rpt-open-delta', d.inProgress + ' in progress');
+    set('rpt-overdue', d.overdue);
+    set('rpt-overdue-delta', d.overdue > 0 ? 'Needs attention' : 'All on track');
 
     var deptBars = document.getElementById('rpt-dept-bars');
     if (deptBars) {
@@ -1207,23 +1218,54 @@ html = html.replace('</body>', `<script>
       }
     }
 
-    var monthlyEl = document.getElementById('rpt-monthly-chart');
-    if (monthlyEl && d.monthly && d.monthly.length) {
-      var maxM = Math.max.apply(null, d.monthly.map(function(m){ return m.count; })) || 1;
-      monthlyEl.innerHTML = d.monthly.map(function(m) {
-        var h = Math.max(4, Math.round((m.count / maxM) * 76));
-        return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">' +
-          '<span style="font-size:10px;color:#64748b">' + (m.count || '') + '</span>' +
-          '<div style="width:100%;background:#3b82f6;border-radius:3px 3px 0 0;height:' + h + 'px;min-height:4px;opacity:.8"></div>' +
-          '<span style="font-size:9px;color:#94a3b8">' + m.label + '</span></div>';
+  }
+
+  function renderMonthlyChart(monthly, elId) {
+    var el = document.getElementById(elId);
+    if (!el || !monthly || !monthly.length) return;
+    var maxM = Math.max.apply(null, monthly.map(function(m){ return m.count; })) || 1;
+    el.innerHTML = monthly.map(function(m) {
+      var h = Math.max(4, Math.round((m.count / maxM) * 76));
+      return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">' +
+        '<span style="font-size:10px;color:#64748b">' + (m.count || 0) + '</span>' +
+        '<div style="width:100%;background:#3b82f6;border-radius:3px 3px 0 0;height:' + h + 'px;min-height:4px;opacity:.8"></div>' +
+        '<span style="font-size:9px;color:#94a3b8">' + m.label + '</span></div>';
+    }).join('');
+  }
+
+  function applyMonthlyCharts(d) {
+    renderMonthlyChart(d.monthly, 'rpt-monthly-chart');
+    renderMonthlyChart(d.monthly, 'dash-monthly-chart');
+  }
+
+  function loadActivityFeed() {
+    var el = document.getElementById('dash-activity');
+    if (!el) return;
+    fetch('/api/activity').then(function(r){ return r.json(); }).then(function(items) {
+      if (!items.length) {
+        el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">No activity yet.</div>';
+        return;
+      }
+      el.innerHTML = items.slice(0, 8).map(function(item) {
+        return '<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="width:8px;height:8px;border-radius:50%;background:' + (item.dot || 'var(--accent)') + ';flex-shrink:0;margin-top:4px"></div>' +
+          '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:12px;line-height:1.4">' + (item.text || '') + '</div>' +
+          (item.ticketId ? '<div style="font-size:11px;color:var(--text3);margin-top:1px">' + item.ticketId + (item.ticketTitle ? ' · ' + item.ticketTitle.slice(0,30) : '') + '</div>' : '') +
+          '</div>' +
+          '<span style="font-size:10px;color:var(--text3);flex-shrink:0">' + (item.timeAgo || '') + '</span>' +
+          '</div>';
       }).join('');
-    }
+    }).catch(function() {
+      if (el) el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px 0">No activity yet.</div>';
+    });
   }
 
   function loadStatsWithFilters(periodId, deptId, assigneeId) {
     var url = buildStatsUrl(periodId, deptId, assigneeId);
     return fetch(url).then(function(r){ return r.json(); }).then(function(d) {
       applyStatsToUI(d);
+      applyMonthlyCharts(d);
       populateFilterDropdowns(d);
     }).catch(function(){});
   }
@@ -1247,7 +1289,10 @@ html = html.replace('</body>', `<script>
     window.navigate = function(route) {
       var r = _origNav.apply(this, arguments);
       if (route === 'reports') setTimeout(loadReportStats, 200);
-      if (route === 'dashboard') setTimeout(function(){ loadStatsWithFilters('dash-period','dash-dept',null); }, 200);
+      if (route === 'dashboard') setTimeout(function(){
+        loadStatsWithFilters('dash-period','dash-dept',null);
+        loadActivityFeed();
+      }, 200);
       // Always clear the search bar on navigation (prevents browser autofill from persisting)
       var _gs = document.getElementById('global-search');
       if (_gs) { _gs.value = ''; setTimeout(function(){ if (_gs) _gs.value = ''; }, 50); }
@@ -1260,8 +1305,11 @@ html = html.replace('</body>', `<script>
     if (p.includes('reports')) setTimeout(loadReportStats, 200);
     if (p.includes('dashboard')) setTimeout(function(){ loadStatsWithFilters('dash-period','dash-dept',null); }, 200);
   });
-  // Run both on initial load
-  setTimeout(function(){ loadStatsWithFilters('dash-period','dash-dept',null); }, 300);
+  // Run on initial load
+  setTimeout(function(){
+    loadStatsWithFilters('dash-period','dash-dept',null);
+    loadActivityFeed();
+  }, 300);
   setTimeout(loadReportStats, 300);
 
   /* ── 4. Notification panel: SVG icons by type ── */
@@ -2045,6 +2093,16 @@ async function initApp() {
   // Call via window so IIFE wrappers (profile panel, admin tabs) are triggered
   if (window.applyUserToUI) window.applyUserToUI(me); else applyUserToUI(me);
   if (window.showAdminTabsIfAllowed) window.showAdminTabsIfAllowed();
+  // Fix ticketInScope — const CURRENT_USER in template is always 'John Doe'
+  // Override it to use the real logged-in user's name
+  window.ticketInScope = function(t, s) {
+    var myName = (window.CURRENT_USER && window.CURRENT_USER.name) ? window.CURRENT_USER.name : '';
+    var assignees = (typeof getAssignees === 'function') ? getAssignees(t) : (t.assignees || [t.assignee || '']);
+    if (s === 'assigned')  return assignees.includes(myName);
+    if (s === 'requested') return t.req === myName;
+    if (s === 'reporting') return t.reporter === myName;
+    return false;
+  };
 
   let tickets, team, invites, events, plans, workTasks;
   try {

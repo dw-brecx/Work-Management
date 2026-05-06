@@ -497,6 +497,25 @@ app.put('/api/notifications/:id/read', requireAuth, (req, res) => {
   res.json({ ok:true });
 });
 
+// Recent activity feed (across all tickets, most recent 20 timeline entries)
+app.get('/api/activity', requireAuth, (req, res) => {
+  const rows = all(`
+    SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
+           t.title as ticket_title
+    FROM ticket_timelines tt
+    LEFT JOIN tickets t ON t.id = tt.ticket_id
+    ORDER BY tt.created_at DESC LIMIT 20
+  `);
+  res.json(rows.map(r => ({
+    id: r.id,
+    ticketId: r.ticket_id,
+    ticketTitle: r.ticket_title || '',
+    text: r.text,
+    dot: r.dot,
+    timeAgo: timeAgo(r.created_at)
+  })));
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function timeAgo(iso) {
   try {
@@ -603,7 +622,19 @@ app.get('/api/stats', requireAuth, (req, res) => {
     monthly.push({ label, count });
   }
 
-  res.json({ total, open, inProgress, overdue, closed, byDept, monthly, allDepts, allAssignees });
+  // Completed today
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const completedToday = get(`SELECT COUNT(*) as c FROM tickets WHERE status='Closed' AND created_at LIKE '${todayStr}%'`).c;
+
+  // Previous month counts for delta calculation
+  const prevNow = new Date(); prevNow.setMonth(prevNow.getMonth() - 1);
+  const py = prevNow.getFullYear(), pm = String(prevNow.getMonth() + 1).padStart(2, '0');
+  const prevWhere = `WHERE 1=1 AND created_at LIKE '${py}-${pm}%' ${deptClause} ${assigneeClause}`;
+  const prevTotal = get(`SELECT COUNT(*) as c FROM tickets ${prevWhere}`).c;
+  const prevInProgress = get(`SELECT COUNT(*) as c FROM tickets ${prevWhere} AND status='In Progress'`).c;
+  const prevOverdue = get(`SELECT COUNT(*) as c FROM tickets ${prevWhere} AND overdue=1`).c;
+
+  res.json({ total, open, inProgress, overdue, closed, completedToday, byDept, monthly, allDepts, allAssignees, prevTotal, prevInProgress, prevOverdue });
 });
 
 // ── Admin: create user directly ───────────────────────────────────────────────
