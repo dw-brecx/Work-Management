@@ -7135,10 +7135,16 @@ function populateCreateTicketModal() {
   const requesterSel = document.getElementById('m-requester');
   const reporterSel  = document.getElementById('m-reporter');
   if (!requesterSel || !reporterSel) return;
-  const opts = TEAM_DATA.map(m => `<option value="${m.name}">${m.name}</option>`).join('');
-  requesterSel.innerHTML = opts;
-  reporterSel.innerHTML  = opts + `<option value="John Doe" selected>John Doe (you)</option>`;
-  reporterSel.value = 'John Doe';
+  const me = (window.CURRENT_USER && window.CURRENT_USER.name) || '';
+  // Make sure the current user appears in the list even if TEAM_DATA hasn't loaded them yet
+  const names = TEAM_DATA.map(m => m.name);
+  if (me && !names.includes(me)) names.unshift(me);
+  const buildOpts = () => names.map(n =>
+    `<option value="${escapeHtml(n)}"${n === me ? ' selected' : ''}>${escapeHtml(n)}${n === me ? ' (you)' : ''}</option>`
+  ).join('');
+  requesterSel.innerHTML = buildOpts();
+  reporterSel.innerHTML  = buildOpts();
+  if (me) { requesterSel.value = me; reporterSel.value = me; }
   // Reset assignees state for fresh modal
   pendingCreateAssignees = [];
   renderCreateAssigneeChips();

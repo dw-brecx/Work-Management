@@ -906,9 +906,14 @@ app.get('/api/stats', requireAuth, async (req, res) => {
     } else if (period === 'year') {
       dateClause = `AND created_at LIKE '${now.getFullYear()}%'`;
     }
+    // Members see stats limited to their own assigned tickets — overrides any client-supplied assignee filter.
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Owner','Admin'].includes(me.perm_role);
+    const effectiveAssignee = isAdmin ? assignee : (me?.name || '__none__');
     const deptClause = dept ? `AND dept = '${dept.replace(/'/g, "''")}'` : '';
-    const assigneeClause = assignee
-      ? `AND id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${assignee.replace(/'/g, "''")}')`
+    const assigneeClause = effectiveAssignee
+      ? `AND (assignee = '${effectiveAssignee.replace(/'/g, "''")}'
+             OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${effectiveAssignee.replace(/'/g, "''")}'))`
       : '';
     const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
 
@@ -936,7 +941,9 @@ app.get('/api/stats', requireAuth, async (req, res) => {
     }
 
     const todayStr = now.toISOString().slice(0, 10);
-    const completedTodayRow = await get(`SELECT COUNT(*) as c FROM tickets WHERE status='Closed' AND created_at LIKE '${todayStr}%'`);
+    const completedTodayRow = await get(
+      `SELECT COUNT(*) as c FROM tickets WHERE status='Closed' AND created_at LIKE '${todayStr}%' ${assigneeClause}`
+    );
     const prevNow = new Date(); prevNow.setMonth(prevNow.getMonth() - 1);
     const py = prevNow.getFullYear(), pm = String(prevNow.getMonth() + 1).padStart(2, '0');
     const prevWhere = `WHERE 1=1 AND created_at LIKE '${py}-${pm}%' ${deptClause} ${assigneeClause}`;
