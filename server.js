@@ -1252,13 +1252,12 @@ app.get('*', (req, res) => {
     await initDb();
     console.log('✅  Database initialized');
 
-    try {
-      await run("DELETE FROM users WHERE email IN ('sarah@worknest.com','mike@worknest.com','emily@worknest.com','david@worknest.com','priya@worknest.com')");
-      await run("DELETE FROM tickets WHERE id IN ('TKT-1042','TKT-1041','TKT-1040','TKT-1039','TKT-1038','TKT-1037','TKT-1036','TKT-1035','TKT-0998')");
-      await run("DELETE FROM plans WHERE id IN ('PLN-001','PLN-002','PLN-003')");
-      await run("DELETE FROM invites WHERE email IN ('ariana@worknest.com','daniel@worknest.com')");
-      await run("UPDATE users SET name='Admin', role='Administrator' WHERE email='admin@worknest.com' AND name='John Doe'");
-    } catch(e) { console.warn('[cleanup]', e.message); }
+    // (Removed) Previously a hardcoded "demo data cleanup" block ran on every server
+    // start and DELETE'd TKT-1035..TKT-1042 / PLN-001..003 plus a fixed list of users.
+    // It was meant to be a one-time migration but, because it had no guard, it wiped
+    // any real ticket whose server-allocated id happened to land in that range every
+    // single deploy. Removed entirely — soft-delete is the proper mechanism for any
+    // future cleanup, and admins can use Settings → Reset Data when they want a wipe.
 
     app.listen(PORT, () => {
       console.log(`✅  Syruvia running at http://localhost:${PORT}`);
