@@ -2686,6 +2686,16 @@ async function runOverdueDigestJob() {
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
+  // Don't fall through to the SPA HTML for missing /uploads paths — that
+  // turns a 404 into "downloaded a copy of index.html" when a user clicks
+  // a Download link for a file that's no longer on disk.
+  if (req.path.startsWith('/uploads/')) return res.status(404).send('File not found');
+  // Same for static-asset extensions that should resolve to a real file or
+  // fail. Without this, /favicon.svg or /sw.js would silently become the
+  // app HTML, and the service worker would refuse to register.
+  if (/\.(svg|png|jpg|jpeg|gif|webp|ico|js|css|map|json|webmanifest|webm|mp4|mov|m4a|mp3|wav|ogg|pdf)$/i.test(req.path)) {
+    return res.status(404).send('Not found');
+  }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
