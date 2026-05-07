@@ -10459,8 +10459,36 @@ function patchTicketMutations() {
 
   const origSaveTicket = window.saveTicket;
   if (typeof origSaveTicket === 'function') {
+    let _saveTicketInFlight = false;
     window.saveTicket = async function(...args) {
-      const r = origSaveTicket.apply(this, args);
+      // Concurrent-click guard: a double-click on "Create Ticket" was
+      // creating two server-side rows with consecutive ids. The user
+      // would see the same ticket appear twice in the list.
+      if (_saveTicketInFlight) return;
+      _saveTicketInFlight = true;
+      // Disable the modal's Create button + show a saving state, so a
+      // slow network can't be misread as "didn't register" → second click.
+      const _btn = document.querySelector('#modal-ticket .btn-primary, .modal .btn-primary[onclick*="saveTicket"]');
+      let _btnPrev = null;
+      if (_btn) {
+        _btnPrev = { html: _btn.innerHTML, disabled: _btn.disabled };
+        _btn.disabled = true;
+        _btn.style.opacity = '0.65';
+        _btn.style.cursor = 'wait';
+        _btn.innerHTML = 'Saving…';
+      }
+      const _release = () => {
+        _saveTicketInFlight = false;
+        if (_btn && _btnPrev) {
+          _btn.disabled = _btnPrev.disabled;
+          _btn.innerHTML = _btnPrev.html;
+          _btn.style.opacity = '';
+          _btn.style.cursor = '';
+        }
+      };
+      let r;
+      try {
+      r = origSaveTicket.apply(this, args);
       const t = TICKETS_DATA[0];
       if (t) {
         const optimisticId = t.id;
@@ -10518,6 +10546,12 @@ function patchTicketMutations() {
         }
       }
       return r;
+      } finally {
+        // Always re-enable the button + clear the in-flight guard, no
+        // matter whether the API call succeeded, threw, was rolled back,
+        // or no ticket got pushed at all.
+        _release();
+      }
     };
   }
 
