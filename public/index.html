@@ -2155,7 +2155,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <!-- ========== DASHBOARD ========== -->
     <div id="page-dashboard" class="page active">
       <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Dashboard</h1>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Welcome back, John! Here's what's happening.</p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Welcome back, <span id="dash-welcome-name">there</span>! Here's what's happening.</p>
 
       <div class="page-filter-bar" id="dash-filter-bar">
         <span class="pf-label">Period</span>
@@ -9874,6 +9874,9 @@ function applyUserToUI(u) {
   document.querySelectorAll('.profile-name, .profile-menu-name').forEach(el => el.textContent = u.name);
   // Header role label (was hardcoded "Product Designer")
   document.querySelectorAll('.profile-role').forEach(el => el.textContent = (u.role || u.dept || ''));
+  // Dashboard welcome banner — first name only
+  const welcome = document.getElementById('dash-welcome-name');
+  if (welcome) welcome.textContent = (u.name || '').split(' ')[0] || u.name || 'there';
   const pn = document.getElementById('prof-name'); if (pn) pn.value = u.name;
   const pr = document.getElementById('prof-role'); if (pr) pr.value = u.role || '';
   const pd = document.getElementById('prof-dept'); if (pd) pd.value = u.dept || '';
