@@ -4552,7 +4552,10 @@ function renderTickets() {
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       ${cmt}
     </span></td>
-    <td><button style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text3)" onclick="event.stopPropagation()">⋯</button></td>
+    <td><button style="background:none;border:none;cursor:pointer;font-size:16px;color:var(--text3);padding:2px 6px;border-radius:5px"
+                onclick="event.stopPropagation();openRowActionsMenu(this, '${t.id}')"
+                onmouseenter="this.style.background='#f1f5f9'" onmouseleave="this.style.background=''"
+                title="More actions">⋯</button></td>
   </tr>`;
   }).join('');
   const cnt = document.getElementById('tkt-count');
@@ -12089,6 +12092,95 @@ initApp();
   setTimeout(_hookRouter, 1200);
   setTimeout(_hookRouter, 2500);
 })();
+
+// Per-row actions menu on the Tickets list (⋯ button on each row).
+let _rowActionsMenuEl = null;
+window.openRowActionsMenu = function(btn, ticketId) {
+  // Close any prior menu
+  if (_rowActionsMenuEl) { _rowActionsMenuEl.remove(); _rowActionsMenuEl = null; }
+  const t = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []).find(x => x.id === ticketId);
+  if (!t) return;
+  const isClosed   = t.status === 'Closed';
+  const isArchived = t.status === 'Archived';
+
+  const items = [];
+  items.push({ label: 'Open ticket',     icon: '↗', action: () => openTicketDetail(ticketId) });
+  if (!isClosed && !isArchived) items.push({ label: 'Close ticket', icon: '✓', action: () => quickCloseTicket(ticketId) });
+  if (isClosed)                  items.push({ label: 'Reopen ticket', icon: '↺', action: () => quickReopenTicket(ticketId) });
+  if (!isArchived)               items.push({ label: 'Archive', icon: '📦', action: () => quickArchiveTicket(ticketId) });
+  items.push({ label: 'Delete', icon: '🗑', danger: true, action: () => quickDeleteTicket(ticketId) });
+
+  const m = document.createElement('div');
+  m.className = 'row-actions-menu';
+  m.style.cssText = 'position:fixed;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 28px rgba(15,23,42,.12);padding:5px;z-index:9999;min-width:160px;display:flex;flex-direction:column;gap:2px';
+  m.onclick = e => e.stopPropagation();
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.style.cssText = `display:flex;align-items:center;gap:9px;width:100%;padding:7px 11px;border:none;background:none;border-radius:7px;cursor:pointer;font-size:12px;text-align:left;color:${it.danger ? 'var(--red)' : 'var(--text)'};font-family:inherit`;
+    b.innerHTML = `<span style="width:16px;display:inline-flex;justify-content:center">${it.icon}</span><span>${it.label}</span>`;
+    b.onmouseenter = () => b.style.background = it.danger ? '#fef2f2' : '#f1f5f9';
+    b.onmouseleave = () => b.style.background = '';
+    b.onclick = () => { if (_rowActionsMenuEl) { _rowActionsMenuEl.remove(); _rowActionsMenuEl = null; } it.action(); };
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+
+  // Position next to the trigger button
+  const r = btn.getBoundingClientRect();
+  m.style.top  = Math.min(window.innerHeight - m.offsetHeight - 8, r.bottom + 4) + 'px';
+  m.style.left = Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + 'px';
+  _rowActionsMenuEl = m;
+
+  // Click-outside to close
+  setTimeout(() => {
+    const off = (e) => {
+      if (_rowActionsMenuEl && !_rowActionsMenuEl.contains(e.target)) {
+        _rowActionsMenuEl.remove(); _rowActionsMenuEl = null;
+        document.removeEventListener('click', off);
+      }
+    };
+    document.addEventListener('click', off);
+  }, 0);
+};
+
+window.quickCloseTicket = async function(id) {
+  const t = TICKETS_DATA.find(x => x.id === id); if (!t) return;
+  if (!confirm(`Close ticket ${id}?`)) return;
+  t.status = 'Closed'; t.overdue = false;
+  if (typeof renderTickets === 'function') renderTickets();
+  if (typeof initDashboard === 'function') initDashboard();
+  try { await apiPut('/api/tickets/' + id, { status: 'Closed', overdue: false }); }
+  catch { alert('Could not save status — check connection.'); }
+};
+
+window.quickReopenTicket = async function(id) {
+  const t = TICKETS_DATA.find(x => x.id === id); if (!t) return;
+  t.status = 'Open';
+  if (typeof renderTickets === 'function') renderTickets();
+  if (typeof initDashboard === 'function') initDashboard();
+  try { await apiPut('/api/tickets/' + id, { status: 'Open' }); }
+  catch { alert('Could not save status — check connection.'); }
+};
+
+window.quickArchiveTicket = async function(id) {
+  const t = TICKETS_DATA.find(x => x.id === id); if (!t) return;
+  if (!confirm(`Archive ticket ${id}?`)) return;
+  t.status = 'Archived';
+  if (typeof renderTickets === 'function') renderTickets();
+  if (typeof initDashboard === 'function') initDashboard();
+  try { await apiPut('/api/tickets/' + id, { status: 'Archived' }); }
+  catch { alert('Could not save status — check connection.'); }
+};
+
+window.quickDeleteTicket = async function(id) {
+  if (!confirm(`Delete ticket ${id}? This is recoverable from the admin dump until purged.`)) return;
+  const idx = TICKETS_DATA.findIndex(x => x.id === id);
+  if (idx !== -1) TICKETS_DATA.splice(idx, 1);
+  if (typeof renderTickets === 'function') renderTickets();
+  if (typeof initDashboard === 'function') initDashboard();
+  try { await apiDel('/api/tickets/' + id); }
+  catch { alert('Could not delete — check connection.'); }
+};
 
 // Jump from a Teams card to the Tickets page filtered by that person.
 window.showTicketsForAssignee = function(name) {
