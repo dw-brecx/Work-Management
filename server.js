@@ -1263,6 +1263,7 @@ app.get('*', (req, res) => {
       console.log(`✅  Syruvia running at http://localhost:${PORT}`);
       console.log(`   Default login: admin@worknest.com / admin123`);
       console.log(`   No on-start ticket cleanup — your data is safe across deploys.`);
+      console.log(`   Status is end-user controlled only; never reset on boot.`);
     });
   } catch(e) {
     console.error('❌  Failed to start:', e.message);
