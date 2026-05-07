@@ -2103,7 +2103,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     #mobile-bottom-nav .mb-label { line-height: 1.1; font-weight: 500; }
     @media (max-width: 768px) {
       #mobile-bottom-nav { display: block; }
-      #mobile-fab { display: flex !important; }
+      /* The FAB only makes sense on pages where "+" means "create a ticket".
+         A body class set by navigate() flips it on for /tickets and /my-
+         tickets only; everywhere else (Dashboard, ticket-detail, settings,
+         etc.) it stays hidden. */
+      body.fab-create-ticket #mobile-fab { display: flex !important; }
       /* Hamburger no longer needed when bottom nav is the primary navigation */
       .mob-menu-btn { display: none !important; }
     }
@@ -4418,6 +4422,13 @@ function navigate(page) {
   document.querySelectorAll('#mobile-bottom-nav .mb-tab').forEach(el => {
     el.classList.toggle('active', el.dataset.page === navKey);
   });
+  // Show the create-ticket FAB only on /tickets and /my-tickets — those
+  // are the pages where "+" naturally means "make a new ticket". On the
+  // dashboard or inside a ticket detail it's just visual noise.
+  document.body.classList.toggle(
+    'fab-create-ticket',
+    page === 'tickets' || page === 'my-tickets'
+  );
   // If the mobile sidebar drawer is open and the user just navigated, close it
   // so they don't have to dismiss the overlay manually.
   const _sb = document.getElementById('sidebar');
