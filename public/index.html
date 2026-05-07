@@ -1926,9 +1926,31 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       /* Hide the bulky topbar search on mobile — bottom nav is primary */
       .search-wrap { display: none !important; }
 
-      /* Right-panel (used on dashboard/calendar) — collapse below content */
-      .page-with-right { grid-template-columns: 1fr !important; }
-      .right-panel { display: none !important; }
+      /* Hide topbar action buttons on mobile — they wrapped to a second row
+         and pushed the bell + profile down on top of the page heading.
+         Replaced by a floating + button (FAB) for Create Ticket. */
+      .topbar-right > button.btn-soft,
+      .topbar-right > button.btn-primary { display: none !important; }
+      /* Tighter topbar so bell + avatar fit cleanly in one row */
+      #topbar { gap: 8px !important; min-height: 56px !important; }
+      .topbar-right { gap: 10px !important; }
+
+      /* Right-panel — on mobile, stack below the main content instead of
+         floating to the right. The ticket-detail right-panel is the comment
+         thread + composer, so hiding it would break commenting on mobile. */
+      .page-with-right {
+        grid-template-columns: 1fr !important;
+        grid-template-rows: auto auto !important;
+      }
+      .right-panel {
+        display: block !important;
+        position: static !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        border-left: 0 !important;
+        border-top: 1px solid var(--border) !important;
+        margin-top: 14px !important;
+      }
 
       /* Bigger touch targets on row-action buttons + filter chips */
       .btn-primary, .btn-sec, .pg-btn { min-height: 40px !important; }
@@ -1936,6 +1958,26 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       /* Make the create modal's body scroll inside the screen */
       #modal-create-ticket .modal-body, #modal-ticket .modal-body { overflow-y: auto !important; }
     }
+
+    /* ── Floating + button (mobile only — primary action) ── */
+    #mobile-fab {
+      display: none;
+      position: fixed;
+      right: 16px;
+      bottom: calc(82px + env(safe-area-inset-bottom));
+      z-index: 96;
+      width: 54px; height: 54px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      color: #fff;
+      border: 0;
+      cursor: pointer;
+      box-shadow: 0 8px 22px rgba(124,58,237,.45);
+      align-items: center;
+      justify-content: center;
+    }
+    #mobile-fab:active { transform: scale(.95); }
+    #mobile-fab svg { width: 26px; height: 26px; }
 
     /* ── Bottom nav (mobile only — looks like a native app tab bar) ── */
     #mobile-bottom-nav {
@@ -1973,6 +2015,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     #mobile-bottom-nav .mb-label { line-height: 1.1; font-weight: 500; }
     @media (max-width: 768px) {
       #mobile-bottom-nav { display: block; }
+      #mobile-fab { display: flex !important; }
       /* Hamburger no longer needed when bottom nav is the primary navigation */
       .mob-menu-btn { display: none !important; }
     }
@@ -2211,6 +2254,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   </div>
 </div>
 <div id="sb-overlay" onclick="closeMobileSidebar()"></div>
+
+<!-- Floating + (mobile only): opens Create Ticket from anywhere -->
+<button id="mobile-fab" type="button" aria-label="Create ticket" onclick="openModal('create-ticket')">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+</button>
 
 <!-- Bottom nav: shown only on mobile, mirrors the most-used sidebar items -->
 <nav id="mobile-bottom-nav" aria-label="Primary">
