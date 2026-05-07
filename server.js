@@ -783,11 +783,19 @@ app.put('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req
 
 app.get('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (req, res) => {
   try {
-    const rows = await all('SELECT * FROM ticket_comments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
+    // Derive the live author name from users.name when author_user_id is set,
+    // so a profile rename retroactively updates how every comment appears.
+    const rows = await all(`
+      SELECT tc.*, u.name AS author_name_now
+        FROM ticket_comments tc
+        LEFT JOIN users u ON u.id = tc.author_user_id
+       WHERE tc.ticket_id=?
+       ORDER BY tc.created_at ASC`, req.params.id);
     res.json(rows.map(r => ({
       id:r.id, parentId: r.parent_id || null,
-      author:r.author, init:r.author_init, bg:r.author_bg, col:r.author_col,
-      text:r.text, time:timeAgo(r.created_at)
+      author: r.author_name_now || r.author,
+      init: r.author_init, bg: r.author_bg, col: r.author_col,
+      text: r.text, time: timeAgo(r.created_at)
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -806,8 +814,8 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       const parent = await get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', Number(parentId), req.params.id);
       if (parent) safeParentId = parent.id;
     }
-    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?) RETURNING id`,
-      req.params.id, u.name, init, bg, col, text.trim(), safeParentId);
+    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_user_id,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+      req.params.id, u.name, u.id, init, bg, col, text.trim(), safeParentId);
     await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
     const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
 
@@ -834,9 +842,13 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
 
     // ── Reply-to-parent notification + email ──────────────────────────────
     if (safeParentId) {
+      // Prefer author_user_id (stable across renames); fall back to author name
+      // for legacy rows where the id wasn't backfilled.
       const parentInfo = await get(
         `SELECT u.id AS user_id, u.name AS name, u.email AS email, u.role AS role
-           FROM ticket_comments tc JOIN users u ON u.name = tc.author
+           FROM ticket_comments tc
+           JOIN users u ON u.id = COALESCE(tc.author_user_id,
+                                           (SELECT id FROM users WHERE name = tc.author ORDER BY id ASC LIMIT 1))
           WHERE tc.id = ?`, safeParentId);
       if (parentInfo && !emailedUserIds.has(parentInfo.user_id)) {
         emailedUserIds.add(parentInfo.user_id);
@@ -990,11 +1002,18 @@ app.delete('/api/announcements/:id', requireAdmin, async (req, res) => {
 });
 
 // ── Ticket subtasks ──────────────────────────────────────────────────────────
-function buildSubtask(r) {
+// Async — looks up the live user.name when assignee_user_id is set so a
+// renamed user shows their current name on every subtask they're on.
+async function buildSubtask(r) {
+  let assignee = r.assignee || '';
+  if (r.assignee_user_id) {
+    const u = await get('SELECT name FROM users WHERE id=?', r.assignee_user_id);
+    if (u?.name) assignee = u.name;
+  }
   return {
     id: r.id, ticketId: r.ticket_id, position: r.position,
     text: r.text || '', description: r.description || '',
-    done: !!r.done, assignee: r.assignee || '',
+    done: !!r.done, assignee,
     due: r.due || '', priority: r.priority || '',
     createdAt: r.created_at,
   };
@@ -1025,7 +1044,7 @@ app.get('/api/tickets/:id/subtasks', requireAuth, requireTicketAccess, async (re
         rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
       }
     }
-    res.json(rows.map(buildSubtask));
+    res.json(await Promise.all(rows.map(buildSubtask)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1036,14 +1055,15 @@ app.post('/api/tickets/:id/subtasks', requireAuth, requireTicketAccess, async (r
     const { text, assignee, due, priority, description } = req.body || {};
     const posRow = await get('SELECT COALESCE(MAX(position),0) AS p FROM ticket_subtasks WHERE ticket_id=?', req.params.id);
     const nextPos = Number(posRow?.p || 0) + 1;
+    const assigneeUid = await resolveUserIdByName(assignee);
     const info = await run(
-      `INSERT INTO ticket_subtasks (ticket_id, position, text, description, done, assignee, due, priority)
-       VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+      `INSERT INTO ticket_subtasks (ticket_id, position, text, description, done, assignee, assignee_user_id, due, priority)
+       VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`,
       req.params.id, nextPos, String(text || '').trim() || 'New subtask',
-      String(description || ''), 0, assignee || '', due || '', priority || ''
+      String(description || ''), 0, assignee || '', assigneeUid, due || '', priority || ''
     );
     const row = await get('SELECT * FROM ticket_subtasks WHERE id=?', Number(info.lastInsertRowid));
-    res.status(201).json(buildSubtask(row));
+    res.status(201).json(await buildSubtask(row));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1058,13 +1078,16 @@ app.put('/api/subtasks/:sid', requireAuth, async (req, res) => {
     if (text !== undefined)        { u.push('text=?');        v.push(String(text || '').trim()); }
     if (description !== undefined) { u.push('description=?'); v.push(String(description || '')); }
     if (done !== undefined)        { u.push('done=?');        v.push(done ? 1 : 0); }
-    if (assignee !== undefined)    { u.push('assignee=?');    v.push(assignee || ''); }
+    if (assignee !== undefined)    {
+      u.push('assignee=?');         v.push(assignee || '');
+      u.push('assignee_user_id=?'); v.push(await resolveUserIdByName(assignee));
+    }
     if (due !== undefined)         { u.push('due=?');         v.push(due || ''); }
     if (priority !== undefined)    { u.push('priority=?');    v.push(priority || ''); }
     if (position !== undefined)    { u.push('position=?');    v.push(Number(position) || 0); }
     if (u.length) { v.push(sid); await run(`UPDATE ticket_subtasks SET ${u.join(',')} WHERE id=?`, ...v); }
     const row = await get('SELECT * FROM ticket_subtasks WHERE id=?', sid);
-    res.json(buildSubtask(row));
+    res.json(await buildSubtask(row));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1744,7 +1767,8 @@ app.get('/api/stats', requireAuth, async (req, res) => {
                 OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_id = ${Number(target.id)} OR (user_id IS NULL AND user_name = '${validatedName}')))`;
       }
     }
-    const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
+    // Always exclude soft-deleted tickets from stats (audit Finding 6.2).
+    const where = `WHERE deleted_at IS NULL ${dateClause} ${deptClause} ${assigneeClause}`;
 
     const [totalRow, openRow, ipRow, ovRow, clRow, byDept, allDepts, allAssignees] = await Promise.all([
       get(`SELECT COUNT(*) as c FROM tickets ${where}`),
@@ -1762,7 +1786,7 @@ app.get('/api/stats', requireAuth, async (req, res) => {
       const d = new Date(); d.setMonth(d.getMonth() - i);
       const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0');
       const label = d.toLocaleString('default', { month: 'short' });
-      let q = `SELECT COUNT(*) as c FROM tickets WHERE created_at LIKE '${y}-${m}%'`;
+      let q = `SELECT COUNT(*) as c FROM tickets WHERE deleted_at IS NULL AND created_at LIKE '${y}-${m}%'`;
       if (deptClause) q += ` ${deptClause}`;
       if (assigneeClause) q += ` ${assigneeClause}`;
       const row = await get(q);
@@ -1771,11 +1795,11 @@ app.get('/api/stats', requireAuth, async (req, res) => {
 
     const todayStr = now.toISOString().slice(0, 10);
     const completedTodayRow = await get(
-      `SELECT COUNT(*) as c FROM tickets WHERE status='Closed' AND created_at LIKE '${todayStr}%' ${assigneeClause}`
+      `SELECT COUNT(*) as c FROM tickets WHERE deleted_at IS NULL AND status='Closed' AND created_at LIKE '${todayStr}%' ${assigneeClause}`
     );
     const prevNow = new Date(); prevNow.setMonth(prevNow.getMonth() - 1);
     const py = prevNow.getFullYear(), pm = String(prevNow.getMonth() + 1).padStart(2, '0');
-    const prevWhere = `WHERE 1=1 AND created_at LIKE '${py}-${pm}%' ${deptClause} ${assigneeClause}`;
+    const prevWhere = `WHERE deleted_at IS NULL AND created_at LIKE '${py}-${pm}%' ${deptClause} ${assigneeClause}`;
     const [prevTotalRow, prevIPRow, prevOvRow] = await Promise.all([
       get(`SELECT COUNT(*) as c FROM tickets ${prevWhere}`),
       get(`SELECT COUNT(*) as c FROM tickets ${prevWhere} AND status='In Progress'`),

@@ -344,11 +344,18 @@ async function init() {
   // Threaded comments — parent_id links a reply to the comment it answers
   await safeAlter("ALTER TABLE ticket_comments ADD COLUMN parent_id INTEGER");
   // Stable user references on tickets — link assignee/reporter/req to user.id
-  // so a profile rename never breaks the association.
+  // so a profile rename never breaks the association. (FK constraint
+  // intentionally omitted: ADD COLUMN IF NOT EXISTS skips on existing installs
+  // so a REFERENCES clause here wouldn't be retroactively applied. The columns
+  // are managed application-side via resolveUserIdByName at write time.)
   await safeAlter("ALTER TABLE tickets ADD COLUMN assignee_user_id INTEGER");
   await safeAlter("ALTER TABLE tickets ADD COLUMN reporter_user_id INTEGER");
   await safeAlter("ALTER TABLE tickets ADD COLUMN req_user_id INTEGER");
   await safeAlter("ALTER TABLE ticket_assignees ADD COLUMN user_id INTEGER");
+  // Same id-link pattern for comments and subtasks so renames don't break
+  // their author/assignee display either. Application-side write resolution.
+  await safeAlter("ALTER TABLE ticket_comments ADD COLUMN author_user_id INTEGER");
+  await safeAlter("ALTER TABLE ticket_subtasks ADD COLUMN assignee_user_id INTEGER");
 
   // One-time best-effort back-fill: populate the new *_user_id columns by
   // matching the current name string against users.name. Rows whose stored
@@ -366,6 +373,13 @@ async function init() {
   await run(`UPDATE ticket_assignees ta SET user_id = u.id
               FROM users u
               WHERE ta.user_id IS NULL AND ta.user_name = u.name AND ta.user_name != ''`);
+  // Back-fill comment author and subtask assignee user_ids the same way.
+  await run(`UPDATE ticket_comments tc SET author_user_id = u.id
+              FROM users u
+              WHERE tc.author_user_id IS NULL AND tc.author = u.name AND tc.author != ''`);
+  await run(`UPDATE ticket_subtasks ts SET assignee_user_id = u.id
+              FROM users u
+              WHERE ts.assignee_user_id IS NULL AND ts.assignee = u.name AND ts.assignee != ''`);
   // Email-system migrations — track known devices/IPs for new-device-login alerts,
   // and per-event flags so we don't double-fire reminder/deadline emails.
   await safeAlter("ALTER TABLE users ADD COLUMN known_uas TEXT DEFAULT '[]'");
