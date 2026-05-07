@@ -12109,8 +12109,12 @@ function createMediaComposer(mountEl, opts = {}) {
     });
   }
 
-  // Paste images / videos from clipboard
-  mountEl.addEventListener('paste', (e) => {
+  // Paste images / videos from clipboard. Listen on the closest enclosing
+  // form host (modal / settings panel / card) so a Ctrl+V inside the title
+  // or description input also routes here — without this, pastes inside a
+  // sibling textarea would never reach our composer.
+  const pasteHost = mountEl.closest('.modal-content, .settings-panel, .card, [data-paste-host]') || mountEl;
+  pasteHost.addEventListener('paste', (e) => {
     const items = e.clipboardData?.items;
     if (!items) return;
     let handled = false;
@@ -12203,12 +12207,20 @@ function renderWhatsNewFeed() {
         ${attHtml}
       </div>`;
   }).join('');
-  // Mark everything in this feed as seen on the server, and clear the
-  // sidebar badge. Failures are non-fatal — the badge will just stay until
-  // the next successful fetch.
-  fetch('/api/announcements/mark-all-seen', { method:'POST' })
-    .then(() => refreshUnreadAnnouncementBadge())
-    .catch(() => {});
+  // Mark everything in this feed as seen — but ONLY when the user is
+  // actually viewing the What's New page. Without this guard, an admin
+  // publishing a new announcement (which calls loadWhatsNewFeed to
+  // refresh the cache) would mark-all-seen for themselves and the badge
+  // would never tick up from 0 → 1.
+  if (typeof currentPage !== 'undefined' && currentPage === 'whats-new') {
+    fetch('/api/announcements/mark-all-seen', { method:'POST' })
+      .then(() => refreshUnreadAnnouncementBadge())
+      .catch(() => {});
+  } else {
+    // Background refresh — leave the badge alone. Just refresh the count
+    // so any newly published items bump the sidebar.
+    refreshUnreadAnnouncementBadge();
+  }
   // If a hash like #ann-{id} is in the URL (deep-linked from the popup's
   // "View announcement"), scroll that card into view and pulse it.
   const m = location.hash.match(/^#ann-(\d+)$/);
@@ -12230,13 +12242,18 @@ async function refreshUnreadAnnouncementBadge() {
   try {
     const r = await apiGet('/api/announcements/unread-count');
     const n = parseInt(r?.count || 0, 10);
+    console.debug('[whats-new] unread count:', n, r);
     if (n > 0) {
       badge.textContent = n > 99 ? '99+' : String(n);
-      badge.style.display = '';
+      // Inline styling overrides the muted .badge class so the unread
+      // count is unmistakable against the dark sidebar.
+      badge.style.cssText = 'margin-left:auto;background:#7c3aed;color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;display:inline-block;min-width:18px;text-align:center;border:none;box-shadow:0 0 0 2px rgba(124,58,237,.25)';
     } else {
       badge.style.display = 'none';
     }
-  } catch { /* silent — keep prior state */ }
+  } catch (e) {
+    console.warn('[whats-new] unread badge fetch failed:', e?.message || e);
+  }
 }
 window.refreshUnreadAnnouncementBadge = refreshUnreadAnnouncementBadge;
 
