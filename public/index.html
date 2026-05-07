@@ -1907,20 +1907,33 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       .tbl tbody td:nth-child(3) { font-weight: 600 !important; font-size: 14px !important; grid-column: 1 / -1 !important; }
       .tbl tbody td:nth-child(4), .tbl tbody td:nth-child(5) { display: inline-block !important; }
 
-      /* Modals: full-screen sheet on mobile so they feel like app screens */
-      .modal {
-        align-items: stretch !important;
-        padding: 0 !important;
-      }
-      .modal-content, .modal > div, .modal-body {
-        max-width: 100vw !important;
+      /* Modals: full-screen sheet on mobile so they feel like app screens.
+         Targets ONLY the inner sheet element of each of the two modal
+         conventions in this codebase:
+           Pattern A (most): <div class="modal-overlay">
+                               <div class="modal">…</div>
+                             </div>
+           Pattern B (feedback create):
+                             <div class="modal">
+                               <div class="modal-overlay"></div>
+                               <div class="modal-content">…</div>
+                             </div>
+         Important: do NOT use .modal > div / .modal-body — that
+         matches every internal row and stretches each one to 100vh,
+         which is what made the create-ticket modal look empty. */
+      .modal-overlay { align-items: stretch !important; padding: 0 !important; }
+      .modal-overlay > .modal,
+      .modal > .modal-content {
         width: 100vw !important;
-        max-height: 100vh !important;
+        max-width: 100vw !important;
         min-height: 100vh !important;
+        max-height: 100vh !important;
         border-radius: 0 !important;
         margin: 0 !important;
-        padding-top: calc(16px + env(safe-area-inset-top)) !important;
-        padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding-top: calc(20px + env(safe-area-inset-top)) !important;
+        padding-bottom: calc(20px + env(safe-area-inset-bottom)) !important;
       }
 
       /* Hide the bulky topbar search on mobile — bottom nav is primary */
@@ -1957,6 +1970,41 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
       /* Make the create modal's body scroll inside the screen */
       #modal-create-ticket .modal-body, #modal-ticket .modal-body { overflow-y: auto !important; }
+
+      /* Settings page has an inline grid-template-columns:220px 1fr that
+         puts the tab list in a left column. On mobile, flatten it so the
+         tabs scroll horizontally above the content. */
+      #page-settings > div[style*="grid-template-columns"] {
+        display: flex !important;
+        flex-direction: column !important;
+      }
+      #page-settings > div[style*="grid-template-columns"] > .card:first-child {
+        width: 100% !important;
+        margin-bottom: 14px !important;
+      }
+      #page-settings .settings-tab {
+        padding: 10px 12px !important;
+      }
+
+      /* Plan detail's right column collapses below on narrow screens
+         (already handled by .pd-grid @media at 1100px, but make sure
+         everything inside fits). Cards full-width. */
+      .pd-grid > * { min-width: 0 !important; }
+
+      /* Make any wide cards / overflows actually fit instead of horizontal-
+         scrolling the whole page. */
+      .card { max-width: 100% !important; }
+
+      /* Form rows in modals: stack so labels + inputs each get full width */
+      .form-grid { grid-template-columns: 1fr !important; }
+      .form-row { width: 100% !important; }
+      .form-row input, .form-row select, .form-row textarea {
+        width: 100% !important;
+        font-size: 16px !important; /* prevents iOS zoom-on-focus */
+      }
+
+      /* Topbar: title-only h1 if needed */
+      h1 { font-size: 18px !important; }
     }
 
     /* ── Floating + button (mobile only — primary action) ── */
