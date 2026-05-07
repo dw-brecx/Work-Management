@@ -302,6 +302,29 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN deleted_at TEXT DEFAULT NULL");
   // Threaded comments — parent_id links a reply to the comment it answers
   await safeAlter("ALTER TABLE ticket_comments ADD COLUMN parent_id INTEGER");
+  // Stable user references on tickets — link assignee/reporter/req to user.id
+  // so a profile rename never breaks the association.
+  await safeAlter("ALTER TABLE tickets ADD COLUMN assignee_user_id INTEGER");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN reporter_user_id INTEGER");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN req_user_id INTEGER");
+  await safeAlter("ALTER TABLE ticket_assignees ADD COLUMN user_id INTEGER");
+
+  // One-time best-effort back-fill: populate the new *_user_id columns by
+  // matching the current name string against users.name. Rows whose stored
+  // name no longer matches any user (because that user was renamed since)
+  // stay null and continue to fall back to name-based matching.
+  await run(`UPDATE tickets t SET assignee_user_id = u.id
+              FROM users u
+              WHERE t.assignee_user_id IS NULL AND t.assignee = u.name AND t.assignee != ''`);
+  await run(`UPDATE tickets t SET reporter_user_id = u.id
+              FROM users u
+              WHERE t.reporter_user_id IS NULL AND t.reporter = u.name AND t.reporter != ''`);
+  await run(`UPDATE tickets t SET req_user_id = u.id
+              FROM users u
+              WHERE t.req_user_id IS NULL AND t.req = u.name AND t.req != ''`);
+  await run(`UPDATE ticket_assignees ta SET user_id = u.id
+              FROM users u
+              WHERE ta.user_id IS NULL AND ta.user_name = u.name AND ta.user_name != ''`);
   // Email-system migrations — track known devices/IPs for new-device-login alerts,
   // and per-event flags so we don't double-fire reminder/deadline emails.
   await safeAlter("ALTER TABLE users ADD COLUMN known_uas TEXT DEFAULT '[]'");
@@ -313,12 +336,19 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN closed_email_sent INTEGER DEFAULT 0");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
 
+  // Consolidate roles to the canonical three: Admin / Manager / Member.
+  // Old installs may have Owner / User / Viewer values; map them onto the
+  // new set so every user falls into one of the three buckets.
+  await run("UPDATE users SET perm_role='Admin'  WHERE perm_role IN ('Owner')");
+  await run("UPDATE users SET perm_role='Member' WHERE perm_role IN ('User','Viewer')");
+  await run("UPDATE users SET perm_role='Member' WHERE perm_role IS NULL OR perm_role=''");
+
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');
   if (!existing) {
     const hash = bcrypt.hashSync('admin123', 10);
     await run('INSERT INTO users (name,email,password_hash,role,dept,color,perm_role) VALUES (?,?,?,?,?,?,?)',
-      'Admin', 'admin@worknest.com', hash, 'Administrator', 'Management', '#2563eb', 'Owner');
+      'Admin', 'admin@worknest.com', hash, 'Administrator', 'Management', '#2563eb', 'Admin');
   }
 
   // Seed default departments

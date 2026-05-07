@@ -3165,11 +3165,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <input type="text" id="users-search" placeholder="Search users…" oninput="renderUsersTab()" style="flex:1;padding:8px 12px;font-size:12px;border:1px solid var(--border);border-radius:8px"/>
             <select id="users-role-filter" onchange="renderUsersTab()" style="padding:8px 12px;font-size:12px;border:1px solid var(--border);border-radius:8px;background:#fff;width:130px">
               <option value="">All roles</option>
-              <option value="Owner">Owner</option>
               <option value="Admin">Admin</option>
               <option value="Manager">Manager</option>
-              <option value="User">User</option>
-              <option value="Viewer">Viewer</option>
+              <option value="Member">Member</option>
             </select>
           </div>
 
@@ -3263,6 +3261,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
                 <label style="font-size:11px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px">Access Level</label>
                 <select id="au-perm" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;box-sizing:border-box">
                   <option value="Member">Member</option>
+                  <option value="Manager">Manager</option>
                   <option value="Admin">Admin</option>
                 </select>
               </div>
@@ -7662,11 +7661,12 @@ function confirmAccountDelete() {
 }
 
 // ============ SETTINGS — Members & Permissions ============
-// ============ USERS & PERMISSIONS (5 roles, 14 perm matrix) ============
-const PERMISSION_ROLES = ['Viewer','User','Manager','Admin','Owner'];
+// ============ USERS & PERMISSIONS (3 roles) ============
+// Canonical roles: Admin (full access), Manager (full access for now —
+// will be restricted in a later pass), Member (only their own things).
+const PERMISSION_ROLES = ['Admin','Manager','Member'];
 
-// Permission catalogue: 5 groups, 14 permissions total
-// 6 feature areas — one toggle per area
+// Permission catalogue: 6 feature areas — one toggle per area
 const PERM_CATALOG = [
   { key:'tickets',   label:'Tickets'   },
   { key:'planning',  label:'Planning'  },
@@ -7680,27 +7680,26 @@ const PERM_CATALOG = [
 function defaultPermsForRole(role) {
   const all = (val) => Object.fromEntries(PERM_CATALOG.map(p => [p.key, val]));
   switch(role) {
-    case 'Owner':   return all(true);
     case 'Admin':   return all(true);
-    case 'Manager': { const p = all(true); p.workspace = false; return p; }
-    case 'User':    { const p = all(false); p.tickets = true; p.planning = true; p.events = true; return p; }
-    case 'Viewer':  { const p = all(false); p.tickets = true; p.events = true; return p; }
+    case 'Manager': return all(true); // matches Admin for now; will tighten later
+    case 'Member':  { const p = all(false); p.tickets = true; p.events = true; return p; }
     default: return all(false);
   }
 }
 
 const ROLE_CAPS = {
-  'Owner':   'Full access',
-  'Admin':   'Manage everything',
-  'Manager': 'All features except workspace settings',
-  'User':    'Tickets, planning &amp; events',
-  'Viewer':  'Read-only (tickets &amp; events)',
+  'Admin':   'Full access — manage workspace, users, and everything else',
+  'Manager': 'Full access (currently same as Admin; will narrow later)',
+  'Member':  'Sees only their own tickets and assigned items',
 };
 
 function ensureMemberPermissions() {
-  TEAM_DATA.forEach((m, idx) => {
-    if (!m.permRole) m.permRole = idx === 0 ? 'Owner' : (idx === 1 ? 'Admin' : (idx === 2 ? 'Manager' : 'User'));
-    // Initialize permissions from role defaults (one-time seed)
+  TEAM_DATA.forEach((m) => {
+    // Coerce any legacy role names onto the canonical three
+    if (!m.permRole || !PERMISSION_ROLES.includes(m.permRole)) {
+      if (m.permRole === 'Owner') m.permRole = 'Admin';
+      else m.permRole = 'Member';
+    }
     if (!m.perms) m.perms = { ...defaultPermsForRole(m.permRole) };
   });
 }
@@ -7732,28 +7731,25 @@ function renderUsersTab() {
 
   tbody.innerHTML = list.length ? list.map((m) => {
     const realIdx = TEAM_DATA.indexOf(m);
-    const isOwner = m.permRole === 'Owner';
+    const isMe = (window.CURRENT_USER && window.CURRENT_USER.name === m.name);
     return `
       <tr data-idx="${realIdx}">
         <td class="user-cell">
           <div class="u-info">
             <div class="avatar" style="background:linear-gradient(135deg,${m.color},${m.color}aa)">${initials(m.name)}</div>
             <div style="min-width:0">
-              <div class="u-name">${escapeHtml(m.name)}</div>
+              <div class="u-name">${escapeHtml(m.name)}${isMe ? ' <span style="font-size:10px;color:var(--text3);font-weight:400">(you)</span>' : ''}</div>
               <div class="u-email">${escapeHtml(m.email || '—')}</div>
             </div>
           </div>
         </td>
         <td class="u-role">
-          ${isOwner
-            ? `<span class="role-chip Owner">Owner</span>`
-            : `<select onchange="changeMemberRole(${realIdx}, this.value)">
-                ${PERMISSION_ROLES.filter(r => r !== 'Owner').map(r => `<option ${m.permRole === r ? 'selected' : ''}>${r}</option>`).join('')}
-               </select>`
-          }
+          <select onchange="changeMemberRole(${realIdx}, this.value)">
+            ${PERMISSION_ROLES.map(r => `<option ${m.permRole === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
         </td>
         <td class="u-actions">
-          ${isOwner ? '' : `<button class="perm-remove" onclick="removeMember(${realIdx})" title="Remove from team">×</button>`}
+          ${isMe ? '' : `<button class="perm-remove" onclick="removeMember(${realIdx})" title="Remove from team">×</button>`}
         </td>
       </tr>
     `;
@@ -7770,7 +7766,7 @@ function renderRoleDefaultsTable() {
 
 function changeMemberRole(idx, role) {
   if (!TEAM_DATA[idx]) return;
-  if (TEAM_DATA[idx].permRole === 'Owner') return; // Owner protected
+  if (!PERMISSION_ROLES.includes(role)) return;
   TEAM_DATA[idx].permRole = role;
   // Reseed effective permissions from the new role's defaults
   TEAM_DATA[idx].perms = { ...defaultPermsForRole(role) };
@@ -7816,12 +7812,12 @@ function renderPermissionsMatrix() {
         </div>
       </td>`;
     PERM_CATALOG.forEach(p => {
-      const isOwner = m.permRole === 'Owner';
+      const isAdmin = m.permRole === 'Admin';
       const value = getPerm(m, p.key);
       let cls = 'perm-cell ';
-      if (isOwner) cls += 'on locked';
+      if (isAdmin) cls += 'on locked';
       else cls += value ? 'on' : 'off';
-      const title = isOwner ? 'Owner has full access' : `${p.label}: ${value ? 'allowed' : 'denied'} — click to toggle`;
+      const title = isAdmin ? 'Admin has full access' : `${p.label}: ${value ? 'allowed' : 'denied'} — click to toggle`;
       body += `<td class="cell-wrap"><span class="${cls}" onclick="togglePermCell(${mi},'${p.key}')" title="${escapeAttr(title)}"></span></td>`;
     });
     body += `</tr>`;
@@ -7833,13 +7829,13 @@ function renderPermissionsMatrix() {
 
 function roleColor(role) {
   return ({
-    Owner:'#9d174d', Admin:'#1d4ed8', Manager:'#6d28d9', User:'#15803d', Viewer:'#475569'
+    Admin:'#1d4ed8', Manager:'#6d28d9', Member:'#15803d'
   })[role] || 'var(--text3)';
 }
 
 function togglePermCell(memberIdx, permKey) {
   const m = TEAM_DATA[memberIdx];
-  if (!m || m.permRole === 'Owner') return; // Owner is locked
+  if (!m || m.permRole === 'Admin') return; // Admin is full access, locked
   if (!m.perms) m.perms = { ...defaultPermsForRole(m.permRole) };
   m.perms[permKey] = !m.perms[permKey];
   renderPermissionsMatrix();
@@ -11926,9 +11922,9 @@ initApp();
           '<th style="padding:9px 12px;text-align:left;font-size:11px;font-weight:600;color:#64748b"></th>' +
           '</tr></thead><tbody>' +
           team.map(function(m) {
-            var bbg = m.permRole==='Owner' ? '#fef9c3' : m.permRole==='Admin' ? '#dde4ff' : '#f0fdf4';
-            var bc  = m.permRole==='Owner' ? '#854d0e' : m.permRole==='Admin' ? '#3730a3' : '#166534';
-            var canDel = m.permRole !== 'Owner' && m.id !== me;
+            var bbg = m.permRole==='Admin' ? '#dde4ff' : m.permRole==='Manager' ? '#ede9fe' : '#f0fdf4';
+            var bc  = m.permRole==='Admin' ? '#3730a3' : m.permRole==='Manager' ? '#5b21b6' : '#166534';
+            var canDel = m.id !== me;
             var delBtn = canDel
               ? '<button onclick="adminDeleteUser(' + m.id + ')" data-uname="' + (m.name||'').replace(/"/g,'') + '" style="padding:4px 10px;background:#fee2e2;color:#dc2626;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">Delete</button>'
               : '<span style="font-size:11px;color:#cbd5e1">' + (m.id === me ? 'You' : 'Protected') + '</span>';
@@ -12026,7 +12022,7 @@ initApp();
     // and reveal the always-hidden admin/reset settings tabs for Owner/Admin.
     window.showAdminTabsIfAllowed = function() {
       var u = window.CURRENT_USER;
-      var isAdmin = !!(u && ['Owner','Admin'].includes(u.permRole));
+      var isAdmin = !!(u && ['Admin','Manager'].includes(u.permRole));
       // Toggle every admin-only element
       document.querySelectorAll('.admin-only').forEach(function(el) {
         el.style.display = isAdmin ? '' : 'none';

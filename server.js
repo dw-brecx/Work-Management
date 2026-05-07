@@ -118,7 +118,7 @@ async function requireAdmin(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
   try {
     const u = await get('SELECT perm_role FROM users WHERE id=?', req.session.userId);
-    if (!u || !['Owner','Admin'].includes(u.perm_role)) return res.status(403).json({ error: 'Admin access required' });
+    if (!u || !['Admin','Manager'].includes(u.perm_role)) return res.status(403).json({ error: 'Admin access required' });
     next();
   } catch(e) { next(e); }
 }
@@ -260,15 +260,27 @@ app.get('/api/auth/me', async (req, res) => {
 app.get('/api/team', requireAuth, async (req, res) => {
   try {
     const members = await all('SELECT id,name,email,role,dept,color,perm_role,avatar_url FROM users ORDER BY id');
-    const counts = await all(`SELECT user_name,COUNT(*) as cnt FROM ticket_assignees ta
-      JOIN tickets t ON t.id=ta.ticket_id AND t.status!='Closed' GROUP BY user_name`);
-    const cm = {};
-    counts.forEach(r => { cm[r.user_name] = parseInt(r.cnt, 10); });
-    res.json(members.map(m => ({
-      id:m.id, name:m.name, email:m.email, role:m.role, dept:m.dept, color:m.color,
-      permRole:m.perm_role, avatarUrl:m.avatar_url || '',
-      workload:Math.min(100,(cm[m.name]||0)*10), tickets:cm[m.name]||0
-    })));
+    // Count open tickets per user_id (preferred) or name (legacy fallback)
+    const byId = await all(`SELECT ta.user_id, COUNT(*) as cnt
+                              FROM ticket_assignees ta
+                              JOIN tickets t ON t.id = ta.ticket_id
+                             WHERE t.status != 'Closed' AND t.deleted_at IS NULL AND ta.user_id IS NOT NULL
+                             GROUP BY ta.user_id`);
+    const byName = await all(`SELECT ta.user_name, COUNT(*) as cnt
+                                FROM ticket_assignees ta
+                                JOIN tickets t ON t.id = ta.ticket_id
+                               WHERE t.status != 'Closed' AND t.deleted_at IS NULL AND ta.user_id IS NULL
+                               GROUP BY ta.user_name`);
+    const idMap = {}; byId.forEach(r => { idMap[r.user_id] = parseInt(r.cnt, 10); });
+    const nameMap = {}; byName.forEach(r => { nameMap[r.user_name] = parseInt(r.cnt, 10); });
+    res.json(members.map(m => {
+      const c = (idMap[m.id] || 0) + (nameMap[m.name] || 0);
+      return {
+        id:m.id, name:m.name, email:m.email, role:m.role, dept:m.dept, color:m.color,
+        permRole:m.perm_role, avatarUrl:m.avatar_url || '',
+        workload: Math.min(100, c * 10), tickets: c
+      };
+    }));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -282,9 +294,8 @@ app.put('/api/team/:id/role', requireAuth, async (req, res) => {
 app.delete('/api/team/:id', requireAuth, async (req, res) => {
   try {
     const me = await get('SELECT perm_role FROM users WHERE id=?', req.session.userId);
-    if (!['Owner','Admin'].includes(me?.perm_role)) return res.status(403).json({ error:'Insufficient permissions' });
-    const target = await get('SELECT perm_role FROM users WHERE id=?', req.params.id);
-    if (target?.perm_role === 'Owner') return res.status(403).json({ error:'Cannot remove owner' });
+    if (!['Admin','Manager'].includes(me?.perm_role)) return res.status(403).json({ error:'Insufficient permissions' });
+    if (Number(req.params.id) === Number(req.session.userId)) return res.status(400).json({ error:'Cannot delete your own account' });
     await run('DELETE FROM users WHERE id=?', req.params.id);
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -385,30 +396,74 @@ app.get('/api/invites/token/:token', async (req, res) => {
 });
 
 // ── Tickets ───────────────────────────────────────────────────────────────────
+// Look up a user.id from a name string. Names aren't guaranteed unique — when
+// they collide we just pick the lowest id, which is the historical default.
+async function resolveUserIdByName(name) {
+  if (!name) return null;
+  const u = await get('SELECT id FROM users WHERE name=? ORDER BY id ASC LIMIT 1', name);
+  return u ? u.id : null;
+}
+
+// Derive the *current* display name for a user.id (so a profile rename
+// reflects everywhere automatically). Falls back to the stored name string
+// when no user_id is set (legacy data) or when the user was deleted.
+async function nameForUserId(userId, fallback) {
+  if (!userId) return fallback || '';
+  const u = await get('SELECT name FROM users WHERE id=?', userId);
+  return u ? u.name : (fallback || '');
+}
+
 async function buildTicket(row) {
   if (!row) return null;
-  const assignees = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', row.id);
-  return { ...row, tags:JSON.parse(row.tags_json||'[]'), assignees:assignees.map(a=>a.user_name), overdue:!!row.overdue, comments:row.comments_count };
+  // Pull all assignees with both user_id and stored user_name; prefer the
+  // current user.name when user_id resolves.
+  const assigneeRows = await all(
+    `SELECT ta.user_name, u.name AS current_name
+       FROM ticket_assignees ta
+       LEFT JOIN users u ON u.id = ta.user_id
+      WHERE ta.ticket_id=?`, row.id
+  );
+  const assignees = assigneeRows.map(a => a.current_name || a.user_name);
+  const liveAssignee = await nameForUserId(row.assignee_user_id, row.assignee);
+  const liveReporter = await nameForUserId(row.reporter_user_id, row.reporter);
+  const liveReq      = await nameForUserId(row.req_user_id, row.req);
+  return {
+    ...row,
+    tags: JSON.parse(row.tags_json || '[]'),
+    assignee: liveAssignee,
+    reporter: liveReporter,
+    req:      liveReq,
+    assignees,
+    overdue: !!row.overdue,
+    comments: row.comments_count
+  };
 }
 
 app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
-    const isAdmin = u && ['Owner','Admin'].includes(u.perm_role);
+    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
     let rows;
     if (isAdmin) {
       rows = await all('SELECT * FROM tickets WHERE deleted_at IS NULL ORDER BY id DESC');
     } else {
       // Members see tickets they are assigned to (primary or via ticket_assignees)
-      // OR tickets they created.
+      // OR tickets they created. Match by user_id first (renames don't break
+      // anything) and fall back to name match for any legacy rows that
+      // never got a user_id back-filled.
       rows = await all(
         `SELECT t.* FROM tickets t
            WHERE t.deleted_at IS NULL
-             AND (t.assignee = ?
-                  OR EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND ta.user_name = ?)
+             AND (t.assignee_user_id = ?
+                  OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+                  OR EXISTS (
+                       SELECT 1 FROM ticket_assignees ta
+                        WHERE ta.ticket_id = t.id
+                          AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+                     )
                   OR t.created_by = ?)
            ORDER BY t.id DESC`,
-        u.name, u.name, u.id
+        u.id, u.name, u.id, u.name, u.id
       );
     }
     res.json(await Promise.all(rows.map(buildTicket)));
@@ -439,12 +494,20 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
     }
     if (!id) return res.status(500).json({ error: 'Could not allocate a unique ticket id — please retry.' });
     console.log(`[tickets] INSERT ${id} "${String(title).slice(0,80)}" by user ${req.session.userId} (clientHint=${clientId||'-'}) at ${new Date().toISOString()}`);
-    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+    // Resolve names → user.id so renames don't break links later
+    const assigneeUid = await resolveUserIdByName(assignee);
+    const reporterUid = await resolveUserIdByName(reporter);
+    const reqUid      = await resolveUserIdByName(reqName);
+    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
-      dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId);
+      dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId,
+      assigneeUid, reporterUid, reqUid);
     await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', id);
-    for (const a of (assignees||[])) await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', id, a);
+    for (const a of (assignees||[])) {
+      const uid = await resolveUserIdByName(a);
+      await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, a, uid);
+    }
     // Persist any checklist items from the create modal as real subtasks (default-assigned to the ticket assignee)
     if (Array.isArray(checklist) && checklist.length) {
       let pos = 1;
@@ -497,9 +560,12 @@ app.put('/api/tickets/:id', requireAuth, async (req, res) => {
 
     const u=[]; const v=[];
     if (title!==undefined)    { u.push('title=?');      v.push(title); }
-    if (reqName!==undefined)  { u.push('req=?');        v.push(reqName); }
-    if (assignee!==undefined) { u.push('assignee=?');   v.push(assignee); }
-    if (reporter!==undefined) { u.push('reporter=?');   v.push(reporter); }
+    if (reqName!==undefined)  { u.push('req=?');        v.push(reqName);
+                                u.push('req_user_id=?');     v.push(await resolveUserIdByName(reqName)); }
+    if (assignee!==undefined) { u.push('assignee=?');   v.push(assignee);
+                                u.push('assignee_user_id=?'); v.push(await resolveUserIdByName(assignee)); }
+    if (reporter!==undefined) { u.push('reporter=?');   v.push(reporter);
+                                u.push('reporter_user_id=?'); v.push(await resolveUserIdByName(reporter)); }
     if (priority!==undefined) { u.push('priority=?');   v.push(priority); }
     if (status!==undefined)   { u.push('status=?');     v.push(status); }
     if (dept!==undefined)     { u.push('dept=?');       v.push(dept); }
@@ -509,7 +575,10 @@ app.put('/api/tickets/:id', requireAuth, async (req, res) => {
     if (u.length) { v.push(req.params.id); await run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
     if (assignees!==undefined) {
       await run('DELETE FROM ticket_assignees WHERE ticket_id=?', req.params.id);
-      for (const a of assignees) await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', req.params.id, a);
+      for (const a of assignees) {
+        const uid = await resolveUserIdByName(a);
+        await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', req.params.id, a, uid);
+      }
       const newAssignees = assignees.filter(a => !oldAssigneesAll.includes(a));
       if (newAssignees.length) {
         const assigner = await getUser(req.session.userId);
@@ -986,14 +1055,18 @@ app.post('/api/flavors', requireAuth, async (req, res) => {
       const due = new Date(dueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
       const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
-      await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
+      const flavorAssigneeUid = await resolveUserIdByName(row.assignee);
+      const flavorReporterUid = u?.id || null;
+      const flavorReqUid      = u?.id || null;
+      await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
         tktId, title, u?.name || '', row.assignee || '', u?.name || '',
         row.priority || 'Medium', 'Open', row.dept || 'General',
-        due, createdStr, 0, JSON.stringify([tag]), req.session.userId);
+        due, createdStr, 0, JSON.stringify([tag]), req.session.userId,
+        flavorAssigneeUid, flavorReporterUid, flavorReqUid);
       await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', tktId);
       if (row.assignee) {
-        await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', tktId, row.assignee);
+        await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', tktId, row.assignee, flavorAssigneeUid);
         const target = await get('SELECT id,name,email FROM users WHERE name=?', row.assignee);
         if (target && target.id !== req.session.userId) {
           await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
@@ -1479,18 +1552,33 @@ app.get('/api/stats', requireAuth, async (req, res) => {
       dateClause = `AND created_at LIKE '${now.getFullYear()}%'`;
     }
     // Members see stats limited to tickets they are assigned to OR tickets they created —
-    // overrides any client-supplied assignee filter.
+    // overrides any client-supplied assignee filter. Match by user_id first, fall back
+    // to the legacy name match for any rows that haven't been back-filled yet.
     const me = await getUser(req.session.userId);
-    const isAdmin = me && ['Owner','Admin'].includes(me.perm_role);
-    const effectiveAssignee = isAdmin ? assignee : (me?.name || '__none__');
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
     const deptClause = dept ? `AND dept = '${dept.replace(/'/g, "''")}'` : '';
     let assigneeClause = '';
-    if (effectiveAssignee) {
-      const safeName = effectiveAssignee.replace(/'/g, "''");
-      const createdByClause = (!isAdmin && me?.id) ? ` OR created_by = ${Number(me.id)}` : '';
+    if (!isAdmin && me?.id) {
+      const safeName = (me.name || '').replace(/'/g, "''");
       assigneeClause =
-        `AND (assignee = '${safeName}'
-              OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${safeName}')${createdByClause})`;
+        `AND (assignee_user_id = ${Number(me.id)}
+              OR (assignee_user_id IS NULL AND assignee = '${safeName}')
+              OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_id = ${Number(me.id)} OR (user_id IS NULL AND user_name = '${safeName}'))
+              OR created_by = ${Number(me.id)})`;
+    } else if (isAdmin && assignee) {
+      // Admin filtering by a specific assignee from the dropdown — try id first
+      const target = await get('SELECT id FROM users WHERE name=? ORDER BY id ASC LIMIT 1', assignee);
+      const safeName = String(assignee).replace(/'/g, "''");
+      if (target?.id) {
+        assigneeClause =
+          `AND (assignee_user_id = ${Number(target.id)}
+                OR (assignee_user_id IS NULL AND assignee = '${safeName}')
+                OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_id = ${Number(target.id)} OR (user_id IS NULL AND user_name = '${safeName}')))`;
+      } else {
+        assigneeClause =
+          `AND (assignee = '${safeName}'
+                OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${safeName}'))`;
+      }
     }
     const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
 
@@ -1549,7 +1637,7 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
     if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
     const norm = email.toLowerCase().trim();
     if (await get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'Email already in use' });
-    const pRole = ['Owner','Admin','Member'].includes(permRole) ? permRole : 'Member';
+    const pRole = ['Admin','Manager','Member'].includes(permRole) ? permRole : 'Member';
     const hash = bcrypt.hashSync(password, 10);
     const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role,welcome_sent) VALUES (?,?,?,?,?,?,1) RETURNING id',
       name.trim(), norm, hash, role?.trim() || 'Team Member', dept?.trim() || 'General', pRole);
@@ -1567,7 +1655,6 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
   try {
     const target = await get('SELECT id,perm_role FROM users WHERE id=?', req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
-    if (target.perm_role === 'Owner') return res.status(403).json({ error: 'Cannot delete the owner account' });
     if (target.id === req.session.userId) return res.status(400).json({ error: 'Cannot delete your own account' });
     await run('DELETE FROM users WHERE id=?', req.params.id);
     res.json({ ok: true });
