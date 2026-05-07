@@ -9946,9 +9946,18 @@ function patchTicketMutations() {
       const r = origSaveTicket.apply(this, args);
       const t = TICKETS_DATA[0];
       if (t) {
+        const optimisticId = t.id;
+        // Helper: drop the matching activity-feed entry so the feed never lies about a
+        // ticket that ultimately didn't save.
+        const dropActivityForId = (idToFind) => {
+          if (typeof DASH_ACTIVITY === 'undefined') return;
+          const idx = DASH_ACTIVITY.findIndex(a => typeof a.text === 'string' && a.text.includes('>' + idToFind + '<'));
+          if (idx !== -1) DASH_ACTIVITY.splice(idx, 1);
+        };
         const rollback = (msg) => {
-          const idx = TICKETS_DATA.findIndex(x => x.id === t.id);
+          const idx = TICKETS_DATA.findIndex(x => x.id === optimisticId);
           if (idx !== -1) TICKETS_DATA.splice(idx, 1);
+          dropActivityForId(optimisticId);
           if (typeof initDashboard === 'function') initDashboard();
           if (typeof renderTickets === 'function') renderTickets();
           alert(msg);
@@ -9962,14 +9971,30 @@ function patchTicketMutations() {
             }
             return r;
           }
-          // apiPost returns the JSON for any non-401 response, so a 409 / 500 lands here as
-          // an object with .error. Detect that and roll back the optimistic UI ticket.
           if (resp && resp.error) {
-            if (resp.code === 'duplicate_id') {
-              rollback('Could not save ticket: ID ' + t.id + ' was just taken. Please try creating it again — a fresh ID will be picked.');
-            } else {
-              rollback('Could not save ticket: ' + resp.error);
+            // Server-authoritative IDs make 409 nearly impossible, but surface anything else.
+            rollback('Could not save ticket: ' + resp.error);
+            return r;
+          }
+          // Server returns the canonical ticket — including its assigned id.
+          // If it differs from the optimistic id, reconcile the in-memory state.
+          if (resp && resp.id && resp.id !== optimisticId) {
+            const tk = TICKETS_DATA.find(x => x.id === optimisticId);
+            if (tk) tk.id = resp.id;
+            // Update the activity-feed entry's text to use the canonical id
+            if (typeof DASH_ACTIVITY !== 'undefined') {
+              const aIdx = DASH_ACTIVITY.findIndex(a => typeof a.text === 'string' && a.text.includes('>' + optimisticId + '<'));
+              if (aIdx !== -1) {
+                DASH_ACTIVITY[aIdx].text = DASH_ACTIVITY[aIdx].text.replace('>' + optimisticId + '<', '>' + resp.id + '<');
+              }
             }
+            // If a plan was promoted to this ticket, fix the back-reference too
+            if (typeof PLANS !== 'undefined' && Array.isArray(PLANS)) {
+              const p = PLANS.find(p => p.promotedTicketId === optimisticId);
+              if (p) p.promotedTicketId = resp.id;
+            }
+            if (typeof renderTickets === 'function') renderTickets();
+            if (typeof initDashboard === 'function') initDashboard();
           }
         } catch(err) {
           rollback('Could not save ticket — please try again.');

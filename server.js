@@ -243,12 +243,20 @@ app.get('/api/tickets/:id', requireAuth, async (req, res) => {
 
 app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const { id, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist } = req.body;
-    if (!id || !title) return res.status(400).json({ error:'id and title required' });
-    if (await get('SELECT id FROM tickets WHERE id=?', id)) {
-      return res.status(409).json({ error: `Ticket ${id} already exists`, code: 'duplicate_id' });
+    const { id: clientId, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist } = req.body;
+    if (!title) return res.status(400).json({ error:'title required' });
+    // Server-authoritative ID. Pick max(existing TKT-### number) + 1, with a tiny retry
+    // loop in case of a concurrent insert. Eliminates the client-side ID-collision race.
+    let id = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+      let nextNum = 1000;
+      if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+      const candidate = 'TKT-' + (nextNum + 1);
+      if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
     }
-    console.log(`[tickets] INSERT ${id} "${String(title).slice(0,80)}" by user ${req.session.userId} at ${new Date().toISOString()}`);
+    if (!id) return res.status(500).json({ error: 'Could not allocate a unique ticket id — please retry.' });
+    console.log(`[tickets] INSERT ${id} "${String(title).slice(0,80)}" by user ${req.session.userId} (clientHint=${clientId||'-'}) at ${new Date().toISOString()}`);
     await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
