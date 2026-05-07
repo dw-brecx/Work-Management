@@ -12092,6 +12092,72 @@ initApp();
 
 })();
 
+// Re-fetch the data a page needs and re-run its renderer. Called after every
+// navigation so each page is "fresh from the server". Failures keep the
+// existing in-memory data instead of clearing it (so a transient network
+// blip doesn't blank the app).
+async function refreshPageData(page) {
+  try {
+    if (page === 'tickets' || page === 'my-tickets' || page === 'flavors' || page === 'dashboard') {
+      const tickets = await apiGet('/api/tickets');
+      if (Array.isArray(tickets)) {
+        TICKETS_DATA.length = 0;
+        tickets.forEach(t => TICKETS_DATA.push(t));
+      }
+    }
+    if (page === 'teams' || page === 'dashboard') {
+      const [team, invites] = await Promise.all([
+        apiGet('/api/team').catch(() => null),
+        apiGet('/api/invites').catch(() => null),
+      ]);
+      if (Array.isArray(team)) {
+        if (typeof _dbTeamIds === 'object') Object.keys(_dbTeamIds).forEach(k => delete _dbTeamIds[k]);
+        TEAM_DATA.length = 0;
+        team.forEach(m => {
+          if (typeof _dbTeamIds === 'object') _dbTeamIds[m.name] = m.id;
+          TEAM_DATA.push({ name:m.name, email:m.email, role:m.role, dept:m.dept, color:m.color, workload:m.workload||0, tickets:m.tickets||0, permRole:m.permRole, avatarUrl:m.avatarUrl });
+        });
+      }
+      if (Array.isArray(invites)) {
+        TEAM_INVITES.length = 0;
+        invites.filter(i => i.status === 'Pending').forEach(i =>
+          TEAM_INVITES.push({ id:i.id, name:i.name, email:i.email, role:i.role, dept:i.dept, status:i.status })
+        );
+      }
+    }
+    if (page === 'planning') {
+      const plans = await apiGet('/api/plans');
+      if (Array.isArray(plans)) {
+        PLANS.length = 0;
+        plans.forEach(p => PLANS.push({ id:p.id, title:p.title, notes:p.notes||'', files:p.files||[], status:p.status||'draft', createdAt:p.createdAt||'', updatedAt:p.updatedAt||'', promotedTicketId:p.promotedTicketId||null, reminderAt:p.reminderAt||null, reminderTriggered:!!p.reminderTriggered }));
+      }
+    }
+    if (page === 'calendar') {
+      const events = await apiGet('/api/events');
+      if (Array.isArray(events)) {
+        // Replace whatever we had cached with the server's view
+        Object.keys(CAL_EVENTS).forEach(k => delete CAL_EVENTS[k]);
+        events.forEach(e => {
+          if (!CAL_EVENTS[e.dateKey]) CAL_EVENTS[e.dateKey] = [];
+          CAL_EVENTS[e.dateKey].push({ _id:e.id, type:e.type, label:e.label, title:e.title, desc:e.desc, allDay:e.allDay, startTime:e.startTime, endTime:e.endTime, linkedTicketId:e.linkedTicketId, attendees:e.attendees||[], location:e.location, assignee:e.assignee, completed:e.completed, syncsTicket:e.syncsTicket, source:e.source||'personal', userId:e.userId });
+        });
+      }
+    }
+    // Re-run the page's renderer with the fresh data
+    if (page === 'dashboard'   && typeof initDashboard === 'function') { initDashboard(); if (typeof updateDashDonut === 'function') updateDashDonut(); }
+    if (page === 'tickets'     && typeof renderTickets === 'function') renderTickets();
+    if (page === 'my-tickets'  && typeof renderKanban  === 'function') renderKanban();
+    if (page === 'planning'    && typeof renderPlans   === 'function') renderPlans();
+    if (page === 'flavors'     && typeof renderFlavors === 'function') renderFlavors();
+    if (page === 'calendar'    && typeof buildCalendar === 'function') { buildCalendar(); if (window.buildCalTodayPanel) window.buildCalTodayPanel(); if (window.buildCalWeekStats) window.buildCalWeekStats(); }
+    if (page === 'teams'       && typeof renderTeams   === 'function') renderTeams();
+  } catch (err) {
+    // Keep stale data — the user will see what they had before the failed nav.
+    console.warn('[router] refreshPageData failed for', page, '—', err?.message || err);
+  }
+}
+window.refreshPageData = refreshPageData;
+
 // ── App router (deep-linkable URLs for every page + ticket + plan) ─────────
 //
 // Path ↔ page map:
@@ -12213,7 +12279,22 @@ initApp();
     if (typeof orig !== 'function' || orig._urlPatched) return;
     const patched = function(id, ...rest) {
       const r = orig.apply(this, [id, ...rest]);
-      if (id) pushUrl('ticket-detail', { ticketId: id });
+      if (id) {
+        pushUrl('ticket-detail', { ticketId: id });
+        // Pull the latest copy of this ticket from the server so the detail
+        // view always reflects current state — useful when arriving via a
+        // direct URL or after another user edited it.
+        apiGet('/api/tickets/' + encodeURIComponent(id)).then(t => {
+          if (!t || t.error) return;
+          const i = TICKETS_DATA.findIndex(x => x.id === t.id);
+          if (i >= 0) TICKETS_DATA[i] = t;
+          else TICKETS_DATA.unshift(t);
+          if (typeof currentTicketId !== 'undefined' && currentTicketId === t.id
+              && typeof renderTicketDetail === 'function') {
+            renderTicketDetail();
+          }
+        }).catch(() => {});
+      }
       return r;
     };
     patched._urlPatched = true;
@@ -12243,6 +12324,8 @@ initApp();
       // top-level pages push the canonical path here.
       if (page !== 'ticket-detail' && page !== 'plan-detail' && PAGE_PATHS[page]) {
         pushUrl(page);
+        // Hard-refresh the data for this page from the server, then re-render.
+        if (typeof refreshPageData === 'function') refreshPageData(page);
       } else if (!PAGE_PATHS[page] && page !== 'ticket-detail' && page !== 'plan-detail') {
         // Unknown page: fall back to root
         if (location.pathname !== '/') history.pushState({}, '', '/');
