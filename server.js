@@ -123,6 +123,42 @@ async function requireAdmin(req, res, next) {
   } catch(e) { next(e); }
 }
 
+// Returns true when the current session can read/write the given ticket id.
+// Admin and Manager can touch every ticket; Members can only touch tickets
+// they're assigned to (primary or via ticket_assignees) or that they created.
+// Used by every per-ticket endpoint to plug the "guess a TKT-id" attack.
+async function canAccessTicket(req, ticketId) {
+  if (!req.session.userId) return false;
+  const me = await getUser(req.session.userId);
+  if (!me) return false;
+  if (['Admin','Manager'].includes(me.perm_role)) return true;
+  const t = await get(
+    `SELECT 1 FROM tickets t
+       WHERE t.id = ?
+         AND (t.assignee_user_id = ?
+              OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+              OR EXISTS (
+                   SELECT 1 FROM ticket_assignees ta
+                    WHERE ta.ticket_id = t.id
+                      AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+                 )
+              OR t.created_by = ?)`,
+    ticketId, me.id, me.name, me.id, me.name, me.id
+  );
+  return !!t;
+}
+
+// Express middleware version. The ticket id is read from req.params.id (the
+// only convention used in this codebase). Returns 404 (not 403) when access
+// is denied so the response is indistinguishable from "ticket doesn't exist".
+async function requireTicketAccess(req, res, next) {
+  try {
+    const id = req.params.id;
+    if (!await canAccessTicket(req, id)) return res.status(404).json({ error: 'Not found' });
+    next();
+  } catch(e) { next(e); }
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -284,9 +320,13 @@ app.get('/api/team', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/team/:id/role', requireAuth, async (req, res) => {
+app.put('/api/team/:id/role', requireAdmin, async (req, res) => {
   try {
-    await run('UPDATE users SET perm_role=? WHERE id=?', req.body.permRole, req.params.id);
+    const role = req.body && req.body.permRole;
+    if (!['Admin','Manager','Member'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be Admin, Manager, or Member.' });
+    }
+    await run('UPDATE users SET perm_role=? WHERE id=?', role, req.params.id);
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -308,7 +348,7 @@ app.get('/api/invites', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/invites', requireAuth, async (req, res) => {
+app.post('/api/invites', requireAdmin, async (req, res) => {
   try {
     const { email, name, role, dept } = req.body;
     if (!email || !name) return res.status(400).json({ error:'Email and name required' });
@@ -333,7 +373,7 @@ app.post('/api/invites', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/invites/:id', requireAuth, async (req, res) => {
+app.delete('/api/invites/:id', requireAdmin, async (req, res) => {
   try {
     await run("UPDATE invites SET status='Cancelled' WHERE id=?", req.params.id);
     res.json({ ok:true });
@@ -367,7 +407,7 @@ async function resendInviteByLookup(lookup, req) {
            email: inv.email, name: inv.name };
 }
 
-app.post('/api/invites/:id/resend', requireAuth, async (req, res) => {
+app.post('/api/invites/:id/resend', requireAdmin, async (req, res) => {
   try {
     const r = await resendInviteByLookup({ id: req.params.id }, req);
     if (!r.ok) return res.status(r.code || 500).json({ error: r.error });
@@ -376,7 +416,7 @@ app.post('/api/invites/:id/resend', requireAuth, async (req, res) => {
 });
 
 // Convenience for the front-end — it knows the email but not the invite id.
-app.post('/api/invites/resend-by-email', requireAuth, async (req, res) => {
+app.post('/api/invites/resend-by-email', requireAdmin, async (req, res) => {
   try {
     const email = String(req.body?.email || '').toLowerCase().trim();
     if (!email) return res.status(400).json({ error: 'Email required' });
@@ -470,7 +510,7 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/tickets/:id', requireAuth, async (req, res) => {
+app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const row = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
     if (!row) return res.status(404).json({ error:'Not found' });
@@ -546,7 +586,7 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/tickets/:id', requireAuth, async (req, res) => {
+app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const { title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags } = req.body;
     const exists = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
@@ -648,7 +688,7 @@ app.put('/api/tickets/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/tickets/:id', requireAuth, async (req, res) => {
+app.delete('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
     console.log(`[tickets] SOFT-DELETE ${req.params.id} by user ${req.session.userId} (${u?.name}) at ${new Date().toISOString()}`);
@@ -658,7 +698,7 @@ app.delete('/api/tickets/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/tickets/:id/details', requireAuth, async (req, res) => {
+app.get('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const row = await get('SELECT * FROM ticket_details WHERE ticket_id=?', req.params.id);
     if (!row) return res.json({ description:'', checklist:[] });
@@ -666,7 +706,7 @@ app.get('/api/tickets/:id/details', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/tickets/:id/details', requireAuth, async (req, res) => {
+app.put('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const { description, checklist } = req.body;
     await run(`INSERT INTO ticket_details (ticket_id,description,checklist_json) VALUES (?,?,?)
@@ -676,7 +716,7 @@ app.put('/api/tickets/:id/details', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/tickets/:id/comments', requireAuth, async (req, res) => {
+app.get('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const rows = await all('SELECT * FROM ticket_comments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
     res.json(rows.map(r => ({
@@ -687,7 +727,7 @@ app.get('/api/tickets/:id/comments', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
+app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const { text, parentId } = req.body;
     if (!text?.trim()) return res.status(400).json({ error:'Text required' });
@@ -769,7 +809,7 @@ app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/tickets/:id/comments/:commentId', requireAuth, async (req, res) => {
+app.delete('/api/tickets/:id/comments/:commentId', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const comment = await get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
     if (!comment) return res.status(404).json({ error:'Comment not found' });
@@ -779,7 +819,7 @@ app.delete('/api/tickets/:id/comments/:commentId', requireAuth, async (req, res)
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
+app.get('/api/tickets/:id/timeline', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const rows = await all('SELECT * FROM ticket_timelines WHERE ticket_id=? ORDER BY created_at DESC', req.params.id);
     if (!rows.length) {
@@ -790,7 +830,7 @@ app.get('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/tickets/:id/timeline', requireAuth, async (req, res) => {
+app.post('/api/tickets/:id/timeline', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const { dot, text, sub } = req.body;
     await run('INSERT INTO ticket_timelines (ticket_id,dot,text,sub) VALUES (?,?,?,?)', req.params.id, dot||'var(--accent)', text, sub||'Just now');
@@ -895,7 +935,7 @@ function buildSubtask(r) {
   };
 }
 
-app.get('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
+app.get('/api/tickets/:id/subtasks', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     let rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
     // One-time migration: if no subtask rows yet, but legacy checklist_json on ticket_details has items, lift them in.
@@ -924,7 +964,7 @@ app.get('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
+app.post('/api/tickets/:id/subtasks', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     if (!await get('SELECT id FROM tickets WHERE id=?', req.params.id))
       return res.status(404).json({ error: 'Ticket not found' });
@@ -945,8 +985,9 @@ app.post('/api/tickets/:id/subtasks', requireAuth, async (req, res) => {
 app.put('/api/subtasks/:sid', requireAuth, async (req, res) => {
   try {
     const sid = Number(req.params.sid);
-    if (!await get('SELECT id FROM ticket_subtasks WHERE id=?', sid))
-      return res.status(404).json({ error: 'Subtask not found' });
+    const sub = await get('SELECT ticket_id FROM ticket_subtasks WHERE id=?', sid);
+    if (!sub) return res.status(404).json({ error: 'Subtask not found' });
+    if (!await canAccessTicket(req, sub.ticket_id)) return res.status(404).json({ error: 'Subtask not found' });
     const { text, description, done, assignee, due, priority, position } = req.body || {};
     const u = []; const v = [];
     if (text !== undefined)        { u.push('text=?');        v.push(String(text || '').trim()); }
@@ -965,6 +1006,9 @@ app.put('/api/subtasks/:sid', requireAuth, async (req, res) => {
 app.delete('/api/subtasks/:sid', requireAuth, async (req, res) => {
   try {
     const sid = Number(req.params.sid);
+    const sub = await get('SELECT ticket_id FROM ticket_subtasks WHERE id=?', sid);
+    if (!sub) return res.status(404).json({ error: 'Subtask not found' });
+    if (!await canAccessTicket(req, sub.ticket_id)) return res.status(404).json({ error: 'Subtask not found' });
     // Delete attached files from disk before cascading
     const atts = await all('SELECT filename FROM attachments WHERE subtask_id=?', sid);
     for (const a of atts) {
@@ -978,7 +1022,11 @@ app.delete('/api/subtasks/:sid', requireAuth, async (req, res) => {
 
 app.get('/api/subtasks/:sid/attachments', requireAuth, async (req, res) => {
   try {
-    const rows = await all('SELECT * FROM attachments WHERE subtask_id=? ORDER BY created_at ASC', Number(req.params.sid));
+    const sid = Number(req.params.sid);
+    const sub = await get('SELECT ticket_id FROM ticket_subtasks WHERE id=?', sid);
+    if (!sub) return res.status(404).json({ error: 'Subtask not found' });
+    if (!await canAccessTicket(req, sub.ticket_id)) return res.status(404).json({ error: 'Subtask not found' });
+    const rows = await all('SELECT * FROM attachments WHERE subtask_id=? ORDER BY created_at ASC', sid);
     res.json(rows.map(r => ({
       id: r.id, filename: r.filename, originalName: r.original_name,
       mimeType: r.mime_type, size: r.size, uploader: r.uploader,
@@ -1002,7 +1050,7 @@ app.get('/api/flavor-tasks', requireAuth, async (req, res) => {
 });
 
 // Replace the entire template list. Body: { tasks: [{ title, assignee, dept, priority, daysOffset }] }
-app.put('/api/flavor-tasks', requireAuth, async (req, res) => {
+app.put('/api/flavor-tasks', requireAdmin, async (req, res) => {
   try {
     const tasks = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
     await run('DELETE FROM flavor_tasks');
@@ -1022,7 +1070,7 @@ app.put('/api/flavor-tasks', requireAuth, async (req, res) => {
 
 // Create one ticket per template row for a new flavor.
 // Body: { name: 'Mango Mint', launchDate: 'YYYY-MM-DD' }
-app.post('/api/flavors', requireAuth, async (req, res) => {
+app.post('/api/flavors', requireAdmin, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     const launchDate = String(req.body?.launchDate || '').trim();
@@ -1498,6 +1546,17 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
     if (!req.file) return res.status(400).json({ error: 'No file' });
     const u = await getUser(req.session.userId);
     const { ticketId, commentId, subtaskId } = req.body;
+    // Verify the uploader actually has access to the parent ticket. Without
+    // this a Member could attach files to anyone's ticket by id-guessing.
+    let parentTicketId = ticketId || null;
+    if (!parentTicketId && subtaskId) {
+      const sub = await get('SELECT ticket_id FROM ticket_subtasks WHERE id=?', Number(subtaskId));
+      parentTicketId = sub ? sub.ticket_id : null;
+    }
+    if (parentTicketId && !await canAccessTicket(req, parentTicketId)) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
     const info = await run(
       'INSERT INTO attachments (ticket_id,comment_id,subtask_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?) RETURNING id',
       ticketId || null, commentId ? Number(commentId) : null, subtaskId ? Number(subtaskId) : null,
@@ -1511,7 +1570,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/tickets/:id/attachments', requireAuth, async (req, res) => {
+app.get('/api/tickets/:id/attachments', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const rows = await all('SELECT * FROM attachments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
     res.json(rows.map(r => ({
@@ -1524,11 +1583,19 @@ app.get('/api/tickets/:id/attachments', requireAuth, async (req, res) => {
 
 app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
   try {
-    const att = await get('SELECT filename FROM attachments WHERE id=?', req.params.id);
-    if (att) {
-      try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
-      await run('DELETE FROM attachments WHERE id=?', req.params.id);
+    const att = await get('SELECT filename, ticket_id, subtask_id FROM attachments WHERE id=?', req.params.id);
+    if (!att) return res.json({ ok: true }); // already gone
+    // Resolve the parent ticket id (direct or via the parent subtask) and verify access
+    let ticketId = att.ticket_id;
+    if (!ticketId && att.subtask_id) {
+      const sub = await get('SELECT ticket_id FROM ticket_subtasks WHERE id=?', att.subtask_id);
+      ticketId = sub ? sub.ticket_id : null;
     }
+    if (ticketId && !await canAccessTicket(req, ticketId)) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+    try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
+    await run('DELETE FROM attachments WHERE id=?', req.params.id);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
