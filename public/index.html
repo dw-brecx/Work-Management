@@ -7551,43 +7551,32 @@ function saveProfileSettings() {
 }
 
 // ============ SETTINGS — Security ============
-const ACTIVE_SESSIONS = [
-  { id:'s1', icon:'💻', device:'Chrome on macOS',  location:'Dhaka, Bangladesh', last:'Active now',         current:true  },
-  { id:'s2', icon:'📱', device:'Safari on iPhone',  location:'Dhaka, Bangladesh', last:'2 hours ago',        current:false },
-  { id:'s3', icon:'💻', device:'Firefox on Windows',location:'Khulna, Bangladesh', last:'Yesterday at 4:12 PM',current:false },
-];
-
+// Session list is intentionally not implemented yet — we don't track per-device
+// sessions on the server. Render a single "this device" tile and an explicit
+// "Sign out" button that hits /api/auth/logout (which exists). Hide the rest.
 function renderSessions() {
   const wrap = document.getElementById('sessions-list');
   if (!wrap) return;
-  wrap.innerHTML = ACTIVE_SESSIONS.map(s => `
-    <div class="session-item" data-id="${s.id}">
-      <div class="session-icon">${s.icon}</div>
+  wrap.innerHTML = `
+    <div class="session-item">
+      <div class="session-icon">💻</div>
       <div class="session-main">
-        <div class="session-title">${escapeHtml(s.device)} ${s.current ? '<span class="session-current">This device</span>' : ''}</div>
-        <div class="session-meta">${escapeHtml(s.location)} · ${escapeHtml(s.last)}</div>
+        <div class="session-title">This device <span class="session-current">Current</span></div>
+        <div class="session-meta">Per-device session history is not tracked yet.</div>
       </div>
-      ${s.current ? '' : `<button class="session-revoke" onclick="revokeSession('${s.id}')">Sign out</button>`}
+      <button class="session-revoke" onclick="signOutThisDevice()">Sign out</button>
     </div>
-  `).join('');
+  `;
 }
 
-function revokeSession(id) {
-  const idx = ACTIVE_SESSIONS.findIndex(s => s.id === id);
-  if (idx === -1) return;
-  ACTIVE_SESSIONS.splice(idx, 1);
-  renderSessions();
-  settingsToast('Session signed out');
+async function signOutThisDevice() {
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+  window.location.href = '/login.html';
 }
 
-function signOutAllSessions() {
-  if (!confirm('Sign out of all other devices? You will stay signed in here.')) return;
-  for (let i = ACTIVE_SESSIONS.length - 1; i >= 0; i--) {
-    if (!ACTIVE_SESSIONS[i].current) ACTIVE_SESSIONS.splice(i, 1);
-  }
-  renderSessions();
-  settingsToast('Signed out of all other sessions');
-}
+// Kept for back-compat but routed to the real logout flow.
+function revokeSession() { signOutThisDevice(); }
+function signOutAllSessions() { signOutThisDevice(); }
 
 function changePassword() {
   const cur = document.getElementById('pw-current').value;
@@ -7645,20 +7634,25 @@ function updatePasswordStrength() {
 }
 
 function toggle2FA(checkbox) {
+  // Two-factor auth isn't implemented on the server yet. Refuse to toggle it
+  // on so the UI doesn't silently lie about the account being protected.
   const sub = document.getElementById('tfa-status-sub');
   if (checkbox.checked) {
-    sub.innerHTML = '2FA is currently <span style="color:var(--green);font-weight:600">enabled</span>. You\'ll be asked for a code at sign-in.';
-    settingsToast('2FA enabled');
+    checkbox.checked = false;
+    if (sub) sub.innerHTML = '2FA is currently <span style="color:var(--text3);font-weight:600">unavailable</span>. This feature will be enabled in a future release.';
+    alert('Two-factor authentication is not available yet — ignore this toggle.');
   } else {
-    sub.innerHTML = '2FA is currently <span style="color:var(--red);font-weight:600">disabled</span>. Turn it on to require a code at sign-in.';
-    settingsToast('2FA disabled');
+    if (sub) sub.innerHTML = '2FA is currently <span style="color:var(--text3);font-weight:600">unavailable</span>. This feature will be enabled in a future release.';
   }
 }
 
-function confirmAccountDelete() {
+async function confirmAccountDelete() {
   if (!confirm('Permanently delete your account?\n\nAll your tickets, plans, and team data will be removed. This cannot be undone.')) return;
   if (!confirm('This is your final warning. Are you absolutely sure?')) return;
-  alert('Account deletion would be processed here.');
+  // Account self-deletion isn't a supported flow on the server (admin must
+  // remove the account). Ask the user to contact an admin instead of pretending
+  // the deletion succeeded.
+  alert('Self-account deletion is not yet supported — please contact a workspace admin to remove your account.');
 }
 
 // ============ SETTINGS — Members & Permissions ============
@@ -10591,7 +10585,17 @@ async function initApp() {
     ]);
   } catch(e) {
     if (e.message === 'unauth') return;
-    console.warn('WorkNest: API unavailable, using local seed data');
+    // The API failed — clear local seed data so we don't silently render
+    // stale demo numbers ("1,248 tickets", etc.) as if they were real, and
+    // surface an explicit error banner so the user knows something is off.
+    console.error('Syruvia: API unreachable —', e?.message || e);
+    if (typeof TICKETS_DATA !== 'undefined') TICKETS_DATA.length = 0;
+    if (typeof DASH_ACTIVITY !== 'undefined') DASH_ACTIVITY.length = 0;
+    if (typeof TEAM_DATA !== 'undefined') TEAM_DATA.length = 0;
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#fee2e2;color:#991b1b;padding:10px 16px;text-align:center;font-size:12.5px;font-weight:600;z-index:99999;border-bottom:1px solid #fecaca';
+    banner.textContent = 'Couldn\'t reach the server. Some data may be unavailable until you reload.';
+    document.body.appendChild(banner);
     patchInviteFlow(); patchTicketMutations(); patchPlanMutations();
     patchCalMutations(); patchTeamMutations();
     return;

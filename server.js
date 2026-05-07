@@ -2056,10 +2056,18 @@ async function runOverdueDigestJob() {
         const last = new Date(usr.last_overdue_digest_at).getTime();
         if (!isNaN(last) && (Date.now() - last) < 23 * 60 * 60 * 1000) continue;
       }
-      // Tickets where this user is primary assignee or in ticket_assignees.
-      const myTicketRows = allTickets.filter(t => t.assignee === usr.name);
+      // Tickets where this user is the primary assignee (id-linked or
+      // legacy name match) or appears in ticket_assignees (id-linked or
+      // legacy name match). Renames don't break the digest because the
+      // id-link path keeps working.
+      const myTicketRows = allTickets.filter(t =>
+        t.assignee_user_id === usr.id ||
+        (t.assignee_user_id == null && t.assignee === usr.name)
+      );
       const otherTicketIds = (await all(
-        'SELECT ticket_id FROM ticket_assignees WHERE user_name=?', usr.name
+        `SELECT ticket_id FROM ticket_assignees
+          WHERE user_id = ? OR (user_id IS NULL AND user_name = ?)`,
+        usr.id, usr.name
       )).map(r => r.ticket_id);
       const otherTickets = allTickets.filter(t =>
         otherTicketIds.includes(t.id) && !myTicketRows.find(x => x.id === t.id)
