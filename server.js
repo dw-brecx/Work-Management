@@ -7,7 +7,56 @@ const fs = require('fs');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
 const { pool, init: initDb, get, all, run, safeAlter } = require('./db');
-const { sendInviteEmail } = require('./email');
+const {
+  sendInviteEmail, sendWelcomeEmail, sendActivateAccountEmail,
+  sendForgotPasswordEmail, sendPasswordChangedEmail, sendNewDeviceLoginEmail,
+  sendTicketAssignedEmail, sendTicketStatusChangedEmail, sendTicketClosedEmail,
+  sendNewCommentEmail, sendMentionEmail, sendOverdueDigestEmail,
+  sendMeetingInviteEmail, sendMeetingReminderEmail, sendTaskAssignedEmail,
+  sendDeadlineApproachingEmail, sendEventCancelledEmail,
+} = require('./email');
+
+// ── Email helpers ────────────────────────────────────────────────────────────
+// Look up a user's email by their display name. Returns null when there's
+// no matching user (e.g. assignee names that haven't been provisioned yet).
+async function emailForName(name) {
+  if (!name) return null;
+  const u = await get('SELECT email, name FROM users WHERE name=?', name);
+  return u ? { email: u.email, name: u.name } : null;
+}
+
+// Parse a User-Agent string into something human-friendly for security alerts.
+function parseUA(ua) {
+  if (!ua) return 'Unknown device';
+  const s = String(ua);
+  let browser = 'Unknown browser';
+  if (/edg(e|a|ios)?\//i.test(s))      browser = 'Edge';
+  else if (/chrome\//i.test(s))         browser = 'Chrome';
+  else if (/firefox\//i.test(s))        browser = 'Firefox';
+  else if (/safari\//i.test(s))         browser = 'Safari';
+  else if (/curl|wget|node/i.test(s))   browser = 'API client';
+  let os = 'Unknown OS';
+  if (/windows nt 10/i.test(s))         os = 'Windows 10';
+  else if (/windows/i.test(s))          os = 'Windows';
+  else if (/mac os x|macintosh/i.test(s)) os = 'macOS';
+  else if (/iphone|ipad|ios/i.test(s))  os = 'iOS';
+  else if (/android/i.test(s))          os = 'Android';
+  else if (/linux/i.test(s))            os = 'Linux';
+  return `${browser} on ${os}`;
+}
+
+// Best-effort device "fingerprint" stored on the user. We just keep parseUA().
+function deviceKey(ua) {
+  return parseUA(ua);
+}
+
+// Wrapper that fires & forgets emails — never lets a mailer error fail
+// the underlying request. Logs and moves on.
+function fireEmail(label, promiseFactory) {
+  Promise.resolve()
+    .then(() => promiseFactory())
+    .catch(e => console.error(`[email:${label}] failed:`, e.message));
+}
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'public', 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -83,6 +132,36 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash))
       return res.status(401).json({ error: 'Invalid email or password' });
     req.session.userId = user.id;
+
+    // ── New-device sign-in detection ──────────────────────────────────────
+    // Build a coarse device fingerprint from the User-Agent. If we've never
+    // seen this UA for this user before AND this isn't their very first
+    // login, fire a security-alert email. Always update the known_uas list
+    // and the last_login_ip / last_login_at columns.
+    try {
+      const ua  = req.headers['user-agent'] || '';
+      const ip  = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+      const dev = deviceKey(ua);
+      let known = [];
+      try { known = JSON.parse(user.known_uas || '[]'); } catch {}
+      const isFirstLogin = !user.last_login_at;
+      const isNewDevice  = !known.includes(dev);
+      if (isNewDevice) known.push(dev);
+      if (known.length > 12) known = known.slice(-12); // keep recent only
+
+      await run('UPDATE users SET known_uas=?, last_login_ip=?, last_login_at=? WHERE id=?',
+        JSON.stringify(known), ip || '', new Date().toISOString(), user.id);
+
+      if (isNewDevice && !isFirstLogin) {
+        fireEmail('new-device-login', () => sendNewDeviceLoginEmail({
+          toEmail: user.email, toName: user.name,
+          ip, device: dev, locationLabel: '',
+        }));
+      }
+    } catch(e) {
+      console.error('[login] new-device tracking failed:', e.message);
+    }
+
     res.json({ id:user.id, name:user.name, email:user.email, role:user.role, dept:user.dept, color:user.color, permRole:user.perm_role, avatarUrl:user.avatar_url || '', tz:user.tz || '' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -102,15 +181,70 @@ app.post('/api/auth/register', async (req, res) => {
     const dept = invite.dept || 'General';
     await run("UPDATE invites SET status='Accepted' WHERE token=?", token);
     const hash = bcrypt.hashSync(password, 10);
-    const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role) VALUES (?,?,?,?,?,?) RETURNING id',
+    const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role,welcome_sent) VALUES (?,?,?,?,?,?,1) RETURNING id',
       name.trim(), norm, hash, role, dept, 'Member');
     req.session.userId = Number(info.lastInsertRowid);
+
+    // Welcome email — fire & forget so a mail outage doesn't block sign-up.
+    fireEmail('welcome', () => sendWelcomeEmail({ toEmail: norm, toName: name.trim() }));
+
     res.json({ id:Number(info.lastInsertRowid), name:name.trim(), email:norm, role, dept, permRole:'Member' });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
+});
+
+// ── Forgot password: takes {email}, generates a reset token, emails the link.
+// Always returns {ok:true} — never reveal whether the email exists.
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').toLowerCase().trim();
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const user = await get('SELECT id,name,email FROM users WHERE email=?', email);
+    if (user) {
+      const token = randomUUID();
+      const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+      await run('INSERT INTO password_resets (user_id, token, expires_at, used) VALUES (?,?,?,0)',
+        user.id, token, expires);
+      const base = process.env.APP_URL || `http://localhost:${PORT}`;
+      const resetUrl = `${base}/reset-password.html?token=${token}`;
+      const ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+      fireEmail('forgot-password', () => sendForgotPasswordEmail({
+        toEmail: user.email, toName: user.name, resetUrl, ip,
+      }));
+    }
+    // Always respond the same way regardless of whether the email matched.
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Reset password: takes {token, newPassword}. Validates the token,
+// updates the password, and fires a password-changed security alert.
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body || {};
+    if (!token || !newPassword) return res.status(400).json({ error: 'Token and new password required' });
+    if (String(newPassword).length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const reset = await get('SELECT * FROM password_resets WHERE token=? AND used=0', token);
+    if (!reset) return res.status(400).json({ error: 'Invalid or expired reset link.' });
+    if (new Date(reset.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'This reset link has expired. Please request a new one.' });
+    }
+    const user = await get('SELECT id,name,email FROM users WHERE id=?', reset.user_id);
+    if (!user) return res.status(400).json({ error: 'Account no longer exists.' });
+    const hash = bcrypt.hashSync(String(newPassword), 10);
+    await run('UPDATE users SET password_hash=? WHERE id=?', hash, user.id);
+    await run('UPDATE password_resets SET used=1 WHERE id=?', reset.id);
+
+    const ip  = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+    const dev = deviceKey(req.headers['user-agent'] || '');
+    fireEmail('password-changed', () => sendPasswordChangedEmail({
+      toEmail: user.email, toName: user.name, ip, device: dev,
+    }));
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/auth/me', async (req, res) => {
@@ -176,12 +310,14 @@ app.post('/api/invites', requireAuth, async (req, res) => {
     const info = await run(`INSERT INTO invites (email,name,role,dept,token,status,invited_by,expires_at)
       VALUES (?,?,?,?,?,'Pending',?,?) RETURNING id`, norm, name.trim(), role||'', dept||'', token, req.session.userId, expires);
     const invite = await get('SELECT * FROM invites WHERE id=?', Number(info.lastInsertRowid));
-    const inviter = await get('SELECT name FROM users WHERE id=?', req.session.userId);
-    try {
-      await sendInviteEmail({ toEmail: norm, toName: name.trim(), inviterName: inviter?.name || 'Your team', role, dept, token });
-    } catch(e) {
-      console.error('[email] Failed to send invite:', e.message);
-    }
+    const inviter = await get('SELECT name,email FROM users WHERE id=?', req.session.userId);
+    fireEmail('invite', () => sendInviteEmail({
+      toEmail: norm, toName: name.trim(),
+      inviterName: inviter?.name || 'Your team',
+      inviterEmail: inviter?.email || '',
+      role, dept, token,
+      workspaceName: process.env.APP_NAME || 'Ticket - Brecx',
+    }));
     res.json({ ...invite, inviteUrl:`${process.env.APP_URL || `http://localhost:${PORT}`}/invite.html?token=${token}` });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -278,10 +414,23 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
     }
     const creator = await getUser(req.session.userId);
     for (const a of (assignees||[])) {
-      const target = await get('SELECT id FROM users WHERE name=?', a);
+      const target = await get('SELECT id,name,email FROM users WHERE name=?', a);
       if (target && target.id !== req.session.userId) {
         await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
           target.id, 'assigned', '👤', `${creator?.name || 'Someone'} assigned you to "${title}"`, id);
+        // Email the new assignee.
+        fireEmail('ticket-assigned', () => sendTicketAssignedEmail({
+          toEmail: target.email, toName: target.name,
+          assignerName: creator?.name || 'Someone',
+          ticketId: id, title,
+          priority: priority || 'Medium',
+          dueAt: due || '',
+          status: status || 'Open',
+          dept: dept || '',
+          requester: reporter || '',
+          description: req.body?.description || reqName || '',
+          tags: tags || [],
+        }));
       }
     }
     res.status(201).json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id)));
@@ -291,10 +440,15 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
 app.put('/api/tickets/:id', requireAuth, async (req, res) => {
   try {
     const { title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags } = req.body;
-    const exists = await get('SELECT id, deleted_at FROM tickets WHERE id=?', req.params.id);
+    const exists = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
     if (!exists) return res.status(404).json({ error:'Not found' });
     if (exists.deleted_at) return res.status(404).json({ error:'Not found' });
     console.log(`[tickets] UPDATE ${req.params.id} by user ${req.session.userId} fields=${Object.keys(req.body||{}).join(',')}`);
+
+    // Snapshot before-state for email diffing
+    const oldStatus = exists.status;
+    const oldAssigneesAll = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
+
     const u=[]; const v=[];
     if (title!==undefined)    { u.push('title=?');      v.push(title); }
     if (reqName!==undefined)  { u.push('req=?');        v.push(reqName); }
@@ -308,22 +462,73 @@ app.put('/api/tickets/:id', requireAuth, async (req, res) => {
     if (tags!==undefined)     { u.push('tags_json=?');  v.push(JSON.stringify(tags)); }
     if (u.length) { v.push(req.params.id); await run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
     if (assignees!==undefined) {
-      const oldAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
       await run('DELETE FROM ticket_assignees WHERE ticket_id=?', req.params.id);
       for (const a of assignees) await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', req.params.id, a);
-      const newAssignees = assignees.filter(a => !oldAssignees.includes(a));
+      const newAssignees = assignees.filter(a => !oldAssigneesAll.includes(a));
       if (newAssignees.length) {
         const assigner = await getUser(req.session.userId);
-        const tkt = await get('SELECT title FROM tickets WHERE id=?', req.params.id);
+        const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
         for (const name of newAssignees) {
-          const target = await get('SELECT id FROM users WHERE name=?', name);
+          const target = await get('SELECT id,name,email FROM users WHERE name=?', name);
           if (target && target.id !== req.session.userId) {
             await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
               target.id, 'assigned', '👤', `${assigner?.name || 'Someone'} assigned you to "${tkt?.title || req.params.id}"`, req.params.id);
+            fireEmail('ticket-assigned', () => sendTicketAssignedEmail({
+              toEmail: target.email, toName: target.name,
+              assignerName: assigner?.name || 'Someone',
+              ticketId: req.params.id, title: tkt?.title || '',
+              priority: tkt?.priority || 'Medium',
+              dueAt: tkt?.due || '',
+              status: tkt?.status || 'Open',
+              dept: tkt?.dept || '',
+              requester: tkt?.reporter || '',
+              description: tkt?.req || '',
+              tags: (() => { try { return JSON.parse(tkt?.tags_json || '[]'); } catch { return []; } })(),
+            }));
           }
         }
       }
     }
+
+    // ── Status change emails (status-changed, plus ticket-closed when applicable) ──
+    if (status !== undefined && oldStatus && oldStatus !== status) {
+      const updated  = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+      const changer  = await getUser(req.session.userId);
+      const currentAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
+      // Notify everyone tied to the ticket: assignees + reporter, minus the actor.
+      const recipientNames = new Set([...currentAssignees, updated.reporter].filter(Boolean));
+      recipientNames.delete(changer?.name);
+      for (const name of recipientNames) {
+        const target = await emailForName(name);
+        if (!target?.email) continue;
+        fireEmail('status-changed', () => sendTicketStatusChangedEmail({
+          toEmail: target.email, toName: target.name,
+          changedByName: changer?.name || 'Someone',
+          ticketId: req.params.id, title: updated.title || '',
+          fromStatus: oldStatus, toStatus: status,
+        }));
+      }
+      // If newly closed, also fire the ticket-closed email (idempotent flag).
+      if (String(status).toLowerCase() === 'closed' && !exists.closed_email_sent) {
+        await run('UPDATE tickets SET closed_email_sent=1 WHERE id=?', req.params.id);
+        const createdAt = updated.created_at ? new Date(updated.created_at) : null;
+        const daysOpen  = createdAt && !isNaN(createdAt) ? Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86400000)) : null;
+        for (const name of recipientNames) {
+          const target = await emailForName(name);
+          if (!target?.email) continue;
+          fireEmail('ticket-closed', () => sendTicketClosedEmail({
+            toEmail: target.email, toName: target.name,
+            closerName: changer?.name || 'Someone',
+            ticketId: req.params.id, title: updated.title || '',
+            resolution: updated.req || '',
+            resolvedAt: new Date(),
+            daysOpen,
+            commentsCount: updated.comments_count || 0,
+          }));
+        }
+      }
+    }
+
     res.json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', req.params.id)));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -384,23 +589,67 @@ app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
     const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?) RETURNING id`,
       req.params.id, u.name, init, bg, col, text.trim(), safeParentId);
     await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
-    const tkt = await get('SELECT title FROM tickets WHERE id=?', req.params.id);
+    const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+
+    // Track who's been emailed about this comment so we don't double-send
+    // (e.g. someone is both an assignee and got mentioned).
+    const emailedUserIds = new Set([req.session.userId]);
+
+    // ── @-mentions: mention email + in-app notification ───────────────────
     const mentions = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
     for (const name of mentions) {
-      const mentioned = await get('SELECT id FROM users WHERE name=?', name);
-      if (mentioned && mentioned.id !== req.session.userId) {
+      const mentioned = await get('SELECT id,name,email,role,dept FROM users WHERE name=?', name);
+      if (mentioned && !emailedUserIds.has(mentioned.id)) {
+        emailedUserIds.add(mentioned.id);
         await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
           mentioned.id, 'mention', '💬', `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id);
+        fireEmail('mention', () => sendMentionEmail({
+          toEmail: mentioned.email, toName: mentioned.name,
+          authorName: u.name, authorRole: u.role || '', authorDept: u.dept || '',
+          ticketId: req.params.id, title: tkt?.title || '',
+          commentText: text.trim(),
+        }));
       }
     }
-    // Notify the parent comment's author when someone replies
+
+    // ── Reply-to-parent notification + email ──────────────────────────────
     if (safeParentId) {
-      const parentInfo = await get(`SELECT u.id AS user_id FROM ticket_comments tc JOIN users u ON u.name = tc.author WHERE tc.id = ?`, safeParentId);
-      if (parentInfo && parentInfo.user_id && parentInfo.user_id !== req.session.userId) {
+      const parentInfo = await get(
+        `SELECT u.id AS user_id, u.name AS name, u.email AS email, u.role AS role
+           FROM ticket_comments tc JOIN users u ON u.name = tc.author
+          WHERE tc.id = ?`, safeParentId);
+      if (parentInfo && !emailedUserIds.has(parentInfo.user_id)) {
+        emailedUserIds.add(parentInfo.user_id);
         await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
           parentInfo.user_id, 'comment', '↩', `${u.name} replied to your comment on "${tkt?.title || req.params.id}"`, req.params.id);
+        fireEmail('comment-reply', () => sendNewCommentEmail({
+          toEmail: parentInfo.email, toName: parentInfo.name,
+          authorName: u.name, authorRole: u.role || '',
+          authorBg: bg, authorFg: col,
+          ticketId: req.params.id, title: tkt?.title || '',
+          commentText: text.trim(),
+        }));
       }
     }
+
+    // ── New-comment email to all assignees + reporter (excluding actor / already-emailed) ──
+    const watchers = new Set();
+    const assigneesRows = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id);
+    assigneesRows.forEach(r => r.user_name && watchers.add(r.user_name));
+    if (tkt?.reporter) watchers.add(tkt.reporter);
+    for (const wname of watchers) {
+      const w = await get('SELECT id,name,email FROM users WHERE name=?', wname);
+      if (!w || emailedUserIds.has(w.id)) continue;
+      emailedUserIds.add(w.id);
+      fireEmail('new-comment', () => sendNewCommentEmail({
+        toEmail: w.email, toName: w.name,
+        authorName: u.name, authorRole: u.role || '',
+        authorBg: bg, authorFg: col,
+        ticketId: req.params.id, title: tkt?.title || '',
+        commentText: text.trim(),
+      }));
+    }
+
     res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -699,10 +948,22 @@ app.post('/api/flavors', requireAuth, async (req, res) => {
       await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', tktId);
       if (row.assignee) {
         await run('INSERT INTO ticket_assignees (ticket_id,user_name) VALUES (?,?) ON CONFLICT DO NOTHING', tktId, row.assignee);
-        const target = await get('SELECT id FROM users WHERE name=?', row.assignee);
+        const target = await get('SELECT id,name,email FROM users WHERE name=?', row.assignee);
         if (target && target.id !== req.session.userId) {
           await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
             target.id, 'assigned', '👤', `${u?.name || 'Someone'} assigned you to "${title}"`, tktId);
+          fireEmail('flavor-ticket-assigned', () => sendTicketAssignedEmail({
+            toEmail: target.email, toName: target.name,
+            assignerName: u?.name || 'Someone',
+            ticketId: tktId, title,
+            priority: row.priority || 'Medium',
+            dueAt: due,
+            status: 'Open',
+            dept: row.dept || 'General',
+            requester: u?.name || '',
+            description: '',
+            tags: [tag],
+          }));
         }
       }
       created.push({ id: tktId, title, assignee: row.assignee || '', dept: row.dept || '', due });
@@ -770,7 +1031,67 @@ app.post('/api/events', requireAuth, async (req, res) => {
       dateKey, type||'meeting', label||title||'', title||'', desc||'', allDay?1:0,
       startTime||'', endTime||'', linkedTicketId||'', JSON.stringify(attendees||[]),
       location||'', assignee||'', completed?1:0, syncsTicket?1:0, req.session.userId, source||'personal');
-    res.status(201).json({ id:Number(info.lastInsertRowid) });
+    const eventId = Number(info.lastInsertRowid);
+
+    // ── Calendar emails ───────────────────────────────────────────────────
+    // Build a real Date for start time so the email helper can format it
+    // nicely. dateKey is 'YYYY-MM-DD'. startTime may be 'HH:MM' or empty.
+    function combineDateTime(dKey, tStr) {
+      if (!dKey) return null;
+      const cleanT = (tStr && /^\d{1,2}:\d{2}/.test(tStr)) ? tStr : '00:00';
+      const iso = `${dKey}T${cleanT.length === 4 ? '0'+cleanT : cleanT}:00`;
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    try {
+      const organizer = await getUser(req.session.userId);
+      const startAt   = combineDateTime(dateKey, startTime);
+      const endAt     = combineDateTime(dateKey, endTime);
+      const evType    = String(type || 'meeting').toLowerCase();
+
+      if (evType === 'meeting') {
+        // Meeting invite to every attendee that isn't the organizer.
+        const attList = Array.isArray(attendees) ? attendees : [];
+        const linked  = linkedTicketId ? await get('SELECT title FROM tickets WHERE id=?', linkedTicketId) : null;
+        for (const aName of attList) {
+          if (!aName || aName === organizer?.name) continue;
+          const t = await emailForName(aName);
+          if (!t?.email) continue;
+          fireEmail('meeting-invite', () => sendMeetingInviteEmail({
+            toEmail: t.email, toName: t.name,
+            organizerName: organizer?.name || 'Someone',
+            title: title || 'Meeting',
+            startAt, endAt,
+            location: location || '',
+            description: desc || (linked ? `Linked: ${linkedTicketId} · ${linked.title}` : ''),
+            attendees: [organizer?.name, ...attList].filter(Boolean),
+            eventId,
+            tz: organizer?.tz || '',
+          }));
+        }
+      } else if (evType === 'task' && assignee && assignee !== organizer?.name) {
+        // Calendar-task assigned email.
+        const t = await emailForName(assignee);
+        if (t?.email) {
+          const linked = linkedTicketId ? await get('SELECT title FROM tickets WHERE id=?', linkedTicketId) : null;
+          fireEmail('task-assigned', () => sendTaskAssignedEmail({
+            toEmail: t.email, toName: t.name,
+            assignerName: organizer?.name || 'Someone',
+            title: title || 'New task',
+            dueAt: startAt || null,
+            estimate: '',
+            linkedTicketId: linkedTicketId || '',
+            linkedTicketTitle: linked?.title || '',
+            description: desc || '',
+            eventId,
+          }));
+        }
+      }
+    } catch(e) {
+      console.error('[events] email dispatch failed:', e.message);
+    }
+
+    res.status(201).json({ id: eventId });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -787,7 +1108,42 @@ app.put('/api/events/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/events/:id', requireAuth, async (req, res) => {
   try {
+    // Read the event first so we can email all attendees BEFORE the row is gone.
+    const ev = await get('SELECT * FROM cal_events WHERE id=?', req.params.id);
     await run('DELETE FROM cal_events WHERE id=?', req.params.id);
+    if (ev && (ev.type === 'meeting' || ev.type === 'task')) {
+      try {
+        const canceller = await getUser(req.session.userId);
+        // Combine date_key + start_time into a real Date so the email format is nice.
+        let originalStart = null, originalEnd = null;
+        if (ev.date_key) {
+          const t1 = (ev.start_time && /^\d{1,2}:\d{2}/.test(ev.start_time)) ? ev.start_time : '00:00';
+          originalStart = new Date(`${ev.date_key}T${t1.length === 4 ? '0'+t1 : t1}:00`);
+          if (ev.end_time && /^\d{1,2}:\d{2}/.test(ev.end_time)) {
+            const t2 = ev.end_time;
+            originalEnd = new Date(`${ev.date_key}T${t2.length === 4 ? '0'+t2 : t2}:00`);
+          }
+        }
+        let attList = [];
+        try { attList = JSON.parse(ev.attendees_json || '[]'); } catch {}
+        if (ev.assignee && !attList.includes(ev.assignee)) attList.push(ev.assignee);
+        for (const aName of attList) {
+          if (!aName || aName === canceller?.name) continue;
+          const t = await emailForName(aName);
+          if (!t?.email) continue;
+          fireEmail('event-cancelled', () => sendEventCancelledEmail({
+            toEmail: t.email, toName: t.name,
+            cancellerName: canceller?.name || 'Someone',
+            title: ev.title || ev.label || 'Event',
+            originalStart: originalStart && !isNaN(originalStart) ? originalStart : null,
+            originalEnd:   originalEnd   && !isNaN(originalEnd)   ? originalEnd   : null,
+            reason: '',
+          }));
+        }
+      } catch(e) {
+        console.error('[events] cancel-email dispatch failed:', e.message);
+      }
+    }
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -906,10 +1262,18 @@ app.put('/api/profile/password', requireAuth, async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword) return res.status(400).json({ error:'Both passwords required' });
     if (newPassword.length < 6) return res.status(400).json({ error:'Password must be at least 6 characters' });
-    const user = await get('SELECT password_hash FROM users WHERE id=?', req.session.userId);
+    const user = await get('SELECT id,name,email,password_hash FROM users WHERE id=?', req.session.userId);
     if (!bcrypt.compareSync(currentPassword, user.password_hash))
       return res.status(401).json({ error:'Current password is incorrect' });
     await run('UPDATE users SET password_hash=? WHERE id=?', bcrypt.hashSync(newPassword, 10), req.session.userId);
+
+    // Security alert email — fire & forget.
+    const ip  = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+    const dev = deviceKey(req.headers['user-agent'] || '');
+    fireEmail('password-changed', () => sendPasswordChangedEmail({
+      toEmail: user.email, toName: user.name, ip, device: dev,
+    }));
+
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1141,9 +1505,13 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
     if (await get('SELECT id FROM users WHERE email=?', norm)) return res.status(409).json({ error: 'Email already in use' });
     const pRole = ['Owner','Admin','Member'].includes(permRole) ? permRole : 'Member';
     const hash = bcrypt.hashSync(password, 10);
-    const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role) VALUES (?,?,?,?,?,?) RETURNING id',
+    const info = await run('INSERT INTO users (name,email,password_hash,role,dept,perm_role,welcome_sent) VALUES (?,?,?,?,?,?,1) RETURNING id',
       name.trim(), norm, hash, role?.trim() || 'Team Member', dept?.trim() || 'General', pRole);
     const u = await getUser(Number(info.lastInsertRowid));
+
+    // Welcome email — admin-created accounts also get an onboarding email.
+    fireEmail('admin-created-welcome', () => sendWelcomeEmail({ toEmail: u.email, toName: u.name }));
+
     res.json({ id: u.id, name: u.name, email: u.email, role: u.role, dept: u.dept, permRole: u.perm_role });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1240,6 +1608,177 @@ app.get('/api/health', (req, res) => {
   res.json({ ok:true, ts: new Date().toISOString() });
 });
 
+// ── Background email jobs ─────────────────────────────────────────────────────
+// All three timers run inside try/catch — a single bad row never kills the loop.
+// Idempotency is enforced via per-row flags (cal_events.reminder_sent /
+// .deadline_warned) and a per-user timestamp (users.last_overdue_digest_at).
+
+// Combine a date_key + time string into a real Date.
+function combineEventStart(dateKey, timeStr) {
+  if (!dateKey) return null;
+  const t = (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) ? timeStr : '00:00';
+  const iso = `${dateKey}T${t.length === 4 ? '0'+t : t}:00`;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Job 1: Meeting reminders — runs every 5 minutes, fires for any meeting
+// whose start time is between 55 and 65 minutes from now.
+async function runMeetingReminderJob() {
+  try {
+    const events = await all(
+      "SELECT * FROM cal_events WHERE type='meeting' AND COALESCE(reminder_sent,0)=0 AND date_key >= ?",
+      new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    );
+    const now = Date.now();
+    const lower = now + 55 * 60 * 1000;
+    const upper = now + 65 * 60 * 1000;
+    for (const ev of events) {
+      const startAt = combineEventStart(ev.date_key, ev.start_time);
+      if (!startAt) continue;
+      const t = startAt.getTime();
+      if (t < lower || t > upper) continue;
+      let attList = [];
+      try { attList = JSON.parse(ev.attendees_json || '[]'); } catch {}
+      const organizer = ev.user_id ? await getUser(ev.user_id) : null;
+      const targetNames = new Set(attList.filter(Boolean));
+      if (organizer?.name) targetNames.add(organizer.name);
+      for (const name of targetNames) {
+        const u = await emailForName(name);
+        if (!u?.email) continue;
+        fireEmail('meeting-reminder', () => sendMeetingReminderEmail({
+          toEmail: u.email, toName: u.name,
+          title: ev.title || ev.label || 'Meeting',
+          startAt,
+          location: ev.location || '',
+          attendeesCount: targetNames.size,
+          eventId: ev.id,
+        }));
+      }
+      await run('UPDATE cal_events SET reminder_sent=1 WHERE id=?', ev.id);
+    }
+  } catch(e) {
+    console.error('[cron:meeting-reminder] failed:', e.message);
+  }
+}
+
+// Job 2: Deadline-approaching — runs hourly, fires once per deadline event
+// when its start (= due time) is between 22 and 26 hours from now.
+async function runDeadlineWarningJob() {
+  try {
+    const events = await all(
+      "SELECT * FROM cal_events WHERE type='deadline' AND COALESCE(deadline_warned,0)=0 AND date_key >= ?",
+      new Date().toISOString().slice(0, 10)
+    );
+    const now = Date.now();
+    const lower = now + 22 * 60 * 60 * 1000;
+    const upper = now + 26 * 60 * 60 * 1000;
+    for (const ev of events) {
+      const dueAt = combineEventStart(ev.date_key, ev.start_time || '23:59');
+      if (!dueAt) continue;
+      const t = dueAt.getTime();
+      if (t < lower || t > upper) continue;
+      const owner = ev.user_id ? await getUser(ev.user_id) : null;
+      const linked = ev.linked_ticket_id ? await get('SELECT title FROM tickets WHERE id=?', ev.linked_ticket_id) : null;
+      const recipients = new Set();
+      if (owner?.name) recipients.add(owner.name);
+      if (ev.assignee) recipients.add(ev.assignee);
+      let attList = [];
+      try { attList = JSON.parse(ev.attendees_json || '[]'); } catch {}
+      attList.forEach(a => a && recipients.add(a));
+      for (const name of recipients) {
+        const u = await emailForName(name);
+        if (!u?.email) continue;
+        fireEmail('deadline-approaching', () => sendDeadlineApproachingEmail({
+          toEmail: u.email, toName: u.name,
+          title: ev.title || ev.label || 'Deadline',
+          dueAt,
+          ownerName: owner?.name || '—',
+          linkedTicketId: ev.linked_ticket_id || '',
+          linkedTicketTitle: linked?.title || '',
+          status: 'In progress',
+          outstanding: [],
+          eventId: ev.id,
+        }));
+      }
+      await run('UPDATE cal_events SET deadline_warned=1 WHERE id=?', ev.id);
+    }
+  } catch(e) {
+    console.error('[cron:deadline-warning] failed:', e.message);
+  }
+}
+
+// Job 3: Overdue digest — once a day per user. We check hourly, but only
+// actually send to a given user if their last_overdue_digest_at is >= 23h ago
+// (so the wall-clock time of the daily send naturally drifts to whenever the
+// server happens to first run the loop after a day's gap).
+async function runOverdueDigestJob() {
+  try {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const users = await all('SELECT id,name,email,last_overdue_digest_at FROM users');
+    const allTickets = await all("SELECT * FROM tickets WHERE deleted_at IS NULL AND status != 'Closed' AND overdue=1");
+    const allDeadlines = await all("SELECT * FROM cal_events WHERE type='deadline' AND date_key < ?", todayKey);
+
+    for (const usr of users) {
+      if (!usr.email) continue;
+      // Throttle: skip if we sent within the last 23 hours.
+      if (usr.last_overdue_digest_at) {
+        const last = new Date(usr.last_overdue_digest_at).getTime();
+        if (!isNaN(last) && (Date.now() - last) < 23 * 60 * 60 * 1000) continue;
+      }
+      // Tickets where this user is primary assignee or in ticket_assignees.
+      const myTicketRows = allTickets.filter(t => t.assignee === usr.name);
+      const otherTicketIds = (await all(
+        'SELECT ticket_id FROM ticket_assignees WHERE user_name=?', usr.name
+      )).map(r => r.ticket_id);
+      const otherTickets = allTickets.filter(t =>
+        otherTicketIds.includes(t.id) && !myTicketRows.find(x => x.id === t.id)
+      );
+      const myTickets = [...myTicketRows, ...otherTickets];
+      const myDeadlines = allDeadlines.filter(d => d.user_id === usr.id || d.assignee === usr.name);
+      if (!myTickets.length && !myDeadlines.length) continue;
+
+      const items = [];
+      const today = Date.now();
+      for (const t of myTickets) {
+        const dueDate = t.due ? new Date(t.due) : null;
+        const daysLate = dueDate && !isNaN(dueDate)
+          ? Math.max(1, Math.floor((today - dueDate.getTime()) / 86400000))
+          : 1;
+        items.push({
+          id: t.id,
+          title: t.title || '(untitled)',
+          type: `Ticket · ${t.priority || 'Medium'}`,
+          daysLate,
+          owner: t.assignee || usr.name,
+          link: `${process.env.APP_URL || `http://localhost:${PORT}`}/?ticket=${encodeURIComponent(t.id)}`,
+        });
+      }
+      for (const d of myDeadlines) {
+        const due = combineEventStart(d.date_key, d.start_time || '23:59');
+        const daysLate = due && !isNaN(due)
+          ? Math.max(1, Math.floor((today - due.getTime()) / 86400000))
+          : 1;
+        items.push({
+          id: `EVT-${d.id}`,
+          title: d.title || d.label || 'Deadline',
+          type: 'Deadline',
+          daysLate,
+          owner: d.assignee || usr.name,
+          link: `${process.env.APP_URL || `http://localhost:${PORT}`}/?event=${d.id}`,
+        });
+      }
+
+      fireEmail('overdue-digest', () => sendOverdueDigestEmail({
+        toEmail: usr.email, toName: usr.name, items,
+      }));
+      await run('UPDATE users SET last_overdue_digest_at=? WHERE id=?', new Date().toISOString(), usr.id);
+    }
+  } catch(e) {
+    console.error('[cron:overdue-digest] failed:', e.message);
+  }
+}
+
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
@@ -1265,6 +1804,21 @@ app.get('*', (req, res) => {
       console.log(`   No on-start ticket cleanup — your data is safe across deploys.`);
       console.log(`   Status is end-user controlled only; never reset on boot.`);
     });
+
+    // ── Email cron loops ────────────────────────────────────────────────────
+    // Every 5 min: meeting reminders ~1 hour before start.
+    setInterval(runMeetingReminderJob, 5 * 60 * 1000);
+    // Every hour: deadline-approaching warnings + overdue-digest dispatch.
+    setInterval(runDeadlineWarningJob, 60 * 60 * 1000);
+    setInterval(runOverdueDigestJob,   60 * 60 * 1000);
+    // Run all jobs once at startup (slightly delayed) so a freshly-deployed
+    // server doesn't have to wait an hour to start sending alerts.
+    setTimeout(() => {
+      runMeetingReminderJob();
+      runDeadlineWarningJob();
+      runOverdueDigestJob();
+    }, 30 * 1000);
+    console.log('✅  Email cron loops scheduled (meeting-reminder/deadline/overdue-digest).');
   } catch(e) {
     console.error('❌  Failed to start:', e.message);
     process.exit(1);

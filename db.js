@@ -277,6 +277,15 @@ async function init() {
       CONSTRAINT session_pkey PRIMARY KEY (sid) NOT DEFERRABLE INITIALLY IMMEDIATE
     )`,
     `CREATE INDEX IF NOT EXISTS idx_session_expire ON session (expire)`,
+    `CREATE TABLE IF NOT EXISTS password_resets (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT UNIQUE NOT NULL,
+      expires_at TEXT NOT NULL,
+      used INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets (token)`,
   ];
 
   for (const sql of tables) {
@@ -293,6 +302,16 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN deleted_at TEXT DEFAULT NULL");
   // Threaded comments — parent_id links a reply to the comment it answers
   await safeAlter("ALTER TABLE ticket_comments ADD COLUMN parent_id INTEGER");
+  // Email-system migrations — track known devices/IPs for new-device-login alerts,
+  // and per-event flags so we don't double-fire reminder/deadline emails.
+  await safeAlter("ALTER TABLE users ADD COLUMN known_uas TEXT DEFAULT '[]'");
+  await safeAlter("ALTER TABLE users ADD COLUMN last_login_ip TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE users ADD COLUMN welcome_sent INTEGER DEFAULT 0");
+  await safeAlter("ALTER TABLE cal_events ADD COLUMN reminder_sent INTEGER DEFAULT 0");
+  await safeAlter("ALTER TABLE cal_events ADD COLUMN deadline_warned INTEGER DEFAULT 0");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN closed_email_sent INTEGER DEFAULT 0");
+  await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
 
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');

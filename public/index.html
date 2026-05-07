@@ -6844,11 +6844,43 @@ function inviteTeamMember() {
     alert('Please enter name and email');
     return;
   }
-  TEAM_INVITES.unshift({name, email, role, dept, status:'Pending'});
-  closeModal('invite-member');
-  resetInviteMemberForm();
-  renderTeams();
-  alert('Invitation sent to ' + email);
+  // Call the real API so the server creates the invite row and sends the email.
+  // Falls back to local-only behaviour if the request fails (offline / backend down).
+  (async () => {
+    const btn = event?.target?.closest?.('button');
+    const oldText = btn?.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      const res = await apiPost('/api/invites', { email, name, role, dept });
+      // Update local invite list from the server's response.
+      try {
+        const invites = await apiGet('/api/invites');
+        TEAM_INVITES.length = 0;
+        invites.filter(i => i.status === 'Pending').forEach(i =>
+          TEAM_INVITES.push({ id:i.id, name:i.name, email:i.email, role:i.role, dept:i.dept, status:i.status })
+        );
+      } catch {}
+      closeModal('invite-member');
+      resetInviteMemberForm();
+      if (typeof renderTeams === 'function') renderTeams();
+      if (typeof renderUsersTab === 'function') renderUsersTab();
+      // Show the invite link so the inviter can copy it even if email delivery is delayed.
+      const link = res?.inviteUrl || '';
+      setTimeout(() => alert(
+        'Invitation sent to ' + email + '!\n\n' +
+        (link ? 'Share this link directly:\n' + link + '\n\n' : '') +
+        '(They will also receive this in their inbox.)'
+      ), 100);
+    } catch (e) {
+      if (e && e.message === 'unauth') {
+        alert('Your session has expired. Please sign in again.');
+      } else {
+        alert('Could not send invitation: ' + (e?.message || 'unknown error'));
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = oldText || 'Send Invitation'; }
+    }
+  })();
 }
 
 function addTeamMember() {
