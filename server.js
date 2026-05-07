@@ -1589,6 +1589,15 @@ app.get('/api/admin/tickets/dump', requireAdmin, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Returns id, name, email, role (job title), perm_role (permissions), dept for every
+// user. Lets an admin quickly verify whether someone has the Admin permission saved.
+app.get('/api/admin/users/dump', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all('SELECT id, name, email, role, perm_role, dept, last_login_at FROM users ORDER BY id ASC');
+    res.json({ total: rows.length, users: rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // Restore a soft-deleted ticket
 app.post('/api/admin/tickets/:id/restore', requireAdmin, async (req, res) => {
   try {

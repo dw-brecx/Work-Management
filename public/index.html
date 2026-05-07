@@ -4793,7 +4793,7 @@ function reopenTicket() {
   t.reopened = true;
   // If the closed-at date had been recorded, clear it (status flow back to Open)
   delete t.closedAt;
-  logActivity(`Ticket reopened${wasOnce ? ' (again)' : ''} by ${CURRENT_USER}`, 'var(--accent)');
+  logActivity(`Ticket reopened${wasOnce ? ' (again)' : ''} by ${CURRENT_USER() || 'someone'}`, 'var(--accent)');
   renderTicketDetail();
   if (currentPage === 'tickets') renderTickets();
   if (currentPage === 'my-tickets') renderKanban();
@@ -6469,7 +6469,10 @@ function closeMentionDropdown() {
 }
 
 // ============ KANBAN (My Tickets) ============
-const CURRENT_USER = 'John Doe';
+// Returns the logged-in user's name (or '' if auth hasn't bootstrapped yet).
+// Replaces a previously hardcoded const CURRENT_USER = 'John Doe' that broke
+// every per-user filter for anyone whose name wasn't literally "John Doe".
+function CURRENT_USER() { return (window.CURRENT_USER && window.CURRENT_USER.name) || ''; }
 const KAN_COLS = [
   {key:'todo',     label:'To Do',          color:'#1e40af', bg:'#eff6ff', statuses:['Open']},
   {key:'progress', label:'In Progress',    color:'#854d0e', bg:'#fefce8', statuses:['In Progress','In Review','On Hold','Overdue']},
@@ -6501,9 +6504,11 @@ function toggleMtScope(scope) {
 
 // Returns true if `t` is in scope `s` for the current user
 function ticketInScope(t, s) {
-  if (s === 'assigned')  return getAssignees(t).includes(CURRENT_USER);
-  if (s === 'requested') return t.req === CURRENT_USER;
-  if (s === 'reporting') return t.reporter === CURRENT_USER;
+  const me = CURRENT_USER();
+  if (!me) return false;
+  if (s === 'assigned')  return getAssignees(t).includes(me);
+  if (s === 'requested') return t.req === me;
+  if (s === 'reporting') return t.reporter === me;
   return false;
 }
 
