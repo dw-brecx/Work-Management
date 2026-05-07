@@ -12092,101 +12092,189 @@ initApp();
 
 })();
 
-// ── Ticket permalinks (/tickets/TKT-####) ─────────────────────────────────
+// ── App router (deep-linkable URLs for every page + ticket + plan) ─────────
+//
+// Path ↔ page map:
+//   /                  → dashboard
+//   /dashboard         → dashboard
+//   /tickets           → tickets
+//   /tickets/TKT-####  → ticket-detail
+//   /my-tickets        → my-tickets
+//   /planning          → planning
+//   /planning/PLN-###  → plan-detail
+//   /flavors           → flavors
+//   /calendar          → calendar
+//   /teams             → teams
+//   /reports           → reports
+//   /settings          → settings
+//
+// Sidebar navigation pushes the URL via history.pushState so deep-links and
+// back/forward work, without a full page reload (data is already hydrated
+// in TICKETS_DATA / TEAM_DATA / etc.; navigate() re-runs the page renderer).
 (function() {
   const TICKET_PATH = /^\/tickets\/(TKT-\d+)\/?$/i;
+  const PLAN_PATH   = /^\/planning\/(PLN-[\w-]+)\/?$/i;
+  // Pages that have a top-level URL. Order matters only for the inverse lookup.
+  const PAGE_PATHS = {
+    'dashboard':   '/dashboard',
+    'tickets':     '/tickets',
+    'my-tickets':  '/my-tickets',
+    'planning':    '/planning',
+    'flavors':     '/flavors',
+    'calendar':    '/calendar',
+    'teams':       '/teams',
+    'reports':     '/reports',
+    'settings':    '/settings',
+  };
+  // Auth pages live under their own .html files and are handled by the server,
+  // not this router. Don't accidentally rewrite them.
+  const AUTH_PAGES = new Set(['/login.html', '/forgot-password.html', '/reset-password.html', '/invite.html']);
 
-  function urlTicketId() {
-    const m = location.pathname.match(TICKET_PATH);
-    return m ? m[1].toUpperCase() : null;
+  function pathToPage(path) {
+    if (TICKET_PATH.test(path)) return { page: 'ticket-detail', ticketId: path.match(TICKET_PATH)[1].toUpperCase() };
+    if (PLAN_PATH.test(path))   return { page: 'plan-detail',   planId:   path.match(PLAN_PATH)[1].toUpperCase() };
+    if (path === '/' || path === '/index.html' || path === '') return { page: 'dashboard' };
+    for (const [page, p] of Object.entries(PAGE_PATHS)) {
+      if (path === p || path === p + '/') return { page };
+    }
+    return null;
   }
 
-  function pushTicketUrl(id) {
-    const path = '/tickets/' + id;
-    if (location.pathname !== path) history.pushState({ ticketId: id }, '', path);
+  function pageToPath(page, opts) {
+    if (page === 'ticket-detail' && opts?.ticketId) return '/tickets/' + opts.ticketId;
+    if (page === 'plan-detail'   && opts?.planId)   return '/planning/' + opts.planId;
+    return PAGE_PATHS[page] || '/';
   }
-  function pushRootUrl() {
-    if (location.pathname !== '/' && location.pathname !== '/index.html') {
-      history.pushState({}, '', '/');
+
+  // Push only when the path actually changes — avoids spamming history with
+  // duplicate entries when a page renderer fires multiple times.
+  function pushUrl(page, opts) {
+    const path = pageToPath(page, opts);
+    if (location.pathname === path) return;
+    history.pushState({ page, ...(opts || {}) }, '', path);
+  }
+
+  // Used at boot + on popstate to render the page that matches the URL,
+  // without re-pushing it (otherwise we'd loop). Each page's renderer is
+  // already invoked by navigate() — that's where the "refresh" happens.
+  function renderForCurrentPath(opts = {}) {
+    const m = pathToPage(location.pathname);
+    if (!m) {
+      if (typeof navigate === 'function') navigate('dashboard');
+      return;
+    }
+    if (m.page === 'ticket-detail') {
+      const tickets = (typeof TICKETS_DATA !== 'undefined') ? TICKETS_DATA : [];
+      const found = tickets.find(t => t.id === m.ticketId);
+      if (found && typeof openTicketDetail === 'function') {
+        // Suspend the URL-push wrapper for this call so popstate doesn't
+        // recurse — we're already on the right path.
+        const w = window.openTicketDetail;
+        if (w && w._urlPatched && w._original) {
+          window.openTicketDetail = w._original;
+          try { w._original(m.ticketId); } finally { window.openTicketDetail = w; }
+        } else {
+          openTicketDetail(m.ticketId);
+        }
+        return;
+      }
+      if (!opts.silent) console.warn('[router] Ticket', m.ticketId, 'not in your visible list — staying on current page.');
+      return;
+    }
+    if (m.page === 'plan-detail') {
+      const plans = (typeof PLANS !== 'undefined') ? PLANS : [];
+      const found = plans.find(p => p.id === m.planId);
+      if (found && typeof openPlanDetail === 'function') {
+        const w = window.openPlanDetail;
+        if (w && w._urlPatched && w._original) {
+          window.openPlanDetail = w._original;
+          try { w._original(m.planId); } finally { window.openPlanDetail = w; }
+        } else {
+          openPlanDetail(m.planId);
+        }
+        return;
+      }
+      return;
+    }
+    // Plain page — call navigate (without re-pushing the URL we're already on)
+    if (typeof navigate === 'function') {
+      const w = window.navigate;
+      if (w && w._urlPatched && w._original) {
+        window.navigate = w._original;
+        try { w._original(m.page); } finally { window.navigate = w; }
+      } else {
+        navigate(m.page);
+      }
     }
   }
 
-  // Open a ticket from a URL once TICKETS_DATA is hydrated. Server filters Members
-  // to their own tickets, so the lookup may fail for tickets they shouldn't see.
-  function tryOpenFromUrl() {
-    const id = urlTicketId();
-    if (!id) return false;
-    const tickets = (typeof TICKETS_DATA !== 'undefined') ? TICKETS_DATA : [];
-    if (!tickets.length) return false;
-    const found = tickets.find(t => t.id === id);
-    if (found && typeof openTicketDetail === 'function') {
-      openTicketDetail(id);
-      return true;
-    }
-    if (!found) {
-      console.warn('[router] Ticket', id, 'not in your visible list — staying on current page.');
-    }
-    return false;
-  }
-
-  // Wrap openTicketDetail to push the URL
   function wrapOpenTicketDetail() {
     const orig = window.openTicketDetail;
     if (typeof orig !== 'function' || orig._urlPatched) return;
     const patched = function(id, ...rest) {
       const r = orig.apply(this, [id, ...rest]);
-      if (id) pushTicketUrl(id);
+      if (id) pushUrl('ticket-detail', { ticketId: id });
       return r;
     };
     patched._urlPatched = true;
+    patched._original = orig;
     window.openTicketDetail = patched;
   }
 
-  // Wrap navigate so leaving a ticket clears the URL back to /
+  function wrapOpenPlanDetail() {
+    const orig = window.openPlanDetail;
+    if (typeof orig !== 'function' || orig._urlPatched) return;
+    const patched = function(id, ...rest) {
+      const r = orig.apply(this, [id, ...rest]);
+      if (id) pushUrl('plan-detail', { planId: id });
+      return r;
+    };
+    patched._urlPatched = true;
+    patched._original = orig;
+    window.openPlanDetail = patched;
+  }
+
   function wrapNavigate() {
     const orig = window.navigate;
     if (typeof orig !== 'function' || orig._urlPatched) return;
     const patched = function(page, ...rest) {
       const r = orig.apply(this, [page, ...rest]);
-      if (page !== 'ticket-detail') pushRootUrl();
+      // ticket-detail / plan-detail push their own URL via the open* wrappers;
+      // top-level pages push the canonical path here.
+      if (page !== 'ticket-detail' && page !== 'plan-detail' && PAGE_PATHS[page]) {
+        pushUrl(page);
+      } else if (!PAGE_PATHS[page] && page !== 'ticket-detail' && page !== 'plan-detail') {
+        // Unknown page: fall back to root
+        if (location.pathname !== '/') history.pushState({}, '', '/');
+      }
       return r;
     };
     patched._urlPatched = true;
+    patched._original = orig;
     window.navigate = patched;
   }
 
   // Browser back / forward
   window.addEventListener('popstate', () => {
-    const id = urlTicketId();
-    if (id) {
-      if (typeof openTicketDetail === 'function') openTicketDetail(id);
-    } else {
-      // No ticket in URL — go back to the dashboard (or whatever page user was on)
-      if (typeof navigate === 'function') {
-        // Avoid pushing again from inside navigate's wrapper
-        const w = window.navigate;
-        if (w && w._urlPatched) {
-          // Temporarily call original to skip the URL push
-          const tmp = w; window.navigate = function(p) { return tmp(p); };
-        }
-        navigate('dashboard');
-      }
-    }
+    if (AUTH_PAGES.has(location.pathname)) return; // let server-served pages handle themselves
+    renderForCurrentPath({ silent: true });
   });
 
-  // Hook up on first paint and again after the auth/data bootstrap (1.2s) so we
-  // catch openTicketDetail / navigate definitions as they become available.
+  // First-paint hookup. Tries multiple times because navigate / openTicketDetail /
+  // openPlanDetail are defined later in the file as plain functions, then the
+  // bootstrap (~1.2s) fetches data — both events need to have happened before
+  // we can resolve a deep-linked ticket id.
   function _hookRouter() {
     wrapOpenTicketDetail();
+    wrapOpenPlanDetail();
     wrapNavigate();
-    tryOpenFromUrl();
+    renderForCurrentPath();
   }
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(_hookRouter, 200);
   } else {
     document.addEventListener('DOMContentLoaded', () => setTimeout(_hookRouter, 200));
   }
-  // After tickets have loaded
   setTimeout(_hookRouter, 1200);
   setTimeout(_hookRouter, 2500);
 })();
