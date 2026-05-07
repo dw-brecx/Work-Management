@@ -5628,30 +5628,67 @@ function toggleSubtaskRecord(sid, btn) {
   }
   navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
     const chunks = [];
-    const recorder = new MediaRecorder(stream);
+    // Pick the best mime type the browser can record. Without this hint the
+    // recorder may produce audio/mp4 (Safari/iOS) but downstream code wraps
+    // the chunks as audio/webm, giving the user noise / silent playback.
+    const mime = pickRecorderMime();
+    const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
     const timerEl = document.getElementById('sub-rec-timer-' + sid);
     let seconds = 0;
     const intervalId = setInterval(() => {
       seconds++;
       if (timerEl) timerEl.textContent = `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;
     }, 1000);
-    recorder.ondataavailable = e => chunks.push(e.data);
+    // Request periodic chunks so we always have data even if onstop fires fast
+    recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       clearInterval(intervalId);
       if (timerEl) timerEl.textContent = '';
       btn.textContent = '🎤 Record voice';
       btn.style.background = '#f0f5ff';
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      const file = new File([blob], `voice-note-${Date.now()}.webm`, { type: 'audio/webm' });
+      const actualMime = recorder.mimeType || mime || 'audio/webm';
+      if (!chunks.length) { alert('No audio captured — please check your microphone permission and try again.'); delete _subRec[sid]; return; }
+      const blob = new Blob(chunks, { type: actualMime });
+      const ext = audioExtFor(actualMime);
+      const file = new File([blob], `voice-note-${Date.now()}.${ext}`, { type: actualMime });
       await uploadSubtaskFile(sid, file);
       delete _subRec[sid];
     };
-    recorder.start();
+    recorder.start(1000); // emit a chunk every second so stop is fast
     _subRec[sid] = { recorder, stream, chunks, intervalId, seconds };
     btn.textContent = '⏹ Stop';
     btn.style.background = '#fee2e2';
   }).catch(() => alert('Microphone access denied.'));
+}
+
+// Voice-recording helpers: pick the best mime type the current browser can
+// actually produce, and map mime → file extension. Without this, MediaRecorder
+// in Safari produces audio/mp4 while the rest of the code labels it audio/webm,
+// and playback comes out as noise/silence.
+function pickRecorderMime() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4;codecs=mp4a.40.2',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+  ];
+  for (const c of candidates) {
+    try { if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+  }
+  return null; // let the browser pick its default
+}
+function audioExtFor(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('mp4'))  return 'm4a';
+  if (m.includes('ogg'))  return 'ogg';
+  if (m.includes('mpeg')) return 'mp3';
+  if (m.includes('wav'))  return 'wav';
+  return 'webm';
 }
 
 // Mock "today" — keeps demo data dates meaningful
@@ -10867,20 +10904,24 @@ function setupTicketModalAttachments(modal) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
       const chunks = [];
-      recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = e => chunks.push(e.data);
+      const mime = pickRecorderMime();
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
       recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
         clearInterval(recInterval);
         recTimer.style.display = 'none';
         voiceBtn.classList.remove('recording');
         voiceBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Record Voice`;
-        voiceBlob = new Blob(chunks, { type:'audio/webm' });
-        voiceBlob.name = `voice-note-${Date.now()}.webm`;
+        const actualMime = recorder.mimeType || mime || 'audio/webm';
+        if (!chunks.length) { alert('No audio captured — please check your microphone permission and try again.'); return; }
+        const ext = audioExtFor(actualMime);
+        // Use a real File so multer reads name + type correctly server-side
+        voiceBlob = new File(chunks, `voice-note-${Date.now()}.${ext}`, { type: actualMime });
         pendingFiles.push(voiceBlob);
         addPreview(voiceBlob, true);
       };
-      recorder.start();
+      recorder.start(1000);
       recSeconds = 0;
       recTimer.style.display = 'inline';
       recTimer.textContent = '0:00';
@@ -11010,20 +11051,23 @@ function setupCommentAttachments(container) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
       const chunks = [];
-      recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = e => chunks.push(e.data);
+      const mime = pickRecorderMime();
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
       recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
         clearInterval(recInterval);
         timer.style.display = 'none';
         voiceBtn.classList.remove('recording');
         voiceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Voice`;
-        const blob = new Blob(chunks, { type:'audio/webm' });
-        blob.name = `voice-note-${Date.now()}.webm`;
+        const actualMime = recorder.mimeType || mime || 'audio/webm';
+        if (!chunks.length) { alert('No audio captured — please check your microphone permission and try again.'); return; }
+        const ext = audioExtFor(actualMime);
+        const blob = new File(chunks, `voice-note-${Date.now()}.${ext}`, { type: actualMime });
         pendingFiles.push(blob);
         addCmtPreview(blob, true);
       };
-      recorder.start();
+      recorder.start(1000);
       recSeconds = 0;
       timer.style.display = 'inline';
       timer.textContent = '0:00';
@@ -11252,20 +11296,23 @@ function setupCommentAttachBar() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const chunks = [];
-      cmtRecorder = new MediaRecorder(stream);
-      cmtRecorder.ondataavailable = e => chunks.push(e.data);
+      const mime = pickRecorderMime();
+      cmtRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      cmtRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
       cmtRecorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
         clearInterval(cmtRecInterval);
         recTimer.style.display = 'none';
         voiceBtn.classList.remove('recording');
         voiceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Voice Note`;
-        const blob = new Blob(chunks, { type: 'audio/webm' });
-        blob.name = `voice-${Date.now()}.webm`;
+        const actualMime = cmtRecorder.mimeType || mime || 'audio/webm';
+        if (!chunks.length) { alert('No audio captured — please check your microphone permission and try again.'); return; }
+        const ext = audioExtFor(actualMime);
+        const blob = new File(chunks, `voice-${Date.now()}.${ext}`, { type: actualMime });
         cmtPendingFiles.push(blob);
         addCmtPreview(blob, true);
       };
-      cmtRecorder.start();
+      cmtRecorder.start(1000);
       cmtRecSecs = 0;
       recTimer.style.display = 'inline';
       recTimer.textContent = '0:00';
