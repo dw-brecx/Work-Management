@@ -12593,9 +12593,16 @@ window.promoteTicketToProject = async function(id) {
   if (!confirm('Convert this ticket into a project? You will be able to add sub-tickets under it.')) return;
   try {
     const r = await fetch('/api/tickets/' + encodeURIComponent(id) + '/promote', { method: 'POST' });
+    const text = await r.text();
+    let data = {}; try { data = text ? JSON.parse(text) : {}; } catch {}
+    console.debug('[projects] promote', id, '→', r.status, data);
     if (!r.ok) {
-      const data = await r.json().catch(() => ({}));
-      alert('Could not convert to project: ' + (data.error || ('status ' + r.status)));
+      const detail = data.error || (text ? text.slice(0, 200) : ('status ' + r.status));
+      alert('Could not convert to project: ' + detail
+        + (r.status === 401 ? '\n(You may need to sign in again.)'
+        : r.status === 403 ? '\n(Admin permission required.)'
+        : r.status === 404 ? '\n(Endpoint not found — server may still be deploying.)'
+        : ''));
       return;
     }
     // Mirror the change in the local cache so the UI reflects it
@@ -12713,13 +12720,22 @@ function renderProjectCardHtml(p) {
 function renderTicketDetailProjectBanner(ticketId) {
   const t = TICKETS_DATA.find(x => x.id === ticketId);
   if (!t) return;
-  const host = document.querySelector('#page-ticket-detail .td-main, #page-ticket-detail') || document.getElementById('page-ticket-detail');
-  if (!host) return;
+  // Anchor the banner directly below the title/badges row inside .page-content
+  // so it lives in the same column as the Ticket Details card. Inserting at
+  // the page root put it into the side margin on the page-with-right layout.
+  const headerRow = document.querySelector('#page-ticket-detail .page-content .td-header-row');
+  const pageContent = document.querySelector('#page-ticket-detail .page-content');
+  if (!pageContent) return;
   let banner = document.getElementById('td-project-banner');
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'td-project-banner';
-    host.insertBefore(banner, host.firstChild);
+  }
+  if (banner.parentNode) banner.parentNode.removeChild(banner);
+  if (headerRow && headerRow.parentNode) {
+    headerRow.insertAdjacentElement('afterend', banner);
+  } else {
+    pageContent.insertBefore(banner, pageContent.firstChild);
   }
   const isAdmin = (typeof isCurrentUserAdmin === 'function' ? isCurrentUserAdmin() : false);
   if (t.parentTicketId) {
@@ -12768,15 +12784,18 @@ async function renderProjectSubticketsSection(projectId) {
     if (old) old.remove();
     return;
   }
-  const host = document.querySelector('#page-ticket-detail .td-main, #page-ticket-detail') || document.getElementById('page-ticket-detail');
-  if (!host) return;
+  // Same column-aware anchoring as the banner — drop the section into
+  // .page-content so it sits below the ticket cards instead of in the margin.
+  const pageContent = document.querySelector('#page-ticket-detail .page-content');
+  if (!pageContent) return;
   let sec = document.getElementById('td-subtickets-section');
   if (!sec) {
     sec = document.createElement('div');
     sec.id = 'td-subtickets-section';
     sec.style.cssText = 'margin-top:14px;border:1px solid var(--border);border-radius:10px;background:#fff;overflow:hidden';
-    host.appendChild(sec);
   }
+  if (sec.parentNode) sec.parentNode.removeChild(sec);
+  pageContent.appendChild(sec);
   sec.innerHTML = '<div style="padding:10px 14px;font-size:12px;color:var(--text3)">Loading sub-tickets…</div>';
   try {
     const children = await apiGet('/api/tickets/' + encodeURIComponent(projectId) + '/children');
