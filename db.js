@@ -372,6 +372,15 @@ async function init() {
   // active announcements with id > this value). Separate from
   // announcement_seen — that table is for popup acknowledgement.
   await safeAlter("ALTER TABLE users ADD COLUMN last_announcement_id_seen INTEGER DEFAULT 0");
+  // Project hierarchy: an admin can promote a ticket to a "project" and then
+  // create child tickets under it. Children carry parent_ticket_id pointing
+  // back at the project. Single-level only — children can't themselves be
+  // projects. The main tickets list hides children; the Projects page lists
+  // every project.
+  await safeAlter('ALTER TABLE tickets ADD COLUMN parent_ticket_id TEXT');
+  await safeAlter('ALTER TABLE tickets ADD COLUMN is_project INTEGER DEFAULT 0');
+  await run('CREATE INDEX IF NOT EXISTS idx_tickets_parent ON tickets (parent_ticket_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_tickets_is_project ON tickets (is_project)');
   // Profile avatar (existing installs)
   await safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''");
   // Time zone preference (existing installs)

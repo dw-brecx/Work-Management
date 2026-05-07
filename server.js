@@ -537,6 +537,12 @@ async function buildTicket(row) {
   const liveAssignee = await nameForUserId(row.assignee_user_id, row.assignee);
   const liveReporter = await nameForUserId(row.reporter_user_id, row.reporter);
   const liveReq      = await nameForUserId(row.req_user_id, row.req);
+  // Count of child tickets (only meaningful when is_project = 1, but cheap
+  // either way). Used by the projects page + the project badge on the list.
+  const childRow = await get(
+    'SELECT COUNT(*)::int AS n FROM tickets WHERE parent_ticket_id = ? AND deleted_at IS NULL',
+    row.id
+  );
   return {
     ...row,
     tags: JSON.parse(row.tags_json || '[]'),
@@ -545,7 +551,10 @@ async function buildTicket(row) {
     req:      liveReq,
     assignees,
     overdue: !!row.overdue,
-    comments: row.comments_count
+    comments: row.comments_count,
+    parentTicketId: row.parent_ticket_id || null,
+    isProject: !!row.is_project,
+    childCount: parseInt(childRow?.n || 0, 10),
   };
 }
 
@@ -580,6 +589,79 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Projects (admin-promoted parent tickets) ────────────────────────────────
+// Promote / demote are admin-only. The list and children endpoints are open to
+// any authenticated user (filtered by ticket access where needed).
+app.post('/api/tickets/:id/promote', requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const t = await get('SELECT id, parent_ticket_id, deleted_at FROM tickets WHERE id=?', id);
+    if (!t || t.deleted_at) return res.status(404).json({ error: 'Not found' });
+    if (t.parent_ticket_id) return res.status(400).json({ error: 'Cannot promote a sub-ticket — it already belongs to a project' });
+    await run('UPDATE tickets SET is_project=1 WHERE id=?', id);
+    console.log(`[projects] PROMOTE ${id} by user ${req.session.userId} at ${new Date().toISOString()}`);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tickets/:id/demote', requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const t = await get('SELECT id, deleted_at FROM tickets WHERE id=?', id);
+    if (!t || t.deleted_at) return res.status(404).json({ error: 'Not found' });
+    // Release any children — they become regular tickets again.
+    await run('UPDATE tickets SET parent_ticket_id=NULL WHERE parent_ticket_id=?', id);
+    await run('UPDATE tickets SET is_project=0 WHERE id=?', id);
+    console.log(`[projects] DEMOTE ${id} by user ${req.session.userId} at ${new Date().toISOString()}`);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// List of projects (parent tickets only) with their child counts. Admin-only —
+// non-admins don't have a Projects view, but their My Tickets shows the
+// individual sub-tickets they're assigned to.
+app.get('/api/projects', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT t.*,
+             (SELECT COUNT(*) FROM tickets c WHERE c.parent_ticket_id = t.id AND c.deleted_at IS NULL)::int AS child_count
+        FROM tickets t
+       WHERE t.is_project = 1 AND t.deleted_at IS NULL
+       ORDER BY t.id DESC`);
+    const out = await Promise.all(rows.map(buildTicket));
+    res.json(out);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Children of a given project ticket. Authenticated, but the access middleware
+// gates non-admins by per-ticket access — a worker can only see children
+// they're assigned to (which they'd already see in My Tickets anyway).
+app.get('/api/tickets/:id/children', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const u = await getUser(req.session.userId);
+    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    let rows;
+    if (isAdmin) {
+      rows = await all('SELECT * FROM tickets WHERE parent_ticket_id=? AND deleted_at IS NULL ORDER BY id ASC', req.params.id);
+    } else {
+      // Same access pattern as the main /api/tickets list — restrict to
+      // children the user is associated with.
+      rows = await all(
+        `SELECT t.* FROM tickets t
+           WHERE t.parent_ticket_id = ?
+             AND t.deleted_at IS NULL
+             AND (t.assignee_user_id = ?
+                  OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+                  OR EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?)))
+                  OR t.created_by = ?)
+           ORDER BY t.id ASC`,
+        req.params.id, u.id, u.name, u.id, u.name, u.id
+      );
+    }
+    res.json(await Promise.all(rows.map(buildTicket)));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
   // Block reads of soft-deleted tickets — even admins shouldn't see them
   // through this path; use /api/admin/tickets/dump for forensics.
@@ -592,8 +674,22 @@ app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
 
 app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const { id: clientId, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist } = req.body;
+    const { id: clientId, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist, parentTicketId } = req.body;
     if (!title) return res.status(400).json({ error:'title required' });
+    // Validate parent (if creating a sub-ticket): must exist, not be soft-
+    // deleted, must itself be a project, and must NOT itself have a parent
+    // (single-level hierarchy only).
+    let resolvedParent = null;
+    if (parentTicketId) {
+      const parent = await get(
+        'SELECT id, parent_ticket_id, is_project FROM tickets WHERE id=? AND deleted_at IS NULL',
+        String(parentTicketId)
+      );
+      if (!parent) return res.status(400).json({ error: 'Parent project not found' });
+      if (parent.parent_ticket_id) return res.status(400).json({ error: 'Cannot nest sub-tickets under another sub-ticket' });
+      if (!parent.is_project) return res.status(400).json({ error: 'Parent must be promoted to a project first' });
+      resolvedParent = parent.id;
+    }
     // Server-authoritative ID. Pick max(existing TKT-### number) + 1, with a tiny retry
     // loop in case of a concurrent insert. Eliminates the client-side ID-collision race.
     let id = null;
@@ -610,11 +706,11 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
     const assigneeUid = await resolveUserIdByName(assignee);
     const reporterUid = await resolveUserIdByName(reporter);
     const reqUid      = await resolveUserIdByName(reqName);
-    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
+    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,parent_ticket_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
       dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId,
-      assigneeUid, reporterUid, reqUid);
+      assigneeUid, reporterUid, reqUid, resolvedParent);
     // Persist the description from the create modal. Audit had this as
     // outstanding: req.body.description was being read for the email but
     // never written, so descriptions silently disappeared on every create.

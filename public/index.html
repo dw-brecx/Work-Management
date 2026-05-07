@@ -2057,6 +2057,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
       My Tickets
     </div>
+    <div class="nav-item admin-only" data-page="projects">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
+    </div>
     <div class="nav-item" data-page="planning">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 2h6l4 4v14a2 2 0 01-2 2H7a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
       Planning
@@ -2986,6 +2990,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         </div>
       </div>
     </div>
+    </div>
+
+    <!-- ========== PROJECTS (admin-only — list of promoted parent tickets) ========== -->
+    <div id="page-projects" class="page">
+      <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Projects</h1>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:18px">Tickets promoted to projects with all their sub-tickets. End users see each sub-ticket in their My Tickets.</p>
+      <div id="projects-list" style="display:flex;flex-direction:column;gap:12px;max-width:920px"></div>
+      <div id="projects-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No projects yet. Open a ticket and click <b>Convert to Project</b> to get started.</div>
     </div>
 
     <!-- ========== WHAT'S NEW (announcement feed) ========== -->
@@ -4105,6 +4117,7 @@ window.PAGE_PATHS = {
   'calendar':    '/calendar',
   'teams':       '/teams',
   'reports':     '/reports',
+  'projects':    '/projects',
   'whats-new':   '/whats-new',
   'feedback':    '/feedback',
   'settings':    '/settings',
@@ -4141,6 +4154,7 @@ function navigate(page) {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
       'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
+      'projects': 'Projects',
       'whats-new': "What's New", 'feedback': 'Feedback',
       'ticket-detail': 'Ticket', 'plan-detail': 'Plan'
     };
@@ -4661,6 +4675,10 @@ function renderTickets() {
   const pr = document.getElementById('fil-priority')?.value || '';
   const ag = assigneeFilter || '';
   let list = TICKETS_DATA.filter(t => {
+    // Sub-tickets are hidden from the main Tickets list — they only appear
+    // inside their project. They still show up in the user's My Tickets
+    // (the 'mine' tab below) so workers see their assigned work.
+    if (t.parentTicketId && currentTicketTab !== 'mine') return false;
     if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER && window.CURRENT_USER.name) || '')) return false;
     if (currentTicketTab === 'open'     && t.status !== 'Open') return false;
     if (currentTicketTab === 'progress' && t.status !== 'In Progress') return false;
@@ -4679,10 +4697,17 @@ function renderTickets() {
   el.innerHTML = list.map(t => {
     const isSel = selectedTicketIds.has(t.id);
     const cmt = t.comments || 0;
-    return `<tr class="${isSel ? 'selected' : ''}" data-tid="${t.id}" style="cursor:pointer" onclick="openTicketDetail('${t.id}')">
+    // Project rows: tinted background + an inline PROJECT badge with the
+    // sub-ticket count so admins spot them at a glance in the list.
+    const isProject = !!t.isProject;
+    const rowStyle = isProject ? 'cursor:pointer;background:linear-gradient(90deg,#faf5ff 0%,#fff 80%)' : 'cursor:pointer';
+    const projectPill = isProject
+      ? `<span style="display:inline-block;background:#7c3aed;color:#fff;font-size:9.5px;font-weight:700;letter-spacing:.05em;padding:1px 6px;border-radius:8px;margin-right:6px;vertical-align:middle">PROJECT · ${t.childCount || 0}</span>`
+      : '';
+    return `<tr class="${isSel ? 'selected' : ''}" data-tid="${t.id}" style="${rowStyle}" onclick="openTicketDetail('${t.id}')">
     <td onclick="event.stopPropagation()" style="cursor:default"><input type="checkbox" class="row-cb" data-tid="${t.id}" ${isSel ? 'checked' : ''} onchange="toggleRowSelection('${t.id}', this.checked)"/></td>
     <td style="color:var(--accent);white-space:nowrap;font-weight:500">${t.id}</td>
-    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">${escapeHtml(t.title)}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">${projectPill}${escapeHtml(t.title)}</td>
     <td>${statusBadge(t.status)}</td>
     <td>${priorityBadge(t.priority)}</td>
     <td>${stackedAvatars(getAssignees(t))}</td>
@@ -7837,6 +7862,12 @@ function saveTicket() {
   const description = document.getElementById('m-desc')?.value.trim() || '';
   const dueDate = parseTicketDate(dueRaw);
   const dueFormatted = dueDate ? formatDateLong(dueDate) : dueRaw;
+  // If this Create modal was opened from a project's "+ Add Sub-ticket"
+  // (or "+ New Ticket" on the Projects page), wire the parent id onto
+  // the optimistic record. Consumed once per submission.
+  const parentTicketId = (typeof consumePendingParentForCreate === 'function')
+    ? consumePendingParentForCreate()
+    : null;
 
   TICKETS_DATA.unshift({
     id: newId,
@@ -7855,7 +7886,8 @@ function saveTicket() {
     comments: 0,
     description,
     checklist,
-    attachments
+    attachments,
+    parentTicketId,
   });
 
   // Seed the description in the in-memory details cache so the ticket
@@ -11648,6 +11680,10 @@ function watchTicketDetailPanel() {
       window.currentDetailTicketId = id;
       const r = _orig.call(this, id, ...args);
       injectAttachmentsWhenReady(id);
+      // Project-aware additions: banner up top (Convert / Disconnect /
+      // Sub-ticket parent link) and the Sub-tickets section underneath.
+      try { if (typeof renderTicketDetailProjectBanner === 'function') renderTicketDetailProjectBanner(id); } catch {}
+      try { if (typeof renderProjectSubticketsSection === 'function') renderProjectSubticketsSection(id); } catch {}
       // Pull the saved description + checklist from the server so reopening a
       // ticket shows what was actually persisted (not just whatever's in the
       // in-memory TICKET_DETAILS cache from the optimistic create).
@@ -12536,6 +12572,254 @@ window.submitFeedback = async function() {
   } finally { submitBtn.disabled = false; }
 };
 
+// ── Projects (admin-promoted parent tickets with sub-tickets) ──────────────
+// State for the "+ New ticket in project" flow — when openCreateTicketModal
+// is called from a project page, we stash the parent id here so the saved
+// ticket gets parent_ticket_id wired automatically.
+let _pendingParentForCreate = null;
+window.startCreateTicketInProject = function(projectId) {
+  _pendingParentForCreate = String(projectId || '') || null;
+  if (typeof openModal === 'function') openModal('ticket');
+};
+window.consumePendingParentForCreate = function() {
+  const p = _pendingParentForCreate;
+  _pendingParentForCreate = null;
+  return p;
+};
+
+// Promote / demote — admin only (server enforces, but we hide the UI for
+// non-admins so they don't see useless buttons).
+window.promoteTicketToProject = async function(id) {
+  if (!confirm('Convert this ticket into a project? You will be able to add sub-tickets under it.')) return;
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(id) + '/promote', { method: 'POST' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not convert to project: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    // Mirror the change in the local cache so the UI reflects it
+    // immediately, and refresh.
+    const t = TICKETS_DATA.find(x => x.id === id);
+    if (t) { t.isProject = true; t.childCount = t.childCount || 0; }
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof window.openTicketDetail === 'function') window.openTicketDetail(id);
+  } catch (e) { alert('Could not convert to project: ' + (e?.message || e)); }
+};
+
+window.demoteProject = async function(id) {
+  if (!confirm('Disconnect this project? Its sub-tickets will become regular tickets again.')) return;
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(id) + '/demote', { method: 'POST' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not disconnect project: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    // Local mirror: clear isProject on parent, clear parentTicketId on
+    // anything that pointed at it, so a manual refresh isn't required.
+    const t = TICKETS_DATA.find(x => x.id === id);
+    if (t) { t.isProject = false; t.childCount = 0; }
+    TICKETS_DATA.forEach(x => { if (x.parentTicketId === id) x.parentTicketId = null; });
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof window.openTicketDetail === 'function') window.openTicketDetail(id);
+  } catch (e) { alert('Could not disconnect project: ' + (e?.message || e)); }
+};
+
+// Projects page renderer. Each project gets a card with its sub-tickets
+// inline, so admins can scan project status without drilling in.
+async function loadProjectsPage() {
+  const wrap = document.getElementById('projects-list');
+  const empty = document.getElementById('projects-empty');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
+  try {
+    const projects = await apiGet('/api/projects');
+    if (!Array.isArray(projects) || !projects.length) {
+      wrap.innerHTML = '';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    // For each project, load its children. Parallel for snappy renders.
+    const enriched = await Promise.all(projects.map(async p => {
+      try {
+        const children = await apiGet('/api/tickets/' + encodeURIComponent(p.id) + '/children');
+        return { ...p, children: Array.isArray(children) ? children : [] };
+      } catch { return { ...p, children: [] }; }
+    }));
+    wrap.innerHTML = enriched.map(renderProjectCardHtml).join('');
+    // Refresh the sidebar counter.
+    const badge = document.getElementById('nav-projects-badge');
+    if (badge) {
+      if (enriched.length > 0) {
+        badge.textContent = enriched.length;
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  } catch (e) {
+    wrap.innerHTML = '<div style="color:var(--red);font-size:12px;padding:10px">Could not load projects.</div>';
+  }
+}
+
+function renderProjectCardHtml(p) {
+  const safeTitle = String(p.title || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const safeDept  = String(p.dept || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const due = p.due ? `<span style="color:var(--text3);font-size:11px">Due ${String(p.due).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}</span>` : '';
+  const childRows = p.children.length === 0
+    ? '<tr><td colspan="5" style="text-align:center;color:var(--text3);font-size:11.5px;padding:10px">No sub-tickets yet — click "+ New Ticket" to add one.</td></tr>'
+    : p.children.map(c => {
+        const a = (c.assignees && c.assignees[0]) || c.assignee || '';
+        return `<tr style="cursor:pointer" onclick="openTicketDetail('${c.id}')">
+          <td style="padding:6px 8px;font-size:12px;color:var(--accent);white-space:nowrap">${c.id}</td>
+          <td style="padding:6px 8px;font-size:12.5px;font-weight:500">${String(c.title||'').replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]))}</td>
+          <td style="padding:6px 8px">${typeof statusBadge==='function' ? statusBadge(c.status) : c.status}</td>
+          <td style="padding:6px 8px;font-size:11.5px;color:var(--text2)">${String(a).replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]))}</td>
+          <td style="padding:6px 8px;font-size:11px;color:${c.overdue?'var(--red)':'var(--text3)'};white-space:nowrap">${String(c.due||'').replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]))}</td>
+        </tr>`;
+      }).join('');
+  return `
+    <div style="border:1px solid var(--border);border-radius:10px;background:#fff;overflow:hidden">
+      <div style="padding:14px 16px;background:linear-gradient(90deg,#faf5ff 0%,#fff 80%);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="display:inline-block;background:#7c3aed;color:#fff;font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 8px;border-radius:10px">PROJECT</span>
+        <span style="font-size:13px;color:var(--accent);font-weight:500;cursor:pointer" onclick="openTicketDetail('${p.id}')">${p.id}</span>
+        <span style="font-size:14px;font-weight:600;cursor:pointer;flex:1;min-width:120px" onclick="openTicketDetail('${p.id}')">${safeTitle}</span>
+        ${safeDept ? `<span style="font-size:11px;color:var(--text2)">${safeDept}</span>` : ''}
+        ${due}
+        <button class="btn-primary" style="font-size:11.5px;padding:5px 12px" onclick="startCreateTicketInProject('${p.id}')">+ New Ticket</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead style="background:#fafbff">
+          <tr>
+            <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">ID</th>
+            <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">TITLE</th>
+            <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">STATUS</th>
+            <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">ASSIGNEE</th>
+            <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">DUE</th>
+          </tr>
+        </thead>
+        <tbody>${childRows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ── Project banner on ticket detail ──────────────────────────────────────
+// Inserts/refreshes a small banner at the top of the ticket detail panel:
+//   - is_project: PROJECT pill + "Disconnect" button + "+ Add Sub-ticket"
+//   - has parent: "Part of project: <id> <title>" link
+//   - regular ticket (admin only): "Convert to Project" button
+function renderTicketDetailProjectBanner(ticketId) {
+  const t = TICKETS_DATA.find(x => x.id === ticketId);
+  if (!t) return;
+  const host = document.querySelector('#page-ticket-detail .td-main, #page-ticket-detail') || document.getElementById('page-ticket-detail');
+  if (!host) return;
+  let banner = document.getElementById('td-project-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'td-project-banner';
+    host.insertBefore(banner, host.firstChild);
+  }
+  const isAdmin = (typeof isCurrentUserAdmin === 'function' ? isCurrentUserAdmin() : false);
+  if (t.parentTicketId) {
+    const parent = TICKETS_DATA.find(x => x.id === t.parentTicketId);
+    const parentTitle = parent ? (parent.title || '') : '';
+    banner.style.cssText = 'background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;display:flex;align-items:center;gap:10px';
+    banner.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span>Part of project:
+        <a onclick="openTicketDetail('${t.parentTicketId}')" style="color:var(--accent);font-weight:500;cursor:pointer;text-decoration:underline">${t.parentTicketId}</a>
+        — ${(parentTitle || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}
+      </span>`;
+    return;
+  }
+  if (t.isProject) {
+    const adminBtns = isAdmin
+      ? `<button onclick="demoteProject('${t.id}')" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text2);margin-left:auto">Disconnect project</button>`
+      : '';
+    banner.style.cssText = 'background:linear-gradient(90deg,#faf5ff 0%,#fff 80%);border:1px solid #e9d5ff;border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+    banner.innerHTML = `
+      <span style="display:inline-block;background:#7c3aed;color:#fff;font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 8px;border-radius:10px">PROJECT · ${t.childCount || 0}</span>
+      <span style="font-size:12px;color:var(--text2)">Sub-tickets are listed below. Open the Projects page for the full overview.</span>
+      <button class="btn-primary" style="font-size:11.5px;padding:5px 12px" onclick="startCreateTicketInProject('${t.id}')">+ Add Sub-ticket</button>
+      ${adminBtns}
+    `;
+    return;
+  }
+  // Regular ticket — admin sees a Convert button.
+  if (isAdmin) {
+    banner.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:#fafbff;border:1px dashed var(--border);border-radius:8px';
+    banner.innerHTML = `
+      <span style="font-size:11.5px;color:var(--text3)">Need to break this into multiple sub-tickets?</span>
+      <button onclick="promoteTicketToProject('${t.id}')" style="font-size:11.5px;padding:5px 12px;background:#7c3aed;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600">Convert to Project</button>
+    `;
+  } else {
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+  }
+}
+
+// Sub-tickets section on a project's ticket detail. Lists every child with
+// status / assignee / due. Click a row → open that child's detail.
+async function renderProjectSubticketsSection(projectId) {
+  const t = TICKETS_DATA.find(x => x.id === projectId);
+  if (!t || !t.isProject) {
+    const old = document.getElementById('td-subtickets-section');
+    if (old) old.remove();
+    return;
+  }
+  const host = document.querySelector('#page-ticket-detail .td-main, #page-ticket-detail') || document.getElementById('page-ticket-detail');
+  if (!host) return;
+  let sec = document.getElementById('td-subtickets-section');
+  if (!sec) {
+    sec = document.createElement('div');
+    sec.id = 'td-subtickets-section';
+    sec.style.cssText = 'margin-top:14px;border:1px solid var(--border);border-radius:10px;background:#fff;overflow:hidden';
+    host.appendChild(sec);
+  }
+  sec.innerHTML = '<div style="padding:10px 14px;font-size:12px;color:var(--text3)">Loading sub-tickets…</div>';
+  try {
+    const children = await apiGet('/api/tickets/' + encodeURIComponent(projectId) + '/children');
+    const isAdmin = (typeof isCurrentUserAdmin === 'function' ? isCurrentUserAdmin() : false);
+    const rows = (Array.isArray(children) ? children : []);
+    // Mirror server-known childCount in cache so list badges stay accurate
+    const cached = TICKETS_DATA.find(x => x.id === projectId);
+    if (cached) cached.childCount = rows.length;
+    const body = rows.length === 0
+      ? '<tr><td colspan="5" style="text-align:center;color:var(--text3);font-size:11.5px;padding:14px">No sub-tickets yet — click "+ Add Sub-ticket" above to create one.</td></tr>'
+      : rows.map(c => {
+          const a = (c.assignees && c.assignees[0]) || c.assignee || '';
+          return `<tr style="cursor:pointer" onclick="openTicketDetail('${c.id}')">
+            <td style="padding:7px 10px;font-size:12px;color:var(--accent);white-space:nowrap">${c.id}</td>
+            <td style="padding:7px 10px;font-size:12.5px;font-weight:500">${String(c.title||'').replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]))}</td>
+            <td style="padding:7px 10px">${typeof statusBadge==='function' ? statusBadge(c.status) : c.status}</td>
+            <td style="padding:7px 10px;font-size:11.5px;color:var(--text2)">${String(a).replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]))}</td>
+            <td style="padding:7px 10px;font-size:11px;color:${c.overdue?'var(--red)':'var(--text3)'};white-space:nowrap">${String(c.due||'').replace(/[<>&"]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[ch]))}</td>
+          </tr>`;
+        }).join('');
+    sec.innerHTML = `
+      <div style="padding:10px 14px;background:#fafbff;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+        <span style="font-size:12px;font-weight:600">Sub-tickets (${rows.length})</span>
+        <button class="btn-primary" style="font-size:11px;padding:4px 10px;margin-left:auto" onclick="startCreateTicketInProject('${projectId}')">+ Add Sub-ticket</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead style="background:#fff;border-bottom:1px solid var(--border)">
+          <tr>
+            <th style="text-align:left;padding:6px 10px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">ID</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">TITLE</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">STATUS</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">ASSIGNEE</th>
+            <th style="text-align:left;padding:6px 10px;font-size:10.5px;color:var(--text3);font-weight:600;letter-spacing:.04em">DUE</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    sec.innerHTML = '<div style="padding:10px 14px;color:var(--red);font-size:12px">Could not load sub-tickets.</div>';
+  }
+}
+
 // ── Sidebar collapse / mobile toggle ─────────────────────────────────────────
 window.toggleSidebar = function() {
   var sb = document.getElementById('sidebar');
@@ -13327,6 +13611,7 @@ async function refreshPageData(page) {
     if (page === 'teams'       && typeof renderTeams   === 'function') renderTeams();
     if (page === 'whats-new'   && typeof loadWhatsNewFeed === 'function') loadWhatsNewFeed();
     if (page === 'feedback'    && typeof loadFeedbackFeed === 'function') loadFeedbackFeed();
+    if (page === 'projects'    && typeof loadProjectsPage === 'function') loadProjectsPage();
   } catch (err) {
     // Keep stale data — the user will see what they had before the failed nav.
     console.warn('[router] refreshPageData failed for', page, '—', err?.message || err);
@@ -13366,6 +13651,7 @@ window.refreshPageData = refreshPageData;
     'calendar':    '/calendar',
     'teams':       '/teams',
     'reports':     '/reports',
+    'projects':    '/projects',
     'whats-new':   '/whats-new',
     'feedback':    '/feedback',
     'settings':    '/settings',
