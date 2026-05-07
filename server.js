@@ -81,10 +81,14 @@ const upload = multer({
     const m = String(file.mimetype || '').toLowerCase();
     const safeImage = /^image\/(png|jpeg|jpg|gif|webp|bmp)$/.test(m);
     const safeAudio = /^audio\//.test(m);
-    const safeVideo = /^video\/(webm|mp4)(;|$)/.test(m);
+    // Allow webm, mp4, quicktime (Safari mov) — accept with or without
+    // codec parameters (browsers vary on whether they include them).
+    const safeVideo = /^video\/(webm|mp4|quicktime|x-matroska)\b/.test(m);
     const safePdf   = m === 'application/pdf';
     const safeOffice = ['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(m);
-    cb(null, safeImage || safeAudio || safeVideo || safePdf || safeOffice);
+    const ok = safeImage || safeAudio || safeVideo || safePdf || safeOffice;
+    if (!ok) console.warn('[upload] rejected by filter:', file.originalname, '→', m || '(no mimetype)');
+    cb(null, ok);
   }
 });
 
