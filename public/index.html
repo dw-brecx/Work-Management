@@ -6912,7 +6912,30 @@ function addTeamMember() {
 }
 
 function resendInvite(email) {
-  alert('Invitation resent to ' + email);
+  // Hits the new /api/invites/resend-by-email endpoint. The server
+  // refreshes the invite's expiry and re-fires the workspace-invite email.
+  (async () => {
+    const btn = event?.target?.closest?.('button');
+    const oldText = btn?.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      const r = await apiPost('/api/invites/resend-by-email', { email });
+      const link = r?.inviteUrl || '';
+      alert(
+        'Invitation resent to ' + email + '!\n\n' +
+        (link ? 'Share this link directly:\n' + link + '\n\n' : '') +
+        '(They will also receive this in their inbox.)'
+      );
+    } catch(e) {
+      if (e && e.message === 'unauth') {
+        alert('Your session has expired. Please sign in again.');
+      } else {
+        alert('Could not resend invitation: ' + (e?.message || 'unknown error'));
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = oldText || 'Resend'; }
+    }
+  })();
 }
 
 // ============ CALENDAR ============

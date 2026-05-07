@@ -329,6 +329,52 @@ app.delete('/api/invites/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Resend a pending invite ──────────────────────────────────────────────────
+// Looks up the existing invite (by id OR by email — the front-end only knows
+// the email when it renders the pending list), refreshes the expiry, and
+// re-sends the workspace-invite email with the same token.
+async function resendInviteByLookup(lookup, req) {
+  const where = lookup.id ? 'id=?' : 'LOWER(email)=?';
+  const arg   = lookup.id ? Number(lookup.id) : String(lookup.email || '').toLowerCase().trim();
+  const inv = await get(`SELECT * FROM invites WHERE ${where} AND status='Pending' ORDER BY created_at DESC LIMIT 1`, arg);
+  if (!inv) return { ok: false, code: 404, error: 'No pending invite found.' };
+
+  // Refresh expiry so the resent link is good for another 7 days.
+  const newExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  await run('UPDATE invites SET expires_at=? WHERE id=?', newExpires, inv.id);
+
+  const inviter = await get('SELECT name,email FROM users WHERE id=?', req.session.userId);
+  fireEmail('invite-resend', () => sendInviteEmail({
+    toEmail: inv.email, toName: inv.name,
+    inviterName: inviter?.name || 'Your team',
+    inviterEmail: inviter?.email || '',
+    role: inv.role, dept: inv.dept, token: inv.token,
+    workspaceName: process.env.APP_NAME || 'Ticket - Brecx',
+  }));
+  const base = process.env.APP_URL || `http://localhost:${PORT}`;
+  return { ok: true, inviteUrl: `${base}/invite.html?token=${inv.token}`,
+           email: inv.email, name: inv.name };
+}
+
+app.post('/api/invites/:id/resend', requireAuth, async (req, res) => {
+  try {
+    const r = await resendInviteByLookup({ id: req.params.id }, req);
+    if (!r.ok) return res.status(r.code || 500).json({ error: r.error });
+    res.json(r);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Convenience for the front-end — it knows the email but not the invite id.
+app.post('/api/invites/resend-by-email', requireAuth, async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').toLowerCase().trim();
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const r = await resendInviteByLookup({ email }, req);
+    if (!r.ok) return res.status(r.code || 500).json({ error: r.error });
+    res.json(r);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/invites/token/:token', async (req, res) => {
   try {
     const inv = await get('SELECT * FROM invites WHERE token=?', req.params.token);
