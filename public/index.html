@@ -1876,6 +1876,19 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         padding: 14px !important;
         padding-bottom: calc(76px + env(safe-area-inset-bottom)) !important;
       }
+      /* page-with-right pages (ticket-detail / plan-detail / calendar)
+         stack the right-panel below the main content on mobile, so any
+         bottom padding on .page-content alone leaves the right-panel's
+         tail hidden behind the bottom nav. Pad the outer wrapper too. */
+      .page-with-right {
+        padding-bottom: calc(76px + env(safe-area-inset-bottom)) !important;
+      }
+      /* Inside .page-with-right, .page-content's own padding-bottom would
+         double up — drop it back to a normal value since the wrapper now
+         carries the safe-area gap. */
+      .page-with-right > .page-content {
+        padding-bottom: 14px !important;
+      }
       .stat-grid { grid-template-columns: 1fr 1fr !important; }
 
       /* Tickets table → row stacks tighter; horizontal scroll if absolutely needed */
@@ -2005,6 +2018,33 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
       /* Topbar: title-only h1 if needed */
       h1 { font-size: 18px !important; }
+
+      /* Tickets page: the tabs row + filter dropdowns sit in a horizontal
+         flex on desktop, but on mobile the dropdowns get clipped on the
+         right and you can't scroll to them. Stack vertically and let the
+         filter cluster wrap so Status / Priority / Assignee are all
+         visible. */
+      #page-tickets .card > div:has(> .tabs) {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 8px !important;
+      }
+      #page-tickets .card > div:has(> .tabs) > div:not(.tabs) {
+        flex-wrap: wrap !important;
+        width: 100% !important;
+      }
+      #page-tickets #fil-status,
+      #page-tickets #fil-priority {
+        flex: 1 1 calc(50% - 4px) !important;
+        min-width: 0 !important;
+        width: auto !important;
+      }
+      #page-tickets .assignee-filter {
+        flex: 1 1 100% !important;
+      }
+      #page-tickets .assignee-filter-trigger {
+        width: 100% !important;
+      }
     }
 
     /* ── Floating + button (mobile only — primary action) ── */
