@@ -182,17 +182,22 @@ async function requireAdmin(req, res, next) {
 }
 
 // Returns true when the current session can read/write the given ticket id.
-// Admin and Manager can touch every ticket; Members can only touch tickets
+// Admin and Manager can touch every live ticket; Members can only touch tickets
 // they're assigned to (primary or via ticket_assignees) or that they created.
-// Used by every per-ticket endpoint to plug the "guess a TKT-id" attack.
+// Soft-deleted tickets (deleted_at IS NOT NULL) are off-limits to everyone via
+// this path — recovery goes through the admin dump/restore endpoints.
 async function canAccessTicket(req, ticketId) {
   if (!req.session.userId) return false;
   const me = await getUser(req.session.userId);
   if (!me) return false;
+  // Confirm the ticket exists and isn't soft-deleted.
+  const exists = await get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', ticketId);
+  if (!exists) return false;
   if (['Admin','Manager'].includes(me.perm_role)) return true;
   const t = await get(
     `SELECT 1 FROM tickets t
        WHERE t.id = ?
+         AND t.deleted_at IS NULL
          AND (t.assignee_user_id = ?
               OR (t.assignee_user_id IS NULL AND t.assignee = ?)
               OR EXISTS (
@@ -569,8 +574,10 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
 });
 
 app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
+  // Block reads of soft-deleted tickets — even admins shouldn't see them
+  // through this path; use /api/admin/tickets/dump for forensics.
   try {
-    const row = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+    const row = await get('SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL', req.params.id);
     if (!row) return res.status(404).json({ error:'Not found' });
     res.json(await buildTicket(row));
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -1551,11 +1558,12 @@ app.put('/api/notifications/:id/read', requireAuth, async (req, res) => {
 // ── Activity feed ─────────────────────────────────────────────────────────────
 app.get('/api/activity', requireAuth, async (req, res) => {
   try {
+    // Skip activity tied to soft-deleted tickets
     const rows = await all(`
       SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
              t.title as ticket_title
       FROM ticket_timelines tt
-      LEFT JOIN tickets t ON t.id = tt.ticket_id
+      JOIN tickets t ON t.id = tt.ticket_id AND t.deleted_at IS NULL
       ORDER BY tt.created_at DESC LIMIT 20
     `);
     res.json(rows.map(r => ({
@@ -1874,7 +1882,7 @@ app.delete('/api/departments/:name', requireAdmin, async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
     const inUse = await get('SELECT id FROM users WHERE dept=? LIMIT 1', name) ||
-                  await get('SELECT id FROM tickets WHERE dept=? LIMIT 1', name);
+                  await get('SELECT id FROM tickets WHERE dept=? AND deleted_at IS NULL LIMIT 1', name);
     if (inUse) return res.status(400).json({ error: 'Department is in use — reassign users and tickets first' });
     await run('DELETE FROM departments WHERE name=?', name);
     res.json({ ok: true });
