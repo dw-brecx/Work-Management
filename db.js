@@ -291,6 +291,8 @@ async function init() {
   await safeAlter("ALTER TABLE users ADD COLUMN tz TEXT DEFAULT ''");
   // Soft delete for tickets — never actually drop a row, just mark deleted_at
   await safeAlter("ALTER TABLE tickets ADD COLUMN deleted_at TEXT DEFAULT NULL");
+  // Threaded comments — parent_id links a reply to the comment it answers
+  await safeAlter("ALTER TABLE ticket_comments ADD COLUMN parent_id INTEGER");
 
   // Seed default admin
   const existing = await get('SELECT id FROM users WHERE email=?', 'admin@worknest.com');

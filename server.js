@@ -351,20 +351,30 @@ app.put('/api/tickets/:id/details', requireAuth, async (req, res) => {
 app.get('/api/tickets/:id/comments', requireAuth, async (req, res) => {
   try {
     const rows = await all('SELECT * FROM ticket_comments WHERE ticket_id=? ORDER BY created_at ASC', req.params.id);
-    res.json(rows.map(r => ({ id:r.id, author:r.author, init:r.author_init, bg:r.author_bg, col:r.author_col, text:r.text, time:timeAgo(r.created_at) })));
+    res.json(rows.map(r => ({
+      id:r.id, parentId: r.parent_id || null,
+      author:r.author, init:r.author_init, bg:r.author_bg, col:r.author_col,
+      text:r.text, time:timeAgo(r.created_at)
+    })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, parentId } = req.body;
     if (!text?.trim()) return res.status(400).json({ error:'Text required' });
     const u = await getUser(req.session.userId);
     const init = u.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const palette = ['#ede9fe|#5b21b6','#dde4ff|#3730a3','#dcfce7|#166534','#fef9c3|#854d0e'];
     const [bg,col] = (palette[u.id % palette.length]||palette[0]).split('|');
-    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text) VALUES (?,?,?,?,?,?) RETURNING id`,
-      req.params.id, u.name, init, bg, col, text.trim());
+    // Validate parentId belongs to this ticket
+    let safeParentId = null;
+    if (parentId) {
+      const parent = await get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', Number(parentId), req.params.id);
+      if (parent) safeParentId = parent.id;
+    }
+    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?) RETURNING id`,
+      req.params.id, u.name, init, bg, col, text.trim(), safeParentId);
     await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
     const tkt = await get('SELECT title FROM tickets WHERE id=?', req.params.id);
     const mentions = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
@@ -375,7 +385,15 @@ app.post('/api/tickets/:id/comments', requireAuth, async (req, res) => {
           mentioned.id, 'mention', '💬', `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id);
       }
     }
-    res.status(201).json({ id:Number(info.lastInsertRowid), author:u.name, init, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
+    // Notify the parent comment's author when someone replies
+    if (safeParentId) {
+      const parentInfo = await get(`SELECT u.id AS user_id FROM ticket_comments tc JOIN users u ON u.name = tc.author WHERE tc.id = ?`, safeParentId);
+      if (parentInfo && parentInfo.user_id && parentInfo.user_id !== req.session.userId) {
+        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+          parentInfo.user_id, 'comment', '↩', `${u.name} replied to your comment on "${tkt?.title || req.params.id}"`, req.params.id);
+      }
+    }
+    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

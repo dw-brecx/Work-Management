@@ -5314,6 +5314,9 @@ function saveDescription() {
   if (next !== d.description) {
     d.description = next;
     logActivity('Description updated', 'var(--accent)');
+    if (typeof apiPut === 'function') {
+      apiPut('/api/tickets/' + t.id + '/details', d).catch(()=>{});
+    }
   }
   renderDescription();
 }
@@ -6236,20 +6239,79 @@ function renderComments() {
   if (!localComments.length) {
     el.innerHTML = `<div class="td-comment-empty">No comments yet. Be the first to add one.</div>`;
   } else {
-    el.innerHTML = localComments.map(c => `<div class="td-comment-item">
-      <div class="avatar" style="background:${c.bg};color:${c.col}">${c.init}</div>
-      <div class="td-comment-bubble">
-        <div class="td-comment-head">
-          <span class="td-comment-name">${escapeHtml(c.author)}</span>
-          <span class="td-comment-time">${escapeHtml(c.time)}</span>
+    // Build a parent → children map. Replies are grouped under their parent.
+    const childrenOf = {};
+    const tops = [];
+    for (const c of localComments) {
+      const p = c.parentId || (c.parent_id || null);
+      if (p && localComments.some(x => x.id === p)) {
+        (childrenOf[p] = childrenOf[p] || []).push(c);
+      } else {
+        tops.push(c);
+      }
+    }
+    function renderOne(c, isReply) {
+      const replies = childrenOf[c.id] || [];
+      const replyForm = `
+        <div class="td-comment-reply-form" id="reply-form-${c.id}" style="display:none;margin-top:8px;display:none">
+          <textarea id="reply-text-${c.id}" placeholder="Write a reply…" rows="2" style="width:100%;font-size:11.5px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;resize:vertical;font-family:inherit"></textarea>
+          <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">
+            <button onclick="closeReplyForm(${c.id})" style="font-size:11px;padding:5px 10px;background:none;border:1px solid var(--border);border-radius:7px;color:var(--text2);cursor:pointer">Cancel</button>
+            <button onclick="submitReply(${c.id})" class="btn-primary" style="font-size:11px;padding:5px 12px">Reply</button>
+          </div>
+        </div>`;
+      return `
+        <div class="td-comment-item" style="${isReply ? 'margin-left:36px;margin-top:6px' : ''}">
+          <div class="avatar" style="background:${c.bg};color:${c.col}">${c.init}</div>
+          <div class="td-comment-bubble" style="${isReply ? 'background:#fafbff' : ''}">
+            <div class="td-comment-head">
+              <span class="td-comment-name">${escapeHtml(c.author)}</span>
+              <span class="td-comment-time">${escapeHtml(c.time)}</span>
+            </div>
+            <div class="td-comment-body">${formatCommentText(c.text)}</div>
+            ${c.id ? `<div style="margin-top:5px"><a onclick="openReplyForm(${c.id})" style="font-size:10.5px;color:var(--accent);cursor:pointer">↩ Reply</a></div>` : ''}
+            ${replyForm}
+            ${replies.map(r => renderOne(r, true)).join('')}
+          </div>
         </div>
-        <div class="td-comment-body">${formatCommentText(c.text)}</div>
-      </div>
-    </div>`).join('');
+      `;
+    }
+    el.innerHTML = tops.map(c => renderOne(c, false)).join('');
   }
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
 }
+
+window.openReplyForm = function(parentId) {
+  const f = document.getElementById('reply-form-' + parentId);
+  if (!f) return;
+  f.style.display = 'block';
+  setTimeout(() => document.getElementById('reply-text-' + parentId)?.focus(), 30);
+};
+window.closeReplyForm = function(parentId) {
+  const f = document.getElementById('reply-form-' + parentId);
+  if (f) f.style.display = 'none';
+  const ta = document.getElementById('reply-text-' + parentId);
+  if (ta) ta.value = '';
+};
+window.submitReply = async function(parentId) {
+  const ta = document.getElementById('reply-text-' + parentId);
+  if (!ta) return;
+  const text = (ta.value || '').trim();
+  if (!text) { ta.focus(); return; }
+  const ticketId = window.currentDetailTicketId || (typeof currentTicketId !== 'undefined' ? currentTicketId : null);
+  if (!ticketId) return;
+  try {
+    const r = await apiPost('/api/tickets/' + ticketId + '/comments', { text, parentId });
+    if (r && r.error) { alert(r.error); return; }
+    // Append the returned comment so the next render nests it
+    localComments.push(r);
+    closeReplyForm(parentId);
+    renderComments();
+  } catch (e) {
+    alert('Could not send reply — check connection.');
+  }
+};
 
 // Legacy drawer no-ops (compatibility shims; comments now always visible inline)
 function openCommentsDrawer() {}
