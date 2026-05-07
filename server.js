@@ -87,18 +87,54 @@ const upload = multer({
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Behind Render / a reverse proxy — needed so secure-cookie checks see HTTPS
+app.set('trust proxy', 1);
+
+// Tiny in-memory rate limiter. Keyed by IP+route. Not perfect (per-process,
+// lost on deploy) but enough to slow credential-stuffing on the auth routes.
+function rateLimit({ windowMs, max, key = 'ip' }) {
+  const buckets = new Map(); // key → { resetAt, count }
+  return (req, res, next) => {
+    const ip = (req.headers['x-forwarded-for'] || req.ip || 'unknown').toString().split(',')[0].trim();
+    const k = key === 'ip' ? ip : `${ip}:${req.path}`;
+    const now = Date.now();
+    let b = buckets.get(k);
+    if (!b || b.resetAt < now) { b = { resetAt: now + windowMs, count: 0 }; buckets.set(k, b); }
+    b.count++;
+    if (b.count > max) {
+      const retryMs = Math.max(0, b.resetAt - now);
+      res.setHeader('Retry-After', Math.ceil(retryMs / 1000));
+      return res.status(429).json({ error: 'Too many attempts. Please wait and try again.' });
+    }
+    next();
+  };
+}
+const authLimiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 10, key: 'route' });
+const resetLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, key: 'route' });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session store — uses PostgreSQL so sessions persist across deploys
+// Session store — uses PostgreSQL so sessions persist across deploys.
 const PgSession = require('connect-pg-simple')(session);
+if (IS_PROD && !process.env.SESSION_SECRET) {
+  console.error('FATAL: SESSION_SECRET is not set in production. Set it in Render env vars.');
+  process.exit(1);
+}
 app.use(session({
   store: new PgSession({ pool, tableName: 'session', createTableIfMissing: false }),
   secret: process.env.SESSION_SECRET || 'syruvia-dev-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 }
+  name: 'syruvia.sid',
+  cookie: {
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    httpOnly: true,                  // not readable by JS — defense against XSS cookie theft
+    sameSite: 'lax',                 // CSRF defense for cross-site POSTs
+    secure: IS_PROD,                 // require HTTPS in production
+  }
 }));
 
 // Serve uploaded files (avatars, attachments, voice notes) from UPLOADS_DIR.
@@ -182,7 +218,7 @@ async function requireTicketAccess(req, res, next) {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
@@ -256,7 +292,7 @@ app.post('/api/auth/logout', (req, res) => {
 
 // ── Forgot password: takes {email}, generates a reset token, emails the link.
 // Always returns {ok:true} — never reveal whether the email exists.
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', resetLimiter, async (req, res) => {
   try {
     const email = String(req.body?.email || '').toLowerCase().trim();
     if (!email) return res.status(400).json({ error: 'Email required' });
@@ -280,7 +316,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
 // ── Reset password: takes {token, newPassword}. Validates the token,
 // updates the password, and fires a password-changed security alert.
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', resetLimiter, async (req, res) => {
   try {
     const { token, newPassword } = req.body || {};
     if (!token || !newPassword) return res.status(400).json({ error: 'Token and new password required' });
@@ -1668,7 +1704,16 @@ app.get('/api/stats', requireAuth, async (req, res) => {
     // to the legacy name match for any rows that haven't been back-filled yet.
     const me = await getUser(req.session.userId);
     const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
-    const deptClause = dept ? `AND dept = '${dept.replace(/'/g, "''")}'` : '';
+
+    // Validate `dept` against the departments table. Unknown values are dropped
+    // so an attacker can't smuggle SQL meta-characters into the where-clause.
+    let safeDept = '';
+    if (dept) {
+      const known = await get('SELECT name FROM departments WHERE name=? LIMIT 1', dept);
+      if (known?.name) safeDept = known.name;
+    }
+    const deptClause = safeDept ? `AND dept = '${safeDept.replace(/'/g, "''")}'` : '';
+
     let assigneeClause = '';
     if (!isAdmin && me?.id) {
       const safeName = (me.name || '').replace(/'/g, "''");
@@ -1678,18 +1723,17 @@ app.get('/api/stats', requireAuth, async (req, res) => {
               OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_id = ${Number(me.id)} OR (user_id IS NULL AND user_name = '${safeName}'))
               OR created_by = ${Number(me.id)})`;
     } else if (isAdmin && assignee) {
-      // Admin filtering by a specific assignee from the dropdown — try id first
-      const target = await get('SELECT id FROM users WHERE name=? ORDER BY id ASC LIMIT 1', assignee);
-      const safeName = String(assignee).replace(/'/g, "''");
+      // Validate assignee against the users table by name; only use the id-based
+      // clause when the lookup actually resolves. This makes the assigneeClause
+      // contain only validated identifiers (id from DB, name from DB), no
+      // unsanitized request input.
+      const target = await get('SELECT id, name FROM users WHERE name=? ORDER BY id ASC LIMIT 1', assignee);
       if (target?.id) {
+        const validatedName = String(target.name || '').replace(/'/g, "''");
         assigneeClause =
           `AND (assignee_user_id = ${Number(target.id)}
-                OR (assignee_user_id IS NULL AND assignee = '${safeName}')
-                OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_id = ${Number(target.id)} OR (user_id IS NULL AND user_name = '${safeName}')))`;
-      } else {
-        assigneeClause =
-          `AND (assignee = '${safeName}'
-                OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_name = '${safeName}'))`;
+                OR (assignee_user_id IS NULL AND assignee = '${validatedName}')
+                OR id IN (SELECT ticket_id FROM ticket_assignees WHERE user_id = ${Number(target.id)} OR (user_id IS NULL AND user_name = '${validatedName}')))`;
       }
     }
     const where = `WHERE 1=1 ${dateClause} ${deptClause} ${assigneeClause}`;
