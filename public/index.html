@@ -11705,7 +11705,12 @@ function setupCommentAttachBar() {
         const actualMime = cmtScreenRecorder.mimeType || wantedMime || 'video/webm';
         const ext = videoExtFor(actualMime);
         const totalBytes = chunks.reduce((n, c) => n + (c.size || 0), 0);
-        const file = new File(chunks, `screen-${Date.now()}.${ext}`, { type: actualMime });
+        // Normalize the mime: strip ";codecs=..." before stamping the File, so
+        // multipart Content-Type is a clean "video/webm" instead of one some
+        // browsers normalize to empty string (which the server then sees as
+        // application/octet-stream and rejects).
+        const baseMime = String(actualMime).split(';')[0].trim() || 'video/webm';
+        const file = new File(chunks, `screen-${Date.now()}.${ext}`, { type: baseMime });
         if (totalBytes > 100 * 1024 * 1024) {
           alert('Recording is too large to upload (' + (totalBytes/1024/1024).toFixed(1) + 'MB, max 100MB). Try a shorter clip.');
           return;
