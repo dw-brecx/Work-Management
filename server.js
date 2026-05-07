@@ -70,18 +70,21 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 25 * 1024 * 1024 },
+  // 100MB limit to accommodate screen recordings (1.2 Mbps × ~10 min ≈ 90MB).
+  // Voice notes and images stay well under this.
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     // Allow common image (excluding SVG — it can carry <script>), audio,
-    // PDF, and Office formats. Block text/* (and especially text/html)
-    // because the static handler below could otherwise serve attacker
-    // HTML on our origin.
+    // video (webm/mp4 only — what MediaRecorder produces), PDF, and Office
+    // formats. Block text/* (and especially text/html) because the static
+    // handler below could otherwise serve attacker HTML on our origin.
     const m = String(file.mimetype || '').toLowerCase();
     const safeImage = /^image\/(png|jpeg|jpg|gif|webp|bmp)$/.test(m);
     const safeAudio = /^audio\//.test(m);
+    const safeVideo = /^video\/(webm|mp4)(;|$)/.test(m);
     const safePdf   = m === 'application/pdf';
     const safeOffice = ['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(m);
-    cb(null, safeImage || safeAudio || safePdf || safeOffice);
+    cb(null, safeImage || safeAudio || safeVideo || safePdf || safeOffice);
   }
 });
 
@@ -151,7 +154,7 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
   setHeaders(res, filePath) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     const ext = path.extname(filePath).toLowerCase();
-    const inlineExts = new Set(['.png','.jpg','.jpeg','.gif','.webp','.bmp','.mp3','.wav','.m4a','.ogg','.webm','.pdf']);
+    const inlineExts = new Set(['.png','.jpg','.jpeg','.gif','.webp','.bmp','.mp3','.wav','.m4a','.ogg','.webm','.mp4','.mov','.pdf']);
     if (!inlineExts.has(ext)) {
       res.setHeader('Content-Disposition', 'attachment');
     }

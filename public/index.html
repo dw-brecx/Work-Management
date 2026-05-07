@@ -5738,6 +5738,34 @@ async function getMicStream() {
   return await navigator.mediaDevices.getUserMedia({ audio: true });
 }
 
+// Pick the best video container/codec the current browser can record. VP9 +
+// Opus is the smallest at acceptable quality; we fall back through VP8 and
+// generic webm, then mp4 (Safari). Return null = let the browser default.
+function pickVideoMime() {
+  if (typeof MediaRecorder === 'undefined') return null;
+  const candidates = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
+  ];
+  for (const c of candidates) {
+    try { if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+  }
+  return null;
+}
+function videoExtFor(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('mp4'))  return 'mp4';
+  if (m.includes('quicktime')) return 'mov';
+  return 'webm';
+}
+function isScreenCaptureSupported() {
+  return !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+}
+
 // ── Microphone test (Settings → Profile) ─────────────────────────────────────
 // Self-contained: opens the mic, shows a live input-level meter, records up
 // to 5s, plays it back, and prints device/mime/byte diagnostics. When a voice
@@ -11529,11 +11557,18 @@ function setupCommentAttachBar() {
   let cmtRecorder = null;
   let cmtRecInterval = null;
   let cmtRecSecs = 0;
+  let cmtScreenRecorder = null;
 
   // Insert bar inside the composer box, above the actions row
   const bar = document.createElement('div');
   bar.className = 'attach-bar';
   bar.style.cssText = 'padding:4px 10px 6px;border-top:1px solid var(--border);';
+  const screenBtnHtml = isScreenCaptureSupported()
+    ? `<button class="attach-btn cmt-screen-btn" type="button" id="cmt-screen-btn" style="font-size:11px;padding:4px 10px;">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        Screen
+      </button>`
+    : '';
   bar.innerHTML = `
     <label class="attach-btn" style="font-size:11px;padding:4px 10px;cursor:pointer">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -11544,6 +11579,7 @@ function setupCommentAttachBar() {
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
       Voice Note
     </button>
+    ${screenBtnHtml}
     <span class="rec-timer" id="cmt-rec-timer" style="display:none"></span>
     <span style="font-size:10.5px;color:#6b7280">or paste image with <kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:3px;padding:0 4px;font-size:10px">Ctrl+V</kbd></span>
     <div class="attach-preview-list" id="cmt-previews" style="width:100%;margin-top:4px"></div>
@@ -11595,6 +11631,143 @@ function setupCommentAttachBar() {
     } catch(e) { alert('Microphone access denied.'); }
   });
 
+  // Screen recording — captures display + mic (and system audio if user opts
+  // in via Chrome's "Share audio" checkbox). Shows a floating overlay with a
+  // timer + Stop / Cancel while recording. Caps at 10 minutes hard.
+  const screenBtn = document.getElementById('cmt-screen-btn');
+  if (screenBtn) {
+    screenBtn.addEventListener('click', async () => {
+      if (cmtScreenRecorder && cmtScreenRecorder.state === 'recording') return; // overlay handles stop
+      let displayStream = null, micStream = null, mixedStream = null, audioCtx = null;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30 } },
+          audio: true, // system audio if the user ticks "Share audio"
+        });
+      } catch (e) {
+        // User cancelled the share dialog — silent return is correct
+        return;
+      }
+
+      // Mic — optional. If denied we still record screen + system audio.
+      try { micStream = await getMicStream(); } catch (e) { micStream = null; }
+
+      // Build a mixed audio track: screen audio (if any) + mic (if any).
+      const audioTracks = [];
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const dest = audioCtx.createMediaStreamDestination();
+        let mixed = false;
+        if (displayStream.getAudioTracks().length > 0) {
+          audioCtx.createMediaStreamSource(new MediaStream(displayStream.getAudioTracks())).connect(dest);
+          mixed = true;
+        }
+        if (micStream && micStream.getAudioTracks().length > 0) {
+          audioCtx.createMediaStreamSource(new MediaStream(micStream.getAudioTracks())).connect(dest);
+          mixed = true;
+        }
+        if (mixed) audioTracks.push(...dest.stream.getAudioTracks());
+      } catch(e) { /* fall through — mic-only or screen-only is still useful */ }
+
+      // Final stream: screen video + mixed audio
+      mixedStream = new MediaStream([
+        ...displayStream.getVideoTracks(),
+        ...audioTracks,
+      ]);
+
+      const wantedMime = pickVideoMime();
+      try {
+        cmtScreenRecorder = wantedMime
+          ? new MediaRecorder(mixedStream, { mimeType: wantedMime, videoBitsPerSecond: 1_200_000, audioBitsPerSecond: 96_000 })
+          : new MediaRecorder(mixedStream);
+      } catch(e) {
+        alert('Your browser refused to record this format.');
+        cleanupScreenRecording(displayStream, micStream, audioCtx);
+        return;
+      }
+
+      const chunks = [];
+      cmtScreenRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+
+      const startedAt = Date.now();
+      const overlay = createScreenRecOverlay({
+        onStop: () => { try { cmtScreenRecorder.stop(); } catch{} },
+        onCancel: () => {
+          chunks.length = 0;
+          try { cmtScreenRecorder.stop(); } catch{}
+        },
+      });
+
+      cmtScreenRecorder.onstop = () => {
+        overlay.remove();
+        cleanupScreenRecording(displayStream, micStream, audioCtx);
+        if (!chunks.length) return; // cancelled or no data
+        const actualMime = cmtScreenRecorder.mimeType || wantedMime || 'video/webm';
+        const ext = videoExtFor(actualMime);
+        const totalBytes = chunks.reduce((n, c) => n + (c.size || 0), 0);
+        const file = new File(chunks, `screen-${Date.now()}.${ext}`, { type: actualMime });
+        if (totalBytes > 100 * 1024 * 1024) {
+          alert('Recording is too large to upload (' + (totalBytes/1024/1024).toFixed(1) + 'MB, max 100MB). Try a shorter clip.');
+          return;
+        }
+        cmtPendingFiles.push(file);
+        addCmtPreview(file, false);
+      };
+
+      // Stop automatically if user closes the share dialog from the browser bar
+      displayStream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        try { if (cmtScreenRecorder.state === 'recording') cmtScreenRecorder.stop(); } catch{}
+      });
+
+      cmtScreenRecorder.start(1000);
+      // Hard 10-minute cap
+      const hardStop = setTimeout(() => {
+        try { if (cmtScreenRecorder.state === 'recording') cmtScreenRecorder.stop(); } catch{}
+      }, 10 * 60 * 1000);
+      // Update overlay timer every second
+      overlay.startTimer(startedAt, hardStop);
+    });
+  }
+
+  function cleanupScreenRecording(displayStream, micStream, audioCtx) {
+    try { displayStream && displayStream.getTracks().forEach(t => t.stop()); } catch {}
+    try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch {}
+    try { audioCtx && audioCtx.close(); } catch {}
+  }
+
+  function createScreenRecOverlay({ onStop, onCancel }) {
+    let el = document.getElementById('screen-rec-overlay');
+    if (el) el.remove();
+    el = document.createElement('div');
+    el.id = 'screen-rec-overlay';
+    el.style.cssText = 'position:fixed;top:14px;right:14px;z-index:99999;background:#111827;color:#fff;border-radius:10px;padding:8px 10px;display:flex;align-items:center;gap:10px;box-shadow:0 6px 20px rgba(0,0,0,.35);font-family:inherit;font-size:12px';
+    el.innerHTML = `
+      <span style="display:inline-flex;align-items:center;gap:6px">
+        <span style="width:9px;height:9px;border-radius:50%;background:#ef4444;animation:screc-blink 1s infinite"></span>
+        <span style="font-weight:600;letter-spacing:.3px">REC</span>
+      </span>
+      <span id="screc-timer" style="font-variant-numeric:tabular-nums;color:#e5e7eb">0:00</span>
+      <button id="screc-stop" style="background:#ef4444;color:#fff;border:0;border-radius:6px;padding:5px 10px;font-size:11.5px;cursor:pointer">Stop</button>
+      <button id="screc-cancel" style="background:transparent;color:#d1d5db;border:1px solid #374151;border-radius:6px;padding:5px 10px;font-size:11.5px;cursor:pointer">Cancel</button>
+      <style>@keyframes screc-blink { 0%,100%{opacity:1} 50%{opacity:.25} }</style>
+    `;
+    document.body.appendChild(el);
+    el.querySelector('#screc-stop').onclick = onStop;
+    el.querySelector('#screc-cancel').onclick = onCancel;
+    let intervalId = null;
+    return {
+      startTimer(startedAt, hardStop) {
+        intervalId = setInterval(() => {
+          const s = Math.floor((Date.now() - startedAt) / 1000);
+          const t = el.querySelector('#screc-timer');
+          if (t) t.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2, '0');
+        }, 500);
+        el._cleanup = () => { clearInterval(intervalId); clearTimeout(hardStop); };
+      },
+      remove() { try { el._cleanup && el._cleanup(); } catch{} el.remove(); },
+    };
+  }
+
   // Paste handler — capture clipboard images on the composer box
   box.addEventListener('paste', (e) => {
     const items = e.clipboardData?.items;
@@ -11620,6 +11793,9 @@ function setupCommentAttachBar() {
     const idx = cmtPendingFiles.length - 1;
     if (isAudio || file.type?.startsWith('audio/')) {
       item.innerHTML = `<audio controls src="${URL.createObjectURL(file)}" style="height:28px"></audio><div class="attach-file-info" style="font-size:10px">🎤 Voice note</div>`;
+    } else if (file.type?.startsWith('video/')) {
+      const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+      item.innerHTML = `<video controls src="${URL.createObjectURL(file)}" style="max-width:240px;max-height:140px;display:block;border-radius:4px;background:#000"></video><div class="attach-file-info" style="font-size:10px">📹 Screen recording · ${sizeMb} MB</div>`;
     } else if (file.type?.startsWith('image/')) {
       item.innerHTML = `<img src="${URL.createObjectURL(file)}" style="width:52px;height:52px;object-fit:cover;display:block">`;
     } else {
@@ -11632,7 +11808,8 @@ function setupCommentAttachBar() {
     list.appendChild(item);
   }
 
-  // Patch addComment: save text to API, audio files → VOICENOTE:: comment, others → attachment
+  // Patch addComment: text → API, audio → VOICENOTE:: comment,
+  // video → SCREENRECORD:: comment, anything else → attachment.
   const _origAddComment = window.addComment;
   if (typeof _origAddComment === 'function') {
     window.addComment = async function(...args) {
@@ -11651,30 +11828,49 @@ function setupCommentAttachBar() {
         // Handle attached files
         if (filesToUpload.length > 0) {
           let needsAttachRefresh = false;
+          let needsCommentReload = false;
           for (const file of filesToUpload) {
             try {
+              const fallbackName = file.type?.startsWith('video/') ? 'screen.webm'
+                                : file.type?.startsWith('audio/') ? 'voice.webm'
+                                : 'attachment';
               const form = new FormData();
-              form.append('file', file, file.name || 'voice.webm');
+              form.append('file', file, file.name || fallbackName);
               form.append('ticketId', ticketId);
               const resp = await fetch('/api/upload', { method: 'POST', body: form });
+              if (!resp.ok) {
+                if (resp.status === 413) {
+                  alert('Upload rejected: file is larger than the 100MB limit.');
+                } else {
+                  alert('Upload failed (' + resp.status + '). Please try again.');
+                }
+                continue;
+              }
+              const data = await resp.json();
               if (file.type && file.type.startsWith('audio/')) {
-                // Post audio as a voice note comment so it appears in the comment thread
-                const data = await resp.json();
                 if (data && data.url) {
                   await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'VOICENOTE::' + data.url });
-                  try {
-                    const cmts = await apiGet('/api/tickets/' + ticketId + '/comments');
-                    if (Array.isArray(cmts)) {
-                      localComments.length = 0;
-                      cmts.forEach(c => localComments.push(c));
-                      renderComments();
-                    }
-                  } catch {}
+                  needsCommentReload = true;
+                }
+              } else if (file.type && file.type.startsWith('video/')) {
+                if (data && data.url) {
+                  await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'SCREENRECORD::' + data.url });
+                  needsCommentReload = true;
                 }
               } else {
                 needsAttachRefresh = true;
               }
             } catch(e) {}
+          }
+          if (needsCommentReload) {
+            try {
+              const cmts = await apiGet('/api/tickets/' + ticketId + '/comments');
+              if (Array.isArray(cmts)) {
+                localComments.length = 0;
+                cmts.forEach(c => localComments.push(c));
+                renderComments();
+              }
+            } catch {}
           }
           if (needsAttachRefresh) setTimeout(() => injectAttachmentsWhenReady(ticketId), 300);
         }
@@ -11802,7 +11998,7 @@ initApp();
   }
   setTimeout(initDonutHover, 800);
 
-  /* ── 1. formatCommentText: render VOICENOTE:: as inline audio player ── */
+  /* ── 1. formatCommentText: render VOICENOTE:: + SCREENRECORD:: inline ── */
   var _fct = window.formatCommentText;
   window.formatCommentText = function(raw) {
     if (raw && raw.startsWith('VOICENOTE::')) {
@@ -11814,6 +12010,15 @@ initApp();
         '<path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>' +
         '<audio controls src="' + safe + '" style="height:28px;max-width:200px"></audio>' +
         '<span class="voice-comment-label">Voice note</span></div>';
+    }
+    if (raw && raw.startsWith('SCREENRECORD::')) {
+      var vurl = raw.slice(14);
+      var vsafe = vurl.replace(/"/g, '&quot;');
+      return '<div class="screen-comment-player" style="display:flex;flex-direction:column;gap:4px;max-width:360px">' +
+        '<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#6b7280">' +
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>' +
+        'Screen recording</div>' +
+        '<video controls preload="metadata" src="' + vsafe + '" style="width:100%;max-height:240px;border-radius:6px;background:#000"></video></div>';
     }
     return _fct ? _fct.call(this, raw) : (raw || '');
   };
