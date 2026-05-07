@@ -9881,17 +9881,33 @@ function patchTicketMutations() {
       const r = origSaveTicket.apply(this, args);
       const t = TICKETS_DATA[0];
       if (t) {
+        const rollback = (msg) => {
+          const idx = TICKETS_DATA.findIndex(x => x.id === t.id);
+          if (idx !== -1) TICKETS_DATA.splice(idx, 1);
+          if (typeof initDashboard === 'function') initDashboard();
+          if (typeof renderTickets === 'function') renderTickets();
+          alert(msg);
+        };
         try {
-          await apiPost('/api/tickets', { ...t, req: t.req });
-        } catch(err) {
-          if (err.message !== 'unauth') {
-            // Roll back the ghost ticket from the UI
-            const idx = TICKETS_DATA.findIndex(x => x.id === t.id);
-            if (idx !== -1) TICKETS_DATA.splice(idx, 1);
-            if (typeof initDashboard === 'function') initDashboard();
-            if (typeof renderTickets === 'function') renderTickets();
-            alert('Could not save ticket to the server. Please check your connection and try again.');
+          let resp;
+          try { resp = await apiPost('/api/tickets', { ...t, req: t.req }); }
+          catch(err) {
+            if (err.message !== 'unauth') {
+              rollback('Could not save ticket to the server. Please check your connection and try again.');
+            }
+            return r;
           }
+          // apiPost returns the JSON for any non-401 response, so a 409 / 500 lands here as
+          // an object with .error. Detect that and roll back the optimistic UI ticket.
+          if (resp && resp.error) {
+            if (resp.code === 'duplicate_id') {
+              rollback('Could not save ticket: ID ' + t.id + ' was just taken. Please try creating it again — a fresh ID will be picked.');
+            } else {
+              rollback('Could not save ticket: ' + resp.error);
+            }
+          }
+        } catch(err) {
+          rollback('Could not save ticket — please try again.');
         }
       }
       return r;
