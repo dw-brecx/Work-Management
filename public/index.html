@@ -4028,6 +4028,16 @@ function navigate(page) {
     if (path && location.pathname !== path) {
       history.pushState({ page }, '', path);
     }
+  } catch (e) { console.warn('[router] pushState failed:', e); }
+  // Also update the document title so the browser tab reflects the page.
+  try {
+    const titles = {
+      'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
+      'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
+      'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
+      'ticket-detail': 'Ticket', 'plan-detail': 'Plan'
+    };
+    if (titles[page]) document.title = titles[page] + ' · Syruvia';
   } catch {}
   if (page === 'tickets') renderTickets();
   if (page === 'my-tickets') renderKanban();
