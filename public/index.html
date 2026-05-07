@@ -12579,7 +12579,10 @@ window.submitFeedback = async function() {
 let _pendingParentForCreate = null;
 window.startCreateTicketInProject = function(projectId) {
   _pendingParentForCreate = String(projectId || '') || null;
-  if (typeof openModal === 'function') openModal('ticket');
+  // Modal id is 'create-ticket' (matches the existing "+ Create Ticket"
+  // button in the topbar). Calling openModal('ticket') tried to open a
+  // non-existent modal-ticket, so the button looked broken.
+  if (typeof openModal === 'function') openModal('create-ticket');
 };
 window.consumePendingParentForCreate = function() {
   const p = _pendingParentForCreate;
