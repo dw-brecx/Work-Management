@@ -78,6 +78,47 @@ async function safeAlter(sql) {
   try { await pool.query(pgSql); } catch(e) { /* ignore if column already exists */ }
 }
 
+// Run `fn(tx)` inside a single Postgres transaction. tx exposes the same
+// run/get/all surface as the module-level helpers but routes every query
+// through one dedicated pool client. On any throw the whole batch is rolled
+// back; on success it's committed. Used by endpoints that need atomic
+// multi-row writes (e.g. flavor-launch ticket batches).
+async function withTx(fn) {
+  const client = await pool.connect();
+  const tx = {
+    run: async (sql, ...params) => {
+      const flat = params.flat().filter(p => p !== undefined);
+      const pgSql = numbered(withConflict(sql));
+      const result = await client.query(pgSql, flat);
+      return { lastInsertRowid: result.rows[0]?.id ?? null };
+    },
+    all: async (sql, ...params) => {
+      const flat = params.flat().filter(p => p !== undefined);
+      const pgSql = numbered(convertSql(sql));
+      const result = await client.query(pgSql, flat);
+      return result.rows;
+    },
+    get: async (sql, ...params) => {
+      const flat = params.flat().filter(p => p !== undefined);
+      let pgSql = numbered(convertSql(sql));
+      if (!/\bLIMIT\b/i.test(pgSql)) pgSql += ' LIMIT 1';
+      const result = await client.query(pgSql, flat);
+      return result.rows[0] || null;
+    },
+  };
+  try {
+    await client.query('BEGIN');
+    const out = await fn(tx);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function init() {
   const tables = [
     `CREATE TABLE IF NOT EXISTS users (
@@ -377,4 +418,4 @@ async function init() {
   }
 }
 
-module.exports = { pool, init, get, all, run, safeAlter };
+module.exports = { pool, init, get, all, run, safeAlter, withTx };

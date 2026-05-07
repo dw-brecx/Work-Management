@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
-const { pool, init: initDb, get, all, run, safeAlter } = require('./db');
+const { pool, init: initDb, get, all, run, safeAlter, withTx } = require('./db');
 const {
   sendInviteEmail, sendWelcomeEmail, sendActivateAccountEmail,
   sendForgotPasswordEmail, sendPasswordChangedEmail, sendNewDeviceLoginEmail,
@@ -1092,6 +1092,11 @@ app.put('/api/flavor-tasks', requireAdmin, async (req, res) => {
 
 // Create one ticket per template row for a new flavor.
 // Body: { name: 'Mango Mint', launchDate: 'YYYY-MM-DD' }
+//
+// Wrapped in a single Postgres transaction so the batch is atomic — if any
+// row fails (id collision, FK error, anything) the whole batch rolls back
+// and no half-created flavor is left behind. ID allocation uses an advisory
+// lock to serialize concurrent /api/flavors and /api/tickets POSTs.
 app.post('/api/flavors', requireAdmin, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
@@ -1105,61 +1110,79 @@ app.post('/api/flavors', requireAdmin, async (req, res) => {
 
     const u = await getUser(req.session.userId);
     const launchMs = new Date(launchDate + 'T00:00:00').getTime();
-
-    // Compute next ticket id from current max — server-side avoids race conditions.
-    const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
-    let nextNum = 1000;
-    if (maxRow?.id) {
-      const m = /^TKT-(\d+)$/.exec(maxRow.id);
-      if (m) nextNum = parseInt(m[1], 10);
-    }
-
     const tag = `Launch: ${name}`;
-    const created = []; // returned to client
 
-    for (const row of tmpl) {
-      nextNum += 1;
-      const tktId = 'TKT-' + nextNum;
-      const title = (row.title_template || '').replace(/\{flavor\}/gi, name);
-      const dueMs = launchMs + Number(row.days_offset || 0) * 86400000;
-      const due = new Date(dueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    // Email side-effects collected during the transaction; fired after commit
+    // so a rollback doesn't send confused emails about tickets that no longer exist.
+    const emailJobs = [];
+    const notifJobs = [];
 
-      const flavorAssigneeUid = await resolveUserIdByName(row.assignee);
-      const flavorReporterUid = u?.id || null;
-      const flavorReqUid      = u?.id || null;
-      await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
-        tktId, title, u?.name || '', row.assignee || '', u?.name || '',
-        row.priority || 'Medium', 'Open', row.dept || 'General',
-        due, createdStr, 0, JSON.stringify([tag]), req.session.userId,
-        flavorAssigneeUid, flavorReporterUid, flavorReqUid);
-      await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', tktId);
-      if (row.assignee) {
-        await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', tktId, row.assignee, flavorAssigneeUid);
-        const target = await get('SELECT id,name,email FROM users WHERE name=?', row.assignee);
-        if (target && target.id !== req.session.userId) {
-          await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-            target.id, 'assigned', '👤', `${u?.name || 'Someone'} assigned you to "${title}"`, tktId);
-          fireEmail('flavor-ticket-assigned', () => sendTicketAssignedEmail({
-            toEmail: target.email, toName: target.name,
-            assignerName: u?.name || 'Someone',
-            ticketId: tktId, title,
-            priority: row.priority || 'Medium',
-            dueAt: due,
-            status: 'Open',
-            dept: row.dept || 'General',
-            requester: u?.name || '',
-            description: '',
-            tags: [tag],
-          }));
+    const created = await withTx(async (tx) => {
+      // Serialize ticket-id allocation across all writers (other /api/flavors,
+      // /api/tickets, /api/admin/users) using a session-scoped advisory lock.
+      // Released automatically on COMMIT/ROLLBACK.
+      await tx.run('SELECT pg_advisory_xact_lock(91501)');
+
+      // Compute next id once — safe because we hold the lock.
+      const maxRow = await tx.get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+      let nextNum = 1000;
+      if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+
+      const out = [];
+      for (const row of tmpl) {
+        nextNum += 1;
+        const tktId = 'TKT-' + nextNum;
+        const title = (row.title_template || '').replace(/\{flavor\}/gi, name);
+        const dueMs = launchMs + Number(row.days_offset || 0) * 86400000;
+        const due = new Date(dueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+        const assigneeRow = row.assignee
+          ? await tx.get('SELECT id,name,email FROM users WHERE name=? ORDER BY id ASC LIMIT 1', row.assignee)
+          : null;
+        const flavorAssigneeUid = assigneeRow?.id || null;
+        const flavorReporterUid = u?.id || null;
+        const flavorReqUid      = u?.id || null;
+
+        await tx.run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
+          tktId, title, u?.name || '', row.assignee || '', u?.name || '',
+          row.priority || 'Medium', 'Open', row.dept || 'General',
+          due, createdStr, 0, JSON.stringify([tag]), req.session.userId,
+          flavorAssigneeUid, flavorReporterUid, flavorReqUid);
+        await tx.run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', tktId);
+
+        if (row.assignee) {
+          await tx.run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', tktId, row.assignee, flavorAssigneeUid);
+          if (assigneeRow && assigneeRow.id !== req.session.userId) {
+            await tx.run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+              assigneeRow.id, 'assigned', '👤', `${u?.name || 'Someone'} assigned you to "${title}"`, tktId);
+            // Defer email to post-commit
+            emailJobs.push({
+              toEmail: assigneeRow.email, toName: assigneeRow.name,
+              assignerName: u?.name || 'Someone',
+              ticketId: tktId, title,
+              priority: row.priority || 'Medium', dueAt: due,
+              status: 'Open', dept: row.dept || 'General',
+              requester: u?.name || '', description: '', tags: [tag],
+            });
+          }
         }
+        out.push({ id: tktId, title, assignee: row.assignee || '', dept: row.dept || '', due });
       }
-      created.push({ id: tktId, title, assignee: row.assignee || '', dept: row.dept || '', due });
+      return out;
+    });
+
+    // Post-commit side-effects
+    for (const job of emailJobs) {
+      fireEmail('flavor-ticket-assigned', () => sendTicketAssignedEmail(job));
     }
 
     res.status(201).json({ ok: true, flavor: name, tag, tickets: created });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  } catch(e) {
+    console.error('[flavors] failed:', e.message);
+    res.status(500).json({ error: 'Could not create flavor launch — please retry.' });
+  }
 });
 
 // ── Work tasks ────────────────────────────────────────────────────────────────
