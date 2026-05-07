@@ -2,9 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="theme-color" content="#7c3aed"/>
 <title>Syruvia</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<!-- PWA: lets users "Add to Home Screen" and launch fullscreen, no browser chrome -->
+<link rel="manifest" href="/manifest.json"/>
+<link rel="apple-touch-icon" href="/app-icon.svg"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<meta name="apple-mobile-web-app-title" content="Syruvia"/>
+<meta name="mobile-web-app-capable" content="yes"/>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -1862,11 +1870,111 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       #sidebar.mobile-open { left: 0 !important; }
       #sidebar.mobile-open ~ #sb-overlay { display: block; }
       #app { width: 100% !important; }
-      #topbar { padding: 0 14px !important; }
+      #topbar { padding: 0 14px !important; padding-top: env(safe-area-inset-top) !important; }
       .search-wrap { max-width: 200px !important; }
-      .page, .page-content { padding: 16px !important; }
+      .page, .page-content {
+        padding: 14px !important;
+        padding-bottom: calc(76px + env(safe-area-inset-bottom)) !important;
+      }
       .stat-grid { grid-template-columns: 1fr 1fr !important; }
-      .tbl { overflow-x: auto !important; }
+
+      /* Tickets table → row stacks tighter; horizontal scroll if absolutely needed */
+      .tbl { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+      .tbl thead { display: none !important; }
+      .tbl tbody tr {
+        display: grid !important;
+        grid-template-columns: 1fr auto !important;
+        gap: 4px 10px !important;
+        padding: 12px !important;
+        border-bottom: 1px solid var(--border) !important;
+        background: #fff !important;
+        border-radius: 10px !important;
+        margin-bottom: 8px !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,.04) !important;
+      }
+      .tbl tbody td {
+        padding: 0 !important;
+        border: 0 !important;
+        max-width: 100% !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        font-size: 13px !important;
+      }
+      .tbl tbody td:first-child { display: none !important; } /* checkbox cell */
+      .tbl tbody td:last-child { display: none !important; }  /* ⋯ cell, replaced by tap-row */
+      .tbl tbody td:nth-child(2) { font-size: 11px !important; color: var(--accent) !important; font-weight: 500 !important; }
+      .tbl tbody td:nth-child(3) { font-weight: 600 !important; font-size: 14px !important; grid-column: 1 / -1 !important; }
+      .tbl tbody td:nth-child(4), .tbl tbody td:nth-child(5) { display: inline-block !important; }
+
+      /* Modals: full-screen sheet on mobile so they feel like app screens */
+      .modal {
+        align-items: stretch !important;
+        padding: 0 !important;
+      }
+      .modal-content, .modal > div, .modal-body {
+        max-width: 100vw !important;
+        width: 100vw !important;
+        max-height: 100vh !important;
+        min-height: 100vh !important;
+        border-radius: 0 !important;
+        margin: 0 !important;
+        padding-top: calc(16px + env(safe-area-inset-top)) !important;
+        padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important;
+      }
+
+      /* Hide the bulky topbar search on mobile — bottom nav is primary */
+      .search-wrap { display: none !important; }
+
+      /* Right-panel (used on dashboard/calendar) — collapse below content */
+      .page-with-right { grid-template-columns: 1fr !important; }
+      .right-panel { display: none !important; }
+
+      /* Bigger touch targets on row-action buttons + filter chips */
+      .btn-primary, .btn-sec, .pg-btn { min-height: 40px !important; }
+
+      /* Make the create modal's body scroll inside the screen */
+      #modal-create-ticket .modal-body, #modal-ticket .modal-body { overflow-y: auto !important; }
+    }
+
+    /* ── Bottom nav (mobile only — looks like a native app tab bar) ── */
+    #mobile-bottom-nav {
+      display: none;
+      position: fixed; left: 0; right: 0; bottom: 0;
+      z-index: 95;
+      background: rgba(255,255,255,.97);
+      backdrop-filter: blur(10px);
+      border-top: 1px solid var(--border);
+      padding: 6px 4px calc(6px + env(safe-area-inset-bottom)) 4px;
+      box-shadow: 0 -4px 14px rgba(15,23,42,.06);
+    }
+    #mobile-bottom-nav .mb-tabs {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0;
+    }
+    #mobile-bottom-nav .mb-tab {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      padding: 6px 4px;
+      font-size: 10px;
+      color: var(--text3);
+      background: none;
+      border: 0;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: color .12s, background .12s;
+    }
+    #mobile-bottom-nav .mb-tab.active { color: var(--accent); background: rgba(124,58,237,.08); }
+    #mobile-bottom-nav .mb-tab svg { width: 22px; height: 22px; }
+    #mobile-bottom-nav .mb-label { line-height: 1.1; font-weight: 500; }
+    @media (max-width: 768px) {
+      #mobile-bottom-nav { display: block; }
+      /* Hamburger no longer needed when bottom nav is the primary navigation */
+      .mob-menu-btn { display: none !important; }
     }
 
     /* ── Nav item layout ── */
@@ -2103,6 +2211,32 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   </div>
 </div>
 <div id="sb-overlay" onclick="closeMobileSidebar()"></div>
+
+<!-- Bottom nav: shown only on mobile, mirrors the most-used sidebar items -->
+<nav id="mobile-bottom-nav" aria-label="Primary">
+  <div class="mb-tabs">
+    <button type="button" class="mb-tab" data-page="dashboard" onclick="navigate('dashboard')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      <span class="mb-label">Home</span>
+    </button>
+    <button type="button" class="mb-tab" data-page="tickets" onclick="navigate('tickets')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+      <span class="mb-label">Tickets</span>
+    </button>
+    <button type="button" class="mb-tab" data-page="my-tickets" onclick="navigate('my-tickets')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+      <span class="mb-label">Mine</span>
+    </button>
+    <button type="button" class="mb-tab" data-page="calendar" onclick="navigate('calendar')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span class="mb-label">Calendar</span>
+    </button>
+    <button type="button" class="mb-tab" data-page="__more" onclick="openMobileSidebar()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      <span class="mb-label">More</span>
+    </button>
+  </div>
+</nav>
 
 <!-- APP -->
 <div id="app">
@@ -4144,6 +4278,14 @@ function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.page === navKey);
   });
+  // Mirror active state on the mobile bottom-nav tabs.
+  document.querySelectorAll('#mobile-bottom-nav .mb-tab').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === navKey);
+  });
+  // If the mobile sidebar drawer is open and the user just navigated, close it
+  // so they don't have to dismiss the overlay manually.
+  const _sb = document.getElementById('sidebar');
+  if (_sb && _sb.classList.contains('mobile-open')) _sb.classList.remove('mobile-open');
   // Update the address bar — every page gets a unique URL so deep-links
   // and back/forward work. ticket-detail / plan-detail are pushed by their
   // open* handlers (which know the id); top-level pages push here.
