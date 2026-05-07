@@ -615,7 +615,15 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
       dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId,
       assigneeUid, reporterUid, reqUid);
-    await run('INSERT INTO ticket_details (ticket_id) VALUES (?) ON CONFLICT DO NOTHING', id);
+    // Persist the description from the create modal. Audit had this as
+    // outstanding: req.body.description was being read for the email but
+    // never written, so descriptions silently disappeared on every create.
+    const _newDesc = String(req.body?.description || '').trim();
+    await run(
+      `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+         ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+      id, _newDesc
+    );
     for (const a of (assignees||[])) {
       const uid = await resolveUserIdByName(a);
       await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, a, uid);

@@ -4066,12 +4066,11 @@ Ensure all flows are tested in sandbox and production environments. Provide unit
 };
 
 function getTicketDetails(id) {
+  // Default to genuinely empty — the renderer paints a grey "Add a
+  // description…" hint when this is empty, but the data field stays
+  // empty so a save never accidentally persists the placeholder text.
   if (!TICKET_DETAILS[id]) {
-    const t = TICKETS_DATA.find(x => x.id === id);
-    TICKET_DETAILS[id] = {
-      description: t ? `Details for "${t.title}". Add a description to give your team more context.` : '',
-      checklist: [],
-    };
+    TICKET_DETAILS[id] = { description: '', checklist: [] };
   }
   return TICKET_DETAILS[id];
 }
@@ -5433,8 +5432,21 @@ function renderDescription() {
   const t = getCurrentTicket();
   if (!t) return;
   const d = getTicketDetails(t.id);
-  document.getElementById('det-desc-view').textContent = d.description;
-  document.getElementById('det-desc-view').style.display = '';
+  const view = document.getElementById('det-desc-view');
+  if (view) {
+    if (d.description && d.description.trim()) {
+      view.textContent = d.description;
+      view.style.color = '';
+      view.style.fontStyle = '';
+    } else {
+      // Empty description — render a grey hint visually, but keep the data
+      // field empty so a "Save" doesn't persist this string.
+      view.textContent = 'No description yet — click Edit to add one.';
+      view.style.color = 'var(--text3)';
+      view.style.fontStyle = 'italic';
+    }
+    view.style.display = '';
+  }
   document.getElementById('det-desc-edit').style.display = 'none';
   const btn = document.getElementById('desc-edit-btn');
   if (btn) btn.style.display = '';
@@ -7822,6 +7834,7 @@ function saveTicket() {
     .map(input => input.value.trim())
     .filter(Boolean);
   const attachments = Array.from(document.getElementById('m-files')?.files || []).map(file => file.name);
+  const description = document.getElementById('m-desc')?.value.trim() || '';
   const dueDate = parseTicketDate(dueRaw);
   const dueFormatted = dueDate ? formatDateLong(dueDate) : dueRaw;
 
@@ -7840,9 +7853,18 @@ function saveTicket() {
     tags: [...pendingTags],
     overdue: dueDate ? dueDate < APP_TODAY : false,
     comments: 0,
+    description,
     checklist,
     attachments
   });
+
+  // Seed the description in the in-memory details cache so the ticket
+  // detail panel shows it immediately if the user opens the new ticket
+  // before the server round-trip completes.
+  if (description) {
+    if (!TICKET_DETAILS[newId]) TICKET_DETAILS[newId] = { description: '', checklist: [] };
+    TICKET_DETAILS[newId].description = description;
+  }
   closeModal('create-ticket');
   resetCreateTicketForm();
   // Prepend a dashboard activity entry so the feed reflects the new ticket
@@ -11592,6 +11614,20 @@ function watchTicketDetailPanel() {
       window.currentDetailTicketId = id;
       const r = _orig.call(this, id, ...args);
       injectAttachmentsWhenReady(id);
+      // Pull the saved description + checklist from the server so reopening a
+      // ticket shows what was actually persisted (not just whatever's in the
+      // in-memory TICKET_DETAILS cache from the optimistic create).
+      apiGet('/api/tickets/' + id + '/details').then(function(det) {
+        if (!det) return;
+        if (!TICKET_DETAILS[id]) TICKET_DETAILS[id] = { description: '', checklist: [] };
+        TICKET_DETAILS[id].description = det.description || '';
+        if (Array.isArray(det.checklist)) TICKET_DETAILS[id].checklist = det.checklist;
+        // Re-paint the description card with the freshly-loaded value if the
+        // panel is still showing this ticket.
+        if (window.currentDetailTicketId === id && typeof renderDescription === 'function') {
+          renderDescription();
+        }
+      }).catch(function(){});
       // Load real comments from API (replaces empty localComments from template)
       apiGet('/api/tickets/' + id + '/comments').then(function(cmts) {
         if (!Array.isArray(cmts)) return;
