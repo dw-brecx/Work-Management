@@ -215,16 +215,16 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
     const isAdmin = u && ['Owner','Admin'].includes(u.perm_role);
     let rows;
     if (isAdmin) {
-      rows = await all('SELECT * FROM tickets ORDER BY id DESC');
+      rows = await all('SELECT * FROM tickets WHERE deleted_at IS NULL ORDER BY id DESC');
     } else {
       // Members see tickets they are assigned to (primary or via ticket_assignees)
-      // OR tickets they created (so a ticket they raised never disappears even if
-      // assigned to someone else).
+      // OR tickets they created.
       rows = await all(
         `SELECT t.* FROM tickets t
-           WHERE t.assignee = ?
-              OR EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND ta.user_name = ?)
-              OR t.created_by = ?
+           WHERE t.deleted_at IS NULL
+             AND (t.assignee = ?
+                  OR EXISTS (SELECT 1 FROM ticket_assignees ta WHERE ta.ticket_id = t.id AND ta.user_name = ?)
+                  OR t.created_by = ?)
            ORDER BY t.id DESC`,
         u.name, u.name, u.id
       );
@@ -248,6 +248,7 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
     if (await get('SELECT id FROM tickets WHERE id=?', id)) {
       return res.status(409).json({ error: `Ticket ${id} already exists`, code: 'duplicate_id' });
     }
+    console.log(`[tickets] INSERT ${id} "${String(title).slice(0,80)}" by user ${req.session.userId} at ${new Date().toISOString()}`);
     await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)`,
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
@@ -282,7 +283,10 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
 app.put('/api/tickets/:id', requireAuth, async (req, res) => {
   try {
     const { title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags } = req.body;
-    if (!await get('SELECT id FROM tickets WHERE id=?', req.params.id)) return res.status(404).json({ error:'Not found' });
+    const exists = await get('SELECT id, deleted_at FROM tickets WHERE id=?', req.params.id);
+    if (!exists) return res.status(404).json({ error:'Not found' });
+    if (exists.deleted_at) return res.status(404).json({ error:'Not found' });
+    console.log(`[tickets] UPDATE ${req.params.id} by user ${req.session.userId} fields=${Object.keys(req.body||{}).join(',')}`);
     const u=[]; const v=[];
     if (title!==undefined)    { u.push('title=?');      v.push(title); }
     if (reqName!==undefined)  { u.push('req=?');        v.push(reqName); }
@@ -318,7 +322,10 @@ app.put('/api/tickets/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/tickets/:id', requireAuth, async (req, res) => {
   try {
-    await run('DELETE FROM tickets WHERE id=?', req.params.id);
+    const u = await getUser(req.session.userId);
+    console.log(`[tickets] SOFT-DELETE ${req.params.id} by user ${req.session.userId} (${u?.name}) at ${new Date().toISOString()}`);
+    // Soft delete: keep the row, just mark it. Admin can restore via /api/admin/tickets/restore/:id.
+    await run("UPDATE tickets SET deleted_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", req.params.id);
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1123,6 +1130,33 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
     if (target.perm_role === 'Owner') return res.status(403).json({ error: 'Cannot delete the owner account' });
     if (target.id === req.session.userId) return res.status(400).json({ error: 'Cannot delete your own account' });
     await run('DELETE FROM users WHERE id=?', req.params.id);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin: tickets ground-truth + restore ────────────────────────────────────
+// Returns every row in the tickets table (including soft-deleted) so an admin
+// can verify what's actually in the DB vs. what the UI shows.
+app.get('/api/admin/tickets/dump', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all('SELECT * FROM tickets ORDER BY id DESC');
+    res.json({
+      total: rows.length,
+      live: rows.filter(r => !r.deleted_at).length,
+      deleted: rows.filter(r => r.deleted_at).length,
+      rows,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Restore a soft-deleted ticket
+app.post('/api/admin/tickets/:id/restore', requireAdmin, async (req, res) => {
+  try {
+    const exists = await get('SELECT id, deleted_at FROM tickets WHERE id=?', req.params.id);
+    if (!exists) return res.status(404).json({ error: 'Ticket not found' });
+    if (!exists.deleted_at) return res.json({ ok: true, alreadyLive: true });
+    await run('UPDATE tickets SET deleted_at=NULL WHERE id=?', req.params.id);
+    console.log(`[tickets] RESTORE ${req.params.id} by user ${req.session.userId} at ${new Date().toISOString()}`);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
