@@ -2122,7 +2122,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         </button>
         <div class="profile-menu" id="profile-menu">
           <div class="profile-menu-head">
-            <div class="avatar profile-menu-avatar">JD</div>
+            <div class="avatar profile-menu-avatar" id="profile-menu-avatar" style="overflow:hidden">JD</div>
             <div style="min-width:0">
               <div class="profile-menu-name">John Doe</div>
               <div class="profile-menu-email" id="pm-email">admin@worknest.com</div>
@@ -2521,7 +2521,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
 
           <div class="td-comment-composer">
-            <div class="avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px">JD</div>
+            <div class="avatar td-composer-avatar" id="td-comment-composer-avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px;overflow:hidden">JD</div>
             <div class="td-composer-box">
               <textarea id="comment-input" placeholder="Write a comment… (use @ to mention)" rows="3"></textarea>
               <div id="mention-dropdown" class="mention-dropdown" role="listbox"></div>
@@ -2744,7 +2744,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
 
           <div class="td-comment-composer">
-            <div class="avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px">JD</div>
+            <div class="avatar td-composer-avatar" id="pd-comment-composer-avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px;overflow:hidden">JD</div>
             <div class="td-composer-box">
               <textarea id="pd-comment-text" placeholder="Add a comment…" rows="3"></textarea>
               <div class="td-composer-actions">
@@ -4258,7 +4258,7 @@ function getVisibleTicketIds() {
   const pr = document.getElementById('fil-priority')?.value || '';
   const ag = assigneeFilter || '';
   return TICKETS_DATA.filter(t => {
-    if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER||{name:'John Doe'}).name)) return false;
+    if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER && window.CURRENT_USER.name) || '')) return false;
     if (currentTicketTab === 'open'     && t.status !== 'Open') return false;
     if (currentTicketTab === 'progress' && t.status !== 'In Progress') return false;
     if (currentTicketTab === 'review'   && t.status !== 'In Review') return false;
@@ -4520,7 +4520,7 @@ function renderTickets() {
   const pr = document.getElementById('fil-priority')?.value || '';
   const ag = assigneeFilter || '';
   let list = TICKETS_DATA.filter(t => {
-    if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER||{name:'John Doe'}).name)) return false;
+    if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER && window.CURRENT_USER.name) || '')) return false;
     if (currentTicketTab === 'open'     && t.status !== 'Open') return false;
     if (currentTicketTab === 'progress' && t.status !== 'In Progress') return false;
     if (currentTicketTab === 'review'   && t.status !== 'In Review') return false;
@@ -4810,7 +4810,7 @@ let pendingEditAssignees = [];
 function renderInfoGridView(t, sla) {
   const reqInit = initials(t.req);
   const asgInit = initials(t.assignee);
-  const repInit = initials(t.reporter || 'John Doe');
+  const repInit = initials(t.reporter || (window.CURRENT_USER && window.CURRENT_USER.name) || '—');
   const tagsHtml = (t.tags && t.tags.length)
     ? t.tags.map(tag => `<span class="badge-status s-open" style="font-size:9px;padding:2px 6px">${escapeHtml(tag)}</span>`).join('')
     : '<span style="font-size:11px;color:var(--text3)">—</span>';
@@ -4834,7 +4834,7 @@ function renderInfoGridView(t, sla) {
       <span class="info-row-label">Reporter</span>
       <div class="info-row-value">
         <div class="avatar" style="width:20px;height:20px;background:#dcfce7;color:#166534;font-size:8px">${repInit}</div>
-        <span>${escapeHtml(t.reporter || 'John Doe')}</span>
+        <span>${escapeHtml(t.reporter || (window.CURRENT_USER && window.CURRENT_USER.name) || '—')}</span>
       </div>
     </div>
     <div class="info-row">
@@ -4896,7 +4896,7 @@ function renderInfoGridEdit(t) {
     </div>
     <div class="info-row">
       <span class="info-row-label">Reporter</span>
-      <div class="info-row-value"><select class="inline-edit" id="edit-input-reporter">${teamOpts(t.reporter || 'John Doe')}</select></div>
+      <div class="info-row-value"><select class="inline-edit" id="edit-input-reporter">${teamOpts(t.reporter || (window.CURRENT_USER && window.CURRENT_USER.name) || '—')}</select></div>
     </div>
     <div class="info-row">
       <span class="info-row-label">Priority</span>
@@ -5038,7 +5038,7 @@ function saveEditAllDetails() {
   }
 
   const newRep = document.getElementById('edit-input-reporter').value;
-  const oldRep = t.reporter || 'John Doe';
+  const oldRep = t.reporter || (window.CURRENT_USER && window.CURRENT_USER.name) || '—';
   if (newRep !== oldRep) { changes.push(`Reporter: ${oldRep} → ${newRep}`); t.reporter = newRep; }
 
   const newPri = document.getElementById('edit-input-priority').value;
@@ -5884,7 +5884,7 @@ function applyStatus(newStatus) {
   if (newStatus === 'Overdue') t.overdue = true;
   closeAllActionPanels();
   renderTicketDetail();
-  logActivity(`Status changed from ${oldStatus} to ${newStatus} by ${(window.CURRENT_USER||{name:'John Doe'}).name}`, 'var(--yellow)');
+  logActivity(`Status changed from ${oldStatus} to ${newStatus} by ${(window.CURRENT_USER && window.CURRENT_USER.name) || ''}`, 'var(--yellow)');
   if (currentPage === 'tickets') renderTickets();
   if (currentPage === 'my-tickets') renderKanban();
 }
@@ -5948,24 +5948,19 @@ function saveNote() {
     alert('Please write something before saving.');
     return;
   }
-  logActivity(`Note added by ${(window.CURRENT_USER||{name:'John Doe'}).name}: "${text}"`, 'var(--purple)');
+  logActivity(`Note added by ${(window.CURRENT_USER && window.CURRENT_USER.name) || ''}: "${text}"`, 'var(--purple)');
   document.getElementById('note-text').value = '';
   closeAllActionPanels();
 }
 
 // --- Send to WorkTrack ---
-// Worker list mirrors WorkTrack's known team. Manager picks which one to assign.
-const WORKTRACK_WORKERS = [
-  { name: 'Sadia Islam',       team: 'Customer Service' },
-  { name: 'Arif Khan',         team: 'Amazon Ads' },
-  { name: 'Nusrat Rahman',     team: 'Reports' },
-  { name: 'Faruk Hasan',       team: 'UPS Claims' },
-  { name: 'Tahmina Begum',     team: 'Customer Service' },
-  { name: 'Mahmud Iqbal',      team: 'Reports' },
-  { name: 'Rashida Chowdhury', team: 'Amazon Ads' },
-  { name: 'Hassan Ali',        team: 'Customer Service' },
-  { name: 'Imran Sheikh',      team: 'Inventory' },
-];
+// Worker list is built from the real team (TEAM_DATA) at render time so the
+// dropdown always reflects who is actually in the workspace. The "team"
+// attribute reuses the user's department for grouping.
+function getWorkTrackWorkers() {
+  const list = (typeof TEAM_DATA !== 'undefined' ? TEAM_DATA : []);
+  return list.map(m => ({ name: m.name, team: m.dept || 'General' }));
+}
 
 function openSendToWorkTrack() {
   closeHeaderActionMenu && closeHeaderActionMenu();
@@ -5981,10 +5976,11 @@ function openSendToWorkTrack() {
     `<span style="color:var(--text3);font-size:11px">${escapeHtml(t.priority)} priority · ${escapeHtml(t.dept)} · Due ${escapeHtml(t.due)}</span>`;
   // Populate worker dropdown — default to ticket assignee if it matches a worker
   const sel = document.getElementById('swt-worker');
-  sel.innerHTML = WORKTRACK_WORKERS.map(w =>
-    `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)} — ${escapeHtml(w.team)}</option>`
+  const _workers = getWorkTrackWorkers();
+  sel.innerHTML = _workers.map(w =>
+    `<option value="${escapeAttr(w.name)}">${escapeHtml(w.name)} — ${escapeHtml(w.team)}</option>`
   ).join('');
-  const match = WORKTRACK_WORKERS.find(w => w.name === t.assignee);
+  const match = _workers.find(w => w.name === t.assignee);
   if (match) sel.value = match.name;
   document.getElementById('swt-estimate').value = '';
   document.getElementById('swt-notes').value = '';
@@ -6012,7 +6008,7 @@ function confirmSendToWorkTrack() {
     fromTicketId: t.id,
     status: 'pending',         // pending → started → paused/stopped → done
     createdAt: Date.now(),
-    createdBy: 'John Doe',
+    createdBy: (window.CURRENT_USER && window.CURRENT_USER.name) || '',
     todayHours: 0,
   };
 
@@ -6189,9 +6185,10 @@ function confirmCloseTicket() {
   t.overdue = false;
   closeModal('close-ticket');
   renderTicketDetail();
+  const _byName = (window.CURRENT_USER && window.CURRENT_USER.name) || 'someone';
   const msg = reason
-    ? `Ticket closed by John Doe — ${reason}`
-    : 'Ticket closed by John Doe';
+    ? `Ticket closed by ${escapeHtml(_byName)} — ${escapeHtml(reason)}`
+    : `Ticket closed by ${escapeHtml(_byName)}`;
   logActivity(msg, 'var(--green)');
   if (currentPage === 'tickets') renderTickets();
   if (currentPage === 'my-tickets') renderKanban();
@@ -6218,7 +6215,7 @@ function formatCommentText(raw) {
   // Build a regex from team member names, longest-first to avoid prefix collisions
   const names = TEAM_DATA
     .map(m => m.name)
-    .concat(['John Doe'])
+    .filter(Boolean)
     .filter((v, i, a) => a.indexOf(v) === i)
     .sort((a, b) => b.length - a.length);
   const pattern = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
@@ -6327,16 +6324,25 @@ function addComment() {
   const text = input.value.trim();
   // Find any mentions and log them in the activity timeline
   const mentioned = [];
-  const names = TEAM_DATA.map(m => m.name).concat(['John Doe']);
+  const names = TEAM_DATA.map(m => m.name).filter(Boolean);
   names.forEach(n => {
     const re = new RegExp(`@${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
     if (re.test(text)) mentioned.push(n);
   });
-  localComments.unshift({author:'John Doe',init:'JD',bg:'#dcfce7',col:'#166534',time: formatNowUS(),text});
+  // Optimistic local push — server response will replace this on next refresh.
+  const me = window.CURRENT_USER || {};
+  const meName = me.name || 'You';
+  const meInit = (meName.split(' ').map(w => w[0] || '').join('').slice(0,2) || 'U').toUpperCase();
+  localComments.unshift({
+    author: meName, init: meInit,
+    bg: me.color ? (me.color + '22') : '#dcfce7',
+    col: me.color || '#166534',
+    time: formatNowUS(), text
+  });
   input.value = '';
   closeMentionDropdown();
   renderComments();
-  logActivity('Comment added by John Doe', 'var(--purple)');
+  logActivity(`Comment added by ${escapeHtml(meName)}`, 'var(--purple)');
   if (mentioned.length) {
     logActivity(`Mentioned ${mentioned.map(n => '@' + n).join(', ')}`, 'var(--accent2)');
   }
@@ -6716,19 +6722,11 @@ function selectMemberColor(btn) {
   btn.classList.add('active');
 }
 
-// Workspace user pool — users that exist in the workspace but aren't on this team yet.
-const WORKSPACE_USERS = [
-  { name:'Alex Morgan',   email:'alex.morgan@brecx.co',  color:'#3b82f6' },
-  { name:'Priya Singh',   email:'priya.singh@brecx.co',  color:'#f97316' },
-  { name:'Hassan Ahmed',  email:'hassan.ahmed@brecx.co', color:'#22c55e' },
-  { name:'Lina Park',     email:'lina.park@brecx.co',    color:'#a855f7' },
-  { name:'Diego Vargas',  email:'diego.vargas@brecx.co', color:'#eab308' },
-  { name:'Yuki Tanaka',   email:'yuki.tanaka@brecx.co',  color:'#06b6d4' },
-  { name:'Marcus Reed',   email:'marcus.reed@brecx.co',  color:'#ec4899' },
-  { name:'Aisha Khan',    email:'aisha.khan@brecx.co',   color:'#6366f1' },
-  { name:'Omar Chowdhury',email:'omar.c@brecx.co',       color:'#10b981' },
-  { name:'Tasnim Reza',   email:'tasnim.reza@brecx.co',  color:'#f59e0b' },
-];
+// Workspace user pool. New users join the workspace through the Invite flow
+// (which hits /api/invites and emails a signup link); there is no longer a
+// pre-seeded "available users" list. The dropdown's empty state directs the
+// admin to use Invite instead.
+const WORKSPACE_USERS = [];
 
 let amSelectedUser = null;
 
@@ -6753,7 +6751,7 @@ function renderAddMemberDropdown(query = '') {
     : eligible;
 
   if (!filtered.length) {
-    dd.innerHTML = `<div class="ss-empty">${eligible.length ? 'No matching users' : 'Everyone in the workspace is already on this team.'}</div>`;
+    dd.innerHTML = `<div class="ss-empty">No users to add. Use <a onclick="closeModal('add-member');openInviteModal&&openInviteModal()" style="color:var(--accent);cursor:pointer;text-decoration:underline">Invite Member</a> to bring someone new into the workspace.</div>`;
     return;
   }
 
@@ -6995,8 +6993,9 @@ function buildMiniCal() {
   const prevDays = new Date(calYear, calMonth, 0).getDate();
   let html = '';
   for (let i = 0; i < first; i++) html += `<div class="mini-day" style="color:var(--text3)">${prevDays - first + i + 1}</div>`;
+  const _now = new Date();
   for (let d = 1; d <= days; d++) {
-    const isToday = d === 21 && calMonth === 4 && calYear === 2024;
+    const isToday = d === _now.getDate() && calMonth === _now.getMonth() && calYear === _now.getFullYear();
     const key = `${calYear}-${calMonth}-${d}`;
     html += `<div class="mini-day ${isToday ? 'mini-today' : ''}" onclick="openCreateEventModal('${key}')" title="Create event on this date">${d}</div>`;
   }
@@ -7388,7 +7387,7 @@ function saveTicket() {
     req: requester,
     assignee: pendingCreateAssignees[0],
     assignees: [...pendingCreateAssignees],
-    reporter: document.getElementById('m-reporter')?.value || (window.CURRENT_USER||{name:'John Doe'}).name,
+    reporter: document.getElementById('m-reporter')?.value || (window.CURRENT_USER && window.CURRENT_USER.name) || '',
     priority: document.getElementById('m-priority')?.value || 'Medium',
     status: 'Open',
     dept: document.getElementById('m-dept')?.value || 'Engineering',
@@ -8319,12 +8318,14 @@ function openCreateEventModal(presetDateKey) {
   document.getElementById('ev-ticket-search').value = '';
   document.getElementById('ev-ticket-wrap').classList.remove('has-selection');
 
-  // Default date: presetDateKey or today (May 21, 2024 mock)
+  // Default date: presetDateKey or actual today (formatted as YYYY-MM-DD)
   const dateInput = document.getElementById('ev-date');
   if (presetDateKey) {
     dateInput.value = eventDateKeyToISO(presetDateKey);
   } else {
-    dateInput.value = '2024-05-21';
+    const t = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    dateInput.value = `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}`;
   }
 
   // Populate assignee dropdown (used by all event types — label changes per type)
@@ -9315,34 +9316,10 @@ document.addEventListener('keydown', e => {
 let currentPlanId = null;
 let pdActiveTab = 'activity';
 
-// Per-plan comments map and activity log
-const PLAN_COMMENTS = {
-  'PLN-001': [
-    { author:'John Doe', initials:'JD', color:'#6366f1', time:'2 days ago', text:"I think the triage stage idea has legs. Let me pull last 30 days of response-time data so we can validate before promoting this." },
-    { author:'Sarah Johnson', initials:'SJ', color:'#a78bfa', time:'Yesterday', text:'+1 — and we should also check whether the slowest tickets share a pattern (specific category, time of day, agent skill mix).' },
-  ],
-  'PLN-002': [
-    { author:'Mike Peters', initials:'MP', color:'#3b82f6', time:'3 days ago', text:'Liking the workload heatmap idea. Linear has a really clean version we could borrow from.' },
-  ],
-  'PLN-003': [],
-};
-
-const PLAN_ACTIVITY = {
-  'PLN-001': [
-    { dot:'gray',  text:'Plan created by <b>John Doe</b>',                    time:'May 18, 2024 · 10:14 AM' },
-    { dot:'',     text:'Notes updated',                                      time:'May 19, 2024 · 2:32 PM' },
-    { dot:'',     text:'Attached <b>response-time-analysis.csv</b>',         time:'May 20, 2024 · 9:08 AM' },
-  ],
-  'PLN-002': [
-    { dot:'gray',  text:'Plan created by <b>John Doe</b>',                    time:'May 16, 2024 · 4:21 PM' },
-    { dot:'',     text:'Attached <b>mockup-v1.png</b>',                       time:'May 17, 2024 · 11:00 AM' },
-    { dot:'',     text:'Notes updated',                                      time:'May 19, 2024 · 9:45 AM' },
-  ],
-  'PLN-003': [
-    { dot:'gray',  text:'Plan created by <b>John Doe</b>',                    time:'May 12, 2024 · 8:30 AM' },
-    { dot:'green', text:'Promoted to <b>TKT-1035</b> · Mobile App Crash on Login', time:'May 17, 2024 · 3:18 PM' },
-  ],
-};
+// Per-plan comments and activity. Populated lazily from the plan API; we no
+// longer ship hardcoded "John Doe / Sarah Johnson / Mike Peters" demo seed.
+const PLAN_COMMENTS = {};
+const PLAN_ACTIVITY = {};
 
 function ensurePlanData(id) {
   if (!PLAN_COMMENTS[id]) PLAN_COMMENTS[id] = [];
@@ -9752,12 +9729,15 @@ function addPlanComment() {
   const text = ta.value.trim();
   if (!text) return;
   ensurePlanData(currentPlanId);
+  const me = window.CURRENT_USER || {};
+  const meName = me.name || 'You';
+  const meInit = (meName.split(' ').map(w => w[0] || '').join('').slice(0,2) || 'U').toUpperCase();
   PLAN_COMMENTS[currentPlanId].unshift({
-    author:'John Doe', initials:'JD', color:'#6366f1',
+    author: meName, initials: meInit, color: me.color || '#6366f1',
     time: formatNowUS(), text,
   });
   PLAN_ACTIVITY[currentPlanId].unshift({
-    dot:'', text:`<b>John Doe</b> commented`, time: formatNowUS()
+    dot:'', text:`<b>${escapeHtml(meName)}</b> commented`, time: formatNowUS()
   });
   ta.value = '';
   renderPlanComments();
@@ -9952,6 +9932,19 @@ function applyUserToUI(u) {
     el.textContent = u.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     el.style.background = 'linear-gradient(135deg,' + (u.color||'#3b82f6') + ',' + (u.color||'#3b82f6') + 'aa)';
   });
+  // Profile-menu avatar + comment-composer avatars (ticket detail + plan detail)
+  // — were previously hardcoded "JD" and never updated.
+  const _userInitials = (u.name || '').split(' ').map(w => w[0] || '').join('').slice(0,2).toUpperCase() || '?';
+  ['profile-menu-avatar', 'td-comment-composer-avatar', 'pd-comment-composer-avatar'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (u.avatarUrl) {
+      el.innerHTML = `<img src="${u.avatarUrl}" alt="${_userInitials}" style="width:100%;height:100%;object-fit:cover;display:block"/>`;
+    } else {
+      el.textContent = _userInitials;
+      if (u.color) el.style.background = 'linear-gradient(135deg,' + u.color + ',' + u.color + 'aa)';
+    }
+  });
 }
 
 // ── Invite flow → API ─────────────────────────────────────────────────────────
@@ -10068,6 +10061,7 @@ function patchTicketMutations() {
     };
   }
 
+  // Single-ticket mutator wrapper — saves the currently-open ticket detail.
   function wrapMutator(name) {
     const orig = window[name];
     if (typeof orig !== 'function') return;
@@ -10080,11 +10074,29 @@ function patchTicketMutations() {
       return r;
     };
   }
+  // Bulk mutator wrapper — snapshots the selection BEFORE the original runs
+  // (the original may clear it), then PUTs every affected ticket. Replaces the
+  // old wrapMutator that only saved currentTicketId — a stale reference on
+  // the Tickets list page where there is no "current ticket".
+  function wrapBulkMutator(name) {
+    const orig = window[name];
+    if (typeof orig !== 'function') return;
+    window[name] = function(...args) {
+      const ids = Array.from(selectedTicketIds || []);
+      const r = orig.apply(this, args);
+      setTimeout(() => {
+        for (const id of ids) {
+          const t = TICKETS_DATA.find(x => x.id === id);
+          if (t) apiPut('/api/tickets/' + t.id, { ...t, req: t.req }).catch(()=>{});
+        }
+      }, 30);
+      return r;
+    };
+  }
   ['applyStatus','applyAssignee','confirmCloseTicket','reopenTicket',
-   'saveEditAllDetails','confirmAssignTicket',
-   'applyBulkStatus','applyBulkPriority','applyBulkAssignee','addBulkTag',
-   'bulkClose','bulkArchive'
-  ].forEach(wrapMutator);
+   'saveEditAllDetails','confirmAssignTicket'].forEach(wrapMutator);
+  ['applyBulkStatus','applyBulkPriority','applyBulkAssign','applyBulkTag',
+   'bulkClose','bulkArchive'].forEach(wrapBulkMutator);
 
   const origBulkDelete = window.bulkDelete;
   if (typeof origBulkDelete === 'function') {
@@ -10184,7 +10196,7 @@ function patchPlanMutations() {
   const origAddCmt = window.addPlanComment;
   if (typeof origAddCmt === 'function') {
     window.addPlanComment = async function(...args) {
-      const el = document.querySelector('#plan-comment-text,.plan-comment-input');
+      const el = document.querySelector('#pd-comment-text,#plan-comment-text,.plan-comment-input');
       const text = el ? el.value.trim() : '';
       const r = origAddCmt.apply(this, args);
       if (text && currentPlanId) apiPost('/api/plans/' + currentPlanId + '/comments', { text }).catch(()=>{});
@@ -10317,8 +10329,28 @@ function patchCalMutations() {
   const origSaveEv = window.saveEvent;
   if (typeof origSaveEv === 'function') {
     window.saveEvent = async function(...args) {
+      // Snapshot the edit context BEFORE the original runs — saveEvent clears
+      // editingEventKey / editingEventIdx after a successful save.
+      const wasEditing = (typeof editingEventKey !== 'undefined' && editingEventKey != null
+                       && typeof editingEventIdx !== 'undefined' && editingEventIdx != null);
+      const editKey = wasEditing ? editingEventKey : null;
+      const editIdx = wasEditing ? editingEventIdx : null;
+      const editingId = wasEditing ? (CAL_EVENTS[editKey]||[])[editIdx]?._id : null;
       const r = origSaveEv.apply(this, args);
       setTimeout(async () => {
+        // Existing event was edited → PUT in place (was previously never persisted).
+        if (editingId) {
+          // The edited event may now live at a different dateKey — find it again.
+          let updated = null, updatedKey = null;
+          for (const [key, arr] of Object.entries(CAL_EVENTS)) {
+            const found = arr.find(e => e._id === editingId);
+            if (found) { updated = found; updatedKey = key; break; }
+          }
+          if (updated) {
+            try { await apiPut('/api/events/' + editingId, { ...updated, dateKey: updatedKey }); } catch {}
+          }
+        }
+        // Any new (no _id yet) events get POSTed.
         for (const [key, arr] of Object.entries(CAL_EVENTS)) {
           for (const evt of arr) {
             if (!evt._id) {
