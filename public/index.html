@@ -3061,11 +3061,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <p style="font-size:11.5px;color:var(--text3);margin:0 0 14px 0">Use this to check that your microphone works before recording voice notes in tickets. Records for up to 5 seconds, then plays it back.</p>
 
             <div style="margin-bottom:10px">
-              <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Microphone device</label>
-              <select id="mic-test-device" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;background:#fff">
-                <option value="">— System default —</option>
-              </select>
-              <div style="font-size:10.5px;color:var(--text3);margin-top:4px">Device names appear once you've granted microphone permission at least once.</div>
+              <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Microphone for voice notes</label>
+              <div style="display:flex;align-items:center;gap:8px">
+                <select id="mic-test-device" style="flex:1;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;background:#fff">
+                  <option value="">— System default —</option>
+                </select>
+                <span id="mic-test-saved" style="font-size:10.5px;color:#10b981;opacity:0;transition:opacity 200ms">✓ Saved</span>
+              </div>
+              <div style="font-size:10.5px;color:var(--text3);margin-top:4px">Saved automatically — this mic will be used for voice notes everywhere in the app. Device names appear once you've granted microphone permission at least once.</div>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -5656,7 +5659,7 @@ function toggleSubtaskRecord(sid, btn) {
     state.recorder.stop();
     return;
   }
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+  getMicStream().then(stream => {
     const chunks = [];
     // Pick the best mime type the browser can record. Without this hint the
     // recorder may produce audio/mp4 (Safari/iOS) but downstream code wraps
@@ -5721,6 +5724,20 @@ function audioExtFor(mime) {
   return 'webm';
 }
 
+// Open a mic stream using the user's saved preference (Settings → Profile →
+// Microphone Test). If the saved device is gone (unplugged headset, etc.),
+// fall back to the system default rather than throwing NotFoundError.
+async function getMicStream() {
+  let savedId = '';
+  try { savedId = localStorage.getItem('wn_mic_device') || ''; } catch {}
+  if (savedId) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: savedId } } });
+    } catch (e) { /* device gone — fall through */ }
+  }
+  return await navigator.mediaDevices.getUserMedia({ audio: true });
+}
+
 // ── Microphone test (Settings → Profile) ─────────────────────────────────────
 // Self-contained: opens the mic, shows a live input-level meter, records up
 // to 5s, plays it back, and prints device/mime/byte diagnostics. When a voice
@@ -5745,19 +5762,39 @@ function audioExtFor(mime) {
     el.textContent = lines.join('\n');
   }
 
+  function micSavedDeviceId() {
+    try { return localStorage.getItem('wn_mic_device') || ''; } catch { return ''; }
+  }
+  function micSaveDeviceId(id) {
+    try { localStorage.setItem('wn_mic_device', id || ''); } catch {}
+  }
+
   async function micListDevices() {
     const sel = $m('mic-test-device'); if (!sel) return;
     try {
       const all = await navigator.mediaDevices.enumerateDevices();
       const mics = all.filter(d => d.kind === 'audioinput');
-      const prev = sel.value;
+      const prev = sel.value || micSavedDeviceId();
       sel.innerHTML = '<option value="">— System default —</option>' +
         mics.map((d, i) => {
           const label = d.label || ('Microphone ' + (i+1));
           return '<option value="' + d.deviceId + '">' + label.replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])) + '</option>';
         }).join('');
-      if (prev) sel.value = prev;
+      // Restore previously chosen device if it's still in the list; otherwise
+      // fall back to system default rather than silently re-picking a different mic.
+      if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+        sel.value = prev;
+      } else {
+        sel.value = '';
+      }
     } catch(e) { /* no permission yet — fine */ }
+  }
+
+  function micFlashSaved() {
+    const tag = $m('mic-test-saved'); if (!tag) return;
+    tag.style.opacity = '1';
+    clearTimeout(micFlashSaved._t);
+    micFlashSaved._t = setTimeout(() => { tag.style.opacity = '0'; }, 1400);
   }
 
   function micMeterLoop() {
@@ -5903,9 +5940,14 @@ function audioExtFor(mime) {
   function wireMicTest() {
     if (micWired) return;
     const btn = $m('mic-test-start');
-    if (!btn) return;
+    const sel = $m('mic-test-device');
+    if (!btn || !sel) return;
     micWired = true;
     btn.addEventListener('click', micStart);
+    sel.addEventListener('change', () => {
+      micSaveDeviceId(sel.value);
+      micFlashSaved();
+    });
     micListDevices();
     if (navigator.mediaDevices?.addEventListener) {
       try { navigator.mediaDevices.addEventListener('devicechange', micListDevices); } catch {}
@@ -11130,7 +11172,7 @@ function setupTicketModalAttachments(modal) {
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      const stream = await getMicStream();
       const chunks = [];
       const mime = pickRecorderMime();
       recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
@@ -11277,7 +11319,7 @@ function setupCommentAttachments(container) {
   voiceBtn.addEventListener('click', async () => {
     if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      const stream = await getMicStream();
       const chunks = [];
       const mime = pickRecorderMime();
       recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
@@ -11522,7 +11564,7 @@ function setupCommentAttachBar() {
   voiceBtn.addEventListener('click', async () => {
     if (cmtRecorder && cmtRecorder.state === 'recording') { cmtRecorder.stop(); return; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await getMicStream();
       const chunks = [];
       const mime = pickRecorderMime();
       cmtRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
