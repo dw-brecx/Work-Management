@@ -367,6 +367,11 @@ async function init() {
   // What's New feed can color-code them. Default 'update' is safe for any
   // existing row that pre-dates this column.
   await safeAlter("ALTER TABLE announcements ADD COLUMN kind TEXT DEFAULT 'update'");
+  // High-water mark: the largest announcement id this user has seen in the
+  // What's New feed. Drives the unread badge in the sidebar (count of
+  // active announcements with id > this value). Separate from
+  // announcement_seen — that table is for popup acknowledgement.
+  await safeAlter("ALTER TABLE users ADD COLUMN last_announcement_id_seen INTEGER DEFAULT 0");
   // Profile avatar (existing installs)
   await safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''");
   // Time zone preference (existing installs)

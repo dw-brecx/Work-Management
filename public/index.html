@@ -3715,8 +3715,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <div id="ann-pop-body" style="padding:18px 22px;font-size:13px;line-height:1.55;color:var(--text2);white-space:pre-wrap;max-height:50vh;overflow:auto">—</div>
     <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg2)">
       <div id="ann-pop-meta" style="font-size:11px;color:var(--text3)"></div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
         <button id="ann-pop-close" onclick="closeAnnouncement(false)" style="font-size:12px;padding:8px 14px;background:none;border:1px solid var(--border);border-radius:7px;color:var(--text2);cursor:pointer">Remind me later</button>
+        <button id="ann-pop-view" onclick="viewAnnouncementFromPopup()" style="font-size:12px;padding:8px 14px;background:#fff;border:1px solid var(--border);border-radius:7px;color:var(--accent);cursor:pointer">View announcement</button>
         <button id="ann-pop-ack" onclick="closeAnnouncement(true)" class="btn-primary" style="font-size:12px;padding:8px 16px">Got it</button>
       </div>
     </div>
@@ -12192,7 +12193,7 @@ function renderWhatsNewFeed() {
     const k = KIND_META[String(a.kind || 'update').toLowerCase()] || KIND_META.update;
     const attHtml = (a.attachments || []).map(att => '<div style="margin-top:8px">'+renderAttachmentHtml(att)+'</div>').join('');
     return `
-      <div style="border:1px solid var(--border);border-radius:10px;padding:16px 18px;background:#fff">
+      <div id="ann-card-${a.id}" data-aid="${a.id}" style="border:1px solid var(--border);border-radius:10px;padding:16px 18px;background:#fff;scroll-margin-top:80px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
           <span style="font-size:10.5px;font-weight:700;letter-spacing:.04em;background:${k.bg};color:${k.color};padding:2px 8px;border-radius:10px">${k.label}</span>
           <span style="font-size:11px;color:var(--text3)">${_esc(a.author?.name || '')}${a.author?.name?' · ':''}${_esc(a.createdAt || '')}</span>
@@ -12202,7 +12203,42 @@ function renderWhatsNewFeed() {
         ${attHtml}
       </div>`;
   }).join('');
+  // Mark everything in this feed as seen on the server, and clear the
+  // sidebar badge. Failures are non-fatal — the badge will just stay until
+  // the next successful fetch.
+  fetch('/api/announcements/mark-all-seen', { method:'POST' })
+    .then(() => refreshUnreadAnnouncementBadge())
+    .catch(() => {});
+  // If a hash like #ann-{id} is in the URL (deep-linked from the popup's
+  // "View announcement"), scroll that card into view and pulse it.
+  const m = location.hash.match(/^#ann-(\d+)$/);
+  if (m) {
+    const target = document.getElementById('ann-card-' + m[1]);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.style.transition = 'box-shadow .8s';
+      target.style.boxShadow = '0 0 0 3px rgba(124,58,237,.45)';
+      setTimeout(() => { target.style.boxShadow = ''; }, 1800);
+    }
+  }
 }
+
+// ── Sidebar unread-announcement badge ──────────────────────────────────────
+async function refreshUnreadAnnouncementBadge() {
+  const badge = document.getElementById('nav-whatsnew-badge');
+  if (!badge) return;
+  try {
+    const r = await apiGet('/api/announcements/unread-count');
+    const n = parseInt(r?.count || 0, 10);
+    if (n > 0) {
+      badge.textContent = n > 99 ? '99+' : String(n);
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch { /* silent — keep prior state */ }
+}
+window.refreshUnreadAnnouncementBadge = refreshUnreadAnnouncementBadge;
 
 // ── Feedback feed (user submissions: feature requests, bugs, add-ons) ───────
 let FEEDBACK_CACHE = [];
@@ -13621,6 +13657,30 @@ window.scheduleEventForCurrentTicket = function() {
     }
   }
 
+  // Popup "View announcement" — closes the popup, marks it acknowledged
+  // (so it won't keep popping back up), and navigates to /whats-new with a
+  // hash so the matching card scrolls into view + pulses.
+  async function viewAnnouncementFromPopup() {
+    const cur = _annCurrent;
+    const ov = document.getElementById('ann-overlay');
+    if (ov) ov.style.display = 'none';
+    _annCurrent = null;
+    if (cur) {
+      try { await apiPost('/api/announcements/' + cur.id + '/ack', {}); } catch {}
+      // Don't keep showing the rest of the popup queue — the user is going
+      // to the feed now where they'll see them all.
+      _annQueue.length = 0;
+      const path = '/whats-new#ann-' + cur.id;
+      try { history.pushState({ page: 'whats-new' }, '', path); } catch {}
+      if (typeof window.navigate === 'function') {
+        window.navigate('whats-new');
+      } else {
+        location.href = path;
+      }
+    }
+  }
+  window.viewAnnouncementFromPopup = viewAnnouncementFromPopup;
+
   // ── Admin: manage announcements (Settings panel) ───────────────────────────
   // Composer for the "Create new announcement" form. Mounted on first
   // visit to the panel so admins can attach voice notes / screen recordings /
@@ -13712,6 +13772,10 @@ window.scheduleEventForCurrentTicket = function() {
       loadAnnouncementsTab();
       // If the user is currently viewing the What's New feed, refresh it too.
       if (typeof loadWhatsNewFeed === 'function') loadWhatsNewFeed();
+      // The new announcement bumps the unread count for everyone except
+      // viewers of the feed (which mark-all-seen clears). Refresh the
+      // sidebar badge so it reflects the bump immediately.
+      if (typeof refreshUnreadAnnouncementBadge === 'function') refreshUnreadAnnouncementBadge();
     } catch {
       if (status) status.textContent = 'Could not publish — check connection.';
     }
@@ -13740,14 +13804,20 @@ window.scheduleEventForCurrentTicket = function() {
   // ── Hooks: load on app start, on every navigate(), and when admin tab opens ─
   function _hookAnnouncements() {
     // After auth is loaded — fire on first paint
-    if (window.CURRENT_USER) fetchAndShowActiveAnnouncements();
+    if (window.CURRENT_USER) {
+      fetchAndShowActiveAnnouncements();
+      if (typeof refreshUnreadAnnouncementBadge === 'function') refreshUnreadAnnouncementBadge();
+    }
     // Hook navigate() so require-ack popups re-appear on every page change
     const _origNav = window.navigate;
     if (typeof _origNav === 'function' && !_origNav._annPatched) {
       const patched = function(...args) {
         const r = _origNav.apply(this, args);
         // Defer so the page renders before the modal appears
-        setTimeout(fetchAndShowActiveAnnouncements, 50);
+        setTimeout(() => {
+          fetchAndShowActiveAnnouncements();
+          if (typeof refreshUnreadAnnouncementBadge === 'function') refreshUnreadAnnouncementBadge();
+        }, 50);
         return r;
       };
       patched._annPatched = true;

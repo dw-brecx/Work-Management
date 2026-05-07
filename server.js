@@ -982,6 +982,33 @@ app.get('/api/announcements/feed', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Sidebar badge — count of active announcements newer than the user's
+// last-seen high-water mark. O(1) thanks to the indexed id comparison.
+app.get('/api/announcements/unread-count', requireAuth, async (req, res) => {
+  try {
+    const u = await get('SELECT last_announcement_id_seen FROM users WHERE id=?', req.session.userId);
+    const lastSeen = parseInt(u?.last_announcement_id_seen || 0, 10);
+    const row = await get(
+      `SELECT COUNT(*)::int AS n FROM announcements WHERE active = 1 AND id > ?`,
+      lastSeen
+    );
+    res.json({ count: row?.n || 0, lastSeenId: lastSeen });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark all current active announcements as seen for this user. Called
+// when the user opens the What's New page (or clicks "View announcement"
+// in the popup) — clears the sidebar badge.
+app.post('/api/announcements/mark-all-seen', requireAuth, async (req, res) => {
+  try {
+    const row = await get('SELECT COALESCE(MAX(id),0) AS max_id FROM announcements');
+    const maxId = parseInt(row?.max_id || 0, 10);
+    await run('UPDATE users SET last_announcement_id_seen=? WHERE id=? AND COALESCE(last_announcement_id_seen,0) < ?',
+      maxId, req.session.userId, maxId);
+    res.json({ ok: true, lastSeenId: maxId });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // Mark an announcement as seen / acknowledged for the current user.
 app.post('/api/announcements/:id/ack', requireAuth, async (req, res) => {
   try {
