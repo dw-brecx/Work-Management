@@ -72,9 +72,16 @@ const upload = multer({
   storage,
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const ok = /^(image\/|audio\/|application\/pdf|text\/)/.test(file.mimetype)
-      || ['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(file.mimetype);
-    cb(null, ok);
+    // Allow common image (excluding SVG — it can carry <script>), audio,
+    // PDF, and Office formats. Block text/* (and especially text/html)
+    // because the static handler below could otherwise serve attacker
+    // HTML on our origin.
+    const m = String(file.mimetype || '').toLowerCase();
+    const safeImage = /^image\/(png|jpeg|jpg|gif|webp|bmp)$/.test(m);
+    const safeAudio = /^audio\//.test(m);
+    const safePdf   = m === 'application/pdf';
+    const safeOffice = ['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(m);
+    cb(null, safeImage || safeAudio || safePdf || safeOffice);
   }
 });
 
@@ -98,7 +105,22 @@ app.use(session({
 // In production UPLOADS_DIR is /data/uploads (outside public/), so this route
 // is required for /uploads/<filename> to resolve. Locally it harmlessly mirrors
 // public/uploads.
-app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
+//
+// Defense-in-depth: tell the browser never to sniff the type, and force any
+// non-image / non-audio file to download as an attachment so a stray HTML or
+// SVG file (somehow past the multer filter) can't execute on our origin and
+// steal session cookies.
+app.use('/uploads', express.static(UPLOADS_DIR, {
+  maxAge: '7d',
+  setHeaders(res, filePath) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const ext = path.extname(filePath).toLowerCase();
+    const inlineExts = new Set(['.png','.jpg','.jpeg','.gif','.webp','.bmp','.mp3','.wav','.m4a','.ogg','.webm','.pdf']);
+    if (!inlineExts.has(ext)) {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+  }
+}));
 
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders(res) { res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); }

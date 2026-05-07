@@ -4117,15 +4117,17 @@ function initDashboard() {
   // Ticket table — show 5 most recent (TICKETS_DATA.unshift puts new ones first)
   const tbody = document.getElementById('dash-ticket-table');
   tbody.innerHTML = `<thead><tr style="background:var(--bg2)"><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">ID</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Title</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Assignee</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Priority</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Status</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Due</th></tr></thead>`;
-  const rows = TICKETS_DATA.slice(0,5).map(t => `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="openTicketDetail('${t.id}')"><td style="padding:8px 10px;font-size:11px;color:var(--accent)">${t.id}</td><td style="padding:8px 10px;font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.title}</td><td style="padding:8px 10px">${miniAvatar(t.assignee)}</td><td style="padding:8px 10px">${priorityBadge(t.priority)}</td><td style="padding:8px 10px">${statusBadge(t.status)}</td><td style="padding:8px 10px;font-size:11px;color:${t.overdue?'var(--red)':'var(--text3)'}">${t.due}</td></tr>`).join('');
+  const rows = TICKETS_DATA.slice(0,5).map(t => `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="openTicketDetail('${escapeAttr(t.id)}')"><td style="padding:8px 10px;font-size:11px;color:var(--accent)">${escapeHtml(t.id)}</td><td style="padding:8px 10px;font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.title)}</td><td style="padding:8px 10px">${miniAvatar(t.assignee)}</td><td style="padding:8px 10px">${priorityBadge(t.priority)}</td><td style="padding:8px 10px">${statusBadge(t.status)}</td><td style="padding:8px 10px;font-size:11px;color:${t.overdue?'var(--red)':'var(--text3)'}">${escapeHtml(t.due || '')}</td></tr>`).join('');
   tbody.innerHTML += `<tbody>${rows}</tbody>`;
 
   // Workload
   const wl = document.getElementById('workload-list');
-  wl.innerHTML = TEAM_DATA.map(m => `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px"><span>${m.name}</span><span style="color:var(--text3)">${m.workload}%</span></div><div class="workload-bar"><div style="height:100%;width:${m.workload}%;background:${m.color};border-radius:3px;transition:width .5s"></div></div></div>`).join('');
+  wl.innerHTML = TEAM_DATA.map(m => `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px"><span>${escapeHtml(m.name)}</span><span style="color:var(--text3)">${m.workload}%</span></div><div class="workload-bar"><div style="height:100%;width:${m.workload}%;background:${m.color};border-radius:3px;transition:width .5s"></div></div></div>`).join('');
 
-  // Activity (mutable so saveTicket can prepend)
-  document.getElementById('dash-activity').innerHTML = DASH_ACTIVITY.slice(0, 5).map((a,i,arr) => `<div class="tl-item"><div class="tl-dot" style="background:${a.dot}"></div>${i<arr.length-1?'<div class="tl-line"></div>':''}<div><div class="tl-text">${a.text}</div><div class="tl-sub">${a.sub}</div></div></div>`).join('');
+  // Activity (mutable so saveTicket can prepend). a.text is intentionally HTML
+  // because it includes pre-built <strong> tags from logActivity; the underlying
+  // text fragments fed into logActivity are escapeHtml'd before concat there.
+  document.getElementById('dash-activity').innerHTML = DASH_ACTIVITY.slice(0, 5).map((a,i,arr) => `<div class="tl-item"><div class="tl-dot" style="background:${a.dot}"></div>${i<arr.length-1?'<div class="tl-line"></div>':''}<div><div class="tl-text">${a.text}</div><div class="tl-sub">${escapeHtml(a.sub || '')}</div></div></div>`).join('');
 }
 
 // ============ TICKETS ============
@@ -4229,8 +4231,8 @@ function renderAssigneeFilterList() {
   } else {
     html += filtered.map(a => {
       const active = assigneeFilter === a.name ? 'active' : '';
-      return `<div class="assignee-filter-item ${active}" onclick="setAssigneeFilter('${a.name.replace(/'/g, "\\'")}')">
-        <span class="avatar" style="background:linear-gradient(135deg,${a.color},${a.color}aa)">${initials(a.name)}</span>
+      return `<div class="assignee-filter-item ${active}" onclick="setAssigneeFilter(${JSON.stringify(a.name || '')})">
+        <span class="avatar" style="background:linear-gradient(135deg,${a.color},${a.color}aa)">${escapeHtml(initials(a.name))}</span>
         <span class="assignee-filter-item-name">${escapeHtml(a.name)}</span>
         <span class="assignee-filter-item-count">${a.count}</span>
       </div>`;
@@ -4539,14 +4541,14 @@ function renderTickets() {
     return `<tr class="${isSel ? 'selected' : ''}" data-tid="${t.id}" style="cursor:pointer" onclick="openTicketDetail('${t.id}')">
     <td onclick="event.stopPropagation()" style="cursor:default"><input type="checkbox" class="row-cb" data-tid="${t.id}" ${isSel ? 'checked' : ''} onchange="toggleRowSelection('${t.id}', this.checked)"/></td>
     <td style="color:var(--accent);white-space:nowrap;font-weight:500">${t.id}</td>
-    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">${t.title}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">${escapeHtml(t.title)}</td>
     <td>${statusBadge(t.status)}</td>
     <td>${priorityBadge(t.priority)}</td>
     <td>${stackedAvatars(getAssignees(t))}</td>
-    <td>${miniAvatar(t.req)}<span style="font-size:11px;color:var(--text2);margin-left:5px">${t.req.split(' ')[0]}</span></td>
-    <td style="font-size:11.5px;color:var(--text2)">${t.dept}</td>
-    <td style="font-size:11px;color:var(--text3);white-space:nowrap">${t.created}</td>
-    <td style="font-size:11px;color:${t.overdue?'var(--red)':'var(--text3)'};white-space:nowrap;font-weight:${t.overdue?'600':'400'}">${t.due}</td>
+    <td>${miniAvatar(t.req)}<span style="font-size:11px;color:var(--text2);margin-left:5px">${escapeHtml(String(t.req || '').split(' ')[0])}</span></td>
+    <td style="font-size:11.5px;color:var(--text2)">${escapeHtml(t.dept || '')}</td>
+    <td style="font-size:11px;color:var(--text3);white-space:nowrap">${escapeHtml(t.created || '')}</td>
+    <td style="font-size:11px;color:${t.overdue?'var(--red)':'var(--text3)'};white-space:nowrap;font-weight:${t.overdue?'600':'400'}">${escapeHtml(t.due || '')}</td>
     <td style="text-align:center"><span class="cmt-count-cell ${cmt > 0 ? 'has' : ''}">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       ${cmt}
@@ -6662,10 +6664,10 @@ function renderTeams() {
   el.innerHTML = TEAM_DATA.map(m => `
     <div class="card">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div class="avatar" style="width:44px;height:44px;background:linear-gradient(135deg,${m.color},${m.color}aa);font-size:16px">${initials(m.name)}</div>
+        <div class="avatar" style="width:44px;height:44px;background:linear-gradient(135deg,${m.color},${m.color}aa);font-size:16px">${escapeHtml(initials(m.name))}</div>
         <div style="min-width:0;flex:1">
-          <div style="font-size:14px;font-weight:500">${m.name}</div>
-          <div style="font-size:11px;color:var(--text3)">${m.role} · ${m.dept}</div>
+          <div style="font-size:14px;font-weight:500">${escapeHtml(m.name)}</div>
+          <div style="font-size:11px;color:var(--text3)">${escapeHtml(m.role || '')} · ${escapeHtml(m.dept || '')}</div>
         </div>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px">
@@ -6674,13 +6676,13 @@ function renderTeams() {
       <div class="progress-bar" style="margin-bottom:12px"><div class="progress-fill" style="width:${m.workload}%;background:${m.color}"></div></div>
       <div style="display:flex;justify-content:space-between;font-size:11px;align-items:center">
         <span style="color:var(--text3)">Active Tickets</span>
-        <a onclick="event.stopPropagation();showTicketsForAssignee('${m.name.replace(/'/g, "&#39;")}')" title="View ${escapeHtml(m.name)}'s open tickets"
+        <a onclick="event.stopPropagation();showTicketsForAssignee(${JSON.stringify(m.name || '')})" title="View ${escapeAttr(m.name || '')}'s open tickets"
            style="font-weight:600;color:var(--accent);cursor:pointer;padding:1px 8px;border-radius:5px;text-decoration:none"
            onmouseenter="this.style.background='#eff6ff'" onmouseleave="this.style.background=''">${m.tickets}</a>
       </div>
       <div class="team-card-actions">
-        <div style="font-size:11px;color:var(--text3)">${m.email || 'No email added'}</div>
-        <a href="javascript:void(0)" class="team-card-link" onclick="prefillInvite('${m.name.replace("'", "&#39;")}')">Invite again</a>
+        <div style="font-size:11px;color:var(--text3)">${escapeHtml(m.email || 'No email added')}</div>
+        <a href="javascript:void(0)" class="team-card-link" onclick="prefillInvite(${JSON.stringify(m.name || '')})">Invite again</a>
       </div>
     </div>`).join('');
 
@@ -6688,15 +6690,15 @@ function renderTeams() {
     invitesEl.innerHTML = TEAM_INVITES.length ? TEAM_INVITES.map(invite => `
       <div class="invite-item">
         <div class="invite-item-main">
-          <div class="avatar" style="width:38px;height:38px;background:linear-gradient(135deg,#93c5fd,#60a5fa);font-size:13px">${initials(invite.name)}</div>
+          <div class="avatar" style="width:38px;height:38px;background:linear-gradient(135deg,#93c5fd,#60a5fa);font-size:13px">${escapeHtml(initials(invite.name))}</div>
           <div>
-            <div style="font-size:13px;font-weight:500">${invite.name}</div>
-            <div class="invite-item-meta">${invite.email} · ${invite.role} · ${invite.dept}</div>
+            <div style="font-size:13px;font-weight:500">${escapeHtml(invite.name)}</div>
+            <div class="invite-item-meta">${escapeHtml(invite.email)} · ${escapeHtml(invite.role || '')} · ${escapeHtml(invite.dept || '')}</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
-          <span class="invite-badge">${invite.status}</span>
-          <button class="btn-sec" style="font-size:11px;padding:7px 10px" onclick="resendInvite('${invite.email}')">Resend</button>
+          <span class="invite-badge">${escapeHtml(invite.status || '')}</span>
+          <button class="btn-sec" style="font-size:11px;padding:7px 10px" onclick="resendInvite(${JSON.stringify(invite.email || '')})">Resend</button>
         </div>
       </div>`).join('') : `<div class="empty-state">No pending invitations right now. Use <strong>Invite Member</strong> to send a new invite.</div>`;
   }
@@ -11062,34 +11064,37 @@ async function loadTicketAttachments(ticketId) {
       atts.forEach(att => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg2);border-radius:8px;margin-bottom:6px;';
+        const safeUrl = escapeAttr(att.url || '');
+        const safeName = escapeHtml(att.originalName || '');
+        const safeUploader = escapeHtml(att.uploader || '');
         if (att.mimeType.startsWith('audio/')) {
           row.innerHTML = `
             <div style="width:28px;height:28px;background:#ede9fe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">🎤</div>
             <div style="flex:1;min-width:0">
-              <div style="font-size:11px;font-weight:500;color:var(--text2);margin-bottom:3px">Voice note · ${att.uploader}</div>
-              <audio controls src="${att.url}" style="height:28px;width:100%;max-width:220px"></audio>
+              <div style="font-size:11px;font-weight:500;color:var(--text2);margin-bottom:3px">Voice note · ${safeUploader}</div>
+              <audio controls src="${safeUrl}" style="height:28px;width:100%;max-width:220px"></audio>
             </div>`;
         } else if (att.mimeType.startsWith('image/')) {
           row.style.cursor = 'pointer';
           row.onclick = () => window.open(att.url, '_blank');
           row.innerHTML = `
-            <img src="${att.url}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0">
+            <img src="${safeUrl}" alt="${safeName}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0">
             <div style="flex:1;min-width:0">
-              <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${att.originalName}</div>
-              <div style="font-size:10px;color:var(--text3)">${att.uploader}</div>
+              <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${safeName}</div>
+              <div style="font-size:10px;color:var(--text3)">${safeUploader}</div>
             </div>
             <span style="color:var(--text3);font-size:14px">↓</span>`;
         } else {
-          const ext = att.originalName.split('.').pop().toUpperCase().slice(0,3);
+          const ext = String(att.originalName || '').split('.').pop().toUpperCase().slice(0,3);
           const bg = ext==='PDF'?'#fef2f2':ext==='DOC'?'#eff6ff':'#f0fdf4';
           const col = ext==='PDF'?'#dc2626':ext==='DOC'?'#2563eb':'#16a34a';
           row.style.cursor = 'pointer';
           row.onclick = () => window.open(att.url, '_blank');
           row.innerHTML = `
-            <div style="width:28px;height:28px;background:${bg};border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${col};flex-shrink:0">${ext}</div>
+            <div style="width:28px;height:28px;background:${bg};border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${col};flex-shrink:0">${escapeHtml(ext)}</div>
             <div style="flex:1;min-width:0">
-              <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${att.originalName}</div>
-              <div style="font-size:10px;color:var(--text3)">${att.uploader}</div>
+              <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${safeName}</div>
+              <div style="font-size:10px;color:var(--text3)">${safeUploader}</div>
             </div>
             <span style="color:var(--text3);font-size:14px">↓</span>`;
         }
@@ -11116,10 +11121,11 @@ async function loadTicketAttachments(ticketId) {
         media.forEach(att => {
           const el = document.createElement('div');
           el.style.cssText = 'margin-bottom:8px';
+          const safeUrl = escapeAttr(att.url || '');
           if (att.mimeType.startsWith('audio/')) {
-            el.innerHTML = `<div style="font-size:11px;color:var(--text2);margin-bottom:3px">🎤 ${att.uploader}</div><audio controls src="${att.url}" style="width:100%;height:30px"></audio>`;
+            el.innerHTML = `<div style="font-size:11px;color:var(--text2);margin-bottom:3px">🎤 ${escapeHtml(att.uploader || '')}</div><audio controls src="${safeUrl}" style="width:100%;height:30px"></audio>`;
           } else {
-            el.innerHTML = `<img src="${att.url}" onclick="window.open('${att.url}','_blank')" style="width:100%;border-radius:8px;cursor:pointer;max-height:120px;object-fit:cover">`;
+            el.innerHTML = `<img src="${safeUrl}" alt="${escapeAttr(att.originalName || '')}" onclick="window.open(this.src,'_blank')" style="width:100%;border-radius:8px;cursor:pointer;max-height:120px;object-fit:cover">`;
           }
           sec.appendChild(el);
         });
