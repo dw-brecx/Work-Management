@@ -351,6 +351,21 @@ async function init() {
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets (token)`,
+    // Web Push subscriptions per device. Users may have multiple (phone +
+    // desktop) so endpoint is the natural per-device key, with user_id
+    // for fan-out. Keys + auth are the standard P-256 push subscription
+    // material from the browser's PushSubscription.toJSON().
+    `CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL DEFAULT '',
+      auth TEXT NOT NULL DEFAULT '',
+      user_agent TEXT DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      last_used_at TEXT DEFAULT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions (user_id)`,
   ];
 
   for (const sql of tables) {

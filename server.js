@@ -6,7 +6,65 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
+const webpush = require('web-push');
 const { pool, init: initDb, get, all, run, safeAlter, withTx } = require('./db');
+
+// ── Web Push (PWA notifications) ─────────────────────────────────────────────
+// Configured once at boot. If the keys aren't set the rest of the app keeps
+// working — sendPushToUser becomes a no-op so we don't break flows that fan
+// out a push as a side effect (assignment, new comment, etc.).
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:noreply@example.com';
+let pushReady = false;
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    pushReady = true;
+    console.log('[push] enabled');
+  } catch (e) {
+    console.error('[push] setVapidDetails failed:', e.message);
+  }
+} else {
+  console.log('[push] disabled — set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY env vars to enable');
+}
+
+// Send a Web Push to every device this user has subscribed. Failures are
+// swallowed (and stale subscriptions auto-pruned on 404/410), so callers
+// can fire-and-forget without worrying about a single bad endpoint
+// breaking the request.
+async function sendPushToUser(userId, payload) {
+  if (!pushReady || !userId) return { sent: 0, removed: 0 };
+  let subs;
+  try {
+    subs = await all('SELECT * FROM push_subscriptions WHERE user_id=?', userId);
+  } catch (e) { console.error('[push] sub lookup failed:', e.message); return { sent: 0, removed: 0 }; }
+  if (!subs || !subs.length) return { sent: 0, removed: 0 };
+  const body = JSON.stringify(payload || {});
+  let sent = 0, removed = 0;
+  for (const s of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+        body,
+        { TTL: 60 * 60 * 24 } // a day
+      );
+      sent++;
+      // Refresh last_used_at lazily — only every ~10 sends per row to avoid
+      // hammering the DB. Cheap UPDATE either way.
+      run('UPDATE push_subscriptions SET last_used_at = TO_CHAR(NOW() AT TIME ZONE \'UTC\', \'YYYY-MM-DD HH24:MI:SS\') WHERE id=?', s.id).catch(()=>{});
+    } catch (err) {
+      const status = err && (err.statusCode || err.status);
+      if (status === 404 || status === 410) {
+        // Endpoint is gone — drop the row so we don't keep retrying it.
+        try { await run('DELETE FROM push_subscriptions WHERE id=?', s.id); removed++; } catch {}
+      } else {
+        console.warn('[push] send failed', status || err.message, 'sub', s.id);
+      }
+    }
+  }
+  return { sent, removed };
+}
 const {
   sendInviteEmail, sendWelcomeEmail, sendActivateAccountEmail,
   sendForgotPasswordEmail, sendPasswordChangedEmail, sendNewDeviceLoginEmail,
@@ -756,6 +814,13 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
           description: req.body?.description || reqName || '',
           tags: tags || [],
         }));
+        // Push notification on the assignee's installed PWA / browser.
+        sendPushToUser(target.id, {
+          title: 'New ticket: ' + (title || id),
+          body: `${creator?.name || 'Someone'} assigned this to you`,
+          tag: 'ticket-' + id,
+          url: '/tickets/' + id,
+        }).catch(()=>{});
       }
     }
     res.status(201).json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id)));
@@ -972,6 +1037,12 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
           ticketId: req.params.id, title: tkt?.title || '',
           commentText: text.trim(),
         }));
+        sendPushToUser(mentioned.id, {
+          title: `${u.name} mentioned you`,
+          body: text.trim().slice(0, 140),
+          tag: 'ticket-' + req.params.id + '-cmt',
+          url: '/tickets/' + req.params.id,
+        }).catch(()=>{});
       }
     }
 
@@ -996,6 +1067,12 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
           ticketId: req.params.id, title: tkt?.title || '',
           commentText: text.trim(),
         }));
+        sendPushToUser(parentInfo.user_id, {
+          title: `${u.name} replied`,
+          body: text.trim().slice(0, 140),
+          tag: 'ticket-' + req.params.id + '-cmt',
+          url: '/tickets/' + req.params.id,
+        }).catch(()=>{});
       }
     }
 
@@ -1015,6 +1092,12 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         ticketId: req.params.id, title: tkt?.title || '',
         commentText: text.trim(),
       }));
+      sendPushToUser(w.id, {
+        title: `${u.name} commented on ${tkt?.title || req.params.id}`,
+        body: text.trim().slice(0, 140),
+        tag: 'ticket-' + req.params.id + '-cmt',
+        url: '/tickets/' + req.params.id,
+      }).catch(()=>{});
     }
 
     res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
@@ -1047,6 +1130,65 @@ app.post('/api/tickets/:id/timeline', requireAuth, requireTicketAccess, async (r
     const { dot, text, sub } = req.body;
     await run('INSERT INTO ticket_timelines (ticket_id,dot,text,sub) VALUES (?,?,?,?)', req.params.id, dot||'var(--accent)', text, sub||'Just now');
     res.json({ ok:true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Push (PWA) subscribe / unsubscribe ──────────────────────────────────────
+// Public key is safe to expose — it only authorizes the *server* to send
+// pushes to subscriptions issued for it.
+app.get('/api/push/public-key', (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY, enabled: !!pushReady });
+});
+
+// Browser sends its PushSubscription.toJSON() here once it's been created.
+// Same endpoint upserts (on conflict update keys + ownership) so a
+// re-permission-grant just refreshes existing rows.
+app.post('/api/push/subscribe', requireAuth, async (req, res) => {
+  try {
+    const sub = req.body || {};
+    const endpoint = String(sub.endpoint || '');
+    const p256dh = String(sub.keys?.p256dh || '');
+    const auth = String(sub.keys?.auth || '');
+    if (!endpoint || !p256dh || !auth) return res.status(400).json({ error: 'Invalid subscription' });
+    const ua = String(req.headers['user-agent'] || '').slice(0, 255);
+    await run(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent)
+         VALUES (?,?,?,?,?)
+         ON CONFLICT (endpoint) DO UPDATE
+           SET user_id = EXCLUDED.user_id,
+               p256dh = EXCLUDED.p256dh,
+               auth = EXCLUDED.auth,
+               user_agent = EXCLUDED.user_agent`,
+      req.session.userId, endpoint, p256dh, auth, ua
+    );
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Caller posts the same endpoint string they got from PushSubscription so
+// we can drop just that one device.
+app.post('/api/push/unsubscribe', requireAuth, async (req, res) => {
+  try {
+    const endpoint = String(req.body?.endpoint || '');
+    if (!endpoint) return res.status(400).json({ error: 'endpoint required' });
+    await run('DELETE FROM push_subscriptions WHERE endpoint=? AND user_id=?', endpoint, req.session.userId);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Self-test — sends a push to the caller's own subscriptions. Surfaces
+// real send count + any pruned-stale subs so the Settings page can show
+// "delivered to N device(s)".
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  try {
+    const u = await getUser(req.session.userId);
+    const r = await sendPushToUser(req.session.userId, {
+      title: 'Syruvia push test',
+      body: `Hi ${u?.name || 'there'} — push notifications are working.`,
+      tag: 'push-self-test',
+      url: '/dashboard',
+    });
+    res.json(r);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

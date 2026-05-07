@@ -3516,6 +3516,20 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           <h2 style="font-size:14px;font-weight:500;margin-bottom:6px">Notification Preferences</h2>
           <p style="font-size:12px;color:var(--text3);margin-bottom:18px">Choose how you want to be notified about ticket activity. Settings apply across all your projects.</p>
 
+          <!-- Push notifications (PWA) -->
+          <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px;background:#fafbff">
+            <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap">
+              <div style="flex:1;min-width:200px">
+                <div style="font-size:13px;font-weight:600;margin-bottom:4px">📱 Push notifications</div>
+                <div style="font-size:11.5px;color:var(--text3);line-height:1.5" id="push-status-text">Loading…</div>
+              </div>
+              <button id="push-enable-btn" type="button" class="btn-primary" style="font-size:12px;padding:7px 14px;display:none" onclick="enablePushNotifications()">Enable</button>
+              <button id="push-disable-btn" type="button" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:6px;cursor:pointer;display:none" onclick="disablePushNotifications()">Disable</button>
+              <button id="push-test-btn" type="button" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:6px;cursor:pointer;display:none" onclick="testPushNotification()">Send test</button>
+            </div>
+            <div id="push-help" style="font-size:11px;color:var(--text3);margin-top:8px;display:none;line-height:1.5"></div>
+          </div>
+
           <table class="notif-table">
             <thead>
               <tr>
@@ -8314,7 +8328,10 @@ function switchSettingsTab(tab) {
   document.querySelectorAll('.settings-panel').forEach(panel => {
     panel.style.display = panel.id === 'settings-panel-' + tab ? '' : 'none';
   });
-  if (tab === 'notifications') renderNotifPrefs();
+  if (tab === 'notifications') {
+    renderNotifPrefs();
+    if (typeof refreshPushStatusUI === 'function') refreshPushStatusUI();
+  }
   if (tab === 'security')      renderSessions();
   if (tab === 'users')         { renderUsersTab(); renderPendingInvites(); }
   if (tab === 'permissions')   renderPermissionsMatrix();
@@ -12389,6 +12406,186 @@ function setupCommentAttachBar() {
     };
   }
 }
+
+// ── Push notifications (PWA) ────────────────────────────────────────────────
+// Tiny client around the standard Web Push API:
+//   1. Register /sw.js once on app load.
+//   2. The Settings → Notifications card surfaces enable / disable / test.
+//   3. enablePushNotifications() asks for the permission, subscribes the
+//      browser to the server's VAPID public key, and POSTs the resulting
+//      subscription so the server can fan out pushes to it later.
+//
+// On iOS Safari this only works if the user has installed the app via
+// Add to Home Screen first (iOS 16.4+ requirement). We detect that case
+// and surface an instructive message instead of a broken Enable button.
+
+let _swReg = null;
+let _vapidPublicKey = null;
+
+async function _ensureServiceWorker() {
+  if (_swReg) return _swReg;
+  if (!('serviceWorker' in navigator)) return null;
+  try {
+    _swReg = await navigator.serviceWorker.register('/sw.js');
+    return _swReg;
+  } catch (e) {
+    console.warn('[push] sw register failed:', e?.message || e);
+    return null;
+  }
+}
+
+function _urlBase64ToUint8Array(b64) {
+  const padding = '='.repeat((4 - (b64.length % 4)) % 4);
+  const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function _fetchVapidPublicKey() {
+  if (_vapidPublicKey) return _vapidPublicKey;
+  try {
+    const r = await apiGet('/api/push/public-key');
+    if (r && r.enabled && r.publicKey) {
+      _vapidPublicKey = r.publicKey;
+      return _vapidPublicKey;
+    }
+  } catch {}
+  return null;
+}
+
+async function refreshPushStatusUI() {
+  const text = document.getElementById('push-status-text');
+  const help = document.getElementById('push-help');
+  const enable = document.getElementById('push-enable-btn');
+  const disable = document.getElementById('push-disable-btn');
+  const test = document.getElementById('push-test-btn');
+  if (!text) return; // panel not in DOM yet
+  const setBtns = (e, d, t) => {
+    if (enable) enable.style.display = e ? '' : 'none';
+    if (disable) disable.style.display = d ? '' : 'none';
+    if (test) test.style.display = t ? '' : 'none';
+  };
+  const setHelp = (msg) => { if (help) { help.textContent = msg || ''; help.style.display = msg ? 'block' : 'none'; } };
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') {
+    text.textContent = 'Your browser does not support push notifications.';
+    setBtns(false, false, false); setHelp('');
+    return;
+  }
+  // iOS Safari: PushManager exists but only after Add-to-Home-Screen + iOS 16.4+.
+  // We can't perfectly detect "installed PWA" from JS, but we can read display-mode.
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const key = await _fetchVapidPublicKey();
+  if (!key) {
+    text.textContent = 'Push is not configured on the server.';
+    setBtns(false, false, false); setHelp('');
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    text.textContent = 'Notifications are blocked for this site in your browser settings.';
+    setBtns(false, false, false);
+    setHelp('Open your browser site settings, allow notifications for this site, then come back.');
+    return;
+  }
+  const reg = await _ensureServiceWorker();
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  if (sub) {
+    text.textContent = 'On — this device will receive push notifications.';
+    setBtns(false, true, true);
+    setHelp('');
+    return;
+  }
+  // Not subscribed yet
+  if (isIOS && !isStandalone) {
+    text.textContent = 'Off — install to home screen first to enable on iPhone/iPad.';
+    setBtns(false, false, false);
+    setHelp('In Safari: tap the Share icon → Add to Home Screen, then open the app from your home screen and turn this on.');
+    return;
+  }
+  text.textContent = 'Off — turn on to get notifications on this device for new comments, assignments, and feedback.';
+  setBtns(true, false, false);
+  setHelp('');
+}
+
+window.enablePushNotifications = async function() {
+  const text = document.getElementById('push-status-text');
+  if (text) text.textContent = 'Requesting permission…';
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      if (text) text.textContent = 'Permission was not granted. You can enable it later from your browser site settings.';
+      refreshPushStatusUI();
+      return;
+    }
+    const key = await _fetchVapidPublicKey();
+    if (!key) { alert('Push is not configured on the server.'); return; }
+    const reg = await _ensureServiceWorker();
+    if (!reg) { alert('Could not register service worker.'); return; }
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: _urlBase64ToUint8Array(key),
+    });
+    const r = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub.toJSON()),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(()=>({}));
+      alert('Could not save subscription: ' + (data.error || ('status ' + r.status)));
+    }
+  } catch (e) {
+    console.warn('[push] enable failed:', e);
+    alert('Could not enable push: ' + (e?.message || e));
+  }
+  refreshPushStatusUI();
+};
+
+window.disablePushNotifications = async function() {
+  try {
+    const reg = await _ensureServiceWorker();
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    if (sub) {
+      const endpoint = sub.endpoint;
+      try { await sub.unsubscribe(); } catch {}
+      try {
+        await fetch('/api/push/unsubscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint }),
+        });
+      } catch {}
+    }
+  } catch (e) { console.warn('[push] disable failed:', e); }
+  refreshPushStatusUI();
+};
+
+window.testPushNotification = async function() {
+  try {
+    const r = await fetch('/api/push/test', { method: 'POST' });
+    const data = await r.json().catch(()=>({}));
+    if (!r.ok) { alert('Test failed: ' + (data.error || ('status ' + r.status))); return; }
+    if (!data.sent) {
+      alert('No active subscription on the server side. Try Disable then Enable again.');
+    }
+    // If sent>0 the OS notification will appear on its own; nothing more to show.
+  } catch (e) { alert('Test failed: ' + (e?.message || e)); }
+};
+
+// Register the SW + refresh the UI early. Don't ask permission — that's
+// only triggered by an explicit user click on Enable.
+(function _initPush() {
+  if ('serviceWorker' in navigator) {
+    _ensureServiceWorker().catch(()=>{});
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    refreshPushStatusUI();
+  });
+})();
 
 // ── Reusable media composer (file / voice / screen / paste) ─────────────────
 // Mounts a compact attach-bar inside the given element and tracks pending
