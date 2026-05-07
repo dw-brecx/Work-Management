@@ -367,6 +367,11 @@ async function init() {
   // What's New feed can color-code them. Default 'update' is safe for any
   // existing row that pre-dates this column.
   await safeAlter("ALTER TABLE announcements ADD COLUMN kind TEXT DEFAULT 'update'");
+  // Audience flag: when 1, the announcement is restricted to users whose
+  // perm_role is Admin or Manager — Members never see it in the feed, the
+  // popup, or the unread badge. Default 0 = visible to everyone (back-
+  // compat with announcements that pre-date this column).
+  await safeAlter("ALTER TABLE announcements ADD COLUMN admin_only INTEGER DEFAULT 0");
   // High-water mark: the largest announcement id this user has seen in the
   // What's New feed. Drives the unread badge in the sidebar (count of
   // active announcements with id > this value). Separate from

@@ -867,10 +867,34 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
 app.delete('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
-    console.log(`[tickets] SOFT-DELETE ${req.params.id} by user ${req.session.userId} (${u?.name}) at ${new Date().toISOString()}`);
+    const id = req.params.id;
+    // If this is a project, cascade the soft-delete to every still-live
+    // sub-ticket so they don't end up orphaned (visible-but-detached).
+    // Same timestamp on parent + children so an admin can identify a
+    // matching restore set later.
+    const parent = await get('SELECT id, is_project FROM tickets WHERE id=?', id);
+    const isProject = !!(parent && parent.is_project);
+    let cascadeCount = 0;
+    if (isProject) {
+      const children = await all(
+        'SELECT id FROM tickets WHERE parent_ticket_id=? AND deleted_at IS NULL',
+        id
+      );
+      cascadeCount = children.length;
+      if (cascadeCount > 0) {
+        await run(
+          "UPDATE tickets SET deleted_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE parent_ticket_id=? AND deleted_at IS NULL",
+          id
+        );
+        for (const c of children) {
+          console.log(`[tickets] SOFT-DELETE ${c.id} (cascade from project ${id}) by user ${req.session.userId} (${u?.name}) at ${new Date().toISOString()}`);
+        }
+      }
+    }
+    console.log(`[tickets] SOFT-DELETE ${id} by user ${req.session.userId} (${u?.name})${isProject ? ' [project, cascaded ' + cascadeCount + ' sub-tickets]' : ''} at ${new Date().toISOString()}`);
     // Soft delete: keep the row, just mark it. Admin can restore via /api/admin/tickets/restore/:id.
-    await run("UPDATE tickets SET deleted_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", req.params.id);
-    res.json({ ok:true });
+    await run("UPDATE tickets SET deleted_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", id);
+    res.json({ ok: true, cascadedSubtickets: cascadeCount });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1027,12 +1051,22 @@ app.post('/api/tickets/:id/timeline', requireAuth, requireTicketAccess, async (r
 });
 
 // ── Announcements ────────────────────────────────────────────────────────────
+// Helper: should the current user see admin-only announcements? Members
+// don't; Admins and Managers do. Used to filter the popup / feed / unread.
+async function _viewerSeesAdminOnlyAnnouncements(req) {
+  const u = await getUser(req.session.userId);
+  return !!(u && ['Admin', 'Manager'].includes(u.perm_role));
+}
+
 // Active, unacknowledged announcements for the current user.
 app.get('/api/announcements/active', requireAuth, async (req, res) => {
   try {
+    const seesAdminOnly = await _viewerSeesAdminOnlyAnnouncements(req);
+    const audienceClause = seesAdminOnly ? '' : ' AND COALESCE(a.admin_only,0) = 0 ';
     const rows = await all(
       `SELECT a.* FROM announcements a
         WHERE a.active = 1
+          ${audienceClause}
           AND NOT EXISTS (
             SELECT 1 FROM announcement_seen s
              WHERE s.announcement_id = a.id AND s.user_id = ?
@@ -1052,11 +1086,13 @@ app.get('/api/announcements/active', requireAuth, async (req, res) => {
 // rather browse the timeline.
 app.get('/api/announcements/feed', requireAuth, async (req, res) => {
   try {
+    const seesAdminOnly = await _viewerSeesAdminOnlyAnnouncements(req);
+    const audienceClause = seesAdminOnly ? '' : ' AND COALESCE(a.admin_only,0) = 0 ';
     const rows = await all(
       `SELECT a.*, u.name AS author_name, u.avatar_url AS author_avatar
          FROM announcements a
          LEFT JOIN users u ON u.id = a.created_by
-        WHERE a.active = 1
+        WHERE a.active = 1 ${audienceClause}
         ORDER BY a.created_at DESC, a.id DESC`);
     const ids = rows.map(r => r.id);
     let attMap = {};
@@ -1079,6 +1115,7 @@ app.get('/api/announcements/feed', requireAuth, async (req, res) => {
       id: r.id, kind: r.kind || 'update',
       title: r.title || '', body: r.body || '',
       requireAck: !!r.require_ack, active: !!r.active,
+      adminOnly: !!r.admin_only,
       createdAt: r.created_at,
       author: { name: r.author_name || '', avatarUrl: r.author_avatar || '' },
       attachments: attMap[r.id] || [],
@@ -1092,8 +1129,10 @@ app.get('/api/announcements/unread-count', requireAuth, async (req, res) => {
   try {
     const u = await get('SELECT last_announcement_id_seen FROM users WHERE id=?', req.session.userId);
     const lastSeen = parseInt(u?.last_announcement_id_seen || 0, 10);
+    const seesAdminOnly = await _viewerSeesAdminOnlyAnnouncements(req);
+    const audienceClause = seesAdminOnly ? '' : ' AND COALESCE(admin_only,0) = 0 ';
     const row = await get(
-      `SELECT COUNT(*)::int AS n FROM announcements WHERE active = 1 AND id > ?`,
+      `SELECT COUNT(*)::int AS n FROM announcements WHERE active = 1 AND id > ? ${audienceClause}`,
       lastSeen
     );
     res.json({ count: row?.n || 0, lastSeenId: lastSeen });
@@ -1102,10 +1141,14 @@ app.get('/api/announcements/unread-count', requireAuth, async (req, res) => {
 
 // Mark all current active announcements as seen for this user. Called
 // when the user opens the What's New page (or clicks "View announcement"
-// in the popup) — clears the sidebar badge.
+// in the popup) — clears the sidebar badge. Uses the same audience filter
+// as the feed so a Member's high-water mark only advances over things
+// they could actually see.
 app.post('/api/announcements/mark-all-seen', requireAuth, async (req, res) => {
   try {
-    const row = await get('SELECT COALESCE(MAX(id),0) AS max_id FROM announcements');
+    const seesAdminOnly = await _viewerSeesAdminOnlyAnnouncements(req);
+    const audienceClause = seesAdminOnly ? '' : ' AND COALESCE(admin_only,0) = 0 ';
+    const row = await get(`SELECT COALESCE(MAX(id),0) AS max_id FROM announcements WHERE 1=1 ${audienceClause}`);
     const maxId = parseInt(row?.max_id || 0, 10);
     await run('UPDATE users SET last_announcement_id_seen=? WHERE id=? AND COALESCE(last_announcement_id_seen,0) < ?',
       maxId, req.session.userId, maxId);
@@ -1134,6 +1177,7 @@ app.get('/api/announcements', requireAdmin, async (req, res) => {
       id: r.id, kind: r.kind || 'update',
       title: r.title || '', body: r.body || '',
       requireAck: !!r.require_ack, active: !!r.active,
+      adminOnly: !!r.admin_only,
       createdAt: r.created_at, ackCount: parseInt(r.ack_count || 0, 10)
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -1141,7 +1185,7 @@ app.get('/api/announcements', requireAdmin, async (req, res) => {
 
 app.post('/api/announcements', requireAdmin, async (req, res) => {
   try {
-    const { title, body, requireAck, kind } = req.body || {};
+    const { title, body, requireAck, kind, adminOnly } = req.body || {};
     const t = String(title || '').trim();
     const b = String(body || '').trim();
     if (!t && !b) return res.status(400).json({ error: 'Title or body required' });
@@ -1149,25 +1193,28 @@ app.post('/api/announcements', requireAdmin, async (req, res) => {
       ? String(kind).toLowerCase()
       : 'update';
     const info = await run(
-      `INSERT INTO announcements (title, body, require_ack, active, created_by, kind) VALUES (?,?,?,1,?,?) RETURNING id`,
-      t, b, requireAck ? 1 : 0, req.session.userId, k
+      `INSERT INTO announcements (title, body, require_ack, active, created_by, kind, admin_only) VALUES (?,?,?,1,?,?,?) RETURNING id`,
+      t, b, requireAck ? 1 : 0, req.session.userId, k, adminOnly ? 1 : 0
     );
     const row = await get('SELECT * FROM announcements WHERE id=?', Number(info.lastInsertRowid));
     res.status(201).json({
       id: row.id, title: row.title || '', body: row.body || '', kind: row.kind || 'update',
-      requireAck: !!row.require_ack, active: !!row.active, createdAt: row.created_at, ackCount: 0
+      requireAck: !!row.require_ack, active: !!row.active,
+      adminOnly: !!row.admin_only,
+      createdAt: row.created_at, ackCount: 0
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/announcements/:id', requireAdmin, async (req, res) => {
   try {
-    const { title, body, requireAck, active, resetSeen, kind } = req.body || {};
+    const { title, body, requireAck, active, resetSeen, kind, adminOnly } = req.body || {};
     const u = []; const v = [];
     if (title !== undefined)      { u.push('title=?');       v.push(String(title || '').trim()); }
     if (body !== undefined)       { u.push('body=?');        v.push(String(body || '').trim()); }
     if (requireAck !== undefined) { u.push('require_ack=?'); v.push(requireAck ? 1 : 0); }
     if (active !== undefined)     { u.push('active=?');      v.push(active ? 1 : 0); }
+    if (adminOnly !== undefined)  { u.push('admin_only=?');  v.push(adminOnly ? 1 : 0); }
     if (kind !== undefined && ['feature','bugfix','update','note'].includes(String(kind).toLowerCase())) {
       u.push('kind=?'); v.push(String(kind).toLowerCase());
     }
