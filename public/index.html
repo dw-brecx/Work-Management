@@ -11901,6 +11901,105 @@ initApp();
 
 })();
 
+// ── Ticket permalinks (/tickets/TKT-####) ─────────────────────────────────
+(function() {
+  const TICKET_PATH = /^\/tickets\/(TKT-\d+)\/?$/i;
+
+  function urlTicketId() {
+    const m = location.pathname.match(TICKET_PATH);
+    return m ? m[1].toUpperCase() : null;
+  }
+
+  function pushTicketUrl(id) {
+    const path = '/tickets/' + id;
+    if (location.pathname !== path) history.pushState({ ticketId: id }, '', path);
+  }
+  function pushRootUrl() {
+    if (location.pathname !== '/' && location.pathname !== '/index.html') {
+      history.pushState({}, '', '/');
+    }
+  }
+
+  // Open a ticket from a URL once TICKETS_DATA is hydrated. Server filters Members
+  // to their own tickets, so the lookup may fail for tickets they shouldn't see.
+  function tryOpenFromUrl() {
+    const id = urlTicketId();
+    if (!id) return false;
+    const tickets = (typeof TICKETS_DATA !== 'undefined') ? TICKETS_DATA : [];
+    if (!tickets.length) return false;
+    const found = tickets.find(t => t.id === id);
+    if (found && typeof openTicketDetail === 'function') {
+      openTicketDetail(id);
+      return true;
+    }
+    if (!found) {
+      console.warn('[router] Ticket', id, 'not in your visible list — staying on current page.');
+    }
+    return false;
+  }
+
+  // Wrap openTicketDetail to push the URL
+  function wrapOpenTicketDetail() {
+    const orig = window.openTicketDetail;
+    if (typeof orig !== 'function' || orig._urlPatched) return;
+    const patched = function(id, ...rest) {
+      const r = orig.apply(this, [id, ...rest]);
+      if (id) pushTicketUrl(id);
+      return r;
+    };
+    patched._urlPatched = true;
+    window.openTicketDetail = patched;
+  }
+
+  // Wrap navigate so leaving a ticket clears the URL back to /
+  function wrapNavigate() {
+    const orig = window.navigate;
+    if (typeof orig !== 'function' || orig._urlPatched) return;
+    const patched = function(page, ...rest) {
+      const r = orig.apply(this, [page, ...rest]);
+      if (page !== 'ticket-detail') pushRootUrl();
+      return r;
+    };
+    patched._urlPatched = true;
+    window.navigate = patched;
+  }
+
+  // Browser back / forward
+  window.addEventListener('popstate', () => {
+    const id = urlTicketId();
+    if (id) {
+      if (typeof openTicketDetail === 'function') openTicketDetail(id);
+    } else {
+      // No ticket in URL — go back to the dashboard (or whatever page user was on)
+      if (typeof navigate === 'function') {
+        // Avoid pushing again from inside navigate's wrapper
+        const w = window.navigate;
+        if (w && w._urlPatched) {
+          // Temporarily call original to skip the URL push
+          const tmp = w; window.navigate = function(p) { return tmp(p); };
+        }
+        navigate('dashboard');
+      }
+    }
+  });
+
+  // Hook up on first paint and again after the auth/data bootstrap (1.2s) so we
+  // catch openTicketDetail / navigate definitions as they become available.
+  function _hookRouter() {
+    wrapOpenTicketDetail();
+    wrapNavigate();
+    tryOpenFromUrl();
+  }
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    setTimeout(_hookRouter, 200);
+  } else {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_hookRouter, 200));
+  }
+  // After tickets have loaded
+  setTimeout(_hookRouter, 1200);
+  setTimeout(_hookRouter, 2500);
+})();
+
 // Jump from a Teams card to the Tickets page filtered by that person.
 window.showTicketsForAssignee = function(name) {
   if (!name) return;
