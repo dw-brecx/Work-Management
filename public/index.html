@@ -3989,6 +3989,21 @@ let calFilter = 'all';
 let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
+// Canonical URL path for each page. Used to push the address bar inside
+// navigate() and by the popstate handler to resolve a path back to a page.
+// Kept on window so the router IIFE further down the file can read it.
+window.PAGE_PATHS = {
+  'dashboard':   '/dashboard',
+  'tickets':     '/tickets',
+  'my-tickets':  '/my-tickets',
+  'planning':    '/planning',
+  'flavors':     '/flavors',
+  'calendar':    '/calendar',
+  'teams':       '/teams',
+  'reports':     '/reports',
+  'settings':    '/settings',
+};
+
 function navigate(page) {
   document.querySelectorAll('.page, .page-with-right').forEach(el => {
     el.classList.remove('active');
@@ -4005,6 +4020,15 @@ function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.page === navKey);
   });
+  // Update the address bar — every page gets a unique URL so deep-links
+  // and back/forward work. ticket-detail / plan-detail are pushed by their
+  // open* handlers (which know the id); top-level pages push here.
+  try {
+    const path = window.PAGE_PATHS[page];
+    if (path && location.pathname !== path) {
+      history.pushState({ page }, '', path);
+    }
+  } catch {}
   if (page === 'tickets') renderTickets();
   if (page === 'my-tickets') renderKanban();
   if (page === 'teams') renderTeams();
@@ -10412,49 +10436,11 @@ function patchTeamMutations() {
   }
 })();
 
-// ── URL routing — update address bar on every navigate() call ────────────────
-(function() {
-  const PAGE_PATHS = {
-    'dashboard':     '/dashboard',
-    'tickets':       '/tickets',
-    'my-tickets':    '/my-tickets',
-    'planning':      '/planning',
-    'calendar':      '/calendar',
-    'teams':         '/teams',
-    'reports':       '/reports',
-    'settings':      '/settings',
-    'ticket-detail': '/tickets',
-    'plan-detail':   '/planning',
-  };
-
-  const origNavigate = window.navigate;
-  window.navigate = function(page, ...args) {
-    const r = origNavigate.call(this, page, ...args);
-    const path = PAGE_PATHS[page] || '/' + page;
-    if (window.location.pathname !== path) {
-      history.pushState({ page }, '', path);
-    }
-    return r;
-  };
-
-  // Browser back/forward
-  window.addEventListener('popstate', function(e) {
-    const page = e.state && e.state.page;
-    if (page) origNavigate.call(window, page);
-  });
-
-  // On initial load, read the URL and navigate to matching page
-  window.addEventListener('_wnReady', function() {
-    const path = window.location.pathname.slice(1) || 'dashboard';
-    const match = Object.keys(PAGE_PATHS).find(k => PAGE_PATHS[k] === '/' + path || k === path);
-    if (match && match !== 'dashboard') {
-      origNavigate.call(window, match);
-      history.replaceState({ page: match }, '', PAGE_PATHS[match] || '/' + match);
-    } else {
-      history.replaceState({ page: 'dashboard' }, '', '/dashboard');
-    }
-  });
-})();
+// (Removed) Older URL-routing IIFE that wrapped window.navigate to push the
+// address bar. Removed because navigate() itself now pushes the URL directly,
+// and the bigger router IIFE further down handles popstate + initial-path
+// resolution. Multiple wrappers were stacking and racing each other on init,
+// which is why the address bar wasn't updating reliably.
 
 // ── Logout ────────────────────────────────────────────────────────────────────
 window.logoutUser = async function() {
@@ -12320,15 +12306,11 @@ window.refreshPageData = refreshPageData;
     if (typeof orig !== 'function' || orig._urlPatched) return;
     const patched = function(page, ...rest) {
       const r = orig.apply(this, [page, ...rest]);
-      // ticket-detail / plan-detail push their own URL via the open* wrappers;
-      // top-level pages push the canonical path here.
+      // The original navigate() already pushes the URL directly (see the
+      // top-level definition). This wrapper just kicks off the server data
+      // refresh for the new page.
       if (page !== 'ticket-detail' && page !== 'plan-detail' && PAGE_PATHS[page]) {
-        pushUrl(page);
-        // Hard-refresh the data for this page from the server, then re-render.
         if (typeof refreshPageData === 'function') refreshPageData(page);
-      } else if (!PAGE_PATHS[page] && page !== 'ticket-detail' && page !== 'plan-detail') {
-        // Unknown page: fall back to root
-        if (location.pathname !== '/') history.pushState({}, '', '/');
       }
       return r;
     };
