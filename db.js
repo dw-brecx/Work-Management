@@ -311,6 +311,30 @@ async function init() {
       uploader TEXT DEFAULT '',
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
+    // User-submitted feature requests / bug reports / add-on requests.
+    // Intentionally NOT in the tickets table — these never appear in the
+    // tickets list, dashboard, calendar, or stats. Visible only via the
+    // dedicated "Feedback" sidebar page.
+    `CREATE TABLE IF NOT EXISTS feedback_items (
+      id SERIAL PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'feature',
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open',
+      created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE TABLE IF NOT EXISTS feedback_comments (
+      id SERIAL PRIMARY KEY,
+      feedback_id INTEGER NOT NULL REFERENCES feedback_items(id) ON DELETE CASCADE,
+      author_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      text TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_items (status)`,
+    `CREATE INDEX IF NOT EXISTS idx_feedback_kind ON feedback_items (kind)`,
+    `CREATE INDEX IF NOT EXISTS idx_feedback_comments_feedback ON feedback_comments (feedback_id)`,
     `CREATE TABLE IF NOT EXISTS session (
       sid VARCHAR NOT NULL,
       sess JSON NOT NULL,
@@ -335,6 +359,14 @@ async function init() {
 
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
+  // Same for the new feedback / announcement parents — voice notes, screen
+  // recordings, and pasted screenshots can be attached to either.
+  await safeAlter('ALTER TABLE attachments ADD COLUMN feedback_id INTEGER');
+  await safeAlter('ALTER TABLE attachments ADD COLUMN announcement_id INTEGER');
+  // Announcements gain a 'kind' tag (feature / bugfix / update / note) so the
+  // What's New feed can color-code them. Default 'update' is safe for any
+  // existing row that pre-dates this column.
+  await safeAlter("ALTER TABLE announcements ADD COLUMN kind TEXT DEFAULT 'update'");
   // Profile avatar (existing installs)
   await safeAlter("ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''");
   // Time zone preference (existing installs)

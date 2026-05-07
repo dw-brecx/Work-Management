@@ -943,6 +943,45 @@ app.get('/api/announcements/active', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// What's New feed — every active announcement, attachments inlined, visible
+// to any authenticated user. Replaces the popup ack flow for users who'd
+// rather browse the timeline.
+app.get('/api/announcements/feed', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT a.*, u.name AS author_name, u.avatar_url AS author_avatar
+         FROM announcements a
+         LEFT JOIN users u ON u.id = a.created_by
+        WHERE a.active = 1
+        ORDER BY a.created_at DESC, a.id DESC`);
+    const ids = rows.map(r => r.id);
+    let attMap = {};
+    if (ids.length) {
+      const placeholders = ids.map((_, i) => '$' + (i + 1)).join(',');
+      const atts = await all(
+        `SELECT * FROM attachments WHERE announcement_id IN (${placeholders}) ORDER BY created_at ASC`,
+        ...ids
+      );
+      attMap = atts.reduce((m, a) => {
+        (m[a.announcement_id] ||= []).push({
+          id: a.id, filename: a.filename, originalName: a.original_name,
+          mimeType: a.mime_type, size: a.size, url: `/uploads/${a.filename}`,
+          createdAt: a.created_at,
+        });
+        return m;
+      }, {});
+    }
+    res.json(rows.map(r => ({
+      id: r.id, kind: r.kind || 'update',
+      title: r.title || '', body: r.body || '',
+      requireAck: !!r.require_ack, active: !!r.active,
+      createdAt: r.created_at,
+      author: { name: r.author_name || '', avatarUrl: r.author_avatar || '' },
+      attachments: attMap[r.id] || [],
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // Mark an announcement as seen / acknowledged for the current user.
 app.post('/api/announcements/:id/ack', requireAuth, async (req, res) => {
   try {
@@ -961,7 +1000,8 @@ app.get('/api/announcements', requireAdmin, async (req, res) => {
       SELECT a.*, (SELECT COUNT(*) FROM announcement_seen s WHERE s.announcement_id = a.id) AS ack_count
       FROM announcements a ORDER BY a.created_at DESC, a.id DESC`);
     res.json(rows.map(r => ({
-      id: r.id, title: r.title || '', body: r.body || '',
+      id: r.id, kind: r.kind || 'update',
+      title: r.title || '', body: r.body || '',
       requireAck: !!r.require_ack, active: !!r.active,
       createdAt: r.created_at, ackCount: parseInt(r.ack_count || 0, 10)
     })));
@@ -970,17 +1010,20 @@ app.get('/api/announcements', requireAdmin, async (req, res) => {
 
 app.post('/api/announcements', requireAdmin, async (req, res) => {
   try {
-    const { title, body, requireAck } = req.body || {};
+    const { title, body, requireAck, kind } = req.body || {};
     const t = String(title || '').trim();
     const b = String(body || '').trim();
     if (!t && !b) return res.status(400).json({ error: 'Title or body required' });
+    const k = ['feature','bugfix','update','note'].includes(String(kind || '').toLowerCase())
+      ? String(kind).toLowerCase()
+      : 'update';
     const info = await run(
-      `INSERT INTO announcements (title, body, require_ack, active, created_by) VALUES (?,?,?,1,?) RETURNING id`,
-      t, b, requireAck ? 1 : 0, req.session.userId
+      `INSERT INTO announcements (title, body, require_ack, active, created_by, kind) VALUES (?,?,?,1,?,?) RETURNING id`,
+      t, b, requireAck ? 1 : 0, req.session.userId, k
     );
     const row = await get('SELECT * FROM announcements WHERE id=?', Number(info.lastInsertRowid));
     res.status(201).json({
-      id: row.id, title: row.title || '', body: row.body || '',
+      id: row.id, title: row.title || '', body: row.body || '', kind: row.kind || 'update',
       requireAck: !!row.require_ack, active: !!row.active, createdAt: row.created_at, ackCount: 0
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -988,12 +1031,15 @@ app.post('/api/announcements', requireAdmin, async (req, res) => {
 
 app.put('/api/announcements/:id', requireAdmin, async (req, res) => {
   try {
-    const { title, body, requireAck, active, resetSeen } = req.body || {};
+    const { title, body, requireAck, active, resetSeen, kind } = req.body || {};
     const u = []; const v = [];
     if (title !== undefined)      { u.push('title=?');       v.push(String(title || '').trim()); }
     if (body !== undefined)       { u.push('body=?');        v.push(String(body || '').trim()); }
     if (requireAck !== undefined) { u.push('require_ack=?'); v.push(requireAck ? 1 : 0); }
     if (active !== undefined)     { u.push('active=?');      v.push(active ? 1 : 0); }
+    if (kind !== undefined && ['feature','bugfix','update','note'].includes(String(kind).toLowerCase())) {
+      u.push('kind=?'); v.push(String(kind).toLowerCase());
+    }
     if (u.length) { v.push(Number(req.params.id)); await run(`UPDATE announcements SET ${u.join(',')} WHERE id=?`, ...v); }
     if (resetSeen) await run('DELETE FROM announcement_seen WHERE announcement_id=?', Number(req.params.id));
     res.json({ ok: true });
@@ -1005,6 +1051,183 @@ app.delete('/api/announcements/:id', requireAdmin, async (req, res) => {
     await run('DELETE FROM announcement_seen WHERE announcement_id=?', Number(req.params.id));
     await run('DELETE FROM announcements WHERE id=?', Number(req.params.id));
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Feedback (feature requests + bug reports + add-on requests) ──────────────
+// Anyone authenticated can list / create / comment. Admins can update status
+// and delete. These are intentionally segregated from tickets — they never
+// appear in the tickets list, dashboard, calendar, or stats.
+const FEEDBACK_KINDS = new Set(['feature', 'bug', 'addon']);
+const FEEDBACK_STATUSES = new Set(['open', 'planned', 'in_progress', 'done', 'dismissed']);
+
+function shapeFeedback(r, attachments = [], comments = []) {
+  return {
+    id: r.id,
+    kind: r.kind || 'feature',
+    title: r.title || '',
+    description: r.description || '',
+    status: r.status || 'open',
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    createdBy: {
+      id: r.created_by_user_id || null,
+      name: r.author_name || '',
+      avatarUrl: r.author_avatar || '',
+    },
+    attachments,
+    comments,
+  };
+}
+
+app.get('/api/feedback', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT f.*, u.name AS author_name, u.avatar_url AS author_avatar,
+             (SELECT COUNT(*) FROM feedback_comments c WHERE c.feedback_id = f.id) AS comment_count
+        FROM feedback_items f
+        LEFT JOIN users u ON u.id = f.created_by_user_id
+       ORDER BY f.created_at DESC, f.id DESC`);
+    const ids = rows.map(r => r.id);
+    let attMap = {};
+    if (ids.length) {
+      const placeholders = ids.map((_, i) => '$' + (i + 1)).join(',');
+      const atts = await all(
+        `SELECT * FROM attachments WHERE feedback_id IN (${placeholders}) ORDER BY created_at ASC`,
+        ...ids
+      );
+      attMap = atts.reduce((m, a) => {
+        (m[a.feedback_id] ||= []).push({
+          id: a.id, filename: a.filename, originalName: a.original_name,
+          mimeType: a.mime_type, size: a.size, url: `/uploads/${a.filename}`,
+          createdAt: a.created_at,
+        });
+        return m;
+      }, {});
+    }
+    res.json(rows.map(r => ({
+      ...shapeFeedback(r, attMap[r.id] || []),
+      commentCount: parseInt(r.comment_count || 0, 10),
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/feedback', requireAuth, async (req, res) => {
+  try {
+    const { kind, title, description } = req.body || {};
+    const k = FEEDBACK_KINDS.has(String(kind || '').toLowerCase())
+      ? String(kind).toLowerCase() : 'feature';
+    const t = String(title || '').trim();
+    const d = String(description || '').trim();
+    if (!t && !d) return res.status(400).json({ error: 'Title or description required' });
+    const info = await run(
+      `INSERT INTO feedback_items (kind, title, description, status, created_by_user_id)
+        VALUES (?,?,?,?,?) RETURNING id`,
+      k, t.slice(0, 200), d, 'open', req.session.userId
+    );
+    const row = await get(
+      `SELECT f.*, u.name AS author_name, u.avatar_url AS author_avatar
+         FROM feedback_items f
+         LEFT JOIN users u ON u.id = f.created_by_user_id
+        WHERE f.id = ?`,
+      Number(info.lastInsertRowid)
+    );
+    res.status(201).json(shapeFeedback(row, [], []));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/feedback/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get(
+      `SELECT f.*, u.name AS author_name, u.avatar_url AS author_avatar
+         FROM feedback_items f
+         LEFT JOIN users u ON u.id = f.created_by_user_id
+        WHERE f.id = ?`,
+      id
+    );
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const attachments = (await all(
+      `SELECT * FROM attachments WHERE feedback_id = ? ORDER BY created_at ASC`,
+      id
+    )).map(a => ({
+      id: a.id, filename: a.filename, originalName: a.original_name,
+      mimeType: a.mime_type, size: a.size, url: `/uploads/${a.filename}`,
+      createdAt: a.created_at,
+    }));
+    const comments = (await all(
+      `SELECT c.*, u.name AS author_name, u.avatar_url AS author_avatar, u.perm_role AS author_role
+         FROM feedback_comments c
+         LEFT JOIN users u ON u.id = c.author_user_id
+        WHERE c.feedback_id = ?
+        ORDER BY c.created_at ASC, c.id ASC`,
+      id
+    )).map(c => ({
+      id: c.id, text: c.text || '', createdAt: c.created_at,
+      author: {
+        id: c.author_user_id || null,
+        name: c.author_name || '',
+        avatarUrl: c.author_avatar || '',
+        role: c.author_role || '',
+      },
+    }));
+    res.json(shapeFeedback(row, attachments, comments));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/feedback/:id', requireAdmin, async (req, res) => {
+  try {
+    const { status, kind, title, description } = req.body || {};
+    const u = []; const v = [];
+    if (status !== undefined && FEEDBACK_STATUSES.has(String(status).toLowerCase())) {
+      u.push('status=?'); v.push(String(status).toLowerCase());
+    }
+    if (kind !== undefined && FEEDBACK_KINDS.has(String(kind).toLowerCase())) {
+      u.push('kind=?'); v.push(String(kind).toLowerCase());
+    }
+    if (title !== undefined)       { u.push('title=?');       v.push(String(title || '').trim().slice(0, 200)); }
+    if (description !== undefined) { u.push('description=?'); v.push(String(description || '').trim()); }
+    if (!u.length) return res.json({ ok: true });
+    u.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+    v.push(Number(req.params.id));
+    await run(`UPDATE feedback_items SET ${u.join(',')} WHERE id=?`, ...v);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/feedback/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT created_by_user_id FROM feedback_items WHERE id=?', id);
+    if (!row) return res.json({ ok: true });
+    const u = await getUser(req.session.userId);
+    const isAdmin = (u?.perm_role || '').toLowerCase() === 'admin';
+    const isCreator = row.created_by_user_id && row.created_by_user_id === req.session.userId;
+    if (!isAdmin && !isCreator) return res.status(403).json({ error: 'Forbidden' });
+    // Free up the uploaded files attached to this item
+    const atts = await all('SELECT filename FROM attachments WHERE feedback_id=?', id);
+    for (const a of atts) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {}
+    }
+    await run('DELETE FROM feedback_items WHERE id=?', id);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/feedback/:id/comments', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { text } = req.body || {};
+    const t = String(text || '').trim();
+    if (!t) return res.status(400).json({ error: 'Empty comment' });
+    const exists = await get('SELECT id FROM feedback_items WHERE id=?', id);
+    if (!exists) return res.status(404).json({ error: 'Not found' });
+    const info = await run(
+      `INSERT INTO feedback_comments (feedback_id, author_user_id, text) VALUES (?,?,?) RETURNING id`,
+      id, req.session.userId, t
+    );
+    await run(`UPDATE feedback_items SET updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`, id);
+    res.status(201).json({ id: Number(info.lastInsertRowid), text: t });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1664,7 +1887,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
   try {
     if (!req.file) return res.status(400).json({ error: 'No file' });
     const u = await getUser(req.session.userId);
-    const { ticketId, commentId, subtaskId } = req.body;
+    const { ticketId, commentId, subtaskId, feedbackId, announcementId } = req.body;
     // Verify the uploader actually has access to the parent ticket. Without
     // this a Member could attach files to anyone's ticket by id-guessing.
     let parentTicketId = ticketId || null;
@@ -1676,9 +1899,25 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
       try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
       return res.status(404).json({ error: 'Ticket not found' });
     }
+    // Announcement attachments: only an admin can attach to one (the create
+    // and edit routes are admin-only too). Reject non-admins to keep the
+    // feed clean.
+    if (announcementId) {
+      if ((u?.perm_role || '').toLowerCase() !== 'admin') {
+        try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+        return res.status(403).json({ error: 'Admin only' });
+      }
+    }
+    // Feedback attachments: anyone authenticated can attach to any feedback
+    // item (the feedback page is shared by everyone). No further check
+    // beyond the auth middleware.
     const info = await run(
-      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?) RETURNING id',
-      ticketId || null, commentId ? Number(commentId) : null, subtaskId ? Number(subtaskId) : null,
+      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id',
+      ticketId || null,
+      commentId ? Number(commentId) : null,
+      subtaskId ? Number(subtaskId) : null,
+      feedbackId ? Number(feedbackId) : null,
+      announcementId ? Number(announcementId) : null,
       req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
     );
     res.json({
