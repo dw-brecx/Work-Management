@@ -6603,8 +6603,11 @@ function renderTeams() {
         <span style="color:var(--text3)">Workload</span><span style="font-weight:500">${m.workload}%</span>
       </div>
       <div class="progress-bar" style="margin-bottom:12px"><div class="progress-fill" style="width:${m.workload}%;background:${m.color}"></div></div>
-      <div style="display:flex;justify-content:space-between;font-size:11px">
-        <span style="color:var(--text3)">Active Tickets</span><span style="font-weight:500;color:var(--accent)">${m.tickets}</span>
+      <div style="display:flex;justify-content:space-between;font-size:11px;align-items:center">
+        <span style="color:var(--text3)">Active Tickets</span>
+        <a onclick="event.stopPropagation();showTicketsForAssignee('${m.name.replace(/'/g, "&#39;")}')" title="View ${escapeHtml(m.name)}'s open tickets"
+           style="font-weight:600;color:var(--accent);cursor:pointer;padding:1px 8px;border-radius:5px;text-decoration:none"
+           onmouseenter="this.style.background='#eff6ff'" onmouseleave="this.style.background=''">${m.tickets}</a>
       </div>
       <div class="team-card-actions">
         <div style="font-size:11px;color:var(--text3)">${m.email || 'No email added'}</div>
@@ -11897,6 +11900,29 @@ initApp();
   })();
 
 })();
+
+// Jump from a Teams card to the Tickets page filtered by that person.
+window.showTicketsForAssignee = function(name) {
+  if (!name) return;
+  // Decode the HTML-escaped name back so it matches TICKETS_DATA values
+  try { name = name.replace(/&#39;/g, "'").replace(/&amp;/g, '&'); } catch {}
+  // Reset any pre-existing filters that would narrow the result, then set assignee
+  try {
+    if (typeof currentTicketTab !== 'undefined') currentTicketTab = 'all';
+    const st = document.getElementById('fil-status'); if (st) st.value = '';
+    const pr = document.getElementById('fil-priority'); if (pr) pr.value = '';
+    if (typeof setAssigneeFilter === 'function') setAssigneeFilter(name);
+    else if (typeof window.assigneeFilter !== 'undefined') window.assigneeFilter = name;
+  } catch {}
+  navigate('tickets');
+  // Make sure the tab pill highlight matches "all" after navigate's renderTickets ran
+  setTimeout(() => {
+    document.querySelectorAll('#page-tickets .tab').forEach(t => t.classList.remove('active'));
+    const allTab = document.querySelector('#page-tickets .tab[data-ttab="all"]');
+    if (allTab) allTab.classList.add('active');
+    if (typeof renderTickets === 'function') renderTickets();
+  }, 30);
+};
 
 // ── Calendar event helpers: Generate Meet, Schedule from ticket ─────────────
 window.generateGoogleMeet = function() {
