@@ -8315,16 +8315,16 @@ function populateCreateTicketModal() {
     dueEl.value = `${yyyy}-${mm}-${dd}`;
   }
 
-  // Department defaults to the workspace's first department (the
-  // "company default"). loadDepartments returns the list; while we wait,
-  // ensure there's at least one safe fallback option so the dropdown
-  // isn't empty if the modal opens before /api/departments responds.
+  // Department defaults to "General" (the company default seeded server-
+  // side). If for any reason General isn't in the list, fall back to the
+  // first available department, then to a safe placeholder so the
+  // dropdown isn't empty before /api/departments resolves.
   const deptSel = document.getElementById('m-dept');
   if (deptSel) {
     const setDeptOpts = (depts) => {
-      const list = (Array.isArray(depts) && depts.length) ? depts : ['Engineering'];
+      const list = (Array.isArray(depts) && depts.length) ? depts : ['General'];
       deptSel.innerHTML = list.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
-      deptSel.value = list[0]; // first = company default
+      deptSel.value = list.includes('General') ? 'General' : list[0];
     };
     if (typeof window.loadDepartments === 'function') {
       window.loadDepartments().then(setDeptOpts).catch(() => setDeptOpts(null));

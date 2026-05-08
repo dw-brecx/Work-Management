@@ -2746,6 +2746,17 @@ app.get('*', (req, res) => {
     await initDb();
     console.log('✅  Database initialized');
 
+    // Seed the "General" department on first boot — it's the company default
+    // we surface in the Create Ticket modal. Idempotent: silently skipped on
+    // subsequent boots once the row exists.
+    try {
+      const existing = await get("SELECT id FROM departments WHERE name='General'");
+      if (!existing) {
+        await run("INSERT INTO departments (name) VALUES ('General')");
+        console.log("[seed] Inserted default department 'General'");
+      }
+    } catch (e) { console.warn("[seed] Could not seed General department:", e.message); }
+
     // (Removed) Previously a hardcoded "demo data cleanup" block ran on every server
     // start and DELETE'd TKT-1035..TKT-1042 / PLN-001..003 plus a fixed list of users.
     // It was meant to be a one-time migration but, because it had no guard, it wiped
