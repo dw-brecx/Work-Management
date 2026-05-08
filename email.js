@@ -21,6 +21,7 @@
  *  17. overdue-digest           sendOverdueDigestEmail
  *  18. ticket-reminder          sendTicketReminderEmail   (user-set self-reminder)
  *  19. personal-reminder        sendPersonalReminderEmail (My Reminders)
+ *  20. update-requested         sendUpdateRequestedEmail  (asks assignee for status)
  *
  * URL conventions used in every template (path-based, clean URLs):
  *   ${APP_URL}/tickets/TKT-1069    — single ticket
@@ -1208,6 +1209,40 @@ async function sendPersonalReminderEmail({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 20. UPDATE REQUESTED (someone is asking the assignee for a ticket update)
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendUpdateRequestedEmail({
+  toEmail, toName, requesterName, ticketId, title, status, priority, dueAt, dept, note,
+}) {
+  if (!toEmail) return { skipped: true };
+  const subject = `${requesterName || 'Someone'} is asking for an update on ${ticketId}${title ? ' — ' + title : ''}`;
+  const html = shell({
+    name: 'Update requested', subject,
+    preheader: `${requesterName || 'A teammate'} would like an update on ${ticketId}.`,
+    headerEyebrow: 'Update requested',
+    headerEmoji: '📩',
+    headerTitle: `${escapeHtml(requesterName || 'Someone')} is asking for an update`,
+    headerSub: title ? escapeHtml(title) : escapeHtml(ticketId || ''),
+    body:
+      (note
+        ? `<div style="margin:0 0 18px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#1e3a8a;font-size:13px;line-height:1.55;white-space:pre-wrap"><strong style="color:#1d4ed8">Note:</strong> ${escapeHtml(note)}</div>`
+        : '') +
+      infoTable([
+        infoRow('Ticket',     escapeHtml(ticketId || '—')),
+        infoRow('Status',     escapeHtml(status || '—')),
+        infoRow('Priority',   escapeHtml(priority || '—')),
+        infoRow('Due date',   escapeHtml(dueAt || '—')),
+        infoRow('Department', escapeHtml(dept || '—')),
+      ]) +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">Please open the ticket and post a quick comment with the latest status. The requester will see your reply right in the ticket activity.</p>`,
+    ctaText: 'Open ticket and reply',
+    ctaHref: ticketId ? ticketUrl(ticketId) : APP_URL,
+    footerNote: `You're receiving this because you're assigned to ${ticketId || 'this ticket'}.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module exports
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = {
@@ -1226,6 +1261,7 @@ module.exports = {
   sendOverdueDigestEmail,
   sendTicketReminderEmail,
   sendPersonalReminderEmail,
+  sendUpdateRequestedEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
   // Account

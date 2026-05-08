@@ -74,6 +74,7 @@ const {
   sendDeadlineApproachingEmail, sendEventCancelledEmail,
   sendTicketReminderEmail,
   sendPersonalReminderEmail,
+  sendUpdateRequestedEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
 } = require('./email');
@@ -1136,6 +1137,103 @@ app.delete('/api/reminders/:id', requireAuth, async (req, res) => {
     // Only the user who set the reminder can delete it.
     await run('DELETE FROM ticket_reminders WHERE id=? AND user_id=?', Number(req.params.id), req.session.userId);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Request update on a ticket ─────────────────────────────────────────────
+// Anyone with access to a ticket can ping its assignees to ask for a status
+// update. Each assignee gets an email + bell notification + push (if their
+// PWA is subscribed). Requester is excluded from the recipient list — no
+// point emailing yourself. Optional `note` is a free-text line included in
+// the email.
+//
+// Cooldown: per-(requester, ticket) 5-minute throttle so an impatient mash
+// doesn't spam the team. Tracked in-memory — if the server restarts the
+// throttle resets, which is fine for a soft anti-spam guard.
+const _UPDATE_REQUEST_COOLDOWN_MS = 5 * 60 * 1000;
+const _updateRequestLastSent = new Map(); // key: `${userId}:${ticketId}` → epoch ms
+app.post('/api/tickets/:id/request-update', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const ticketId = req.params.id;
+    const requester = await getUser(req.session.userId);
+    if (!requester) return res.status(401).json({ error: 'Not signed in' });
+    const cooldownKey = `${requester.id}:${ticketId}`;
+    const last = _updateRequestLastSent.get(cooldownKey);
+    if (last && Date.now() - last < _UPDATE_REQUEST_COOLDOWN_MS) {
+      const waitSecs = Math.ceil((_UPDATE_REQUEST_COOLDOWN_MS - (Date.now() - last)) / 1000);
+      return res.status(429).json({ error: `Please wait ${Math.ceil(waitSecs/60)} more minute(s) before asking for another update on this ticket.` });
+    }
+    const note = String(req.body?.note || '').trim().slice(0, 500);
+    const t = await get('SELECT * FROM tickets WHERE id=?', ticketId);
+    if (!t) return res.status(404).json({ error: 'Ticket not found' });
+    // Build the recipient set: every distinct user assigned to this ticket
+    // (multi-assignee table is the source of truth, but legacy `assignee`
+    // single-name field still exists on some old tickets). Skip the
+    // requester — there's no value emailing yourself.
+    const assigneeRows = await all(
+      `SELECT DISTINCT COALESCE(ta.user_id, u2.id) AS user_id, COALESCE(u1.name, ta.user_name) AS user_name
+         FROM ticket_assignees ta
+         LEFT JOIN users u1 ON u1.id = ta.user_id
+         LEFT JOIN users u2 ON u2.name = ta.user_name
+        WHERE ta.ticket_id = ?`,
+      ticketId
+    );
+    // Legacy single-assignee fallback: include t.assignee if multi-assignee
+    // table is empty (very old tickets).
+    if (!assigneeRows.length && t.assignee) {
+      const u = await get('SELECT id,name FROM users WHERE name=?', t.assignee);
+      if (u) assigneeRows.push({ user_id: u.id, user_name: u.name });
+    }
+    const recipientIds = new Set();
+    for (const r of assigneeRows) {
+      if (r.user_id && r.user_id !== requester.id) recipientIds.add(r.user_id);
+    }
+    if (!recipientIds.size) {
+      return res.status(400).json({ error: 'Nobody is assigned to this ticket — assign someone before requesting an update.' });
+    }
+    const recipientUsers = await all(
+      `SELECT id,name,email FROM users WHERE id IN (${Array.from(recipientIds).map(() => '?').join(',')})`,
+      ...Array.from(recipientIds)
+    );
+    // Fan out: bell notification, email, push. Each independently best-
+    // effort so one failed channel doesn't block the others.
+    const notifiedNames = [];
+    for (const u of recipientUsers) {
+      try {
+        await run(
+          'INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+          u.id, 'update-requested', '📩',
+          `${requester.name || 'Someone'} requested an update on ${ticketId}${t.title ? ' — ' + t.title : ''}`,
+          ticketId
+        );
+      } catch (e) { console.warn('[update-request] notification insert failed for', u.id, e.message); }
+      fireEmail('update-requested', () => sendUpdateRequestedEmail({
+        toEmail: u.email, toName: u.name,
+        requesterName: requester.name || 'A teammate',
+        ticketId, title: t.title || '',
+        status: t.status || '', priority: t.priority || '',
+        dueAt: t.due || '', dept: t.dept || '',
+        note,
+      }));
+      sendPushToUser(u.id, {
+        title: `Update requested on ${ticketId}`,
+        body:  `${requester.name || 'A teammate'} is asking for an update`,
+        tag:   'update-request-' + ticketId,
+        url:   '/tickets/' + ticketId,
+      }).catch(() => {});
+      notifiedNames.push(u.name);
+    }
+    // Activity timeline entry — visible to anyone viewing the ticket detail.
+    try {
+      await run(
+        'INSERT INTO ticket_timelines (ticket_id,dot,text,sub) VALUES (?,?,?,?)',
+        ticketId, 'var(--accent)',
+        `${requester.name || 'Someone'} requested an update${note ? ': ' + note : ''}`,
+        'Just now'
+      );
+    } catch (e) { console.warn('[update-request] timeline insert failed:', e.message); }
+    _updateRequestLastSent.set(cooldownKey, Date.now());
+    res.json({ ok: true, notified: notifiedNames });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

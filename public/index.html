@@ -2802,6 +2802,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
               Remind me
             </button>
+            <button class="td-action-btn" id="request-update-trigger" onclick="requestUpdateOnCurrentTicket()" title="Email the assignees and ask for an update on this ticket">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h.01M12 10h.01M15 10h.01"/></svg>
+              Request update
+            </button>
             <button class="td-action-btn" id="assign-trigger" onclick="openHeaderActionMenu('assign', this)" title="Assign ticket">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m22 11-3 3-2-2"/></svg>
               Assign
@@ -14455,6 +14459,57 @@ function closeDailyRemindersPopup() {
     apiPost('/api/my-reminders/' + id + '/seen-today', {}).catch(() => {});
   }
   _DAILY_POPUP_SHOWN_REMINDER_IDS = [];
+}
+
+// ── Request update on current ticket ───────────────────────────────────────
+// Pings every assignee with an email + bell notification + push, asking
+// them for a status update. Optional one-line note included in the email.
+// Server enforces a 5-minute per-(user, ticket) cooldown to prevent spam.
+async function requestUpdateOnCurrentTicket() {
+  const tid = (typeof currentTicketId !== 'undefined') ? currentTicketId : null;
+  if (!tid) return;
+  const note = prompt(
+    'Ask the assignees for an update on this ticket.\n\n' +
+    'Optional note (will appear in the email — leave blank to just ask):',
+    ''
+  );
+  // prompt() returns null when the user clicks Cancel — bail without
+  // sending. An empty string means "send with no note", which is fine.
+  if (note === null) return;
+  const btn = document.getElementById('request-update-trigger');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(tid) + '/request-update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: note || '' }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      alert(data.error || 'Could not send update request.');
+      return;
+    }
+    const names = (data.notified || []).join(', ');
+    if (typeof settingsToast === 'function') {
+      settingsToast(names ? `Asked for update from ${names}` : 'Update request sent');
+    } else {
+      alert(names ? `Asked ${names} for an update.` : 'Update request sent.');
+    }
+    // Refresh the timeline panel — the server logged a "requested an update"
+    // entry that the user will want to see immediately.
+    if (typeof renderTimeline === 'function') {
+      try {
+        const fresh = await apiGet('/api/tickets/' + encodeURIComponent(tid) + '/timeline');
+        if (Array.isArray(fresh)) {
+          TICKET_TIMELINES[tid] = fresh.map(x => ({ dot: x.dot, text: x.text, sub: x.sub }));
+          renderTimeline();
+        }
+      } catch {}
+    }
+  } catch (e) {
+    alert('Could not send update request: ' + (e?.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  }
 }
 
 // Used by the reminder-card "ticket pill" — open the linked ticket detail.
