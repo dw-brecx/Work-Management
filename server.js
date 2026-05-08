@@ -1204,7 +1204,7 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
 
 app.delete('/api/tickets/:id/comments/:commentId', requireAuth, requireTicketAccess, async (req, res) => {
   try {
-    const comment = await get('SELECT id, author_user_id FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
+    const comment = await get('SELECT id, author_user_id, text FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
     if (!comment) return res.status(404).json({ error:'Comment not found' });
     // Only the original author or an admin/manager can delete a comment.
     // Without this gate any teammate with ticket access could erase
@@ -1213,18 +1213,48 @@ app.delete('/api/tickets/:id/comments/:commentId', requireAuth, requireTicketAcc
     const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
     const isAuthor = comment.author_user_id && comment.author_user_id === req.session.userId;
     if (!isAdmin && !isAuthor) return res.status(403).json({ error: 'Only the author or an admin can delete this comment.' });
-    // Drop any attached files alongside the comment row so we don't keep
-    // orphaned uploads (incl. voice notes / screen recordings posted as
-    // VOICENOTE:: / SCREENRECORD:: comments — those store the file on
-    // disk, the comment text only carries the URL).
-    const orphans = await all('SELECT id, filename FROM attachments WHERE comment_id=?', req.params.commentId);
-    for (const a of orphans) {
-      try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {}
+
+    // Cascade-delete any attachment owned by this comment. Two flavours:
+    //   1. Direct rows: attachments.comment_id = this comment id (rare —
+    //      attachments uploaded as part of the comment send flow get
+    //      tagged this way only when the client passes commentId).
+    //   2. Voice notes / screen recordings posted as VOICENOTE::<url> /
+    //      SCREENRECORD::<url> comments. The attachment was uploaded
+    //      *before* the comment existed, so comment_id is NULL. Match
+    //      it by URL → filename → row instead.
+    const orphanIds = new Set();
+    const orphanFiles = [];
+    const direct = await all('SELECT id, filename FROM attachments WHERE comment_id=?', req.params.commentId);
+    for (const a of direct) { orphanIds.add(a.id); orphanFiles.push(a.filename); }
+
+    const t = String(comment.text || '');
+    const m = t.match(/^(?:VOICENOTE|SCREENRECORD)::(\S+)/);
+    if (m) {
+      // The stored URL is /uploads/<filename> — strip everything up to and
+      // including the last slash to get the on-disk filename.
+      const urlPath = m[1];
+      const filename = urlPath.split('/').filter(Boolean).pop();
+      if (filename) {
+        const linked = await all(
+          'SELECT id, filename FROM attachments WHERE filename=? AND ticket_id=?',
+          filename, req.params.id
+        );
+        for (const a of linked) { orphanIds.add(a.id); orphanFiles.push(a.filename); }
+      }
     }
-    if (orphans.length) await run('DELETE FROM attachments WHERE comment_id=?', req.params.commentId);
+
+    for (const f of orphanFiles) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, f)); } catch {}
+    }
+    if (orphanIds.size) {
+      const ids = Array.from(orphanIds);
+      const placeholders = ids.map((_, i) => '$' + (i + 1)).join(',');
+      await run(`DELETE FROM attachments WHERE id IN (${placeholders})`, ...ids);
+    }
+
     await run('DELETE FROM ticket_comments WHERE id=?', req.params.commentId);
     await run('UPDATE tickets SET comments_count=GREATEST(0,comments_count-1) WHERE id=?', req.params.id);
-    res.json({ ok:true });
+    res.json({ ok:true, removedAttachments: orphanIds.size });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

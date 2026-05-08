@@ -936,6 +936,22 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .td-comment-time{font-size:10px;color:var(--text3)}
   .td-comment-body{font-size:11.5px;color:var(--text);line-height:1.5;white-space:pre-wrap;word-break:break-word}
   .td-comment-body .mention{color:var(--accent);font-weight:600;background:transparent;padding:0;border-radius:0}
+  /* Comment row actions (Reply / Delete) — small ghost buttons that hover
+     to a soft tinted background. Clear hierarchy with primary tint for
+     Reply and red tint for Delete. */
+  .cmt-actions{display:flex;align-items:center;gap:4px;margin-top:7px}
+  .cmt-action{
+    display:inline-flex;align-items:center;gap:5px;
+    padding:4px 9px;border-radius:7px;
+    font-size:11px;font-weight:500;line-height:1;
+    background:transparent;border:0;cursor:pointer;
+    color:var(--text2);font-family:inherit;
+    transition:background .12s,color .12s;
+  }
+  .cmt-action svg{flex-shrink:0;opacity:.85}
+  .cmt-action:hover{background:#eef2ff;color:var(--accent)}
+  .cmt-action-danger{color:#9ca3af}
+  .cmt-action-danger:hover{background:#fef2f2;color:#dc2626}
 
   /* PLAN DETAIL PAGE */
   .pd-grid{display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start}
@@ -7374,6 +7390,18 @@ function renderComments() {
         (typeof isCurrentUserAdmin === 'function' && isCurrentUserAdmin())
         || (me.name && c.author && me.name === c.author)
       );
+      const replyBtn = c.id
+        ? `<button type="button" class="cmt-action" onclick="openReplyForm(${c.id})">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+             <span>Reply</span>
+           </button>`
+        : '';
+      const delBtn = canDelete
+        ? `<button type="button" class="cmt-action cmt-action-danger" onclick="deleteCommentFromUI(${c.id})">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+             <span>Delete</span>
+           </button>`
+        : '';
       return `
         <div class="td-comment-item" style="${isReply ? 'margin-left:36px;margin-top:6px' : ''}">
           <div class="avatar" style="background:${c.bg};color:${c.col}">${c.init}</div>
@@ -7383,10 +7411,7 @@ function renderComments() {
               <span class="td-comment-time">${escapeHtml(c.time)}</span>
             </div>
             <div class="td-comment-body">${formatCommentText(c.text)}</div>
-            <div style="margin-top:5px;display:flex;gap:12px;align-items:center">
-              ${c.id ? `<a onclick="openReplyForm(${c.id})" style="font-size:10.5px;color:var(--accent);cursor:pointer">↩ Reply</a>` : ''}
-              ${canDelete ? `<a onclick="deleteCommentFromUI(${c.id})" style="font-size:10.5px;color:var(--red);cursor:pointer">🗑 Delete</a>` : ''}
-            </div>
+            ${(replyBtn || delBtn) ? `<div class="cmt-actions">${replyBtn}${delBtn}</div>` : ''}
             ${replyForm}
             ${replies.map(r => renderOne(r, true)).join('')}
           </div>
@@ -12641,12 +12666,25 @@ function watchTicketDetailPanel() {
   if (typeof _orig === 'function') {
     window.openTicketDetail = function(id, ...args) {
       window.currentDetailTicketId = id;
+      // Clear stale data BEFORE the synchronous render so we don't briefly
+      // show the previous ticket's comments / attachments while the new
+      // ones are being fetched. The fetches below will refill localComments
+      // and re-call renderComments as soon as the server responds.
+      try {
+        localComments.length = 0;
+        if (typeof renderComments === 'function') renderComments();
+        const attPanel = document.getElementById('det-panel-attachments');
+        if (attPanel) attPanel.innerHTML = '<div style="text-align:center;padding:18px;color:var(--text3);font-size:11.5px">Loading attachments…</div>';
+      } catch {}
       const r = _orig.call(this, id, ...args);
-      injectAttachmentsWhenReady(id);
       // Project-aware additions: banner up top (Convert / Disconnect /
       // Sub-ticket parent link) and the Sub-tickets section underneath.
       try { if (typeof renderTicketDetailProjectBanner === 'function') renderTicketDetailProjectBanner(id); } catch {}
       try { if (typeof renderProjectSubticketsSection === 'function') renderProjectSubticketsSection(id); } catch {}
+      // Load attachments directly — no DOM polling. The det-panel-attachments
+      // div lives in the static HTML so it's always in the DOM by the time
+      // openTicketDetail runs.
+      if (typeof loadTicketAttachments === 'function') loadTicketAttachments(id);
       // Pull the saved description + checklist from the server so reopening a
       // ticket shows what was actually persisted (not just whatever's in the
       // in-memory TICKET_DETAILS cache from the optimistic create).
@@ -12664,6 +12702,9 @@ function watchTicketDetailPanel() {
       // Load real comments from API (replaces empty localComments from template)
       apiGet('/api/tickets/' + id + '/comments').then(function(cmts) {
         if (!Array.isArray(cmts)) return;
+        // Guard against a fast-clicker switching to another ticket before
+        // this fetch resolves — if so, ignore the stale response.
+        if (window.currentDetailTicketId !== id) return;
         localComments.length = 0;
         cmts.forEach(function(c) { localComments.push(c); });
         if (typeof renderComments === 'function') renderComments();
@@ -12678,17 +12719,11 @@ function watchTicketDetailPanel() {
   }
 }
 
+// Kept as a thin alias for legacy callers (some code paths still call this
+// after an upload to refresh the panel). The polling-and-waiting variant is
+// gone — loadTicketAttachments is safe to call directly.
 function injectAttachmentsWhenReady(ticketId) {
-  let attempts = 0;
-  const interval = setInterval(async () => {
-    attempts++;
-    const panel = document.getElementById('det-panel-attachments');
-    if (panel && (document.querySelector('.right-panel')?.textContent.includes(ticketId) || attempts > 8)) {
-      clearInterval(interval);
-      await loadTicketAttachments(ticketId);
-    }
-    if (attempts > 15) clearInterval(interval);
-  }, 250);
+  if (typeof loadTicketAttachments === 'function') loadTicketAttachments(ticketId);
 }
 
 // ── Comment section: direct wire-up ─────────────────────────────────────────
