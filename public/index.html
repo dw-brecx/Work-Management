@@ -13665,7 +13665,7 @@ function renderFeedbackFeed() {
           <span style="font-size:11px;color:var(--text3);margin-left:auto">${_esc(it.createdBy?.name || '')}${it.createdBy?.name?' · ':''}${_esc(it.createdAt || '')}</span>
         </div>
         <div style="font-size:13.5px;font-weight:600;margin-bottom:4px;cursor:pointer" onclick="toggleFeedbackExpanded(${it.id})">${_esc(it.title || '(no title)')}</div>
-        ${it.description ? `<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap">${_esc(it.description)}</div>` : ''}
+        ${it.description ? `<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap">${typeof _linkifyTicketRefs === 'function' ? _linkifyTicketRefs(_esc(it.description)) : _esc(it.description)}</div>` : ''}
         ${attHtml}
         <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
           <button onclick="toggleFeedbackExpanded(${it.id})" style="font-size:11px;background:none;border:0;color:var(--accent);cursor:pointer;padding:0">${expanded?'Hide':'View'} replies (${cmtCount})</button>
@@ -13703,6 +13703,33 @@ async function loadAndShowFeedbackDetail(id) {
   }
 }
 
+// Auto-link any TKT-#### substring inside text to the corresponding ticket
+// detail. Used in feedback comments + descriptions so when someone types
+// "see TKT-1042" the id becomes a clickable link.
+function _linkifyTicketRefs(escapedText) {
+  return String(escapedText || '').replace(/(TKT-\d+)/g, (m) =>
+    `<a onclick="openTicketDetail('${m}')" style="color:var(--accent);font-weight:500;cursor:pointer;text-decoration:underline">${m}</a>`
+  );
+}
+
+// Render a single feedback comment's body. Voice notes / screen recordings
+// posted as VOICENOTE::URL / SCREENRECORD::URL are turned into inline media
+// players (mirroring the ticket-comment behavior). Plain text gets escaped
+// and ticket refs are auto-linked.
+function _renderFeedbackCommentBody(text) {
+  const t = String(text || '');
+  if (t.startsWith('VOICENOTE::')) {
+    const safe = _esc(t.slice(11));
+    return '<audio controls preload="metadata" src="'+safe+'" style="display:block;height:32px;width:100%;max-width:340px"></audio>';
+  }
+  if (t.startsWith('SCREENRECORD::')) {
+    const safe = _esc(t.slice(14));
+    return '<video controls playsinline preload="metadata" src="'+safe+'" style="display:block;width:100%;max-width:480px;max-height:280px;border-radius:6px;background:#000"></video>';
+  }
+  // Plain text: escape, then turn TKT-XXXX into clickable links.
+  return _linkifyTicketRefs(_esc(t));
+}
+
 function renderFeedbackDetailHtml(item) {
   const isAdmin = isCurrentUserAdmin();
   const comments = (item.comments || []).map(c => {
@@ -13710,7 +13737,7 @@ function renderFeedbackDetailHtml(item) {
     const adminTag = isAdminAuthor ? ' <span style="background:#ede9fe;color:#7c3aed;padding:1px 6px;border-radius:8px;font-size:9.5px;font-weight:600;letter-spacing:.04em">ADMIN</span>' : '';
     return `<div style="padding:8px 10px;background:#fafbff;border-radius:6px;margin-bottom:6px">
       <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${_esc(c.author?.name || '')}${adminTag} · ${_esc(c.createdAt || '')}</div>
-      <div style="font-size:12.5px;white-space:pre-wrap">${_esc(c.text || '')}</div>
+      <div style="font-size:12.5px;white-space:pre-wrap;line-height:1.55">${_renderFeedbackCommentBody(c.text)}</div>
     </div>`;
   }).join('') || '<div style="color:var(--text3);font-size:11px;margin-bottom:8px">No replies yet.</div>';
   const adminControls = isAdmin ? `
@@ -13724,24 +13751,78 @@ function renderFeedbackDetailHtml(item) {
     </div>` : '';
   return adminControls + comments + `
     <div style="margin-top:8px">
-      <textarea data-fb-reply-text="${item.id}" placeholder="Write a reply…" rows="2" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
+      <textarea data-fb-reply-text="${item.id}" placeholder="Write a reply…  Tip: type TKT-1234 to link a ticket." rows="2" style="width:100%;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
+      <div style="margin-top:6px">
+        <label style="font-size:10.5px;color:var(--text3);display:block;margin-bottom:3px">Reference ticket <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+        <input data-fb-reply-tref="${item.id}" type="text" placeholder="TKT-1234" style="width:140px;padding:5px 8px;font-size:11.5px;border:1px solid var(--border);border-radius:4px"/>
+      </div>
+      <div data-fb-reply-composer-mount="${item.id}" style="margin-top:8px"></div>
       <div style="display:flex;justify-content:flex-end;margin-top:6px">
         <button data-fb-reply-submit="${item.id}" class="btn-primary" style="font-size:11.5px;padding:5px 12px">Reply</button>
       </div>
     </div>`;
 }
 
+// Per-feedback composer instances live here so we can wipe them when the
+// detail panel re-renders (which happens on every reply submit).
+const _fbReplyComposers = {};
+
 function wireFeedbackDetailHandlers(root, item) {
   const submitBtn = root.querySelector('[data-fb-reply-submit="'+item.id+'"]');
+  // Mount the media composer (Voice / Screen / File / paste) into the
+  // reply form so users can attach files + voice notes + screen
+  // recordings to a feedback reply, just like in ticket comments.
+  const mount = root.querySelector('[data-fb-reply-composer-mount="'+item.id+'"]');
+  if (mount && typeof createMediaComposer === 'function' && !mount.dataset.mounted) {
+    mount.dataset.mounted = '1';
+    _fbReplyComposers[item.id] = createMediaComposer(mount);
+  }
   if (submitBtn) {
     submitBtn.addEventListener('click', async () => {
       const ta = root.querySelector('[data-fb-reply-text="'+item.id+'"]');
-      const text = ta?.value.trim();
-      if (!text) return;
+      const trefEl = root.querySelector('[data-fb-reply-tref="'+item.id+'"]');
+      let text = ta?.value.trim() || '';
+      const trefRaw = (trefEl?.value || '').trim();
+      // Normalize ticket reference. Accept "1234" / "TKT-1234" / "tkt 1234"
+      // — anything that has a number gets coerced to TKT-#### and appended
+      // to the reply body. _renderFeedbackCommentBody linkifies it on display.
+      let trefId = '';
+      const m = trefRaw.match(/(\d+)/);
+      if (m) trefId = 'TKT-' + m[1];
+      if (trefId) text = (text ? text + '\n\n' : '') + 'Ref: ' + trefId;
+
+      const composer = _fbReplyComposers[item.id];
+      const mediaFiles = composer ? composer.getFiles() : [];
+      if (!text && !mediaFiles.length) {
+        alert('Type a reply or attach media before sending.');
+        return;
+      }
       submitBtn.disabled = true;
       try {
-        await apiPost('/api/feedback/'+item.id+'/comments', { text });
-        ta.value = '';
+        // 1. Post the text reply (if any) so the opener gets one
+        //    notification email with readable content.
+        if (text) await apiPost('/api/feedback/'+item.id+'/comments', { text });
+        // 2. Upload each media file against this feedback. Voice notes and
+        //    screen recordings additionally get a marker comment with the
+        //    URL so they render inline in the thread; non-media files just
+        //    sit on the feedback's attachments strip.
+        if (composer && mediaFiles.length) {
+          const results = await composer.uploadAll({ feedbackId: item.id });
+          for (const r of results) {
+            if (!r.ok || !r.response || !r.response.url) continue;
+            const f = r.file;
+            const url = r.response.url;
+            if (f.type && f.type.startsWith('audio/')) {
+              try { await apiPost('/api/feedback/'+item.id+'/comments', { text: 'VOICENOTE::' + url }); } catch {}
+            } else if (f.type && f.type.startsWith('video/')) {
+              try { await apiPost('/api/feedback/'+item.id+'/comments', { text: 'SCREENRECORD::' + url }); } catch {}
+            }
+          }
+          composer.reset();
+        }
+        if (ta) ta.value = '';
+        if (trefEl) trefEl.value = '';
+        delete _fbReplyComposers[item.id];
         await loadAndShowFeedbackDetail(item.id);
         loadFeedbackFeed();
       } catch (e) { alert('Reply failed: '+(e?.message||e)); }

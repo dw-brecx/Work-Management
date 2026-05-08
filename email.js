@@ -1077,6 +1077,60 @@ async function sendOverdueDigestEmail({ toEmail, toName, items }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FEEDBACK — reply / status change notifications to the original opener
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendFeedbackReplyEmail({
+  toEmail, toName, feedbackId, kind, title, replyAuthor, replyText,
+}) {
+  if (!toEmail) return { skipped: true };
+  const subject = `New reply on your feedback: ${title || ('#' + feedbackId)}`;
+  const html = shell({
+    name: 'Feedback reply', subject,
+    preheader: `${replyAuthor || 'Someone'} replied to your ${kind || 'feedback'}.`,
+    headerEyebrow: 'Feedback reply',
+    headerEmoji: '💬',
+    headerTitle: `${escapeHtml(replyAuthor || 'Someone')} replied`,
+    headerSub: title ? escapeHtml(title) : '',
+    body:
+      `<div style="margin:0 0 18px;padding:14px 16px;background:#fafbff;border:1px solid #e2e8f0;border-radius:10px;color:#0f172a;font-size:13px;line-height:1.55">${escapeHtml((replyText || '').slice(0, 400))}${(replyText || '').length > 400 ? '…' : ''}</div>` +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">Open the feedback to read the full reply, add another, or change its status.</p>`,
+    ctaText: 'Open feedback',
+    ctaHref: `${APP_URL}/feedback`,
+    footerNote: `You're getting this because you opened this feedback item.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
+async function sendFeedbackStatusChangedEmail({
+  toEmail, toName, feedbackId, kind, title, prevStatus, newStatus, changedBy,
+}) {
+  if (!toEmail) return { skipped: true };
+  const STATUS_LABEL = { open: 'Open', planned: 'Planned', in_progress: 'In Progress', done: 'Done', dismissed: 'Dismissed' };
+  const prevLbl = STATUS_LABEL[String(prevStatus || '').toLowerCase()] || (prevStatus || '—');
+  const newLbl  = STATUS_LABEL[String(newStatus || '').toLowerCase()]  || (newStatus  || '—');
+  const subject = `Feedback status updated: ${title || ('#' + feedbackId)} → ${newLbl}`;
+  const html = shell({
+    name: 'Feedback status', subject,
+    preheader: `${changedBy || 'An admin'} marked your ${kind || 'feedback'} as ${newLbl}.`,
+    headerEyebrow: 'Status update',
+    headerEmoji: '📌',
+    headerTitle: `Marked as ${escapeHtml(newLbl)}`,
+    headerSub: title ? escapeHtml(title) : '',
+    body:
+      infoTable([
+        infoRow('Previous status', escapeHtml(prevLbl)),
+        infoRow('New status',      escapeHtml(newLbl)),
+        infoRow('Changed by',      escapeHtml(changedBy || '—')),
+      ]) +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">Open the feedback to see the latest replies.</p>`,
+    ctaText: 'Open feedback',
+    ctaHref: `${APP_URL}/feedback`,
+    footerNote: `You're getting this because you opened this feedback item.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 18. TICKET REMINDER (user-set self-reminder on a ticket)
 // ─────────────────────────────────────────────────────────────────────────────
 async function sendTicketReminderEmail({
@@ -1128,6 +1182,8 @@ module.exports = {
   sendTicketClosedEmail,
   sendOverdueDigestEmail,
   sendTicketReminderEmail,
+  sendFeedbackReplyEmail,
+  sendFeedbackStatusChangedEmail,
   // Account
   sendInviteEmail,
   sendActivateAccountEmail,

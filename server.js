@@ -73,6 +73,8 @@ const {
   sendMeetingInviteEmail, sendMeetingReminderEmail, sendTaskAssignedEmail,
   sendDeadlineApproachingEmail, sendEventCancelledEmail,
   sendTicketReminderEmail,
+  sendFeedbackReplyEmail,
+  sendFeedbackStatusChangedEmail,
 } = require('./email');
 
 // ── Email helpers ────────────────────────────────────────────────────────────
@@ -1716,7 +1718,15 @@ app.get('/api/feedback/:id', requireAuth, async (req, res) => {
 
 app.patch('/api/feedback/:id', requireAdmin, async (req, res) => {
   try {
+    const id = Number(req.params.id);
     const { status, kind, title, description } = req.body || {};
+    // Snapshot before-state so we can email on a meaningful status change.
+    const before = await get(
+      `SELECT f.*, u.email AS creator_email, u.name AS creator_name
+         FROM feedback_items f
+         LEFT JOIN users u ON u.id = f.created_by_user_id
+        WHERE f.id = ?`, id
+    );
     const u = []; const v = [];
     if (status !== undefined && FEEDBACK_STATUSES.has(String(status).toLowerCase())) {
       u.push('status=?'); v.push(String(status).toLowerCase());
@@ -1728,8 +1738,19 @@ app.patch('/api/feedback/:id', requireAdmin, async (req, res) => {
     if (description !== undefined) { u.push('description=?'); v.push(String(description || '').trim()); }
     if (!u.length) return res.json({ ok: true });
     u.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
-    v.push(Number(req.params.id));
+    v.push(id);
     await run(`UPDATE feedback_items SET ${u.join(',')} WHERE id=?`, ...v);
+    // Email the original opener when status flipped to something else.
+    if (before && status !== undefined && before.status !== String(status).toLowerCase()
+        && before.creator_email && before.created_by_user_id !== req.session.userId) {
+      const me = await getUser(req.session.userId);
+      fireEmail('feedback-status', () => sendFeedbackStatusChangedEmail({
+        toEmail: before.creator_email, toName: before.creator_name,
+        feedbackId: id, kind: before.kind, title: before.title || '',
+        prevStatus: before.status, newStatus: String(status).toLowerCase(),
+        changedBy: me?.name || 'An admin',
+      }));
+    }
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1759,13 +1780,31 @@ app.post('/api/feedback/:id/comments', requireAuth, async (req, res) => {
     const { text } = req.body || {};
     const t = String(text || '').trim();
     if (!t) return res.status(400).json({ error: 'Empty comment' });
-    const exists = await get('SELECT id FROM feedback_items WHERE id=?', id);
-    if (!exists) return res.status(404).json({ error: 'Not found' });
+    const fb = await get(
+      `SELECT f.*, u.email AS creator_email, u.name AS creator_name
+         FROM feedback_items f
+         LEFT JOIN users u ON u.id = f.created_by_user_id
+        WHERE f.id = ?`, id
+    );
+    if (!fb) return res.status(404).json({ error: 'Not found' });
     const info = await run(
       `INSERT INTO feedback_comments (feedback_id, author_user_id, text) VALUES (?,?,?) RETURNING id`,
       id, req.session.userId, t
     );
     await run(`UPDATE feedback_items SET updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`, id);
+    // Notify the opener when someone other than them replies. We skip
+    // VOICENOTE::/SCREENRECORD:: marker comments so the user gets a
+    // meaningful subject line — the media itself is included via the
+    // attached file, and a separate text comment usually accompanies it.
+    const isMarkerOnly = /^(VOICENOTE|SCREENRECORD)::\S+\s*$/.test(t);
+    if (!isMarkerOnly && fb.creator_email && fb.created_by_user_id !== req.session.userId) {
+      const me = await getUser(req.session.userId);
+      fireEmail('feedback-reply', () => sendFeedbackReplyEmail({
+        toEmail: fb.creator_email, toName: fb.creator_name,
+        feedbackId: id, kind: fb.kind, title: fb.title || '',
+        replyAuthor: me?.name || 'Someone', replyText: t,
+      }));
+    }
     res.status(201).json({ id: Number(info.lastInsertRowid), text: t });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
