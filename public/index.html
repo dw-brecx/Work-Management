@@ -3321,7 +3321,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <!-- ========== PROJECTS (admin-only — list of promoted parent tickets) ========== -->
     <div id="page-projects" class="page">
       <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Projects</h1>
-      <p style="color:var(--text2);font-size:12px;margin-bottom:18px">Tickets promoted to projects with all their sub-tickets. End users see each sub-ticket in their My Tickets.</p>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Tickets promoted to projects with all their sub-tickets. End users see each sub-ticket in their My Tickets.</p>
+      <!-- Filter strip: Open / Closed / All. A project counts as "closed"
+           once every sub-ticket under it is Closed or Archived. -->
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <button class="proj-filter-btn active" data-filter="open" onclick="setProjectsFilter('open')" style="font-size:11.5px;padding:6px 14px;border-radius:14px;border:1px solid var(--border);background:var(--accent);color:#fff;cursor:pointer;font-weight:500">Open</button>
+        <button class="proj-filter-btn" data-filter="closed" onclick="setProjectsFilter('closed')" style="font-size:11.5px;padding:6px 14px;border-radius:14px;border:1px solid var(--border);background:#fff;cursor:pointer;font-weight:500">Closed</button>
+        <button class="proj-filter-btn" data-filter="all" onclick="setProjectsFilter('all')" style="font-size:11.5px;padding:6px 14px;border-radius:14px;border:1px solid var(--border);background:#fff;cursor:pointer;font-weight:500">All</button>
+      </div>
       <div id="projects-list" style="display:flex;flex-direction:column;gap:12px;max-width:920px"></div>
       <div id="projects-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No projects yet. Open a ticket and click <b>Convert to Project</b> to get started.</div>
     </div>
@@ -7359,6 +7366,14 @@ function renderComments() {
             <button onclick="submitReply(${c.id})" class="btn-primary" style="font-size:11px;padding:5px 12px">Reply</button>
           </div>
         </div>`;
+      // Show a Delete link only when the current user authored the comment
+      // OR is an Admin/Manager. The server enforces the same gate; this is
+      // just for not showing the button to people who can't use it.
+      const me = window.CURRENT_USER || {};
+      const canDelete = !!c.id && (
+        (typeof isCurrentUserAdmin === 'function' && isCurrentUserAdmin())
+        || (me.name && c.author && me.name === c.author)
+      );
       return `
         <div class="td-comment-item" style="${isReply ? 'margin-left:36px;margin-top:6px' : ''}">
           <div class="avatar" style="background:${c.bg};color:${c.col}">${c.init}</div>
@@ -7368,7 +7383,10 @@ function renderComments() {
               <span class="td-comment-time">${escapeHtml(c.time)}</span>
             </div>
             <div class="td-comment-body">${formatCommentText(c.text)}</div>
-            ${c.id ? `<div style="margin-top:5px"><a onclick="openReplyForm(${c.id})" style="font-size:10.5px;color:var(--accent);cursor:pointer">↩ Reply</a></div>` : ''}
+            <div style="margin-top:5px;display:flex;gap:12px;align-items:center">
+              ${c.id ? `<a onclick="openReplyForm(${c.id})" style="font-size:10.5px;color:var(--accent);cursor:pointer">↩ Reply</a>` : ''}
+              ${canDelete ? `<a onclick="deleteCommentFromUI(${c.id})" style="font-size:10.5px;color:var(--red);cursor:pointer">🗑 Delete</a>` : ''}
+            </div>
             ${replyForm}
             ${replies.map(r => renderOne(r, true)).join('')}
           </div>
@@ -7380,6 +7398,60 @@ function renderComments() {
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
 }
+
+// Delete a comment (or voice note / screen recording posted as a
+// VOICENOTE:: / SCREENRECORD:: comment). Server-side gate ensures only
+// the author or an admin can actually delete; the UI hides the link
+// from non-eligible viewers as a courtesy.
+window.deleteCommentFromUI = async function(commentId) {
+  if (!commentId) return;
+  if (!confirm('Delete this comment? This cannot be undone.')) return;
+  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+  const tid = (t && t.id) || window.currentDetailTicketId;
+  if (!tid) return;
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(tid) + '/comments/' + commentId, { method: 'DELETE' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not delete: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    // Drop it locally + re-render. We also re-fetch the canonical list so
+    // any orphaned attachment references that the server cascade-cleaned
+    // up disappear from the right-panel media strip.
+    const idx = localComments.findIndex(c => c.id === commentId);
+    if (idx !== -1) localComments.splice(idx, 1);
+    renderComments();
+    if (typeof apiGet === 'function') {
+      apiGet('/api/tickets/' + encodeURIComponent(tid) + '/comments').then(cmts => {
+        if (Array.isArray(cmts)) {
+          localComments.length = 0;
+          cmts.forEach(c => localComments.push(c));
+          renderComments();
+        }
+      }).catch(()=>{});
+    }
+    if (typeof loadTicketAttachments === 'function') loadTicketAttachments(tid);
+  } catch (e) {
+    alert('Could not delete: ' + (e?.message || e));
+  }
+};
+
+window.deleteAttachmentFromUI = async function(attId, ticketId) {
+  if (!attId) return;
+  if (!confirm('Delete this file? This cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/attachments/' + attId, { method: 'DELETE' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not delete: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    if (ticketId && typeof loadTicketAttachments === 'function') loadTicketAttachments(ticketId);
+  } catch (e) {
+    alert('Could not delete: ' + (e?.message || e));
+  }
+};
 
 window.openReplyForm = function(parentId) {
   const f = document.getElementById('reply-form-' + parentId);
@@ -12472,12 +12544,15 @@ async function loadTicketAttachments(ticketId) {
       attPanel.innerHTML = atts.length === 0
         ? `<div style="text-align:center;padding:24px;color:var(--text3);font-size:12px">No attachments yet</div>`
         : '';
+      const myName = (window.CURRENT_USER || {}).name || '';
+      const meAdmin = typeof isCurrentUserAdmin === 'function' && isCurrentUserAdmin();
       atts.forEach(att => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg2);border-radius:8px;margin-bottom:6px;';
         const safeUrl = escapeAttr(att.url || '');
         const safeName = escapeHtml(att.originalName || '');
         const safeUploader = escapeHtml(att.uploader || '');
+        const canDelAtt = meAdmin || (myName && att.uploader === myName);
         if (att.mimeType.startsWith('audio/')) {
           row.innerHTML = `
             <div style="width:28px;height:28px;background:#ede9fe;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">🎤</div>
@@ -12508,6 +12583,20 @@ async function loadTicketAttachments(ticketId) {
               <div style="font-size:10px;color:var(--text3)">${safeUploader}</div>
             </div>
             <span style="color:var(--text3);font-size:14px">↓</span>`;
+        }
+        // Append a small Delete button to the right of the row when this
+        // user uploaded the file or is an Admin/Manager. Click goes through
+        // a confirm() prompt then calls the API and re-renders.
+        if (canDelAtt) {
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.title = 'Delete attachment';
+          del.style.cssText = 'flex-shrink:0;background:none;border:0;color:var(--red);cursor:pointer;font-size:13px;padding:4px 6px;border-radius:6px';
+          del.textContent = '🗑';
+          del.onmouseenter = () => del.style.background = '#fef2f2';
+          del.onmouseleave = () => del.style.background = '';
+          del.onclick = (e) => { e.stopPropagation(); deleteAttachmentFromUI(att.id, ticketId); };
+          row.appendChild(del);
         }
         attPanel.appendChild(row);
       });
@@ -13729,6 +13818,59 @@ window.demoteProject = async function(id) {
   } catch (e) { alert('Could not disconnect project: ' + (e?.message || e)); }
 };
 
+// Projects page filter state. A project counts as "closed" when it has
+// at least one sub-ticket and every sub-ticket is Closed/Archived. New
+// projects (no sub-tickets yet) stay in the Open bucket so they don't
+// vanish the moment they're promoted.
+let _projectsFilter = 'open'; // 'open' | 'closed' | 'all'
+let _projectsCacheEnriched = []; // last loaded list, used by re-render after filter switch
+
+window.setProjectsFilter = function(mode) {
+  _projectsFilter = mode;
+  document.querySelectorAll('.proj-filter-btn').forEach(b => {
+    const active = b.dataset.filter === mode;
+    b.classList.toggle('active', active);
+    b.style.background = active ? 'var(--accent)' : '#fff';
+    b.style.color = active ? '#fff' : '';
+  });
+  _renderFilteredProjects();
+};
+
+function _renderFilteredProjects() {
+  const wrap = document.getElementById('projects-list');
+  const empty = document.getElementById('projects-empty');
+  if (!wrap) return;
+  let list = _projectsCacheEnriched;
+  if (_projectsFilter === 'open') {
+    list = list.filter(p => !p.allChildrenClosed);
+  } else if (_projectsFilter === 'closed') {
+    list = list.filter(p => p.allChildrenClosed);
+  }
+  if (!list.length) {
+    wrap.innerHTML = '';
+    if (empty) {
+      empty.textContent = _projectsFilter === 'closed'
+        ? 'No closed projects yet. A project becomes closed once every sub-ticket under it is closed.'
+        : 'No projects yet. Open a ticket and click Convert to Project to get started.';
+      empty.style.display = 'block';
+    }
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  wrap.innerHTML = list.map(renderProjectCardHtml).join('');
+  // Sidebar count reflects ALL projects (regardless of filter), so admins
+  // see the project total at a glance from the nav.
+  const badge = document.getElementById('nav-projects-badge');
+  if (badge) {
+    if (_projectsCacheEnriched.length > 0) {
+      badge.textContent = _projectsCacheEnriched.length;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+}
+
 // Projects page renderer. Each project gets a card with its sub-tickets
 // inline, so admins can scan project status without drilling in.
 async function loadProjectsPage() {
@@ -13739,11 +13881,10 @@ async function loadProjectsPage() {
   try {
     const projects = await apiGet('/api/projects');
     if (!Array.isArray(projects) || !projects.length) {
-      wrap.innerHTML = '';
-      if (empty) empty.style.display = 'block';
+      _projectsCacheEnriched = [];
+      _renderFilteredProjects();
       return;
     }
-    if (empty) empty.style.display = 'none';
     // For each project, load its children. Parallel for snappy renders.
     const enriched = await Promise.all(projects.map(async p => {
       try {
@@ -13751,17 +13892,8 @@ async function loadProjectsPage() {
         return { ...p, children: Array.isArray(children) ? children : [] };
       } catch { return { ...p, children: [] }; }
     }));
-    wrap.innerHTML = enriched.map(renderProjectCardHtml).join('');
-    // Refresh the sidebar counter.
-    const badge = document.getElementById('nav-projects-badge');
-    if (badge) {
-      if (enriched.length > 0) {
-        badge.textContent = enriched.length;
-        badge.style.display = '';
-      } else {
-        badge.style.display = 'none';
-      }
-    }
+    _projectsCacheEnriched = enriched;
+    _renderFilteredProjects();
   } catch (e) {
     wrap.innerHTML = '<div style="color:var(--red);font-size:12px;padding:10px">Could not load projects.</div>';
   }

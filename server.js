@@ -703,11 +703,23 @@ app.get('/api/projects', requireAdmin, async (req, res) => {
   try {
     const rows = await all(`
       SELECT t.*,
-             (SELECT COUNT(*) FROM tickets c WHERE c.parent_ticket_id = t.id AND c.deleted_at IS NULL)::int AS child_count
+             (SELECT COUNT(*) FROM tickets c
+                WHERE c.parent_ticket_id = t.id AND c.deleted_at IS NULL)::int AS child_count,
+             (SELECT COUNT(*) FROM tickets c
+                WHERE c.parent_ticket_id = t.id AND c.deleted_at IS NULL
+                  AND c.status NOT IN ('Closed','Archived'))::int AS open_child_count
         FROM tickets t
        WHERE t.is_project = 1 AND t.deleted_at IS NULL
        ORDER BY t.id DESC`);
-    const out = await Promise.all(rows.map(buildTicket));
+    const out = await Promise.all(rows.map(async r => {
+      const t = await buildTicket(r);
+      // Open child count for the Projects page filter. A project counts as
+      // "done" when it has children and all of them are Closed/Archived.
+      // A project with zero children stays "open" (just created).
+      t.openChildCount = parseInt(r.open_child_count || 0, 10);
+      t.allChildrenClosed = (t.childCount > 0 && t.openChildCount === 0);
+      return t;
+    }));
     res.json(out);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1192,8 +1204,24 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
 
 app.delete('/api/tickets/:id/comments/:commentId', requireAuth, requireTicketAccess, async (req, res) => {
   try {
-    const comment = await get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
+    const comment = await get('SELECT id, author_user_id FROM ticket_comments WHERE id=? AND ticket_id=?', req.params.commentId, req.params.id);
     if (!comment) return res.status(404).json({ error:'Comment not found' });
+    // Only the original author or an admin/manager can delete a comment.
+    // Without this gate any teammate with ticket access could erase
+    // someone else's words.
+    const u = await getUser(req.session.userId);
+    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    const isAuthor = comment.author_user_id && comment.author_user_id === req.session.userId;
+    if (!isAdmin && !isAuthor) return res.status(403).json({ error: 'Only the author or an admin can delete this comment.' });
+    // Drop any attached files alongside the comment row so we don't keep
+    // orphaned uploads (incl. voice notes / screen recordings posted as
+    // VOICENOTE:: / SCREENRECORD:: comments — those store the file on
+    // disk, the comment text only carries the URL).
+    const orphans = await all('SELECT id, filename FROM attachments WHERE comment_id=?', req.params.commentId);
+    for (const a of orphans) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {}
+    }
+    if (orphans.length) await run('DELETE FROM attachments WHERE comment_id=?', req.params.commentId);
     await run('DELETE FROM ticket_comments WHERE id=?', req.params.commentId);
     await run('UPDATE tickets SET comments_count=GREATEST(0,comments_count-1) WHERE id=?', req.params.id);
     res.json({ ok:true });
@@ -2356,7 +2384,7 @@ app.get('/api/tickets/:id/attachments', requireAuth, requireTicketAccess, async 
 
 app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
   try {
-    const att = await get('SELECT filename, ticket_id, subtask_id FROM attachments WHERE id=?', req.params.id);
+    const att = await get('SELECT * FROM attachments WHERE id=?', req.params.id);
     if (!att) return res.json({ ok: true }); // already gone
     // Resolve the parent ticket id (direct or via the parent subtask) and verify access
     let ticketId = att.ticket_id;
@@ -2367,6 +2395,14 @@ app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
     if (ticketId && !await canAccessTicket(req, ticketId)) {
       return res.status(404).json({ error: 'Attachment not found' });
     }
+    // Only the uploader or an admin/manager can remove the file. We match
+    // by the legacy `uploader` (display name) since that's the only signal
+    // stored on attachments. Acceptable because a name collision wouldn't
+    // grant escalated access — they'd still be in the same workspace.
+    const u = await getUser(req.session.userId);
+    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    const isUploader = att.uploader && u && att.uploader === u.name;
+    if (!isAdmin && !isUploader) return res.status(403).json({ error: 'Only the uploader or an admin can delete this file.' });
     try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
     await run('DELETE FROM attachments WHERE id=?', req.params.id);
     res.json({ ok: true });
