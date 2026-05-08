@@ -123,6 +123,11 @@ function fireEmail(label, promiseFactory) {
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'public', 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// Boot-time visibility into where uploads actually land. If UPLOADS_DIR
+// is the default (public/uploads), files are on ephemeral storage on
+// Render and disappear every redeploy — flag that loudly so it's not a
+// silent footgun.
+console.log(`[uploads] dir = ${UPLOADS_DIR}${process.env.UPLOADS_DIR ? '' : '  (default — NOT persistent on Render!)'}`);
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
@@ -2764,6 +2769,12 @@ app.post('/api/profile/avatar', requireAuth, upload.single('file'), async (req, 
       try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
       return res.status(400).json({ error: 'Only image files allowed' });
     }
+    let onDiskBytes = 0;
+    try { onDiskBytes = fs.statSync(path.join(UPLOADS_DIR, req.file.filename)).size; } catch {}
+    if (!req.file.size || onDiskBytes === 0) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+      return res.status(400).json({ error: 'Upload arrived empty (0 bytes). Please try again.' });
+    }
     // Remove the previous avatar file if any
     const prev = await get('SELECT avatar_url FROM users WHERE id=?', req.session.userId);
     if (prev?.avatar_url) {
@@ -2799,6 +2810,20 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
         });
       }
       return res.status(400).json({ error: 'No file' });
+    }
+    // Reject empty / corrupt uploads. Multer reports the upload size, but
+    // we also stat the on-disk file as a sanity check — if either is zero,
+    // we'd otherwise persist a row pointing to a 0-byte file that plays
+    // back as a black video / silent audio on every other client.
+    let onDiskBytes = 0;
+    try { onDiskBytes = fs.statSync(path.join(UPLOADS_DIR, req.file.filename)).size; } catch {}
+    if (!req.file.size || onDiskBytes === 0) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+      console.warn('[upload] rejected empty file:',
+        req.file.originalname, 'multer-size=', req.file.size, 'on-disk=', onDiskBytes);
+      return res.status(400).json({
+        error: 'Upload arrived empty (0 bytes). The browser may have stopped the recording before it finished — please try again.',
+      });
     }
     const u = await getUser(req.session.userId);
     const { ticketId, commentId, subtaskId, feedbackId, announcementId, reminderId } = req.body;
@@ -3050,6 +3075,77 @@ app.get('/api/admin/tickets/dump', requireAdmin, async (req, res) => {
       deleted: rows.filter(r => r.deleted_at).length,
       rows,
     });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Diagnose attachment storage health. Walks the attachments table and
+// stats every referenced file on disk, returning the rows that are
+// missing, zero-byte, or whose on-disk size doesn't match the DB. Use
+// this when users report "empty files" to confirm whether the bytes
+// are actually on disk vs. a UI-caching issue.
+app.get('/api/admin/uploads/diagnose', requireAdmin, async (req, res) => {
+  try {
+    let totalDiskBytes = 0;
+    try {
+      const names = fs.readdirSync(UPLOADS_DIR);
+      for (const n of names) {
+        try { totalDiskBytes += fs.statSync(path.join(UPLOADS_DIR, n)).size; } catch {}
+      }
+    } catch (e) {
+      return res.status(500).json({
+        uploadsDir: UPLOADS_DIR,
+        error: 'Could not read uploads dir: ' + e.message,
+      });
+    }
+    const rows = await all('SELECT id, filename, original_name, mime_type, size, ticket_id, comment_id, reminder_id, feedback_id, announcement_id, uploader, created_at FROM attachments ORDER BY id DESC LIMIT 1000');
+    const missing = [];
+    const zeroByte = [];
+    const sizeMismatch = [];
+    for (const r of rows) {
+      const full = path.join(UPLOADS_DIR, r.filename);
+      let stat = null;
+      try { stat = fs.statSync(full); } catch {}
+      if (!stat) {
+        missing.push({ id: r.id, filename: r.filename, dbSize: r.size, originalName: r.original_name, mimeType: r.mime_type, uploader: r.uploader, createdAt: r.created_at });
+      } else if (stat.size === 0) {
+        zeroByte.push({ id: r.id, filename: r.filename, dbSize: r.size, originalName: r.original_name, mimeType: r.mime_type, uploader: r.uploader, createdAt: r.created_at });
+      } else if (r.size && Math.abs(stat.size - r.size) > 0) {
+        sizeMismatch.push({ id: r.id, filename: r.filename, dbSize: r.size, diskSize: stat.size, originalName: r.original_name, uploader: r.uploader });
+      }
+    }
+    res.json({
+      uploadsDir: UPLOADS_DIR,
+      uploadsDirIsDefault: !process.env.UPLOADS_DIR,
+      totalDiskBytes,
+      totalAttachmentRows: rows.length,
+      missingCount: missing.length,
+      zeroByteCount: zeroByte.length,
+      sizeMismatchCount: sizeMismatch.length,
+      missing, zeroByte, sizeMismatch,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Prune broken attachment rows — deletes any attachments whose file is
+// missing or 0 bytes on disk. Body: { confirm: true } required so it can't
+// be triggered accidentally.
+app.post('/api/admin/uploads/prune-broken', requireAdmin, async (req, res) => {
+  try {
+    if (!req.body || req.body.confirm !== true) {
+      return res.status(400).json({ error: 'confirm:true required' });
+    }
+    const rows = await all('SELECT id, filename FROM attachments');
+    const toDelete = [];
+    for (const r of rows) {
+      const full = path.join(UPLOADS_DIR, r.filename);
+      let stat = null;
+      try { stat = fs.statSync(full); } catch {}
+      if (!stat || stat.size === 0) toDelete.push(r.id);
+    }
+    if (!toDelete.length) return res.json({ ok: true, deleted: 0 });
+    const placeholders = toDelete.map(() => '?').join(',');
+    await run(`DELETE FROM attachments WHERE id IN (${placeholders})`, ...toDelete);
+    res.json({ ok: true, deleted: toDelete.length, ids: toDelete });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

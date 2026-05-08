@@ -12939,8 +12939,20 @@ function setupCommentAttachBar() {
         voiceBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg> Voice Note`;
         const actualMime = cmtRecorder.mimeType || mime || 'audio/webm';
         if (!chunks.length) { alert('No audio captured — please check your microphone permission and try again.'); return; }
+        const totalBytes = chunks.reduce((n, c) => n + (c.size || 0), 0);
+        // Reject anything tiny enough to be a corrupt / 0-byte recording —
+        // a real voice clip is at least a few KB even for one syllable.
+        if (totalBytes < 1024) {
+          alert('Voice note was empty or too short — please try again.');
+          return;
+        }
         const ext = audioExtFor(actualMime);
-        const blob = new File(chunks, `voice-${Date.now()}.${ext}`, { type: actualMime });
+        // Strip the ";codecs=..." param off the File mime so multipart
+        // Content-Type uploads as a clean "audio/webm". Some browsers
+        // normalize the codec param to empty, which the server then sees
+        // as application/octet-stream and the file lands corrupted.
+        const baseMime = String(actualMime).split(';')[0].trim() || 'audio/webm';
+        const blob = new File(chunks, `voice-${Date.now()}.${ext}`, { type: baseMime });
         cmtPendingFiles.push(blob);
         addCmtPreview(blob, true);
       };
