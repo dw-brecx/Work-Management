@@ -3543,9 +3543,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
               <span class="stab-icon">🔧</span> Admin
             </div>
-            <div class="settings-tab" data-stab="reset" onclick="switchSettingsTab('reset')" id="reset-settings-tab" style="display:none;color:#dc2626">
-              <span class="stab-icon">⚠️</span> Reset Data
-            </div>
           </div>
         </div>
 
@@ -3870,14 +3867,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <button onclick="adminAddDepartment()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Add Department</button>
             </div>
           </div>
-        </div>
-
-        <!-- Reset Data panel (admin only) -->
-        <div class="card settings-panel" id="settings-panel-reset" style="display:none">
-          <h2 style="font-size:14px;font-weight:700;margin-bottom:4px;color:#dc2626">Reset All Data</h2>
-          <p style="font-size:12px;color:var(--text2);margin-bottom:4px">Permanently deletes all tickets, comments, attachments, plans, calendar events, and notifications.</p>
-          <p style="font-size:12px;color:var(--text2);margin-bottom:20px"><strong>User accounts and departments are kept.</strong> This cannot be undone.</p>
-          <button onclick="confirmResetData()" style="padding:10px 24px;background:#dc2626;color:#fff;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Reset All Data</button>
         </div>
 
         <!-- Permissions panel (matrix) -->
@@ -15354,19 +15343,6 @@ initApp();
     }).catch(function(){ results.innerHTML = '<div style="color:#ef4444">Failed to load tickets.</div>'; });
   };
 
-  /* ── Reset data ── */
-  window.confirmResetData = function() {
-    if (!confirm('⚠️ RESET ALL DATA\n\nThis will permanently delete:\n• All tickets & comments\n• Attachments & voice notes\n• Plans & calendar events\n• Notifications\n\nUser accounts are NOT deleted.\n\nContinue?')) return;
-    if (!confirm('Final confirmation: delete all data? This CANNOT be undone.')) return;
-    fetch('/api/reset', { method: 'POST' })
-      .then(function(r){ return r.json(); })
-      .then(function(d) {
-        if (d.ok) { alert('All data has been reset. User accounts are kept.\nThe page will reload.'); location.reload(); }
-        else alert('Reset failed.');
-      })
-      .catch(function(){ alert('Reset failed. Please try again.'); });
-  };
-
   /* ── Nav tickets badge: dynamic from real count ── */
   function updateNavBadge() {
     var badge = document.getElementById('nav-tickets-badge');
@@ -15584,7 +15560,7 @@ initApp();
     };
 
     // Apply role-based visibility: hide every .admin-only element for Members,
-    // and reveal the always-hidden admin/reset settings tabs for Owner/Admin.
+    // and reveal the always-hidden Admin settings tab for Owner/Admin.
     window.showAdminTabsIfAllowed = function() {
       var u = window.CURRENT_USER;
       var isAdmin = !!(u && ['Admin','Manager'].includes(u.permRole));
@@ -15592,11 +15568,9 @@ initApp();
       document.querySelectorAll('.admin-only').forEach(function(el) {
         el.style.display = isAdmin ? '' : 'none';
       });
-      // Always-hidden tabs (admin + reset) reveal only for admins
+      // Always-hidden Admin tab reveals only for admins
       var at = document.getElementById('admin-settings-tab');
-      var rt = document.getElementById('reset-settings-tab');
       if (at) at.style.display = isAdmin ? '' : 'none';
-      if (rt) rt.style.display = isAdmin ? '' : 'none';
     };
 
     // Patch switchSettingsTab to load data when admin tab opens
