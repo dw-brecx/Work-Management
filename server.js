@@ -133,19 +133,38 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     // Allow common image (excluding SVG — it can carry <script>), audio,
-    // video (webm/mp4 only — what MediaRecorder produces), PDF, and Office
-    // formats. Block text/* (and especially text/html) because the static
-    // handler below could otherwise serve attacker HTML on our origin.
+    // video (webm/mp4 only — what MediaRecorder produces), PDF, common
+    // Office + spreadsheet formats, plain text/csv. Block HTML / SVG /
+    // executables — the static handler below could otherwise serve them
+    // back on our origin and run scripts in users' browsers.
     const m = String(file.mimetype || '').toLowerCase();
-    const safeImage = /^image\/(png|jpeg|jpg|gif|webp|bmp)$/.test(m);
+    const name = String(file.originalname || '').toLowerCase();
+    const ext = name.includes('.') ? name.split('.').pop() : '';
+    const safeImage = /^image\/(png|jpeg|jpg|gif|webp|bmp|heic|heif)$/.test(m)
+      || ['png','jpg','jpeg','gif','webp','bmp','heic','heif'].includes(ext);
     const safeAudio = /^audio\//.test(m);
     // Allow webm, mp4, quicktime (Safari mov) — accept with or without
     // codec parameters (browsers vary on whether they include them).
-    const safeVideo = /^video\/(webm|mp4|quicktime|x-matroska)\b/.test(m);
-    const safePdf   = m === 'application/pdf';
-    const safeOffice = ['application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(m);
-    const ok = safeImage || safeAudio || safeVideo || safePdf || safeOffice;
-    if (!ok) console.warn('[upload] rejected by filter:', file.originalname, '→', m || '(no mimetype)');
+    const safeVideo = /^video\/(webm|mp4|quicktime|x-matroska)\b/.test(m)
+      || ['mp4','mov','webm'].includes(ext);
+    const safePdf   = m === 'application/pdf' || ext === 'pdf';
+    const safeOffice = [
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ].includes(m) || ['doc','docx','xls','xlsx','ppt','pptx'].includes(ext);
+    const safeText = /^text\/(plain|csv)$/.test(m) || ['txt','csv','log'].includes(ext);
+    const safeArchive = m === 'application/zip' || ext === 'zip';
+    const ok = safeImage || safeAudio || safeVideo || safePdf || safeOffice || safeText || safeArchive;
+    if (!ok) {
+      console.warn('[upload] rejected by filter:', file.originalname, '→', m || '(no mimetype)', 'ext=' + (ext || '(none)'));
+      // Stash the rejection reason on the request so the route handler
+      // can return a meaningful 400 instead of a generic "No file".
+      req._uploadRejected = { name: file.originalname, mime: m, ext };
+    }
     cb(null, ok);
   }
 });
@@ -2205,7 +2224,16 @@ app.delete('/api/profile/avatar', requireAuth, async (req, res) => {
 
 app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file' });
+    if (!req.file) {
+      if (req._uploadRejected) {
+        const r = req._uploadRejected;
+        return res.status(400).json({
+          error: `File type not allowed: ${r.name || 'file'} (${r.mime || 'no mime'}${r.ext ? ', .' + r.ext : ''})`,
+          rejected: r,
+        });
+      }
+      return res.status(400).json({ error: 'No file' });
+    }
     const u = await getUser(req.session.userId);
     const { ticketId, commentId, subtaskId, feedbackId, announcementId } = req.body;
     // Verify the uploader actually has access to the parent ticket. Without
