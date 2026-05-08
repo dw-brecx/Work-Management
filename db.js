@@ -366,6 +366,22 @@ async function init() {
       last_used_at TEXT DEFAULT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions (user_id)`,
+    // Per-user reminders attached to a ticket. The user who set the reminder
+    // gets an email at remind_at. One ticket can have many reminders, set
+    // by different users — each row is scoped to a single (user, ticket)
+    // pairing. Marked sent=1 once delivered so the cron doesn't re-send.
+    `CREATE TABLE IF NOT EXISTS ticket_reminders (
+      id SERIAL PRIMARY KEY,
+      ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      remind_at TEXT NOT NULL,
+      note TEXT DEFAULT '',
+      sent INTEGER DEFAULT 0,
+      sent_at TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_ticket_reminders_due ON ticket_reminders (sent, remind_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_ticket_reminders_ticket_user ON ticket_reminders (ticket_id, user_id)`,
   ];
 
   for (const sql of tables) {

@@ -72,6 +72,7 @@ const {
   sendNewCommentEmail, sendMentionEmail, sendOverdueDigestEmail,
   sendMeetingInviteEmail, sendMeetingReminderEmail, sendTaskAssignedEmail,
   sendDeadlineApproachingEmail, sendEventCancelledEmail,
+  sendTicketReminderEmail,
 } = require('./email');
 
 // ── Email helpers ────────────────────────────────────────────────────────────
@@ -993,6 +994,59 @@ app.delete('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res
     await run("UPDATE tickets SET deleted_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", id);
     res.json({ ok: true, cascadedSubtickets: cascadeCount });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Ticket reminders ────────────────────────────────────────────────────────
+// Per-user self-reminders attached to a ticket. The reminder fires (email)
+// at remind_at to the user who set it. Multiple users can have reminders on
+// the same ticket; each user only sees their own. Stored in UTC; the cron
+// loop further down compares against TO_CHAR(NOW()) text for simplicity.
+app.get('/api/tickets/:id/reminders', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT * FROM ticket_reminders
+        WHERE ticket_id=? AND user_id=?
+        ORDER BY remind_at ASC, id ASC`,
+      req.params.id, req.session.userId
+    );
+    res.json(rows.map(r => ({
+      id: r.id, ticketId: r.ticket_id, remindAt: r.remind_at,
+      note: r.note || '', sent: !!r.sent, sentAt: r.sent_at, createdAt: r.created_at,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tickets/:id/reminders', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const { remindAt, note } = req.body || {};
+    if (!remindAt) return res.status(400).json({ error: 'remindAt required (YYYY-MM-DD or ISO datetime)' });
+    // Normalize the input to a "YYYY-MM-DD HH:MM:SS" UTC string so the cron
+    // loop can compare with TO_CHAR(NOW()) directly. Accept date-only
+    // (treated as 9:00 local-of-server / 9:00 UTC) and full ISO datetime.
+    let storedAt;
+    try {
+      const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(remindAt));
+      const d = isDateOnly ? new Date(remindAt + 'T09:00:00Z') : new Date(remindAt);
+      if (isNaN(d)) throw new Error('parse failed');
+      const pad = n => String(n).padStart(2, '0');
+      storedAt = `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+    } catch {
+      return res.status(400).json({ error: 'Invalid remindAt — use YYYY-MM-DD or ISO datetime' });
+    }
+    const info = await run(
+      `INSERT INTO ticket_reminders (ticket_id, user_id, remind_at, note) VALUES (?,?,?,?) RETURNING id`,
+      req.params.id, req.session.userId, storedAt, String(note || '').slice(0, 500)
+    );
+    res.status(201).json({ id: Number(info.lastInsertRowid), ticketId: req.params.id, remindAt: storedAt, note: note || '' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/reminders/:id', requireAuth, async (req, res) => {
+  try {
+    // Only the user who set the reminder can delete it.
+    await run('DELETE FROM ticket_reminders WHERE id=? AND user_id=?', Number(req.params.id), req.session.userId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req, res) => {
@@ -2649,6 +2703,43 @@ async function runDeadlineWarningJob() {
 // actually send to a given user if their last_overdue_digest_at is >= 23h ago
 // (so the wall-clock time of the daily send naturally drifts to whenever the
 // server happens to first run the loop after a day's gap).
+// Ticket reminders: scan for un-sent reminders whose remind_at has passed,
+// email the user who set each one, mark them sent so we don't re-send.
+async function runTicketReminderJob() {
+  try {
+    const due = await all(
+      `SELECT r.*, u.email AS user_email, u.name AS user_name,
+              t.title AS ticket_title, t.status AS ticket_status,
+              t.priority AS ticket_priority, t.due AS ticket_due, t.dept AS ticket_dept
+         FROM ticket_reminders r
+         JOIN users u   ON u.id = r.user_id
+         JOIN tickets t ON t.id = r.ticket_id
+        WHERE r.sent = 0
+          AND r.remind_at <= TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+          AND t.deleted_at IS NULL
+        ORDER BY r.remind_at ASC
+        LIMIT 200`
+    );
+    if (!due.length) return;
+    for (const r of due) {
+      try {
+        await sendTicketReminderEmail({
+          toEmail: r.user_email, toName: r.user_name,
+          ticketId: r.ticket_id, title: r.ticket_title,
+          status: r.ticket_status, priority: r.ticket_priority,
+          dueAt: r.ticket_due, dept: r.ticket_dept,
+          note: r.note || '',
+        });
+        await run(
+          `UPDATE ticket_reminders SET sent = 1, sent_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id = ?`,
+          r.id
+        );
+        console.log(`[reminder] sent #${r.id} (${r.ticket_id} → ${r.user_email})`);
+      } catch (e) { console.error('[reminder] failed for', r.id, e.message); }
+    }
+  } catch (e) { console.error('[cron:ticket-reminder] failed:', e.message); }
+}
+
 async function runOverdueDigestJob() {
   try {
     const todayKey = new Date().toISOString().slice(0, 10);
@@ -2772,8 +2863,10 @@ app.get('*', (req, res) => {
     });
 
     // ── Email cron loops ────────────────────────────────────────────────────
-    // Every 5 min: meeting reminders ~1 hour before start.
+    // Every 5 min: meeting reminders ~1 hour before start, ticket reminders
+    // whose remind_at has passed.
     setInterval(runMeetingReminderJob, 5 * 60 * 1000);
+    setInterval(runTicketReminderJob,  5 * 60 * 1000);
     // Every hour: deadline-approaching warnings + overdue-digest dispatch.
     setInterval(runDeadlineWarningJob, 60 * 60 * 1000);
     setInterval(runOverdueDigestJob,   60 * 60 * 1000);
@@ -2781,10 +2874,11 @@ app.get('*', (req, res) => {
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
       runMeetingReminderJob();
+      runTicketReminderJob();
       runDeadlineWarningJob();
       runOverdueDigestJob();
     }, 30 * 1000);
-    console.log('✅  Email cron loops scheduled (meeting-reminder/deadline/overdue-digest).');
+    console.log('✅  Email cron loops scheduled (meeting-reminder/ticket-reminder/deadline/overdue-digest).');
   } catch(e) {
     console.error('❌  Failed to start:', e.message);
     process.exit(1);

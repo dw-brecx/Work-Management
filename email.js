@@ -1067,6 +1067,40 @@ async function sendOverdueDigestEmail({ toEmail, toName, items }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 16. TICKET REMINDER (user-set self-reminder on a ticket)
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendTicketReminderEmail({
+  toEmail, toName, ticketId, title, status, priority, dueAt, dept, note,
+}) {
+  if (!toEmail) return { skipped: true };
+  const subject = `Reminder: check on ${ticketId}${title ? ' — ' + title : ''}`;
+  const html = shell({
+    name: 'Ticket reminder', subject,
+    preheader: `You asked to be reminded to check on ${ticketId}${title ? ' (' + title + ')' : ''}.`,
+    headerEyebrow: 'Reminder',
+    headerEmoji: '🔔',
+    headerTitle: `Check on ${escapeHtml(ticketId)}`,
+    headerSub: title ? escapeHtml(title) : '',
+    body:
+      (note
+        ? `<div style="margin:0 0 18px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#78350f;font-size:13px;line-height:1.55"><strong style="color:#92400e">Your note:</strong> ${escapeHtml(note)}</div>`
+        : '') +
+      infoTable([
+        infoRow('Ticket', escapeHtml(ticketId || '—')),
+        infoRow('Status', escapeHtml(status || '—')),
+        infoRow('Priority', escapeHtml(priority || '—')),
+        infoRow('Due date', escapeHtml(dueAt || '—')),
+        infoRow('Department', escapeHtml(dept || '—')),
+      ]) +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">You set this reminder yourself. Open the ticket to follow up, change status, or set another reminder.</p>`,
+    ctaText: 'Open ticket',
+    ctaHref: ticketId ? `${APP_URL}/tickets/${encodeURIComponent(ticketId)}` : `${APP_URL}/`,
+    footerNote: `Reminders only go to the person who set them. To stop getting these for this ticket, open it and remove the reminder.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module exports
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = {
@@ -1083,6 +1117,7 @@ module.exports = {
   sendMentionEmail,
   sendTicketClosedEmail,
   sendOverdueDigestEmail,
+  sendTicketReminderEmail,
   // Account
   sendInviteEmail,
   sendActivateAccountEmail,

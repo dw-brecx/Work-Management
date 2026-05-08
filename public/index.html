@@ -2769,6 +2769,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
               Schedule
             </button>
+            <button class="td-action-btn" id="remind-trigger" onclick="openTicketReminderModal()" title="Email me a reminder to check on this ticket">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+              Remind me
+            </button>
             <button class="td-action-btn" id="assign-trigger" onclick="openHeaderActionMenu('assign', this)" title="Assign ticket">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m22 11-3 3-2-2"/></svg>
               Assign
@@ -3872,6 +3876,37 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 </div>
 
 <!-- CLOSE TICKET MODAL -->
+<!-- TICKET REMINDER MODAL -->
+<div id="modal-ticket-reminder" class="modal-overlay">
+  <div class="modal" style="width:460px">
+    <div class="modal-header">
+      <span class="modal-title">Remind me about this ticket</span>
+      <button class="modal-close" onclick="closeModal('ticket-reminder')">×</button>
+    </div>
+    <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin-bottom:14px">
+      We'll email you at the date and time you pick. Reminders are personal — only you get them.
+    </p>
+    <div class="form-grid">
+      <div class="form-row" style="grid-column:span 2">
+        <label>Remind me on</label>
+        <input type="datetime-local" id="rem-when" style="font-size:13px;padding:8px 10px"/>
+      </div>
+      <div class="form-row" style="grid-column:span 2">
+        <label>Note <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+        <textarea id="rem-note" placeholder="e.g. Check whether the design got approved." style="height:64px;resize:none"></textarea>
+      </div>
+    </div>
+    <div id="rem-list-wrap" style="margin-top:14px">
+      <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-bottom:6px">Your reminders for this ticket</div>
+      <div id="rem-list" style="display:flex;flex-direction:column;gap:6px;font-size:12px"></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('ticket-reminder')">Done</button>
+      <button class="btn-primary" style="font-size:12px;padding:9px 16px" onclick="saveTicketReminder()">Set Reminder</button>
+    </div>
+  </div>
+</div>
+
 <div id="modal-close-ticket" class="modal-overlay">
   <div class="modal" style="width:420px">
     <div class="modal-header">
@@ -7009,6 +7044,88 @@ function openCloseTicketModal() {
     if (confirmBtn) confirmBtn.textContent = 'Yes, close ticket';
   }
 }
+
+// ── Ticket reminders (per-user email reminders on a ticket) ────────────────
+window.openTicketReminderModal = function() {
+  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+  if (!t) { alert('Open a ticket first.'); return; }
+  if (typeof openModal === 'function') openModal('ticket-reminder');
+  // Default the picker to tomorrow 9:00 in the user's local time so users
+  // don't have to fiddle with the field for the typical "remind me later"
+  // case. Format must be YYYY-MM-DDTHH:MM for <input type="datetime-local">.
+  const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0);
+  const pad = n => String(n).padStart(2, '0');
+  const local = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const whenEl = document.getElementById('rem-when');
+  if (whenEl) whenEl.value = local;
+  const noteEl = document.getElementById('rem-note');
+  if (noteEl) noteEl.value = '';
+  loadTicketReminders(t.id);
+};
+
+async function loadTicketReminders(ticketId) {
+  const list = document.getElementById('rem-list');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--text3);font-size:11px">Loading…</div>';
+  try {
+    const items = await apiGet('/api/tickets/' + encodeURIComponent(ticketId) + '/reminders');
+    if (!Array.isArray(items) || !items.length) {
+      list.innerHTML = '<div style="color:var(--text3);font-size:11px">No reminders set yet.</div>';
+      return;
+    }
+    list.innerHTML = items.map(r => {
+      const when = (r.remindAt || '').replace(' ', ' ').slice(0, 16); // YYYY-MM-DD HH:MM
+      const status = r.sent ? '<span style="color:var(--text3)">sent</span>' : 'pending';
+      const note = r.note ? ' — ' + escapeHtml(r.note) : '';
+      const cancelBtn = r.sent ? '' :
+        `<button onclick="deleteTicketReminder(${r.id},'${ticketId}')" style="font-size:10.5px;background:none;border:0;color:#dc2626;cursor:pointer;padding:0">Cancel</button>`;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:#fafbff;border:1px solid var(--border);border-radius:6px">
+        <span>🔔 ${escapeHtml(when)} (${status})${note}</span>
+        ${cancelBtn ? '<span style="margin-left:auto"></span>' + cancelBtn : ''}
+      </div>`;
+    }).join('');
+  } catch {
+    list.innerHTML = '<div style="color:var(--red);font-size:11px">Could not load reminders.</div>';
+  }
+}
+
+window.saveTicketReminder = async function() {
+  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+  if (!t) return;
+  const when = document.getElementById('rem-when')?.value || '';
+  const note = document.getElementById('rem-note')?.value.trim() || '';
+  if (!when) { alert('Pick a date/time first.'); return; }
+  // Convert local datetime to ISO so the server gets unambiguous UTC.
+  const d = new Date(when);
+  if (isNaN(d)) { alert('That date didn\'t parse — try again.'); return; }
+  if (d.getTime() < Date.now() - 60 * 1000) {
+    alert('That time is in the past. Pick a future moment.');
+    return;
+  }
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(t.id) + '/reminders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remindAt: d.toISOString(), note }),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not set reminder: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    document.getElementById('rem-note').value = '';
+    loadTicketReminders(t.id);
+  } catch (e) {
+    alert('Could not set reminder: ' + (e?.message || e));
+  }
+};
+
+window.deleteTicketReminder = async function(id, ticketId) {
+  try {
+    await fetch('/api/reminders/' + id, { method: 'DELETE' });
+    loadTicketReminders(ticketId);
+  } catch (e) { alert('Could not cancel: ' + (e?.message || e)); }
+};
 
 function confirmCloseTicket() {
   const reason = document.getElementById('close-reason').value.trim();
