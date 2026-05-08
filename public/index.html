@@ -2687,6 +2687,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
                 Tag
               </button>
               <span class="bulk-divider"></span>
+              <button class="bulk-action-btn" onclick="bulkRemindMe()" title="Set the same reminder on every selected ticket">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+                Remind me
+              </button>
+              <span class="bulk-divider"></span>
               <button class="bulk-action-btn" onclick="bulkClose()">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                 Close
@@ -4998,6 +5003,15 @@ function applyBulkTag(tag) {
   settingsToast(`Tag "${tag}" added to ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'}`);
 }
 
+// Open the reminder modal in bulk mode for every currently-selected ticket.
+// Each ticket gets its own row in ticket_reminders, but they all share the
+// same remind_at + note (one reminder per ticket per email).
+function bulkRemindMe() {
+  const ids = Array.from(typeof selectedTicketIds !== 'undefined' ? selectedTicketIds : []);
+  if (!ids.length) { alert('Pick at least one ticket first.'); return; }
+  if (typeof openTicketReminderModal === 'function') openTicketReminderModal(ids);
+}
+
 function bulkClose() {
   if (!selectedTicketIds.size) return;
   // Open the same confirmation modal used for single-ticket close, in bulk mode
@@ -7046,13 +7060,25 @@ function openCloseTicketModal() {
 }
 
 // ── Ticket reminders (per-user email reminders on a ticket) ────────────────
-window.openTicketReminderModal = function() {
-  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
-  if (!t) { alert('Open a ticket first.'); return; }
+// _reminderTargetIds is the set of ticket ids the modal currently applies to.
+// Single ticket: [ id ]. Bulk: [ id1, id2, … ]. Set whenever the modal opens
+// from any entry point (row menu, bulk action bar, ticket detail).
+let _reminderTargetIds = [];
+
+// Open the reminder modal. Pass an array of ticket ids to scope it to those
+// tickets; pass nothing to use the currently-open ticket detail.
+window.openTicketReminderModal = function(ids) {
+  let targets = Array.isArray(ids) ? ids.filter(Boolean) : null;
+  if (!targets || !targets.length) {
+    const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+    if (!t) { alert('Open a ticket first, or select tickets in the list.'); return; }
+    targets = [t.id];
+  }
+  _reminderTargetIds = targets;
   if (typeof openModal === 'function') openModal('ticket-reminder');
-  // Default the picker to tomorrow 9:00 in the user's local time so users
-  // don't have to fiddle with the field for the typical "remind me later"
-  // case. Format must be YYYY-MM-DDTHH:MM for <input type="datetime-local">.
+
+  // Default the picker to tomorrow 9:00 in the user's local time. Format
+  // must be YYYY-MM-DDTHH:MM for <input type="datetime-local">.
   const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0);
   const pad = n => String(n).padStart(2, '0');
   const local = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -7060,7 +7086,22 @@ window.openTicketReminderModal = function() {
   if (whenEl) whenEl.value = local;
   const noteEl = document.getElementById('rem-note');
   if (noteEl) noteEl.value = '';
-  loadTicketReminders(t.id);
+
+  // Title + body adapt to single vs bulk.
+  const titleEl = document.querySelector('#modal-ticket-reminder .modal-title');
+  const wrapEl  = document.getElementById('rem-list-wrap');
+  if (targets.length > 1) {
+    if (titleEl) titleEl.textContent = `Remind me — ${targets.length} tickets`;
+    if (wrapEl)  wrapEl.style.display = 'none'; // existing-reminders list doesn't make sense in bulk
+    const desc = document.querySelector('#modal-ticket-reminder p');
+    if (desc) desc.innerHTML = `One reminder will be created on each of the <b>${targets.length} selected</b> ticket(s). Reminders are personal — only you receive these emails.`;
+  } else {
+    if (titleEl) titleEl.textContent = 'Remind me about this ticket';
+    if (wrapEl)  wrapEl.style.display = '';
+    const desc = document.querySelector('#modal-ticket-reminder p');
+    if (desc) desc.textContent = "We'll email you at the date and time you pick. Reminders are personal — only you get them.";
+    loadTicketReminders(targets[0]);
+  }
 };
 
 async function loadTicketReminders(ticketId) {
@@ -7090,33 +7131,51 @@ async function loadTicketReminders(ticketId) {
 }
 
 window.saveTicketReminder = async function() {
-  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
-  if (!t) return;
+  const targets = (_reminderTargetIds && _reminderTargetIds.length)
+    ? _reminderTargetIds
+    : (() => {
+        const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+        return t ? [t.id] : [];
+      })();
+  if (!targets.length) return;
+
   const when = document.getElementById('rem-when')?.value || '';
   const note = document.getElementById('rem-note')?.value.trim() || '';
   if (!when) { alert('Pick a date/time first.'); return; }
-  // Convert local datetime to ISO so the server gets unambiguous UTC.
   const d = new Date(when);
-  if (isNaN(d)) { alert('That date didn\'t parse — try again.'); return; }
+  if (isNaN(d)) { alert("That date didn't parse — try again."); return; }
   if (d.getTime() < Date.now() - 60 * 1000) {
     alert('That time is in the past. Pick a future moment.');
     return;
   }
-  try {
-    const r = await fetch('/api/tickets/' + encodeURIComponent(t.id) + '/reminders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ remindAt: d.toISOString(), note }),
-    });
-    if (!r.ok) {
-      const data = await r.json().catch(() => ({}));
-      alert('Could not set reminder: ' + (data.error || ('status ' + r.status)));
-      return;
+
+  let okCount = 0, failed = [];
+  for (const id of targets) {
+    try {
+      const r = await fetch('/api/tickets/' + encodeURIComponent(id) + '/reminders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remindAt: d.toISOString(), note }),
+      });
+      if (r.ok) okCount++;
+      else { const data = await r.json().catch(() => ({})); failed.push(id + ': ' + (data.error || r.status)); }
+    } catch (e) {
+      failed.push(id + ': ' + (e?.message || e));
     }
+  }
+
+  if (targets.length === 1) {
+    if (failed.length) { alert('Could not set reminder: ' + failed[0]); return; }
     document.getElementById('rem-note').value = '';
-    loadTicketReminders(t.id);
-  } catch (e) {
-    alert('Could not set reminder: ' + (e?.message || e));
+    loadTicketReminders(targets[0]);
+    return;
+  }
+  // Bulk — give the user a summary and close the modal so they can move on.
+  closeModal('ticket-reminder');
+  if (failed.length) {
+    alert(`Set ${okCount} reminder${okCount === 1 ? '' : 's'}, ${failed.length} failed:\n` + failed.slice(0, 5).join('\n'));
+  } else {
+    if (typeof settingsToast === 'function') settingsToast(`Set ${okCount} reminder${okCount === 1 ? '' : 's'}`);
   }
 };
 
@@ -14829,6 +14888,7 @@ window.openRowActionsMenu = function(btn, ticketId) {
 
   const items = [];
   items.push({ label: 'Open ticket',     icon: '↗', action: () => openTicketDetail(ticketId) });
+  items.push({ label: 'Remind me',       icon: '🔔', action: () => openTicketReminderModal([ticketId]) });
   if (!isClosed && !isArchived) items.push({ label: 'Close ticket', icon: '✓', action: () => quickCloseTicket(ticketId) });
   if (isClosed)                  items.push({ label: 'Reopen ticket', icon: '↺', action: () => quickReopenTicket(ticketId) });
   if (!isArchived)               items.push({ label: 'Archive', icon: '📦', action: () => quickArchiveTicket(ticketId) });
