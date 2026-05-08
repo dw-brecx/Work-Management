@@ -4688,26 +4688,15 @@ function initDashboard() {
 function switchTicketTab(el, tab) {
   document.querySelectorAll('#page-tickets .tab').forEach(t => t.classList.remove('active'));
   if (el) el.classList.add('active');
-  const prevTab = currentTicketTab;
   currentTicketTab = tab;
   // Sync the matching stat card highlight (if any)
   document.querySelectorAll('.stat-card-clickable').forEach(c => {
     c.classList.toggle('active', c.dataset.filterTab === tab);
   });
-  // "My Tickets" defaults to status=Open — most users care about what they
-  // need to do, not what they've already finished. They can change the
-  // Status dropdown to see closed/archived. We only set it when entering
-  // 'mine' from a different tab, so a user who picks a different status
-  // while on 'mine' isn't overridden every render.
-  const statusEl = document.getElementById('fil-status');
-  if (statusEl && tab === 'mine' && prevTab !== 'mine') {
-    statusEl.value = 'Open';
-  }
-  // Leaving 'mine' clears the auto-applied Open filter (only if it's still
-  // the value we set) so the next tab renders with all statuses.
-  if (statusEl && prevTab === 'mine' && tab !== 'mine' && statusEl.value === 'Open') {
-    statusEl.value = '';
-  }
+  // "My Tickets" hides Closed + Archived by default — users want to see
+  // what's still on their plate. The actual filter happens in renderTickets
+  // (when no explicit Status is picked); switching tabs alone doesn't
+  // touch the Status dropdown so a user-chosen status sticks.
   renderTickets();
 }
 
@@ -5107,6 +5096,10 @@ function renderTickets() {
     // (the 'mine' tab below) so workers see their assigned work.
     if (t.parentTicketId && currentTicketTab !== 'mine') return false;
     if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER && window.CURRENT_USER.name) || '')) return false;
+    // When on Mine tab and no explicit Status filter is set, hide Closed
+    // and Archived so the default view = "what's still on my plate". User
+    // can pick Closed/Archived in the dropdown to see those.
+    if (currentTicketTab === 'mine' && !st && (t.status === 'Closed' || t.status === 'Archived')) return false;
     if (currentTicketTab === 'open'     && t.status !== 'Open') return false;
     if (currentTicketTab === 'progress' && t.status !== 'In Progress') return false;
     if (currentTicketTab === 'review'   && t.status !== 'In Review') return false;
