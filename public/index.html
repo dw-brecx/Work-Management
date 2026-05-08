@@ -3888,6 +3888,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <span class="modal-title">Remind me about this ticket</span>
       <button class="modal-close" onclick="closeModal('ticket-reminder')">×</button>
     </div>
+    <!-- Current time display: helps the user verify their device's clock /
+         timezone is what they expect before picking a reminder time. -->
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#f0f5ff;border:1px solid #c7d7fe;border-radius:8px;margin-bottom:12px;font-size:11.5px;color:#1e3a8a">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span>Right now:</span>
+      <strong id="rem-now-display" style="font-variant-numeric:tabular-nums">—</strong>
+      <span id="rem-tz-display" style="margin-left:auto;color:var(--text3)"></span>
+    </div>
     <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin-bottom:14px">
       We'll email you at the date and time you pick. Reminders are personal — only you get them.
     </p>
@@ -7064,6 +7072,47 @@ function openCloseTicketModal() {
 // Single ticket: [ id ]. Bulk: [ id1, id2, … ]. Set whenever the modal opens
 // from any entry point (row menu, bulk action bar, ticket detail).
 let _reminderTargetIds = [];
+let _reminderClockInterval = null;
+
+// Format a server-stored "YYYY-MM-DD HH:MM:SS" UTC string in the user's
+// local timezone. Storing UTC and rendering local is the standard way
+// to keep multi-region teams sane — without this, a user in NY who set
+// a reminder for 9 AM saw "2026-05-08 14:00" in the list and got
+// confused (5-hour offset = UTC-5).
+function _formatRemindAtLocal(utcText) {
+  if (!utcText) return '';
+  // The 'Z' suffix tells Date() to parse as UTC (not local).
+  const d = new Date(String(utcText).replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return utcText;
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Refresh the "Right now: …" line in the reminder modal once a second so
+// the user can sanity-check their device clock before picking a time.
+function _startReminderClock() {
+  const tzEl  = document.getElementById('rem-tz-display');
+  const nowEl = document.getElementById('rem-now-display');
+  if (tzEl) {
+    let tz = '';
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch {}
+    tzEl.textContent = tz ? '(' + tz + ')' : '';
+  }
+  const tick = () => {
+    if (!nowEl) return;
+    const d = new Date();
+    nowEl.textContent = d.toLocaleString(undefined, {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+  };
+  tick();
+  if (_reminderClockInterval) clearInterval(_reminderClockInterval);
+  _reminderClockInterval = setInterval(tick, 1000);
+}
+function _stopReminderClock() {
+  if (_reminderClockInterval) { clearInterval(_reminderClockInterval); _reminderClockInterval = null; }
+}
 
 // Open the reminder modal. Pass an array of ticket ids to scope it to those
 // tickets; pass nothing to use the currently-open ticket detail.
@@ -7076,6 +7125,7 @@ window.openTicketReminderModal = function(ids) {
   }
   _reminderTargetIds = targets;
   if (typeof openModal === 'function') openModal('ticket-reminder');
+  _startReminderClock();
 
   // Default the picker to tomorrow 9:00 in the user's local time. Format
   // must be YYYY-MM-DDTHH:MM for <input type="datetime-local">.
@@ -7115,7 +7165,9 @@ async function loadTicketReminders(ticketId) {
       return;
     }
     list.innerHTML = items.map(r => {
-      const when = (r.remindAt || '').replace(' ', ' ').slice(0, 16); // YYYY-MM-DD HH:MM
+      // Server stores remindAt as UTC; render in the user's local timezone
+      // so it matches what they typed in the picker.
+      const when = _formatRemindAtLocal(r.remindAt);
       const status = r.sent ? '<span style="color:var(--text3)">sent</span>' : 'pending';
       const note = r.note ? ' — ' + escapeHtml(r.note) : '';
       const cancelBtn = r.sent ? '' :
@@ -8156,6 +8208,9 @@ function closeModal(id) {
   if (id === 'assign-ticket') resetAssignTicketModal();
   if (id === 'create-ticket') pendingPlanIdToArchive = null; // user backed out of plan-conversion
   if (id === 'close-ticket') closeModalContext = { kind: 'single', ids: null };
+  // Stop the live clock when the reminder modal is dismissed so we don't
+  // burn a setInterval forever while the modal sits hidden.
+  if (id === 'ticket-reminder' && typeof _stopReminderClock === 'function') _stopReminderClock();
 }
 
 // --- Assign Ticket modal (Tickets page Quick Action) ---
