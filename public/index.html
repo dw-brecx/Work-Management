@@ -2848,6 +2848,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
         </div>
 
+        <!-- My Reminders (private to this user, scoped to this ticket) -->
+        <div class="card td-card" style="margin-bottom:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <h2 class="td-card-title">My Reminders <span style="font-size:10px;font-weight:400;color:var(--text3)">(only you can see these)</span></h2>
+            <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="openReminderEditorForCurrentTicket()">+ Add reminder</button>
+          </div>
+          <div id="det-reminders-list" style="display:flex;flex-direction:column;gap:6px"></div>
+          <div id="det-reminders-empty" style="display:none;color:var(--text3);font-size:11.5px;padding:6px 0">No personal reminders for this ticket yet.</div>
+        </div>
+
         <!-- Activity / Subtasks / Attachments tabs -->
         <div class="card td-card">
           <div class="tabs" style="margin-bottom:10px">
@@ -5450,6 +5460,7 @@ function renderTicketDetail() {
   renderChecklist();
   loadSubtasks(getCurrentTicket()?.id); // async; will re-render when fetched
   renderTimeline();
+  if (typeof renderTicketDetailReminders === 'function') renderTicketDetailReminders();
 }
 
 // Lock/unlock the action bar based on ticket status. When closed, only the
@@ -14240,7 +14251,10 @@ async function submitReminderEditor() {
       await _remEditorState.composer.uploadAll({ reminderId: saved.id });
     }
     closeReminderEditor();
-    loadMyRemindersPage();
+    // Refresh whichever surface is visible — the user may have opened the
+    // editor from the /my-reminders page OR from the per-ticket card.
+    if (currentPage === 'my-reminders') loadMyRemindersPage();
+    if (currentPage === 'ticket-detail' && typeof renderTicketDetailReminders === 'function') renderTicketDetailReminders();
   } catch (e) {
     alert('Could not save: ' + (e?.message || e));
   } finally {
@@ -14255,7 +14269,8 @@ async function deleteReminderFromEditor() {
   try {
     await apiDel('/api/my-reminders/' + id);
     closeReminderEditor();
-    loadMyRemindersPage();
+    if (currentPage === 'my-reminders') loadMyRemindersPage();
+    if (currentPage === 'ticket-detail' && typeof renderTicketDetailReminders === 'function') renderTicketDetailReminders();
   } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
 }
 
@@ -14284,6 +14299,93 @@ async function reopenReminder(id) {
     await apiPut('/api/my-reminders/' + id, { completed: false });
     loadMyRemindersPage();
   } catch (e) { alert('Could not update: ' + (e?.message || e)); }
+}
+
+// Open the editor pre-filled with the current ticket id so the new reminder
+// is auto-linked. Called from the My Reminders card on ticket detail.
+function openReminderEditorForCurrentTicket() {
+  openReminderEditor();
+  try {
+    const tid = (typeof currentTicketId !== 'undefined') ? currentTicketId : null;
+    if (tid) document.getElementById('rem-edit-ticket').value = tid;
+  } catch {}
+}
+
+// Render the per-ticket My Reminders card on ticket detail. Pulls only the
+// current user's reminders for the current ticket (server enforces the same
+// scope; this is just convenience). Called from renderTicketDetail and
+// re-called after create / edit / complete so the card stays in sync.
+async function renderTicketDetailReminders() {
+  const wrap = document.getElementById('det-reminders-list');
+  const empty = document.getElementById('det-reminders-empty');
+  if (!wrap) return;
+  const tid = (typeof currentTicketId !== 'undefined') ? currentTicketId : null;
+  if (!tid) { wrap.innerHTML = ''; if (empty) empty.style.display = ''; return; }
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:11px;padding:4px 0">Loading…</div>';
+  try {
+    const items = await apiGet('/api/my-reminders?filter=all&ticketId=' + encodeURIComponent(tid));
+    if (!Array.isArray(items) || !items.length) {
+      wrap.innerHTML = '';
+      if (empty) empty.style.display = '';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    wrap.innerHTML = items.map(r => {
+      const overdue = !r.completed && _remIsOverdue(r.dueAt);
+      const dueColor = overdue ? '#b91c1c' : 'var(--text3)';
+      const titleStyle = r.completed ? 'text-decoration:line-through;color:var(--text3)' : '';
+      const flags = [
+        r.emailEnabled    ? '📧' : '',
+        r.repeatDaily     ? '🔁' : '',
+        r.showDailyInApp  ? '📺' : '',
+      ].filter(Boolean).join(' ');
+      const completeBtn = r.completed
+        ? `<button onclick="reopenReminderInTicket(${r.id})" style="font-size:10.5px;padding:3px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer">Reopen</button>`
+        : `<button onclick="completeReminderInTicket(${r.id})" style="font-size:10.5px;padding:3px 8px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:4px;cursor:pointer">✓ Done</button>`;
+      return `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg2);border-radius:6px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:500;${titleStyle}">${_esc(r.title)}</div>
+            <div style="font-size:10.5px;color:${dueColor}">⏰ ${_remFmtLocal(r.dueAt)}${flags ? ' · ' + flags : ''}${overdue ? ' · Overdue' : ''}</div>
+          </div>
+          ${completeBtn}
+          <button onclick="openReminderEditorFromTicket(${r.id})" style="font-size:10.5px;padding:3px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer">Edit</button>
+        </div>
+      `;
+    }).join('');
+    // Cache so the editor "Edit" button can read the existing values.
+    items.forEach(r => {
+      const i = MY_REMINDERS.findIndex(x => x.id === r.id);
+      if (i >= 0) MY_REMINDERS[i] = r; else MY_REMINDERS.push(r);
+    });
+  } catch {
+    wrap.innerHTML = '<div style="color:#dc2626;font-size:11px;padding:4px 0">Failed to load.</div>';
+  }
+}
+
+// Local wrappers used by the per-ticket card so we can refresh just this
+// card without bouncing the whole /my-reminders page (which the user isn't
+// looking at anyway).
+async function completeReminderInTicket(id) {
+  try {
+    await apiPut('/api/my-reminders/' + id, { completed: true });
+    renderTicketDetailReminders();
+  } catch (e) { alert('Could not update: ' + (e?.message || e)); }
+}
+async function reopenReminderInTicket(id) {
+  try {
+    await apiPut('/api/my-reminders/' + id, { completed: false });
+    renderTicketDetailReminders();
+  } catch (e) { alert('Could not update: ' + (e?.message || e)); }
+}
+async function openReminderEditorFromTicket(id) {
+  // Make sure the editor has fresh data (the user may have edited elsewhere).
+  try {
+    const r = await apiGet('/api/my-reminders/' + id);
+    const i = MY_REMINDERS.findIndex(x => x.id === r.id);
+    if (i >= 0) MY_REMINDERS[i] = r; else MY_REMINDERS.push(r);
+  } catch {}
+  openReminderEditor(id);
 }
 
 // Used by the reminder-card "ticket pill" — open the linked ticket detail.
