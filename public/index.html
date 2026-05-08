@@ -3778,10 +3778,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
         </div>
       </div>
-      <div class="form-row"><label>Reporter</label><select id="m-reporter"></select></div>
-      <div class="form-row"><label>Department</label><select id="m-dept"><option>Engineering</option><option>Design</option><option>Support</option><option>Operations</option></select></div>
-      <div class="form-row"><label>Priority</label><select id="m-priority"><option>High</option><option>Medium</option><option>Low</option><option>Urgent</option></select></div>
-      <div class="form-row"><label>Due Date *</label><input type="date" id="m-due"/></div>
+      <div class="form-row"><label>Reporter <span style="color:var(--text3);font-weight:400">(optional)</span></label><select id="m-reporter"><option value="">— None —</option></select></div>
+      <div class="form-row"><label>Department</label><select id="m-dept"></select></div>
+      <div class="form-row"><label>Priority</label><select id="m-priority"><option value="Urgent">Urgent</option><option value="High">High</option><option value="Medium">Medium</option><option value="Low" selected>Low</option></select></div>
+      <div class="form-row"><label>Due Date <span style="color:var(--text3);font-weight:400">(optional)</span></label><input type="date" id="m-due"/></div>
     </div>
     <div class="form-row">
       <label>Tags <span style="color:var(--text3);font-weight:400">(press Enter to add)</span></label>
@@ -5223,12 +5223,21 @@ function renderTicketDetail() {
       Reopened
     </span>
   ` : '';
+  // When the ticket is closed AND a reason was saved, surface it as a small
+  // inline note next to the badges so it's obvious why this one was closed.
+  const closeReasonPill = (t.status === 'Closed' && t.closeReason) ? `
+    <span title="Reason for closing" style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;border-radius:999px;font-size:11px;font-weight:500;max-width:360px">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Closed: ${escapeHtml(t.closeReason)}</span>
+    </span>
+  ` : '';
   document.getElementById('det-badges').innerHTML = `
     ${statusBadge(t.status)}
     ${priorityBadge(t.priority)}
     <span class="badge-status" style="background:var(--bg2);color:var(--text2)">${escapeHtml(t.dept)}</span>
     <span class="badge-status" style="background:var(--bg2);color:var(--text2)">Due ${escapeHtml(t.due)}</span>
     ${reopenedPill}
+    ${closeReasonPill}
     ${wtChip}
   `;
 
@@ -7026,6 +7035,7 @@ function confirmCloseTicket() {
   if (!t) return;
   t.status = 'Closed';
   t.overdue = false;
+  t.closeReason = reason || '';
   closeModal('close-ticket');
   renderTicketDetail();
   const _byName = (window.CURRENT_USER && window.CURRENT_USER.name) || 'someone';
@@ -7033,6 +7043,15 @@ function confirmCloseTicket() {
     ? `Ticket closed by ${escapeHtml(_byName)} — ${escapeHtml(reason)}`
     : `Ticket closed by ${escapeHtml(_byName)}`;
   logActivity(msg, 'var(--green)');
+  // Persist server-side: status + close reason. Optimistic update above
+  // means the UI reacts instantly; this is the durable write. If it
+  // fails the next page refresh from the server will reveal it.
+  if (typeof apiPut === 'function') {
+    apiPut('/api/tickets/' + encodeURIComponent(t.id), {
+      status: 'Closed',
+      closeReason: reason || '',
+    }).catch(() => {});
+  }
   if (currentPage === 'tickets') renderTickets();
   if (currentPage === 'my-tickets') renderKanban();
 }
@@ -8267,12 +8286,53 @@ function populateCreateTicketModal() {
   // Make sure the current user appears in the list even if TEAM_DATA hasn't loaded them yet
   const names = TEAM_DATA.map(m => m.name);
   if (me && !names.includes(me)) names.unshift(me);
-  const buildOpts = () => names.map(n =>
+  // Requester defaults to current user (this is "who needs the work").
+  requesterSel.innerHTML = names.map(n =>
     `<option value="${escapeHtml(n)}"${n === me ? ' selected' : ''}>${escapeHtml(n)}${n === me ? ' (you)' : ''}</option>`
   ).join('');
-  requesterSel.innerHTML = buildOpts();
-  reporterSel.innerHTML  = buildOpts();
-  if (me) { requesterSel.value = me; reporterSel.value = me; }
+  // Reporter is optional — defaults to empty so a casual ticket doesn't auto-
+  // tag the creator as a reporter unless they explicitly opt in.
+  reporterSel.innerHTML = '<option value="">— None —</option>' + names.map(n =>
+    `<option value="${escapeHtml(n)}">${escapeHtml(n)}${n === me ? ' (you)' : ''}</option>`
+  ).join('');
+  if (me) requesterSel.value = me;
+  reporterSel.value = '';
+
+  // Priority defaults to Low — most new tickets aren't urgent, and a Low
+  // default avoids the case where creators ship Medium/High tickets without
+  // intending to inflate the priority queue.
+  const prioritySel = document.getElementById('m-priority');
+  if (prioritySel) prioritySel.value = 'Low';
+
+  // Due date defaults to today + 7 days. Field is optional but pre-filled so
+  // every ticket carries a reasonable target date out of the box.
+  const dueEl = document.getElementById('m-due');
+  if (dueEl) {
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    dueEl.value = `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Department defaults to the workspace's first department (the
+  // "company default"). loadDepartments returns the list; while we wait,
+  // ensure there's at least one safe fallback option so the dropdown
+  // isn't empty if the modal opens before /api/departments responds.
+  const deptSel = document.getElementById('m-dept');
+  if (deptSel) {
+    const setDeptOpts = (depts) => {
+      const list = (Array.isArray(depts) && depts.length) ? depts : ['Engineering'];
+      deptSel.innerHTML = list.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+      deptSel.value = list[0]; // first = company default
+    };
+    if (typeof window.loadDepartments === 'function') {
+      window.loadDepartments().then(setDeptOpts).catch(() => setDeptOpts(null));
+    } else {
+      setDeptOpts(null);
+    }
+  }
+
   // Reset assignees state for fresh modal
   pendingCreateAssignees = [];
   renderCreateAssigneeChips();
@@ -8281,8 +8341,13 @@ function populateCreateTicketModal() {
 function saveTicket() {
   const title = document.getElementById('m-title')?.value.trim();
   if (!title) { alert('Please enter a title.'); return; }
-  const dueRaw = document.getElementById('m-due')?.value;
-  if (!dueRaw) { alert('Please pick a due date.'); return; }
+  // Due date is optional. If the user cleared it, fall back to 7 days from
+  // today so every ticket still carries a reasonable target date.
+  let dueRaw = document.getElementById('m-due')?.value || '';
+  if (!dueRaw) {
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    dueRaw = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
   const requester = document.getElementById('m-requester')?.value;
   if (!requester) { alert('Please select a requester.'); return; }
   if (!pendingCreateAssignees.length) { alert('Please add at least one assignee.'); return; }
@@ -8323,7 +8388,8 @@ function saveTicket() {
     req: requester,
     assignee: pendingCreateAssignees[0],
     assignees: [...pendingCreateAssignees],
-    reporter: document.getElementById('m-reporter')?.value || (window.CURRENT_USER && window.CURRENT_USER.name) || '',
+    // Reporter is optional — empty selection stays empty (no auto-fill).
+    reporter: document.getElementById('m-reporter')?.value || '',
     priority: document.getElementById('m-priority')?.value || 'Medium',
     status: 'Open',
     dept: document.getElementById('m-dept')?.value || 'Engineering',

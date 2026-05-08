@@ -398,6 +398,10 @@ async function init() {
   // projects. The main tickets list hides children; the Projects page lists
   // every project.
   await safeAlter('ALTER TABLE tickets ADD COLUMN parent_ticket_id TEXT');
+  // Optional reason captured when a user closes a ticket. Stored verbatim
+  // and surfaced on the closed-ticket detail; null when no reason was
+  // provided. Pure metadata — doesn't affect access checks.
+  await safeAlter('ALTER TABLE tickets ADD COLUMN close_reason TEXT');
   await safeAlter('ALTER TABLE tickets ADD COLUMN is_project INTEGER DEFAULT 0');
   await run('CREATE INDEX IF NOT EXISTS idx_tickets_parent ON tickets (parent_ticket_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_tickets_is_project ON tickets (is_project)');

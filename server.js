@@ -632,6 +632,7 @@ async function buildTicket(row) {
     parentTicketId: row.parent_ticket_id || null,
     isProject: !!row.is_project,
     childCount: parseInt(childRow?.n || 0, 10),
+    closeReason: row.close_reason || '',
   };
 }
 
@@ -848,7 +849,7 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
 
 app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) => {
   try {
-    const { title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags } = req.body;
+    const { title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, overdue, tags, closeReason } = req.body;
     const exists = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
     if (!exists) return res.status(404).json({ error:'Not found' });
     if (exists.deleted_at) return res.status(404).json({ error:'Not found' });
@@ -872,6 +873,18 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
     if (due!==undefined)      { u.push('due=?');        v.push(due); }
     if (overdue!==undefined)  { u.push('overdue=?');    v.push(overdue?1:0); }
     if (tags!==undefined)     { u.push('tags_json=?');  v.push(JSON.stringify(tags)); }
+    // Persist the optional close-reason note. Only saved when the caller
+    // explicitly provided one (undefined = "don't touch this column"); a
+    // blank string clears any previous reason (e.g. on reopen).
+    if (closeReason !== undefined) {
+      u.push('close_reason=?');
+      v.push(String(closeReason || '').trim() || null);
+    }
+    // If status flipped to a non-Closed value (reopen / move back to Open),
+    // wipe any stale close_reason so the next display doesn't lie.
+    if (status !== undefined && oldStatus === 'Closed' && status !== 'Closed' && closeReason === undefined) {
+      u.push('close_reason=?'); v.push(null);
+    }
     if (u.length) { v.push(req.params.id); await run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
     if (assignees!==undefined) {
       await run('DELETE FROM ticket_assignees WHERE ticket_id=?', req.params.id);
