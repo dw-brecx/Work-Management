@@ -668,6 +668,81 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Trash (soft-deleted tickets) ────────────────────────────────────────────
+// Admin-only. Lists every soft-deleted ticket with the days-until-purge so
+// admins can restore on demand or trigger a permanent removal early.
+app.get('/api/admin/tickets/trash', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT t.*, u.name AS deleted_by_name
+         FROM tickets t
+         LEFT JOIN users u ON u.id = t.created_by
+        WHERE t.deleted_at IS NOT NULL
+        ORDER BY t.deleted_at DESC, t.id DESC`
+    );
+    const out = await Promise.all(rows.map(async r => {
+      const t = await buildTicket(r);
+      t.deletedAt = r.deleted_at || null;
+      // 30-day countdown — purge cron drops anything past that. Using
+      // simple JS date math is fine for display; the cron uses SQL math
+      // for the actual decision.
+      let daysLeft = null;
+      if (r.deleted_at) {
+        const d = new Date(String(r.deleted_at).replace(' ', 'T') + 'Z');
+        if (!isNaN(d)) daysLeft = Math.max(0, 30 - Math.floor((Date.now() - d.getTime()) / 86400000));
+      }
+      t.daysUntilPurge = daysLeft;
+      return t;
+    }));
+    res.json(out);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin-only hard delete. Drops the row + on-disk attachments + cascades
+// to children (FK), comments (FK), reminders (FK). Use this when you
+// want a ticket actually gone before the 30-day auto-purge.
+app.delete('/api/admin/tickets/:id/permanent', requireAdmin, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const t = await get('SELECT id, deleted_at FROM tickets WHERE id=?', id);
+    if (!t) return res.status(404).json({ error: 'Not found' });
+    // Drop on-disk files for any attachment that lived under this ticket
+    // (or any of its sub-tickets).
+    const subIds = (await all('SELECT id FROM tickets WHERE parent_ticket_id=?', id)).map(r => r.id);
+    const allTktIds = [id, ...subIds];
+    if (allTktIds.length) {
+      const placeholders = allTktIds.map((_, i) => '$' + (i + 1)).join(',');
+      const atts = await all(`SELECT filename FROM attachments WHERE ticket_id IN (${placeholders})`, ...allTktIds);
+      for (const a of atts) { try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {} }
+    }
+    // Cascades will clean comments / subtask rows / attachment rows / etc.
+    await run('DELETE FROM tickets WHERE id=?', id);
+    console.log(`[trash] PERMANENT-DELETE ${id} by user ${req.session.userId} at ${new Date().toISOString()}`);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Daily auto-purge: hard-delete every ticket whose deleted_at is more
+// than 30 days old. Same on-disk file cleanup as the manual permanent-
+// delete. Idempotent and safe to run on every server start.
+async function runTrashAutoPurgeJob() {
+  try {
+    const old = await all(
+      `SELECT id FROM tickets
+        WHERE deleted_at IS NOT NULL
+          AND deleted_at < TO_CHAR(NOW() - INTERVAL '30 days' AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`
+    );
+    if (!old.length) return;
+    const ids = old.map(r => r.id);
+    // Wipe attachment files first.
+    const placeholders = ids.map((_, i) => '$' + (i + 1)).join(',');
+    const atts = await all(`SELECT filename FROM attachments WHERE ticket_id IN (${placeholders})`, ...ids);
+    for (const a of atts) { try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {} }
+    await run(`DELETE FROM tickets WHERE id IN (${placeholders})`, ...ids);
+    console.log(`[trash] auto-purged ${ids.length} ticket(s) past the 30-day mark: ${ids.join(', ')}`);
+  } catch (e) { console.error('[cron:trash-auto-purge]', e.message); }
+}
+
 // ── Projects (admin-promoted parent tickets) ────────────────────────────────
 // Promote / demote are admin-only. The list and children endpoints are open to
 // any authenticated user (filtered by ticket access where needed).
@@ -2936,6 +3011,8 @@ app.get('*', (req, res) => {
     // Every hour: deadline-approaching warnings + overdue-digest dispatch.
     setInterval(runDeadlineWarningJob, 60 * 60 * 1000);
     setInterval(runOverdueDigestJob,   60 * 60 * 1000);
+    // Once a day: hard-delete tickets that have sat in trash for 30+ days.
+    setInterval(runTrashAutoPurgeJob, 24 * 60 * 60 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
@@ -2943,6 +3020,7 @@ app.get('*', (req, res) => {
       runTicketReminderJob();
       runDeadlineWarningJob();
       runOverdueDigestJob();
+      runTrashAutoPurgeJob();
     }, 30 * 1000);
     console.log('✅  Email cron loops scheduled (meeting-reminder/ticket-reminder/deadline/overdue-digest).');
   } catch(e) {

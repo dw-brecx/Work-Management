@@ -2356,6 +2356,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
     </div>
+    <div class="nav-item admin-only" data-page="trash">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      Trash <span class="badge" id="nav-trash-badge" style="display:none"></span>
+    </div>
     <div class="nav-item" data-page="planning">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 2h6l4 4v14a2 2 0 01-2 2H7a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
       Planning
@@ -2805,6 +2809,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <button class="td-action-btn danger" id="close-trigger" onclick="openModal('close-ticket')" title="Close ticket">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
               Close
+            </button>
+            <button class="td-action-btn danger" id="delete-trigger" onclick="deleteCurrentTicketWithConfirm()" title="Move ticket to trash (recoverable for 30 days)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Delete
             </button>
           </div>
         </div>
@@ -3347,6 +3355,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
       <div id="projects-list" style="display:flex;flex-direction:column;gap:12px;max-width:920px"></div>
       <div id="projects-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No projects yet. Open a ticket and click <b>Convert to Project</b> to get started.</div>
+    </div>
+
+    <!-- ========== TRASH (admin-only — soft-deleted tickets) ========== -->
+    <div id="page-trash" class="page">
+      <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Trash</h1>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:18px">Deleted tickets stay here for 30 days. After that they're permanently removed automatically. You can restore or permanently delete any ticket here.</p>
+      <div id="trash-list" style="display:flex;flex-direction:column;gap:8px;max-width:920px"></div>
+      <div id="trash-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">Trash is empty.</div>
     </div>
 
     <!-- ========== WHAT'S NEW (announcement feed) ========== -->
@@ -4527,6 +4543,7 @@ window.PAGE_PATHS = {
   'projects':    '/projects',
   'whats-new':   '/whats-new',
   'feedback':    '/feedback',
+  'trash':       '/trash',
   'settings':    '/settings',
 };
 
@@ -4578,6 +4595,7 @@ function navigate(page) {
       'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
       'projects': 'Projects',
       'whats-new': "What's New", 'feedback': 'Feedback',
+      'trash': 'Trash',
       'ticket-detail': 'Ticket', 'plan-detail': 'Plan'
     };
     if (titles[page]) document.title = titles[page] + ' · Syruvia';
@@ -13789,6 +13807,127 @@ window.submitFeedback = async function() {
   } finally { submitBtn.disabled = false; }
 };
 
+// ── Delete current ticket (with double-confirm) ─────────────────────────────
+// The action-bar Delete button — soft-deletes through DELETE /api/tickets/:id
+// (recoverable from /trash for 30 days). Double-confirms because the row
+// menu version was easy to mis-click.
+window.deleteCurrentTicketWithConfirm = async function() {
+  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+  if (!t) return;
+  const childCount = TICKETS_DATA.filter(x => x.parentTicketId === t.id).length;
+  const cascadeNote = (t.isProject && childCount > 0)
+    ? `\nThis will also move ${childCount} sub-ticket${childCount === 1 ? '' : 's'} to trash.`
+    : '';
+  if (!confirm(`Move ${t.id} to trash?` + cascadeNote + '\nIt can be restored from Trash within 30 days.')) return;
+  // Second prompt to make accidental deletes harder.
+  if (!confirm(`Are you sure? Type OK below to confirm: deleting ${t.id}.`)) return;
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(t.id), { method: 'DELETE' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not delete: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    // Remove the ticket and its cascaded children from the in-memory list.
+    const toRemove = new Set([t.id]);
+    if (t.isProject) {
+      TICKETS_DATA.forEach(x => { if (x.parentTicketId === t.id) toRemove.add(x.id); });
+    }
+    for (const rid of toRemove) {
+      const idx = TICKETS_DATA.findIndex(x => x.id === rid);
+      if (idx !== -1) TICKETS_DATA.splice(idx, 1);
+    }
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof initDashboard === 'function') initDashboard();
+    // Hop back to the Tickets list — the detail we were viewing is gone.
+    if (typeof navigate === 'function') navigate('tickets');
+  } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+};
+
+// ── Trash page (admin-only) ────────────────────────────────────────────────
+async function loadTrashPage() {
+  const wrap = document.getElementById('trash-list');
+  const empty = document.getElementById('trash-empty');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
+  try {
+    const items = await apiGet('/api/admin/tickets/trash');
+    const badge = document.getElementById('nav-trash-badge');
+    if (badge) {
+      if (Array.isArray(items) && items.length > 0) {
+        badge.textContent = items.length;
+        badge.style.display = '';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+    if (!Array.isArray(items) || !items.length) {
+      wrap.innerHTML = '';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    wrap.innerHTML = items.map(t => {
+      const safeTitle = String(t.title || '').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+      const days = (t.daysUntilPurge != null) ? t.daysUntilPurge : 30;
+      const expiresIn = days <= 0 ? 'purging soon' : (days + ' day' + (days === 1 ? '' : 's') + ' until purge');
+      const expiresColor = days <= 3 ? '#dc2626' : days <= 7 ? '#d97706' : 'var(--text3)';
+      return `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:12px 16px;background:#fff;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:12px;color:var(--accent);font-weight:500;margin-bottom:2px">${t.id}</div>
+            <div style="font-size:13.5px;font-weight:600;margin-bottom:3px">${safeTitle}</div>
+            <div style="font-size:11px;color:var(--text3)">Deleted ${t.deletedAt || '—'} · <span style="color:${expiresColor};font-weight:500">${expiresIn}</span></div>
+          </div>
+          <button onclick="restoreTrashedTicket('${t.id}')" class="btn-primary" style="font-size:11.5px;padding:6px 12px;background:#10b981">Restore</button>
+          <button onclick="permanentlyDeleteTrashedTicket('${t.id}')" style="font-size:11.5px;padding:6px 12px;background:#fff;border:1px solid #fecaca;border-radius:6px;color:#dc2626;cursor:pointer">Delete forever</button>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    wrap.innerHTML = '<div style="color:var(--red);font-size:12px;padding:10px">Could not load trash.</div>';
+  }
+}
+
+window.restoreTrashedTicket = async function(id) {
+  if (!confirm(`Restore ${id} from trash?`)) return;
+  try {
+    const r = await fetch('/api/admin/tickets/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not restore: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    // Refresh the local TICKETS_DATA so the restored ticket reappears in
+    // the main list without a manual refresh.
+    if (typeof apiGet === 'function') {
+      try {
+        const fresh = await apiGet('/api/tickets');
+        if (Array.isArray(fresh)) {
+          TICKETS_DATA.length = 0;
+          fresh.forEach(t => TICKETS_DATA.push(t));
+          if (typeof renderTickets === 'function') renderTickets();
+          if (typeof initDashboard === 'function') initDashboard();
+        }
+      } catch {}
+    }
+    loadTrashPage();
+  } catch (e) { alert('Could not restore: ' + (e?.message || e)); }
+};
+
+window.permanentlyDeleteTrashedTicket = async function(id) {
+  if (!confirm(`Permanently delete ${id}? This is final — it cannot be recovered.`)) return;
+  if (!confirm(`Last chance: type-your-mind moment. ${id} will be erased from the database including all comments, attachments, and reminders. Proceed?`)) return;
+  try {
+    const r = await fetch('/api/admin/tickets/' + encodeURIComponent(id) + '/permanent', { method: 'DELETE' });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert('Could not permanently delete: ' + (data.error || ('status ' + r.status)));
+      return;
+    }
+    loadTrashPage();
+  } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+};
+
 // ── Projects (admin-promoted parent tickets with sub-tickets) ──────────────
 // State for the "+ New ticket in project" flow — when openCreateTicketModal
 // is called from a project page, we stash the parent id here so the saved
@@ -14905,6 +15044,7 @@ async function refreshPageData(page) {
     if (page === 'whats-new'   && typeof loadWhatsNewFeed === 'function') loadWhatsNewFeed();
     if (page === 'feedback'    && typeof loadFeedbackFeed === 'function') loadFeedbackFeed();
     if (page === 'projects'    && typeof loadProjectsPage === 'function') loadProjectsPage();
+    if (page === 'trash'       && typeof loadTrashPage === 'function') loadTrashPage();
   } catch (err) {
     // Keep stale data — the user will see what they had before the failed nav.
     console.warn('[router] refreshPageData failed for', page, '—', err?.message || err);
@@ -14947,6 +15087,7 @@ window.refreshPageData = refreshPageData;
     'projects':    '/projects',
     'whats-new':   '/whats-new',
     'feedback':    '/feedback',
+    'trash':       '/trash',
     'settings':    '/settings',
   };
   // Auth pages live under their own .html files and are handled by the server,
