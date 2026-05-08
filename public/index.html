@@ -58,6 +58,9 @@
   #admin-scope-wrap input:checked ~ .scope-track .scope-thumb,
   #admin-scope-wrap:has(input:checked) .scope-thumb { transform: translateX(12px); }
   #admin-scope-wrap:hover { background:#fafbff; border-color:#cbd5e1; }
+  /* Hide the toggle on narrow desktop windows where the topbar starts
+     overflowing — admin can still flip it on a wider screen / via URL. */
+  @media (max-width: 1100px) { #admin-scope-wrap { display: none !important; } }
   .btn-primary{display:flex;align-items:center;gap:6px;padding:7px 14px;background:var(--accent);border:none;border-radius:8px;color:white;font-size:12px;font-weight:500;cursor:pointer}
   .btn-primary:hover{background:#2563eb}
   .btn-sec{padding:7px 12px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text2);font-size:12px;cursor:pointer}
@@ -2402,11 +2405,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
            dashboard counts + tickets list show only the user's own tickets, the
            same way a Member sees them. Flip ON to see everything across the
            workspace. State persists in localStorage. -->
-      <label class="admin-only" id="admin-scope-wrap" style="display:inline-flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text2);user-select:none;cursor:pointer;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff" title="Toggle between only-my-tickets and all-workspace views">
-        <span class="scope-track" style="position:relative;width:30px;height:18px;background:#e2e8f0;border-radius:10px;transition:background .18s;flex-shrink:0">
-          <span class="scope-thumb" style="position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform .18s"></span>
+      <label class="admin-only" id="admin-scope-wrap" style="position:relative;display:inline-flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;font-size:11.5px;color:var(--text2);user-select:none;cursor:pointer;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff" title="Toggle between Mine and All workspace views">
+        <span class="scope-track" style="position:relative;width:28px;height:16px;background:#e2e8f0;border-radius:10px;transition:background .18s;flex-shrink:0">
+          <span class="scope-thumb" style="position:absolute;top:2px;left:2px;width:12px;height:12px;background:#fff;border-radius:50%;box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform .18s"></span>
         </span>
-        <span id="admin-scope-label" style="white-space:nowrap;font-weight:500">Mine only</span>
+        <span id="admin-scope-label" style="font-weight:500">Mine</span>
         <input type="checkbox" id="admin-scope-toggle" onchange="toggleAdminViewAll(this.checked)" style="position:absolute;opacity:0;pointer-events:none"/>
       </label>
       <button class="btn-primary" onclick="openModal('create-ticket')">+ Create Ticket</button>
@@ -11375,9 +11378,9 @@ window.toggleAdminViewAll = function(checked) {
   if (typeof updateTicketPageStats === 'function') updateTicketPageStats();
   if (typeof initDashboard === 'function') initDashboard();
   if (typeof updateDashDonut === 'function') updateDashDonut();
-  // Reflect the new label on the toggle (e.g. "Mine only" / "All workspace")
+  // Reflect the new label on the toggle.
   const lbl = document.getElementById('admin-scope-label');
-  if (lbl) lbl.textContent = _adminViewAll ? 'All workspace' : 'Mine only';
+  if (lbl) lbl.textContent = _adminViewAll ? 'All' : 'Mine';
 };
 
 // On boot, sync the toggle's checkbox/label with the persisted state once
@@ -11387,7 +11390,7 @@ function syncAdminScopeToggle() {
   const cb  = document.getElementById('admin-scope-toggle');
   const lbl = document.getElementById('admin-scope-label');
   if (cb)  cb.checked = _adminViewAll;
-  if (lbl) lbl.textContent = _adminViewAll ? 'All workspace' : 'Mine only';
+  if (lbl) lbl.textContent = _adminViewAll ? 'All' : 'Mine';
 }
 
 function updateTicketPageStats() {
