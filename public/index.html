@@ -12232,6 +12232,11 @@ async function initApp() {
   loadRealNotifications();
   setInterval(loadRealNotifications, 30000);
 
+  // First-of-day in-app reminder popup — shows reminders flagged
+  // showDailyInApp once per local-calendar day. Fires shortly after boot so
+  // it doesn't compete with the initial render.
+  setTimeout(maybeShowDailyRemindersPopup, 1500);
+
   // Signal that the app is ready — triggers URL routing from initial path
   window.dispatchEvent(new Event('_wnReady'));
 }
@@ -14386,6 +14391,81 @@ async function openReminderEditorFromTicket(id) {
     if (i >= 0) MY_REMINDERS[i] = r; else MY_REMINDERS.push(r);
   } catch {}
   openReminderEditor(id);
+}
+
+// ── Daily in-app reminder popup ────────────────────────────────────────────
+// Shows once per local calendar day on first sign-in. The server gates this
+// too (it tracks last_in_app_shown_at per row), but a localStorage check
+// means we don't re-prompt if the user navigates around mid-session.
+let _DAILY_POPUP_SHOWN_REMINDER_IDS = [];
+function _todayLocalKey() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+}
+async function maybeShowDailyRemindersPopup() {
+  try {
+    const todayKey = _todayLocalKey();
+    const stored = localStorage.getItem('wn_reminder_popup_last_day');
+    if (stored === todayKey) return;  // already shown today on this device
+    const items = await apiGet('/api/my-reminders/today-popup/list?dayKey=' + encodeURIComponent(todayKey));
+    if (!Array.isArray(items) || !items.length) {
+      // Nothing to show — still mark today done so we don't keep polling.
+      localStorage.setItem('wn_reminder_popup_last_day', todayKey);
+      return;
+    }
+    _DAILY_POPUP_SHOWN_REMINDER_IDS = items.map(r => r.id);
+    const wrap = document.getElementById('rem-daily-list');
+    if (!wrap) return;
+    wrap.innerHTML = items.map(r => {
+      const overdue = _remIsOverdue(r.dueAt);
+      const dueColor = overdue ? '#b91c1c' : 'var(--text3)';
+      const desc = r.description ? `<div style="font-size:11.5px;color:var(--text2);margin-top:4px;white-space:pre-wrap">${_esc(r.description)}</div>` : '';
+      const ticketLink = r.ticketId ? ` · <a onclick="closeDailyRemindersPopup();openTicketDetailById('${_esc(r.ticketId)}')" style="color:var(--accent);cursor:pointer">${_esc(r.ticketId)}</a>` : '';
+      return `
+        <div style="padding:10px 12px;background:#fafbff;border:1px solid var(--border);border-radius:6px">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12.5px;font-weight:600">${_esc(r.title)}</div>
+              <div style="font-size:10.5px;color:${dueColor};margin-top:2px">⏰ ${_remFmtLocal(r.dueAt)}${ticketLink}${overdue ? ' · Overdue' : ''}</div>
+              ${desc}
+            </div>
+            <button onclick="completeReminderFromDailyPopup(${r.id}, this)" style="font-size:11px;padding:5px 10px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:4px;cursor:pointer;flex-shrink:0">✓ Done</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    const m = document.getElementById('modal-reminder-daily');
+    if (m) m.style.display = 'flex';
+  } catch (e) {
+    console.warn('[reminders] daily popup failed:', e?.message || e);
+  }
+}
+
+async function completeReminderFromDailyPopup(id, btn) {
+  try {
+    await apiPut('/api/my-reminders/' + id, { completed: true });
+    // Strikethrough the row instead of removing it — visual confirmation
+    // that the action worked, then dismiss when the user clicks "Got it".
+    if (btn) {
+      const card = btn.closest('div[style*="border-radius:6px"]');
+      if (card) card.style.opacity = '0.45';
+      btn.outerHTML = '<span style="font-size:11px;color:#16a34a">✓ Done</span>';
+    }
+  } catch (e) { alert('Could not update: ' + (e?.message || e)); }
+}
+
+function closeDailyRemindersPopup() {
+  const m = document.getElementById('modal-reminder-daily');
+  if (m) m.style.display = 'none';
+  // Mark every reminder we displayed as "shown today" on the server so they
+  // don't reappear in the next sign-in within this calendar day, and stamp
+  // the local high-water mark so we don't re-fetch within this session.
+  try { localStorage.setItem('wn_reminder_popup_last_day', _todayLocalKey()); } catch {}
+  for (const id of _DAILY_POPUP_SHOWN_REMINDER_IDS) {
+    apiPost('/api/my-reminders/' + id + '/seen-today', {}).catch(() => {});
+  }
+  _DAILY_POPUP_SHOWN_REMINDER_IDS = [];
 }
 
 // Used by the reminder-card "ticket pill" — open the linked ticket detail.
