@@ -2352,6 +2352,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
       My Tickets
     </div>
+    <div class="nav-item" data-page="my-reminders">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+      My Reminders <span class="badge" id="nav-reminders-badge" style="display:none"></span>
+    </div>
     <div class="nav-item admin-only" data-page="projects">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
@@ -3363,6 +3367,84 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <p style="color:var(--text2);font-size:12px;margin-bottom:18px">Deleted tickets stay here for 30 days. After that they're permanently removed automatically. You can restore or permanently delete any ticket here.</p>
       <div id="trash-list" style="display:flex;flex-direction:column;gap:8px;max-width:920px"></div>
       <div id="trash-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">Trash is empty.</div>
+    </div>
+
+    <!-- ========== MY REMINDERS (per-user private task list) ========== -->
+    <div id="page-my-reminders" class="page">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:4px;flex-wrap:wrap">
+        <h1 style="font-size:20px;font-weight:600;margin:0">My Reminders</h1>
+        <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="openReminderEditor()">+ New Reminder</button>
+      </div>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Personal tasks &amp; reminders. Only you can see these. Optionally link to a ticket, attach voice notes / screen recordings / files, and choose how you want to be reminded.</p>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <button class="rem-filter active" data-filter="open"   onclick="filterMyReminders('open')"   style="font-size:11px;padding:5px 11px;border-radius:14px;border:1px solid var(--border);background:var(--accent);color:#fff;cursor:pointer">Open</button>
+        <button class="rem-filter"        data-filter="done"   onclick="filterMyReminders('done')"   style="font-size:11px;padding:5px 11px;border-radius:14px;border:1px solid var(--border);background:#fff;cursor:pointer">Done</button>
+        <button class="rem-filter"        data-filter="all"    onclick="filterMyReminders('all')"    style="font-size:11px;padding:5px 11px;border-radius:14px;border:1px solid var(--border);background:#fff;cursor:pointer">All</button>
+      </div>
+      <div id="my-reminders-list" style="display:flex;flex-direction:column;gap:10px;max-width:820px"></div>
+      <div id="my-reminders-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No reminders yet — click "+ New Reminder" to add one.</div>
+    </div>
+
+    <!-- ========== REMINDER EDITOR MODAL (create / edit) ========== -->
+    <div id="modal-reminder-edit" class="modal" style="display:none">
+      <div class="modal-overlay" onclick="closeReminderEditor()"></div>
+      <div class="modal-content" style="max-width:640px;padding:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h2 id="rem-edit-title-label" style="font-size:16px;font-weight:600;margin:0">New Reminder</h2>
+          <button onclick="closeReminderEditor()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0;line-height:1">×</button>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Local time: <span id="rem-edit-now">—</span></div>
+        <input id="rem-edit-title" type="text" placeholder="Title (e.g. Talk to Sarah about TKT-1042)" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:4px;margin-bottom:10px"/>
+        <textarea id="rem-edit-desc" placeholder="Notes (optional)" rows="4" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:4px;resize:vertical;margin-bottom:10px"></textarea>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">When to remind (date &amp; time)</label>
+            <input id="rem-edit-due" type="datetime-local" style="width:100%;padding:7px 8px;font-size:13px;border:1px solid var(--border);border-radius:4px"/>
+          </div>
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Link to ticket (optional)</label>
+            <input id="rem-edit-ticket" type="text" placeholder="TKT-1042" style="width:100%;padding:7px 8px;font-size:13px;border:1px solid var(--border);border-radius:4px"/>
+          </div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:10px;background:#fafbff">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:500">How should I remind you?</div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:6px;cursor:pointer">
+            <input type="checkbox" id="rem-edit-email" checked> 📧 Email me at the chosen time
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:6px;cursor:pointer">
+            <input type="checkbox" id="rem-edit-repeat"> 🔁 Keep emailing me daily until I mark it done
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer">
+            <input type="checkbox" id="rem-edit-popup"> 📺 Show me on screen once a day when I sign in
+          </label>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Attach voice / screen / file (optional)</div>
+        <div id="rem-edit-composer-mount" style="margin-bottom:10px"></div>
+        <div id="rem-edit-existing-attachments" style="display:none;margin-bottom:10px"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap">
+          <button id="rem-edit-delete" style="display:none;font-size:11px;padding:6px 12px;background:#fff;border:1px solid #fecaca;color:#dc2626;border-radius:5px;cursor:pointer" onclick="deleteReminderFromEditor()">Delete</button>
+          <div style="display:flex;gap:8px;margin-left:auto">
+            <button onclick="closeReminderEditor()" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:pointer">Cancel</button>
+            <button class="btn-primary" id="rem-edit-submit" style="font-size:12px;padding:7px 14px" onclick="submitReminderEditor()">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== DAILY REMINDER POPUP (auto-shown once a day) ========== -->
+    <div id="modal-reminder-daily" class="modal" style="display:none">
+      <div class="modal-overlay" onclick="closeDailyRemindersPopup()"></div>
+      <div class="modal-content" style="max-width:560px;padding:24px;max-height:80vh;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h2 style="font-size:16px;font-weight:600;margin:0">📺 Today's Reminders</h2>
+          <button onclick="closeDailyRemindersPopup()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0;line-height:1">×</button>
+        </div>
+        <p style="color:var(--text2);font-size:12px;margin:0 0 14px">These reminders are set to show daily until you mark them done.</p>
+        <div id="rem-daily-list" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:14px">
+          <button onclick="closeDailyRemindersPopup()" class="btn-primary" style="font-size:12px;padding:7px 14px">Got it</button>
+        </div>
+      </div>
     </div>
 
     <!-- ========== WHAT'S NEW (announcement feed) ========== -->
@@ -4535,6 +4617,7 @@ window.PAGE_PATHS = {
   'dashboard':   '/dashboard',
   'tickets':     '/tickets',
   'my-tickets':  '/my-tickets',
+  'my-reminders':'/my-reminders',
   'planning':    '/planning',
   'flavors':     '/flavors',
   'calendar':    '/calendar',
@@ -4591,6 +4674,7 @@ function navigate(page) {
   try {
     const titles = {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
+      'my-reminders': 'My Reminders',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
       'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
       'projects': 'Projects',
@@ -13925,6 +14009,292 @@ window.deleteCurrentTicketWithConfirm = async function() {
   } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
 };
 
+// ── My Reminders (per-user private task list) ──────────────────────────────
+// Personal reminders / tasks. Visible only to the user who created them. Each
+// row can have voice notes / screen recordings / files attached, and toggles
+// for: email-on-due-time, repeat-daily-until-done, show-in-app-once-per-day.
+let MY_REMINDERS = [];
+let _remindersFilter = 'open';
+let _remEditorState = { id: null, composer: null };
+let _remNowTimer = null;
+
+function _remFmtLocal(utcStr) {
+  // Stored value is 'YYYY-MM-DD HH:MM:SS' UTC. Convert to user's local clock.
+  if (!utcStr) return '—';
+  try {
+    const d = new Date(utcStr.replace(' ', 'T') + 'Z');
+    if (isNaN(d)) return utcStr;
+    return d.toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+  } catch { return utcStr; }
+}
+function _remIsOverdue(utcStr) {
+  if (!utcStr) return false;
+  try { return new Date(utcStr.replace(' ', 'T') + 'Z') < new Date(); } catch { return false; }
+}
+function _remRenderAttachments(atts) {
+  if (!atts || !atts.length) return '';
+  return atts.map(a => {
+    const mt = (a.mimeType || '').toLowerCase();
+    if (mt.startsWith('audio/'))
+      return `<audio controls src="${_esc(a.url)}" style="height:32px;display:block;margin-top:4px"></audio>`;
+    if (mt.startsWith('video/'))
+      return `<video controls playsinline src="${_esc(a.url)}" style="max-width:280px;max-height:160px;display:block;margin-top:4px;background:#000;border-radius:3px"></video>`;
+    if (mt.startsWith('image/'))
+      return `<a href="${_esc(a.url)}" target="_blank"><img src="${_esc(a.url)}" style="max-width:120px;max-height:120px;border-radius:3px;margin-top:4px"></a>`;
+    return `<a href="${_esc(a.url)}" target="_blank" style="display:inline-block;font-size:11px;color:var(--accent);margin-top:4px">📄 ${_esc(a.originalName || a.filename)}</a>`;
+  }).join('');
+}
+
+async function loadMyRemindersPage() {
+  const wrap = document.getElementById('my-reminders-list');
+  const empty = document.getElementById('my-reminders-empty');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
+  try {
+    const items = await apiGet('/api/my-reminders?filter=' + encodeURIComponent(_remindersFilter));
+    MY_REMINDERS = Array.isArray(items) ? items : [];
+    renderMyRemindersList();
+    updateMyRemindersBadge();
+  } catch (e) {
+    wrap.innerHTML = '<div style="color:#dc2626;font-size:12px;padding:10px">Failed to load reminders.</div>';
+  }
+}
+
+function filterMyReminders(filter) {
+  _remindersFilter = filter;
+  document.querySelectorAll('.rem-filter').forEach(b => {
+    const on = b.dataset.filter === filter;
+    b.classList.toggle('active', on);
+    b.style.background = on ? 'var(--accent)' : '#fff';
+    b.style.color = on ? '#fff' : '';
+  });
+  loadMyRemindersPage();
+}
+
+function renderMyRemindersList() {
+  const wrap = document.getElementById('my-reminders-list');
+  const empty = document.getElementById('my-reminders-empty');
+  if (!wrap) return;
+  if (!MY_REMINDERS.length) {
+    wrap.innerHTML = '';
+    if (empty) empty.style.display = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  wrap.innerHTML = MY_REMINDERS.map(_remCardHtml).join('');
+}
+
+function _remCardHtml(r) {
+  const overdue = !r.completed && _remIsOverdue(r.dueAt);
+  const pills = [
+    r.emailEnabled    ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#eef2ff;color:#4338ca">📧 Email</span>' : '',
+    r.repeatDaily     ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#fef3c7;color:#92400e">🔁 Daily</span>' : '',
+    r.showDailyInApp  ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#ecfeff;color:#0e7490">📺 In-app</span>' : '',
+    r.ticketId        ? `<a onclick="openTicketDetailById('${_esc(r.ticketId)}')" style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155;cursor:pointer">🎫 ${_esc(r.ticketId)}</a>` : '',
+    overdue           ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#fee2e2;color:#991b1b">Overdue</span>' : '',
+    r.completed       ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#dcfce7;color:#166534">✓ Done</span>' : '',
+  ].filter(Boolean).join(' ');
+  const dueColor = overdue ? '#b91c1c' : '#475569';
+  const titleStyle = r.completed ? 'text-decoration:line-through;color:var(--text3)' : '';
+  const desc = r.description ? `<div style="font-size:12px;color:var(--text2);margin-top:6px;white-space:pre-wrap">${_esc(r.description)}</div>` : '';
+  const atts = _remRenderAttachments(r.attachments);
+  const attsHtml = atts ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">${atts}</div>` : '';
+  const completeBtn = r.completed
+    ? `<button onclick="reopenReminder(${r.id})" style="font-size:11px;padding:5px 10px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer">Reopen</button>`
+    : `<button onclick="completeReminder(${r.id})" style="font-size:11px;padding:5px 10px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:4px;cursor:pointer">✓ Mark done</button>`;
+  return `
+    <div class="card" style="padding:14px">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:600;${titleStyle}">${_esc(r.title)}</div>
+          <div style="font-size:11px;color:${dueColor};margin-top:3px">⏰ ${_remFmtLocal(r.dueAt)}</div>
+          ${desc}
+          ${attsHtml}
+          <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">${pills}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
+          ${completeBtn}
+          <button onclick="openReminderEditor(${r.id})" style="font-size:11px;padding:5px 10px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer">Edit</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function updateMyRemindersBadge() {
+  // The badge counts open reminders that are due today or overdue (the ones
+  // the user is most likely to act on). Avoids visual noise from far-future
+  // reminders.
+  try {
+    const badge = document.getElementById('nav-reminders-badge');
+    if (!badge) return;
+    const cutoff = new Date(Date.now() + 24*60*60*1000);
+    const n = MY_REMINDERS.filter(r => !r.completed && r.dueAt && new Date(r.dueAt.replace(' ', 'T') + 'Z') <= cutoff).length;
+    if (n > 0) { badge.textContent = String(n); badge.style.display = ''; }
+    else       { badge.style.display = 'none'; }
+  } catch {}
+}
+
+// ── Reminder editor modal ──────────────────────────────────────────────────
+function openReminderEditor(id) {
+  const m = document.getElementById('modal-reminder-edit');
+  if (!m) return;
+  const isEdit = id != null;
+  const existing = isEdit ? MY_REMINDERS.find(r => r.id === id) : null;
+  _remEditorState.id = isEdit ? id : null;
+  document.getElementById('rem-edit-title-label').textContent = isEdit ? 'Edit Reminder' : 'New Reminder';
+  document.getElementById('rem-edit-title').value = existing?.title || '';
+  document.getElementById('rem-edit-desc').value  = existing?.description || '';
+  document.getElementById('rem-edit-ticket').value = existing?.ticketId || '';
+  document.getElementById('rem-edit-email').checked  = existing ? !!existing.emailEnabled : true;
+  document.getElementById('rem-edit-repeat').checked = !!existing?.repeatDaily;
+  document.getElementById('rem-edit-popup').checked  = !!existing?.showDailyInApp;
+  // datetime-local wants 'YYYY-MM-DDTHH:MM' in *local* time.
+  const dueInput = document.getElementById('rem-edit-due');
+  if (existing?.dueAt) {
+    const d = new Date(existing.dueAt.replace(' ', 'T') + 'Z');
+    if (!isNaN(d)) {
+      const pad = n => String(n).padStart(2, '0');
+      dueInput.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    } else { dueInput.value = ''; }
+  } else {
+    // Default: tomorrow at 9 AM local.
+    const t = new Date(); t.setDate(t.getDate()+1); t.setHours(9, 0, 0, 0);
+    const pad = n => String(n).padStart(2, '0');
+    dueInput.value = `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
+  }
+  document.getElementById('rem-edit-delete').style.display = isEdit ? '' : 'none';
+  // Mount fresh composer (clean slate every time the modal opens).
+  const mount = document.getElementById('rem-edit-composer-mount');
+  mount.innerHTML = '';
+  if (typeof createMediaComposer === 'function') {
+    _remEditorState.composer = createMediaComposer(mount);
+  } else {
+    _remEditorState.composer = null;
+  }
+  // Show existing attachments inline (with delete buttons) when editing.
+  const existingWrap = document.getElementById('rem-edit-existing-attachments');
+  if (existing?.attachments?.length) {
+    existingWrap.style.display = '';
+    existingWrap.innerHTML =
+      '<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Already attached:</div>' +
+      existing.attachments.map(a => `
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:12px">
+          <a href="${_esc(a.url)}" target="_blank" style="flex:1;color:var(--accent);text-decoration:none">${_esc(a.originalName || a.filename)}</a>
+          <button onclick="deleteReminderAttachment(${a.id})" style="font-size:10px;padding:2px 7px;background:#fff;border:1px solid #fecaca;color:#dc2626;border-radius:3px;cursor:pointer">Remove</button>
+        </div>
+      `).join('');
+  } else {
+    existingWrap.style.display = 'none';
+    existingWrap.innerHTML = '';
+  }
+  m.style.display = 'flex';
+  // Live local-clock readout so the user can see what "now" is when picking
+  // the date — same UX as the existing ticket-reminder modal.
+  const nowEl = document.getElementById('rem-edit-now');
+  const tickNow = () => { try { nowEl.textContent = new Date().toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }); } catch{} };
+  tickNow();
+  if (_remNowTimer) clearInterval(_remNowTimer);
+  _remNowTimer = setInterval(tickNow, 30000);
+  setTimeout(() => document.getElementById('rem-edit-title').focus(), 50);
+}
+
+function closeReminderEditor() {
+  const m = document.getElementById('modal-reminder-edit');
+  if (m) m.style.display = 'none';
+  if (_remNowTimer) { clearInterval(_remNowTimer); _remNowTimer = null; }
+  _remEditorState = { id: null, composer: null };
+}
+
+async function submitReminderEditor() {
+  const title = document.getElementById('rem-edit-title').value.trim();
+  const description = document.getElementById('rem-edit-desc').value;
+  const dueLocal = document.getElementById('rem-edit-due').value;
+  let ticketId = document.getElementById('rem-edit-ticket').value.trim();
+  const emailEnabled    = document.getElementById('rem-edit-email').checked;
+  const repeatDaily     = document.getElementById('rem-edit-repeat').checked;
+  const showDailyInApp  = document.getElementById('rem-edit-popup').checked;
+  if (!title)    { alert('Title required.');           return; }
+  if (!dueLocal) { alert('Date & time required.');     return; }
+  // Normalize loose ticket entry: "1042", "tkt 1042", "TKT-1042" → "TKT-1042".
+  if (ticketId) {
+    const m = ticketId.match(/(\d+)/);
+    if (m) ticketId = 'TKT-' + m[1];
+    else ticketId = '';
+  }
+  const dueIso = new Date(dueLocal).toISOString();
+  const payload = { title, description, dueAt: dueIso, ticketId: ticketId || null,
+                    emailEnabled, repeatDaily, showDailyInApp };
+  const btn = document.getElementById('rem-edit-submit');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    let saved;
+    if (_remEditorState.id) {
+      saved = await apiPut('/api/my-reminders/' + _remEditorState.id, payload);
+    } else {
+      saved = await apiPost('/api/my-reminders', payload);
+    }
+    if (!saved || saved.error) throw new Error(saved?.error || 'save failed');
+    // Upload any composer attachments now that we have an id.
+    if (_remEditorState.composer && _remEditorState.composer.getFiles().length) {
+      await _remEditorState.composer.uploadAll({ reminderId: saved.id });
+    }
+    closeReminderEditor();
+    loadMyRemindersPage();
+  } catch (e) {
+    alert('Could not save: ' + (e?.message || e));
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save';
+  }
+}
+
+async function deleteReminderFromEditor() {
+  const id = _remEditorState.id;
+  if (!id) return;
+  if (!confirm('Delete this reminder? This cannot be undone.')) return;
+  try {
+    await apiDel('/api/my-reminders/' + id);
+    closeReminderEditor();
+    loadMyRemindersPage();
+  } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+}
+
+async function deleteReminderAttachment(attId) {
+  if (!confirm('Remove this attachment?')) return;
+  try {
+    await apiDel('/api/attachments/' + attId);
+    // Refresh the editor view by re-fetching the reminder.
+    if (_remEditorState.id) {
+      const r = await apiGet('/api/my-reminders/' + _remEditorState.id);
+      const i = MY_REMINDERS.findIndex(x => x.id === r.id);
+      if (i >= 0) MY_REMINDERS[i] = r; else MY_REMINDERS.unshift(r);
+      openReminderEditor(r.id);  // re-render the modal with the new state
+    }
+  } catch (e) { alert('Could not remove: ' + (e?.message || e)); }
+}
+
+async function completeReminder(id) {
+  try {
+    await apiPut('/api/my-reminders/' + id, { completed: true });
+    loadMyRemindersPage();
+  } catch (e) { alert('Could not update: ' + (e?.message || e)); }
+}
+async function reopenReminder(id) {
+  try {
+    await apiPut('/api/my-reminders/' + id, { completed: false });
+    loadMyRemindersPage();
+  } catch (e) { alert('Could not update: ' + (e?.message || e)); }
+}
+
+// Used by the reminder-card "ticket pill" — open the linked ticket detail.
+function openTicketDetailById(id) {
+  const t = (typeof TICKETS_DATA !== 'undefined') ? TICKETS_DATA.find(x => x.id === id) : null;
+  if (t && typeof openTicketDetail === 'function') { openTicketDetail(id); return; }
+  // If the ticket isn't in our local cache (shouldn't happen — the user has
+  // access since they linked it), fall back to navigating to the URL.
+  try { history.pushState({}, '', '/tickets/' + encodeURIComponent(id)); window.dispatchEvent(new PopStateEvent('popstate')); } catch {}
+}
+
 // ── Trash page (admin-only) ────────────────────────────────────────────────
 async function loadTrashPage() {
   const wrap = document.getElementById('trash-list');
@@ -15126,6 +15496,7 @@ async function refreshPageData(page) {
     if (page === 'feedback'    && typeof loadFeedbackFeed === 'function') loadFeedbackFeed();
     if (page === 'projects'    && typeof loadProjectsPage === 'function') loadProjectsPage();
     if (page === 'trash'       && typeof loadTrashPage === 'function') loadTrashPage();
+    if (page === 'my-reminders' && typeof loadMyRemindersPage === 'function') loadMyRemindersPage();
   } catch (err) {
     // Keep stale data — the user will see what they had before the failed nav.
     console.warn('[router] refreshPageData failed for', page, '—', err?.message || err);
@@ -15160,6 +15531,7 @@ window.refreshPageData = refreshPageData;
     'dashboard':   '/dashboard',
     'tickets':     '/tickets',
     'my-tickets':  '/my-tickets',
+    'my-reminders':'/my-reminders',
     'planning':    '/planning',
     'flavors':     '/flavors',
     'calendar':    '/calendar',
