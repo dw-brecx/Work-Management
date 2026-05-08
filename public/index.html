@@ -51,6 +51,13 @@
   .search-wrap input{width:100%;padding:7px 10px 7px 32px;border:1px solid var(--border);border-radius:8px;font-size:12px;background:var(--bg2);color:var(--text);outline:none}
   .search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%)}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  /* Admin-scope toggle: when the hidden checkbox is checked, slide the
+     thumb to the right and tint the track purple. */
+  #admin-scope-wrap input:checked ~ .scope-track,
+  #admin-scope-wrap:has(input:checked) .scope-track { background:#7c3aed; }
+  #admin-scope-wrap input:checked ~ .scope-track .scope-thumb,
+  #admin-scope-wrap:has(input:checked) .scope-thumb { transform: translateX(12px); }
+  #admin-scope-wrap:hover { background:#fafbff; border-color:#cbd5e1; }
   .btn-primary{display:flex;align-items:center;gap:6px;padding:7px 14px;background:var(--accent);border:none;border-radius:8px;color:white;font-size:12px;font-weight:500;cursor:pointer}
   .btn-primary:hover{background:#2563eb}
   .btn-sec{padding:7px 12px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text2);font-size:12px;cursor:pointer}
@@ -2391,6 +2398,17 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <div class="topbar-right">
       <button class="btn-soft" onclick="openPlanModal()" style="font-size:12px;padding:8px 12px">+ New Plan</button>
       <button class="btn-soft admin-only" id="new-flavor-btn" onclick="openNewFlavorModal()" style="font-size:12px;padding:8px 12px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc">+ New Flavor</button>
+      <!-- Workspace-scope toggle (admin/manager only). Default OFF = personal view —
+           dashboard counts + tickets list show only the user's own tickets, the
+           same way a Member sees them. Flip ON to see everything across the
+           workspace. State persists in localStorage. -->
+      <label class="admin-only" id="admin-scope-wrap" style="display:inline-flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text2);user-select:none;cursor:pointer;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff" title="Toggle between only-my-tickets and all-workspace views">
+        <span class="scope-track" style="position:relative;width:30px;height:18px;background:#e2e8f0;border-radius:10px;transition:background .18s;flex-shrink:0">
+          <span class="scope-thumb" style="position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform .18s"></span>
+        </span>
+        <span id="admin-scope-label" style="white-space:nowrap;font-weight:500">Mine only</span>
+        <input type="checkbox" id="admin-scope-toggle" onchange="toggleAdminViewAll(this.checked)" style="position:absolute;opacity:0;pointer-events:none"/>
+      </label>
       <button class="btn-primary" onclick="openModal('create-ticket')">+ Create Ticket</button>
       <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel(event)" aria-label="Open notifications">
         <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
@@ -4982,7 +5000,11 @@ function renderTickets() {
   const st = document.getElementById('fil-status')?.value || '';
   const pr = document.getElementById('fil-priority')?.value || '';
   const ag = assigneeFilter || '';
-  let list = TICKETS_DATA.filter(t => {
+  // Apply the admin/manager workspace-scope toggle at the top: in personal
+  // view (default for everyone, including admins), filter to tickets the
+  // user is involved with. Admins can flip the toggle to see everything.
+  const baseList = (typeof visibleTickets === 'function') ? visibleTickets() : TICKETS_DATA;
+  let list = baseList.filter(t => {
     // Sub-tickets are hidden from the main Tickets list — they only appear
     // inside their project. They still show up in the user's My Tickets
     // (the 'mine' tab below) so workers see their assigned work.
@@ -11295,18 +11317,92 @@ window.logoutUser = async function() {
 };
 
 // ── Ticket page stat counts updater ─────────────────────────────────────────
+// ── Workspace-scope toggle (admin/manager only) ─────────────────────────────
+// Admins and Managers default to seeing only the tickets they're personally
+// involved in (assignee, reporter, requester, or creator), like a Member.
+// Flipping the topbar toggle to "All workspace" expands the dashboard
+// counts + tickets list to every ticket. Choice is persisted to
+// localStorage so reloads keep the same view.
+let _adminViewAll = false;
+try { _adminViewAll = localStorage.getItem('wn_admin_view_all') === '1'; } catch {}
+
+function _isAdminOrManager() {
+  const u = window.CURRENT_USER || {};
+  return ['Admin', 'Manager'].includes(u.permRole || u.role || '');
+}
+
+function isPersonalScope() {
+  // Members are always in personal scope (server filters their list anyway).
+  // Admins/Managers default to personal unless they've flipped the toggle.
+  if (!_isAdminOrManager()) return true;
+  return !_adminViewAll;
+}
+
+function ticketIsMine(t) {
+  if (!t) return false;
+  const u = window.CURRENT_USER || {};
+  const myName = u.name || '';
+  const myId = u.id || null;
+  // The /api/tickets payload is buildTicket() with `...row` spread, so the
+  // user_id columns come through as snake_case (assignee_user_id, etc.).
+  // Prefer those when present — they survive profile renames; fall back to
+  // name matching for legacy rows that haven't been back-filled yet.
+  if (myId && (
+    t.assignee_user_id === myId ||
+    t.reporter_user_id === myId ||
+    t.req_user_id === myId ||
+    t.created_by === myId
+  )) return true;
+  if (myName && (
+    (typeof getAssignees === 'function' && getAssignees(t).includes(myName)) ||
+    t.assignee === myName ||
+    t.reporter === myName ||
+    t.req === myName
+  )) return true;
+  return false;
+}
+
+function visibleTickets() {
+  if (!isPersonalScope()) return TICKETS_DATA;
+  return TICKETS_DATA.filter(ticketIsMine);
+}
+
+window.toggleAdminViewAll = function(checked) {
+  _adminViewAll = !!checked;
+  try { localStorage.setItem('wn_admin_view_all', _adminViewAll ? '1' : '0'); } catch {}
+  // Re-paint everything that respects the scope.
+  if (typeof renderTickets === 'function') renderTickets();
+  if (typeof updateTicketPageStats === 'function') updateTicketPageStats();
+  if (typeof initDashboard === 'function') initDashboard();
+  if (typeof updateDashDonut === 'function') updateDashDonut();
+  // Reflect the new label on the toggle (e.g. "Mine only" / "All workspace")
+  const lbl = document.getElementById('admin-scope-label');
+  if (lbl) lbl.textContent = _adminViewAll ? 'All workspace' : 'Mine only';
+};
+
+// On boot, sync the toggle's checkbox/label with the persisted state once
+// the user is loaded. Hidden for non-admins via the .admin-only class
+// elsewhere.
+function syncAdminScopeToggle() {
+  const cb  = document.getElementById('admin-scope-toggle');
+  const lbl = document.getElementById('admin-scope-label');
+  if (cb)  cb.checked = _adminViewAll;
+  if (lbl) lbl.textContent = _adminViewAll ? 'All workspace' : 'Mine only';
+}
+
 function updateTicketPageStats() {
   const me = (window.CURRENT_USER || {}).name || '';
+  const scoped = visibleTickets();
   const counts = {
-    all:      TICKETS_DATA.length,
-    mine:     TICKETS_DATA.filter(t => getAssignees(t).includes(me)).length,
-    open:     TICKETS_DATA.filter(t => t.status === 'Open').length,
-    progress: TICKETS_DATA.filter(t => t.status === 'In Progress').length,
-    review:   TICKETS_DATA.filter(t => t.status === 'In Review').length,
-    hold:     TICKETS_DATA.filter(t => t.status === 'On Hold').length,
-    overdue:  TICKETS_DATA.filter(t => t.overdue || t.status === 'Overdue').length,
-    closed:   TICKETS_DATA.filter(t => t.status === 'Closed').length,
-    archived: TICKETS_DATA.filter(t => t.status === 'Archived').length,
+    all:      scoped.length,
+    mine:     scoped.filter(t => getAssignees(t).includes(me)).length,
+    open:     scoped.filter(t => t.status === 'Open').length,
+    progress: scoped.filter(t => t.status === 'In Progress').length,
+    review:   scoped.filter(t => t.status === 'In Review').length,
+    hold:     scoped.filter(t => t.status === 'On Hold').length,
+    overdue:  scoped.filter(t => t.overdue || t.status === 'Overdue').length,
+    closed:   scoped.filter(t => t.status === 'Closed').length,
+    archived: scoped.filter(t => t.status === 'Archived').length,
   };
   // Stat cards (data-filter-tab attribute)
   document.querySelectorAll('[data-filter-tab]').forEach(card => {
@@ -11325,15 +11421,16 @@ function updateTicketPageStats() {
 // ── Dashboard donut chart updater ────────────────────────────────────────────
 function updateDashDonut() {
   const C = 2 * Math.PI * 44;
-  const realTotal = TICKETS_DATA.length;
+  const scoped = (typeof visibleTickets === 'function') ? visibleTickets() : TICKETS_DATA;
+  const realTotal = scoped.length;
   const counts = {
-    'Open':           TICKETS_DATA.filter(t => t.status === 'Open').length,
-    'In Progress':    TICKETS_DATA.filter(t => t.status === 'In Progress').length,
-    'On Hold':        TICKETS_DATA.filter(t => t.status === 'On Hold').length,
-    'In Review':      TICKETS_DATA.filter(t => t.status === 'In Review').length,
-    'Closed':         TICKETS_DATA.filter(t => t.status === 'Closed').length,
-    'Overdue':        TICKETS_DATA.filter(t => t.status === 'Overdue').length,
-    'Pending Review': TICKETS_DATA.filter(t => t.status === 'Pending Review').length,
+    'Open':           scoped.filter(t => t.status === 'Open').length,
+    'In Progress':    scoped.filter(t => t.status === 'In Progress').length,
+    'On Hold':        scoped.filter(t => t.status === 'On Hold').length,
+    'In Review':      scoped.filter(t => t.status === 'In Review').length,
+    'Closed':         scoped.filter(t => t.status === 'Closed').length,
+    'Overdue':        scoped.filter(t => t.status === 'Overdue').length,
+    'Pending Review': scoped.filter(t => t.status === 'Pending Review').length,
   };
   const order = ['Open', 'In Progress', 'On Hold', 'In Review', 'Closed'];
   // donut segments use sum of the 5 base categories; extra statuses appear in legend only
@@ -11460,11 +11557,21 @@ async function initApp() {
   PLANS.length = 0;
   plans.forEach(p => PLANS.push({ id:p.id, title:p.title, notes:p.notes||'', files:p.files||[], status:p.status||'draft', createdAt:p.createdAt||'', updatedAt:p.updatedAt||'', promotedTicketId:p.promotedTicketId||null, reminderAt:p.reminderAt||null, reminderTriggered:!!p.reminderTriggered }));
 
+  // Sync the admin-scope toggle in the topbar with persisted state before
+  // we compute counts — initDashboard + DASH_BASELINE both honour the
+  // scope, so an admin who left "All workspace" on last visit gets the
+  // same numbers on next paint without a flicker.
+  if (typeof syncAdminScopeToggle === 'function') syncAdminScopeToggle();
+
   // Re-render with live data — replace fake baseline with real DB counts
-  DASH_BASELINE.total      = TICKETS_DATA.length;
-  DASH_BASELINE.inProgress = TICKETS_DATA.filter(t => t.status === 'In Progress').length;
-  DASH_BASELINE.overdue    = TICKETS_DATA.filter(t => t.overdue || t.status === 'Overdue').length;
-  DASH_BASELINE.completed  = TICKETS_DATA.filter(t => t.status === 'Closed').length;
+  // Honour the admin scope toggle: in personal view (default), counts cover
+  // only the user's own tickets — same source of truth as the donut + tab
+  // counters.
+  const _scoped = (typeof visibleTickets === 'function') ? visibleTickets() : TICKETS_DATA;
+  DASH_BASELINE.total      = _scoped.length;
+  DASH_BASELINE.inProgress = _scoped.filter(t => t.status === 'In Progress').length;
+  DASH_BASELINE.overdue    = _scoped.filter(t => t.overdue || t.status === 'Overdue').length;
+  DASH_BASELINE.completed  = _scoped.filter(t => t.status === 'Closed').length;
   DASH_INITIAL_SNAPSHOT = null;
   captureDashboardBaseline();
   initDashboard();
