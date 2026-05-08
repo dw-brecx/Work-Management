@@ -51,13 +51,28 @@
   .search-wrap input{width:100%;padding:7px 10px 7px 32px;border:1px solid var(--border);border-radius:8px;font-size:12px;background:var(--bg2);color:var(--text);outline:none}
   .search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%)}
   .topbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
-  /* Admin-scope toggle: when the hidden checkbox is checked, slide the
-     thumb to the right and tint the track purple. */
-  #admin-scope-wrap input:checked ~ .scope-track,
-  #admin-scope-wrap:has(input:checked) .scope-track { background:#7c3aed; }
-  #admin-scope-wrap input:checked ~ .scope-track .scope-thumb,
-  #admin-scope-wrap:has(input:checked) .scope-thumb { transform: translateX(12px); }
-  #admin-scope-wrap:hover { background:#fafbff; border-color:#cbd5e1; }
+  /* Admin-scope segmented control: high-contrast active state, clear
+     inactive state, both buttons visible at all times. */
+  .admin-scope-btn{
+    appearance:none;
+    background:transparent;
+    border:0;
+    cursor:pointer;
+    padding:6px 14px;
+    border-radius:7px;
+    font-size:12px;
+    font-weight:600;
+    color:#4f46e5;
+    transition:background .12s, color .12s, box-shadow .12s;
+    min-width:46px;
+  }
+  .admin-scope-btn:hover{ background:rgba(79,70,229,.08); }
+  .admin-scope-btn.active{
+    background:#4f46e5;
+    color:#fff;
+    box-shadow:0 1px 3px rgba(79,70,229,.45);
+  }
+  .admin-scope-btn.active:hover{ background:#4338ca; }
   /* Hide the toggle on narrow desktop windows where the topbar starts
      overflowing — admin can still flip it on a wider screen / via URL. */
   @media (max-width: 1100px) { #admin-scope-wrap { display: none !important; } }
@@ -221,6 +236,17 @@
   /* KANBAN */
   .kanban{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
   .kanban-col{background:var(--bg2);border-radius:10px;overflow:hidden}
+  /* Drag-and-drop visual cues. Card grabs by default; while dragging it
+     fades to indicate it's being moved; the target column glows. */
+  .kanban-card{cursor:grab}
+  .kanban-card:active{cursor:grabbing}
+  .kanban-card.drag-source{opacity:.4}
+  .kanban-col.drag-over .kanban-body{
+    background:rgba(124,58,237,.06);
+    box-shadow:inset 0 0 0 2px rgba(124,58,237,.45);
+    border-radius:8px;
+    transition:background .12s, box-shadow .12s;
+  }
   .kanban-header{padding:10px 14px;font-size:12px;font-weight:500;border-bottom:1px solid var(--border)}
   .kanban-body{padding:10px;min-height:200px}
   .kanban-card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer}
@@ -2401,17 +2427,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <div class="topbar-right">
       <button class="btn-soft" onclick="openPlanModal()" style="font-size:12px;padding:8px 12px">+ New Plan</button>
       <button class="btn-soft admin-only" id="new-flavor-btn" onclick="openNewFlavorModal()" style="font-size:12px;padding:8px 12px;background:#ecfeff;color:#0e7490;border:1px solid #a5f3fc">+ New Flavor</button>
-      <!-- Workspace-scope toggle (admin/manager only). Default OFF = personal view —
-           dashboard counts + tickets list show only the user's own tickets, the
-           same way a Member sees them. Flip ON to see everything across the
-           workspace. State persists in localStorage. -->
-      <label class="admin-only" id="admin-scope-wrap" style="position:relative;display:inline-flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;font-size:11.5px;color:var(--text2);user-select:none;cursor:pointer;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff" title="Toggle between Mine and All workspace views">
-        <span class="scope-track" style="position:relative;width:28px;height:16px;background:#e2e8f0;border-radius:10px;transition:background .18s;flex-shrink:0">
-          <span class="scope-thumb" style="position:absolute;top:2px;left:2px;width:12px;height:12px;background:#fff;border-radius:50%;box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform .18s"></span>
-        </span>
-        <span id="admin-scope-label" style="font-weight:500">Mine</span>
-        <input type="checkbox" id="admin-scope-toggle" onchange="toggleAdminViewAll(this.checked)" style="position:absolute;opacity:0;pointer-events:none"/>
-      </label>
+      <!-- Workspace-scope segmented toggle (admin/manager only). Default = Mine.
+           Two-button group instead of a slider so the active state is crisp
+           and unambiguous. State persists in localStorage. -->
+      <div class="admin-only" id="admin-scope-wrap" style="display:inline-flex;flex-shrink:0;white-space:nowrap;background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:3px;gap:2px" role="tablist" aria-label="Workspace scope">
+        <button type="button" class="admin-scope-btn active" data-scope="mine" onclick="toggleAdminViewAll(false)" aria-label="Show only my tickets">Mine</button>
+        <button type="button" class="admin-scope-btn"        data-scope="all"  onclick="toggleAdminViewAll(true)"  aria-label="Show all workspace tickets">All</button>
+      </div>
       <button class="btn-primary" onclick="openModal('create-ticket')">+ Create Ticket</button>
       <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel(event)" aria-label="Open notifications">
         <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
@@ -7446,7 +7468,7 @@ function renderKanban() {
           const dueLabel = sla.text;
           const dueColor = sla.color;
           const created = formatCreatedShort(t.created);
-          return `<div class="kanban-card" onclick="openTicketDetail('${t.id}')">
+          return `<div class="kanban-card" draggable="true" data-tid="${t.id}" onclick="openTicketDetail('${t.id}')">
             <div class="k-id">
               <span>${t.id}</span>
               ${created ? `<span style="color:var(--text3)">·</span><span class="k-created">Created ${escapeHtml(created)}</span>` : ''}
@@ -7462,11 +7484,97 @@ function renderKanban() {
         }).join('')
       : `<div style="font-size:11px;color:var(--text3);text-align:center;padding:18px 8px">${q || range !== 'all' ? 'No matches in this column.' : 'No tickets here.'}</div>`;
     return `
-      <div class="kanban-col">
+      <div class="kanban-col" data-colkey="${col.key}">
         <div class="kanban-header" style="background:${col.bg};color:${col.color}">${col.label} <span style="opacity:.6">(${items.length})</span></div>
         <div class="kanban-body">${cards}</div>
       </div>`;
   }).join('');
+  // Wire drag-and-drop once — uses event delegation on the board so it
+  // survives every re-render without re-binding handlers per card.
+  if (typeof wireKanbanDragDrop === 'function') wireKanbanDragDrop();
+}
+
+// ── Kanban drag-and-drop (move tickets between columns to change status) ───
+// Uses HTML5 native drag-and-drop with delegation on #kanban-board, so a
+// re-render of the board doesn't drop the listeners. Drop on a column =
+// status change → optimistic local update + PUT /api/tickets/:id, with
+// rollback on failure.
+let _kanbanDragWired = false;
+function wireKanbanDragDrop() {
+  const board = document.getElementById('kanban-board');
+  if (!board || _kanbanDragWired) return;
+  _kanbanDragWired = true;
+
+  function colPrimaryStatus(colKey) {
+    const c = KAN_COLS.find(x => x.key === colKey);
+    if (!c) return null;
+    // Overdue is computed from the due date, not a settable target — skip it.
+    return c.statuses.find(s => s !== 'Overdue') || c.statuses[0];
+  }
+  function colForStatus(status) {
+    return KAN_COLS.find(c => c.statuses.includes(status));
+  }
+
+  board.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('.kanban-card');
+    if (!card || !card.dataset.tid) return;
+    e.dataTransfer.setData('text/plain', card.dataset.tid);
+    e.dataTransfer.effectAllowed = 'move';
+    card.classList.add('drag-source');
+  });
+  board.addEventListener('dragend', () => {
+    document.querySelectorAll('.kanban-card.drag-source').forEach(c => c.classList.remove('drag-source'));
+    document.querySelectorAll('.kanban-col.drag-over').forEach(c => c.classList.remove('drag-over'));
+  });
+  board.addEventListener('dragover', (e) => {
+    const col = e.target.closest('.kanban-col');
+    if (!col) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    col.classList.add('drag-over');
+  });
+  board.addEventListener('dragleave', (e) => {
+    const col = e.target.closest('.kanban-col');
+    if (col && !col.contains(e.relatedTarget)) col.classList.remove('drag-over');
+  });
+  board.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const col = e.target.closest('.kanban-col');
+    document.querySelectorAll('.kanban-col.drag-over').forEach(c => c.classList.remove('drag-over'));
+    if (!col || !col.dataset.colkey) return;
+    const tid = e.dataTransfer.getData('text/plain');
+    const t = TICKETS_DATA.find(x => x.id === tid);
+    if (!t) return;
+    // If the ticket already lives in the dropped-on column, don't downgrade
+    // its specific status (e.g. dropping an In-Review ticket on the same
+    // "In Progress" column shouldn't revert it to In Progress).
+    const currentCol = colForStatus(t.status);
+    if (currentCol && currentCol.key === col.dataset.colkey) return;
+    const newStatus = colPrimaryStatus(col.dataset.colkey);
+    if (!newStatus || t.status === newStatus) return;
+
+    const prevStatus = t.status;
+    t.status = newStatus;
+    if (typeof renderKanban === 'function') renderKanban();
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof updateTicketPageStats === 'function') updateTicketPageStats();
+    if (typeof initDashboard === 'function') initDashboard();
+    if (typeof updateDashDonut === 'function') updateDashDonut();
+    try {
+      const r = await fetch('/api/tickets/' + encodeURIComponent(t.id), {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ status: newStatus })
+      });
+      if (!r.ok) throw new Error('status ' + r.status);
+    } catch (err) {
+      // Roll back optimistic update + alert the user
+      t.status = prevStatus;
+      if (typeof renderKanban === 'function') renderKanban();
+      if (typeof renderTickets === 'function') renderTickets();
+      alert('Could not update status — ' + (err.message || err));
+    }
+  });
 }
 
 // ============ TEAMS ============
@@ -11378,19 +11486,23 @@ window.toggleAdminViewAll = function(checked) {
   if (typeof updateTicketPageStats === 'function') updateTicketPageStats();
   if (typeof initDashboard === 'function') initDashboard();
   if (typeof updateDashDonut === 'function') updateDashDonut();
-  // Reflect the new label on the toggle.
-  const lbl = document.getElementById('admin-scope-label');
-  if (lbl) lbl.textContent = _adminViewAll ? 'All' : 'Mine';
+  // Reflect the new active button on the segmented control.
+  document.querySelectorAll('.admin-scope-btn').forEach(b => {
+    const wantActive = (b.dataset.scope === 'all') === _adminViewAll;
+    b.classList.toggle('active', wantActive);
+  });
 };
 
 // On boot, sync the toggle's checkbox/label with the persisted state once
 // the user is loaded. Hidden for non-admins via the .admin-only class
 // elsewhere.
 function syncAdminScopeToggle() {
-  const cb  = document.getElementById('admin-scope-toggle');
-  const lbl = document.getElementById('admin-scope-label');
-  if (cb)  cb.checked = _adminViewAll;
-  if (lbl) lbl.textContent = _adminViewAll ? 'All' : 'Mine';
+  // Highlight whichever segment matches the persisted state. Done via a
+  // class swap so CSS controls the active style.
+  document.querySelectorAll('.admin-scope-btn').forEach(b => {
+    const wantActive = (b.dataset.scope === 'all') === _adminViewAll;
+    b.classList.toggle('active', wantActive);
+  });
 }
 
 function updateTicketPageStats() {
