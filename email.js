@@ -19,6 +19,15 @@
  *  15. password-changed         sendPasswordChangedEmail
  *  16. new-device-login         sendNewDeviceLoginEmail
  *  17. overdue-digest           sendOverdueDigestEmail
+ *  18. ticket-reminder          sendTicketReminderEmail   (user-set self-reminder)
+ *
+ * URL conventions used in every template (path-based, clean URLs):
+ *   ${APP_URL}/tickets/TKT-1069    — single ticket
+ *   ${APP_URL}/tickets?filter=...  — ticket list with filter
+ *   ${APP_URL}/calendar            — calendar view
+ *   ${APP_URL}/settings            — settings / account
+ *   ${APP_URL}/invite.html?token=  — invite landing
+ *   ${APP_URL}/reset-password.html?token=  — reset landing
  *
  * Configuration (.env):
  *   SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS
@@ -34,8 +43,18 @@ require('dotenv').config();
 const nodemailer = require('nodemailer');
 
 const APP_NAME = process.env.APP_NAME || 'Ticket - Brecx';
-const APP_URL  = process.env.APP_URL  || `http://localhost:${process.env.PORT || 3000}`;
+const APP_URL  = (process.env.APP_URL  || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, '');
 const FROM     = process.env.FROM_EMAIL || `${APP_NAME} <no-reply@example.com>`;
+
+// ── URL builders ─────────────────────────────────────────────────────────────
+// All app deep-links are generated through these helpers so the path scheme is
+// kept in one place. Frontend should serve /tickets, /tickets/:id, /calendar,
+// /settings via SPA routes (server.js handles this).
+function ticketUrl(id)        { return `${APP_URL}/tickets/${encodeURIComponent(id)}`; }
+function ticketListUrl(query) { return `${APP_URL}/tickets${query ? `?${query}` : ''}`; }
+function calendarUrl()        { return `${APP_URL}/calendar`; }
+function settingsUrl()        { return `${APP_URL}/settings`; }
+function inviteUrl(token)     { return `${APP_URL}/invite.html?token=${encodeURIComponent(token)}`; }
 
 // ── Transporter ──────────────────────────────────────────────────────────────
 let transporter = null;
@@ -254,7 +273,7 @@ function shell(opts) {
           <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:20px 36px;">
             <p style="margin:0 0 6px 0;font-size:11px;color:#94a3b8;line-height:1.55;">
               You're receiving this because you're a member of the ${escapeHtml(APP_NAME)} workspace.
-              <a href="${APP_URL}/settings" style="color:#475569;text-decoration:underline;">Notification settings</a>
+              <a href="${settingsUrl()}" style="color:#475569;text-decoration:underline;">Notification settings</a>
             </p>
           </td>
         </tr>
@@ -337,10 +356,6 @@ async function sendMeetingInviteEmail({
   const attendeesText = (attendees || []).filter(Boolean).map(escapeHtml).join(', ') || '—';
   const subject = `Meeting invite: ${title || 'Meeting'}${startAt ? ` · ${fmtShortDate(startAt)}` : ''}`;
 
-  const ctaHref = eventId
-    ? `${APP_URL}/?event=${encodeURIComponent(eventId)}`
-    : `${APP_URL}/`;
-
   const html = shell({
     name: 'Meeting invitation', subject,
     preheader: `${organizerName || 'Someone'} invited you to ${title || 'a meeting'}${startAt ? ` on ${fmtShortDate(startAt)}` : ''}.`,
@@ -360,7 +375,7 @@ async function sendMeetingInviteEmail({
           `<p style="margin:0 0 18px 0;font-size:13px;color:#0f172a;line-height:1.65;">${escapeHtml(description)}</p>`
         : ''),
     ctaText: 'View in Calendar',
-    ctaHref,
+    ctaHref: calendarUrl(),
     footerNote: 'Need to decline or reschedule? Reply directly to this email or update your response in ' + escapeHtml(APP_NAME) + '.',
   });
   return sendMail({ to: toEmail, subject, html });
@@ -393,10 +408,8 @@ async function sendMeetingReminderEmail({
         infoRow('Attendees', `${Number(attendeesCount || 1)} ${attendeesCount === 1 ? 'person' : 'people'}`),
       ]) +
       `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">Heads-up so you have time to get ready.</p>`,
-    ctaText: location && /^https?:\/\//i.test(location) ? 'Join meeting' : 'Open event',
-    ctaHref: location && /^https?:\/\//i.test(location)
-      ? location
-      : (eventId ? `${APP_URL}/?event=${encodeURIComponent(eventId)}` : `${APP_URL}/`),
+    ctaText: location && /^https?:\/\//i.test(location) ? 'Join meeting' : 'Open calendar',
+    ctaHref: location && /^https?:\/\//i.test(location) ? location : calendarUrl(),
     footerNote: `Can't make it? Open the event in ${escapeHtml(APP_NAME)} to mark yourself as away.`,
   });
   return sendMail({ to: toEmail, subject, html });
@@ -414,7 +427,7 @@ async function sendTaskAssignedEmail({
     ? `<span style="color:#dc2626;font-weight:600;">${escapeHtml(fmtLongDate(dueAt))}</span>`
     : '—';
   const linkedLine = linkedTicketId
-    ? `<a href="${APP_URL}/?ticket=${encodeURIComponent(linkedTicketId)}" style="color:#004874;text-decoration:underline;">${escapeHtml(linkedTicketId)}${linkedTicketTitle ? ` &middot; ${escapeHtml(linkedTicketTitle)}` : ''}</a>`
+    ? `<a href="${ticketUrl(linkedTicketId)}" style="color:#004874;text-decoration:underline;">${escapeHtml(linkedTicketId)}${linkedTicketTitle ? ` &middot; ${escapeHtml(linkedTicketTitle)}` : ''}</a>`
     : '—';
 
   const html = shell({
@@ -434,8 +447,8 @@ async function sendTaskAssignedEmail({
         ? `<p style="margin:0 0 10px 0;font-size:13px;font-weight:600;color:#475569;">What's needed</p>` +
           `<p style="margin:0 0 14px 0;font-size:13px;color:#0f172a;line-height:1.65;">${escapeHtml(description)}</p>`
         : ''),
-    ctaText: 'Open task',
-    ctaHref: eventId ? `${APP_URL}/?event=${encodeURIComponent(eventId)}` : `${APP_URL}/`,
+    ctaText: 'Open in calendar',
+    ctaHref: calendarUrl(),
     footerNote: 'You can reschedule or reassign this task from Calendar &rarr; click the date.',
   });
   return sendMail({ to: toEmail, subject, html });
@@ -450,7 +463,7 @@ async function sendDeadlineApproachingEmail({
   if (!toEmail) return { skipped: true };
   const subject = `Deadline tomorrow: ${title || 'Item'}${dueAt ? ` due ${fmtShortDate(dueAt)}` : ''}`;
   const linkedLine = linkedTicketId
-    ? `<a href="${APP_URL}/?ticket=${encodeURIComponent(linkedTicketId)}" style="color:#004874;text-decoration:underline;">${escapeHtml(linkedTicketId)}${linkedTicketTitle ? ` &middot; ${escapeHtml(linkedTicketTitle)}` : ''}</a>`
+    ? `<a href="${ticketUrl(linkedTicketId)}" style="color:#004874;text-decoration:underline;">${escapeHtml(linkedTicketId)}${linkedTicketTitle ? ` &middot; ${escapeHtml(linkedTicketTitle)}` : ''}</a>`
     : '—';
   const sCol = statusColors(status);
   const statusBadge = `<span style="background:${sCol.bg};color:${sCol.fg};padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;">${escapeHtml(status || 'In progress')}</span>`;
@@ -477,10 +490,8 @@ async function sendDeadlineApproachingEmail({
         infoRow('Linked', linkedLine),
         infoRow('Status', statusBadge),
       ]) + outstandingHtml,
-    ctaText: 'Open ticket',
-    ctaHref: linkedTicketId
-      ? `${APP_URL}/?ticket=${encodeURIComponent(linkedTicketId)}`
-      : (eventId ? `${APP_URL}/?event=${encodeURIComponent(eventId)}` : `${APP_URL}/`),
+    ctaText: linkedTicketId ? 'Open ticket' : 'Open calendar',
+    ctaHref: linkedTicketId ? ticketUrl(linkedTicketId) : calendarUrl(),
     footerNote: `If this deadline needs to slip, update the date in ${escapeHtml(APP_NAME)} so the team is aligned.`,
   });
   return sendMail({ to: toEmail, subject, html });
@@ -518,7 +529,7 @@ async function sendEventCancelledEmail({
       (reason ? quoteBlock(escapeHtml(reason), `— ${escapeHtml(cancellerName || '')}`) : '') +
       `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">No action needed. The slot has been removed from your calendar automatically.</p>`,
     ctaText: 'View calendar',
-    ctaHref: `${APP_URL}/?view=calendar`,
+    ctaHref: calendarUrl(),
     footerNote: '',
   });
   return sendMail({ to: toEmail, subject, html });
@@ -534,7 +545,7 @@ async function sendTicketAssignedEmail({
   const subject = `${ticketId} assigned to you${title ? ` · ${title}` : ''}`;
   const pCol = priorityColors(priority);
   const sCol = statusColors(status);
-  const url = `${APP_URL}/?ticket=${encodeURIComponent(ticketId)}`;
+  const url = ticketUrl(ticketId);
 
   const html = shell({
     name: 'Ticket assigned', subject,
@@ -572,7 +583,7 @@ async function sendTicketStatusChangedEmail({
   const subject = `${ticketId} moved from ${fromStatus} to ${toStatus}`;
   const fromCol = statusColors(fromStatus);
   const toCol   = statusColors(toStatus);
-  const url = `${APP_URL}/?ticket=${encodeURIComponent(ticketId)}`;
+  const url = ticketUrl(ticketId);
 
   const html = shell({
     name: 'Status changed', subject,
@@ -603,7 +614,7 @@ async function sendNewCommentEmail({
 }) {
   if (!toEmail) return { skipped: true };
   const subject = `${authorName || 'Someone'} commented on ${ticketId}${title ? ` · ${title}` : ''}`;
-  const url = `${APP_URL}/?ticket=${encodeURIComponent(ticketId)}`;
+  const url = ticketUrl(ticketId);
   const init = initials(authorName);
   const bg = authorBg || '#a78bfa';
   const fg = authorFg || '#ffffff';
@@ -651,7 +662,7 @@ async function sendMentionEmail({
 }) {
   if (!toEmail) return { skipped: true };
   const subject = `${authorName || 'Someone'} mentioned you on ${ticketId}${title ? ` · ${title}` : ''}`;
-  const url = `${APP_URL}/?ticket=${encodeURIComponent(ticketId)}`;
+  const url = ticketUrl(ticketId);
   const init = initials(authorName);
   const youTag = `@${escapeHtml(toName || 'you')}`;
 
@@ -697,7 +708,7 @@ async function sendTicketClosedEmail({
 }) {
   if (!toEmail) return { skipped: true };
   const subject = `${ticketId} has been closed${title ? ` · ${title}` : ''}`;
-  const url = `${APP_URL}/?ticket=${encodeURIComponent(ticketId)}`;
+  const url = ticketUrl(ticketId);
   const resolvedDate = resolvedAt ? fmtShortDate(resolvedAt) : fmtShortDate(new Date());
 
   const html = shell({
@@ -737,7 +748,6 @@ async function sendInviteEmail({
   toEmail, toName, inviterName, inviterEmail, role, dept, token, workspaceName,
 }) {
   if (!toEmail) return { skipped: true };
-  const inviteUrl = `${APP_URL}/invite.html?token=${token}`;
   const subject = `${inviterName || 'Your team'} invited you to join ${APP_NAME}`;
   const wsName = workspaceName || APP_NAME;
   const wsInitial = (wsName || 'W').trim()[0]?.toUpperCase() || 'W';
@@ -775,7 +785,7 @@ async function sendInviteEmail({
       ]) +
       `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">Click below to accept and create your account. The invite expires in <b>7 days</b>.</p>`,
     ctaText: 'Accept invite',
-    ctaHref: inviteUrl,
+    ctaHref: inviteUrl(token),
     footerNote: `If you weren't expecting this invite, you can safely ignore this email — no account will be created.`,
   });
   return sendMail({ to: toEmail, subject, html });
@@ -870,7 +880,7 @@ async function sendWelcomeEmail({ toEmail, toName }) {
 async function sendForgotPasswordEmail({ toEmail, toName, resetUrl, ip, locationLabel }) {
   if (!toEmail) return { skipped: true };
   const subject = `Reset your ${APP_NAME} password`;
-  const url = resetUrl || `${APP_URL}/reset`;
+  const url = resetUrl || `${APP_URL}/reset-password.html`;
 
   const html = shell({
     name: 'Reset password', subject,
@@ -928,7 +938,7 @@ async function sendPasswordChangedEmail({ toEmail, toName, ip, device, locationL
         </td></tr>
       </table>`,
     ctaText: 'Secure my account',
-    ctaHref: `${APP_URL}/?view=settings`,
+    ctaHref: settingsUrl(),
     footerNote: 'If you made this change, no further action is needed.',
   });
   return sendMail({ to: toEmail, subject, html });
@@ -963,7 +973,7 @@ async function sendNewDeviceLoginEmail({ toEmail, toName, ip, device, locationLa
         </td></tr>
       </table>`,
     ctaText: 'Review activity',
-    ctaHref: `${APP_URL}/?view=settings`,
+    ctaHref: settingsUrl(),
     footerNote: '',
   });
   return sendMail({ to: toEmail, subject, html });
@@ -1011,7 +1021,7 @@ async function sendOverdueDigestEmail({ toEmail, toName, items }) {
   const sortedList = [...list].sort((a, b) => Number(b.daysLate || 0) - Number(a.daysLate || 0));
   const rowsHtml = sortedList.map(it => {
     const idColor = /ticket/i.test(it.type || '') ? '#dc2626' : (/deadline/i.test(it.type || '') ? '#7c3aed' : '#16a34a');
-    const link = it.link || (it.id?.startsWith('TKT-') ? `${APP_URL}/?ticket=${encodeURIComponent(it.id)}` : APP_URL);
+    const link = it.link || (it.id?.startsWith('TKT-') ? ticketUrl(it.id) : APP_URL);
     return overdueRow(it.id || '—', it.title || 'Untitled', it.type || 'Item', Number(it.daysLate || 0), it.owner || '—', link, idColor);
   }).join('');
 
@@ -1060,14 +1070,14 @@ async function sendOverdueDigestEmail({ toEmail, toName, items }) {
         </td></tr>
       </table>`,
     ctaText: 'Open overdue list',
-    ctaHref: `${APP_URL}/?filter=overdue`,
+    ctaHref: ticketListUrl('filter=overdue'),
     footerNote: `You're getting this overdue alert daily while items remain past due. Change frequency or turn it off in Settings → Notifications.`,
   });
   return sendMail({ to: toEmail, subject, html });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 16. TICKET REMINDER (user-set self-reminder on a ticket)
+// 18. TICKET REMINDER (user-set self-reminder on a ticket)
 // ─────────────────────────────────────────────────────────────────────────────
 async function sendTicketReminderEmail({
   toEmail, toName, ticketId, title, status, priority, dueAt, dept, note,
@@ -1094,7 +1104,7 @@ async function sendTicketReminderEmail({
       ]) +
       `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">You set this reminder yourself. Open the ticket to follow up, change status, or set another reminder.</p>`,
     ctaText: 'Open ticket',
-    ctaHref: ticketId ? `${APP_URL}/tickets/${encodeURIComponent(ticketId)}` : `${APP_URL}/`,
+    ctaHref: ticketId ? ticketUrl(ticketId) : APP_URL,
     footerNote: `Reminders only go to the person who set them. To stop getting these for this ticket, open it and remove the reminder.`,
   });
   return sendMail({ to: toEmail, subject, html });
