@@ -1138,6 +1138,234 @@ app.delete('/api/reminders/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Personal reminders ("My Reminders") ─────────────────────────────────────
+// A private per-user task list. Optionally linked to a ticket. Each reminder
+// can carry voice notes / screen recordings / files (attachments table,
+// reminder_id column). Privacy: ALL routes filter by user_id = current user.
+// No admin override — these are personal notes, not workspace data.
+function _normalizeDueAt(raw) {
+  // Accept ISO datetime, 'YYYY-MM-DD HH:MM' (browser datetime-local), or
+  // 'YYYY-MM-DD' (date-only, treated as 09:00 UTC). Returns a UTC string in
+  // the same 'YYYY-MM-DD HH:MM:SS' shape the cron uses.
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const d = isDateOnly ? new Date(s + 'T09:00:00Z') : new Date(s);
+  if (isNaN(d)) return null;
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+function _serializeReminder(r, attachments = []) {
+  return {
+    id: r.id,
+    ticketId: r.ticket_id || null,
+    title: r.title || '',
+    description: r.description || '',
+    dueAt: r.due_at,
+    emailEnabled: !!r.email_enabled,
+    repeatDaily: !!r.repeat_daily,
+    showDailyInApp: !!r.show_daily_in_app,
+    completed: !!r.completed,
+    completedAt: r.completed_at || null,
+    lastEmailSentAt: r.last_email_sent_at || null,
+    lastInAppShownAt: r.last_in_app_shown_at || null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    attachments: attachments.map(a => ({
+      id: a.id, filename: a.filename, originalName: a.original_name,
+      mimeType: a.mime_type, size: a.size, createdAt: a.created_at,
+      url: `/uploads/${a.filename}`,
+    })),
+  };
+}
+
+// List the current user's reminders. Query params:
+//   ticketId=TKT-123  → only reminders for this ticket (still owner-scoped)
+//   filter=open|done|all  (default: open)
+app.get('/api/my-reminders', requireAuth, async (req, res) => {
+  try {
+    const { ticketId, filter } = req.query;
+    const where = ['user_id=?'];
+    const args = [req.session.userId];
+    if (ticketId) { where.push('ticket_id=?'); args.push(String(ticketId)); }
+    const f = String(filter || 'open').toLowerCase();
+    if (f === 'open')      where.push('completed=0');
+    else if (f === 'done') where.push('completed=1');
+    // else 'all': no completed filter
+    const rows = await all(
+      `SELECT * FROM personal_reminders WHERE ${where.join(' AND ')} ORDER BY completed ASC, due_at ASC, id DESC LIMIT 500`,
+      ...args
+    );
+    if (!rows.length) return res.json([]);
+    const ids = rows.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const atts = await all(
+      `SELECT * FROM attachments WHERE reminder_id IN (${placeholders}) ORDER BY created_at ASC`,
+      ...ids
+    );
+    const byReminder = new Map();
+    for (const a of atts) {
+      const arr = byReminder.get(a.reminder_id) || [];
+      arr.push(a);
+      byReminder.set(a.reminder_id, arr);
+    }
+    res.json(rows.map(r => _serializeReminder(r, byReminder.get(r.id) || [])));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Single reminder by id (with attachments). Owner-only.
+app.get('/api/my-reminders/:id', requireAuth, async (req, res) => {
+  try {
+    const r = await get('SELECT * FROM personal_reminders WHERE id=? AND user_id=?',
+      Number(req.params.id), req.session.userId);
+    if (!r) return res.status(404).json({ error: 'Not found' });
+    const atts = await all('SELECT * FROM attachments WHERE reminder_id=? ORDER BY created_at ASC', r.id);
+    res.json(_serializeReminder(r, atts));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Create. Body: { title, description, dueAt, ticketId?, emailEnabled,
+// repeatDaily, showDailyInApp }. Title required, dueAt required.
+app.post('/api/my-reminders', requireAuth, async (req, res) => {
+  try {
+    const {
+      title, description, dueAt, ticketId,
+      emailEnabled, repeatDaily, showDailyInApp,
+    } = req.body || {};
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle) return res.status(400).json({ error: 'title required' });
+    const stored = _normalizeDueAt(dueAt);
+    if (!stored) return res.status(400).json({ error: 'dueAt required (YYYY-MM-DD or ISO datetime)' });
+    // If linking to a ticket, verify the user has access to it. Without this
+    // a worker could observe ticket existence by id-guessing.
+    if (ticketId) {
+      if (!await canAccessTicket(req, String(ticketId))) {
+        return res.status(404).json({ error: 'Ticket not found' });
+      }
+    }
+    const info = await run(
+      `INSERT INTO personal_reminders
+         (user_id, ticket_id, title, description, due_at,
+          email_enabled, repeat_daily, show_daily_in_app)
+       VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+      req.session.userId,
+      ticketId ? String(ticketId) : null,
+      cleanTitle.slice(0, 200),
+      String(description || '').slice(0, 5000),
+      stored,
+      emailEnabled === false ? 0 : 1,
+      repeatDaily ? 1 : 0,
+      showDailyInApp ? 1 : 0,
+    );
+    const row = await get('SELECT * FROM personal_reminders WHERE id=?', Number(info.lastInsertRowid));
+    res.status(201).json(_serializeReminder(row, []));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Update. Owner-only. Any of the writable fields may be patched. Sending
+// completed:true sets completed_at; completed:false clears it (reopen).
+app.put('/api/my-reminders/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const own = await get('SELECT * FROM personal_reminders WHERE id=? AND user_id=?', id, req.session.userId);
+    if (!own) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const u = [];
+    const v = [];
+    if (b.title !== undefined) {
+      const t = String(b.title || '').trim();
+      if (!t) return res.status(400).json({ error: 'title cannot be empty' });
+      u.push('title=?'); v.push(t.slice(0, 200));
+    }
+    if (b.description !== undefined) { u.push('description=?'); v.push(String(b.description || '').slice(0, 5000)); }
+    if (b.dueAt !== undefined) {
+      const stored = _normalizeDueAt(b.dueAt);
+      if (!stored) return res.status(400).json({ error: 'Invalid dueAt' });
+      u.push('due_at=?'); v.push(stored);
+      // Editing dueAt resets the email high-water mark so the new time fires.
+      u.push('last_email_sent_at=?'); v.push(null);
+    }
+    if (b.ticketId !== undefined) {
+      if (b.ticketId && !await canAccessTicket(req, String(b.ticketId))) {
+        return res.status(404).json({ error: 'Ticket not found' });
+      }
+      u.push('ticket_id=?'); v.push(b.ticketId ? String(b.ticketId) : null);
+    }
+    if (b.emailEnabled !== undefined)  { u.push('email_enabled=?');     v.push(b.emailEnabled ? 1 : 0); }
+    if (b.repeatDaily !== undefined)   { u.push('repeat_daily=?');      v.push(b.repeatDaily ? 1 : 0); }
+    if (b.showDailyInApp !== undefined){ u.push('show_daily_in_app=?'); v.push(b.showDailyInApp ? 1 : 0); }
+    if (b.completed !== undefined) {
+      u.push('completed=?'); v.push(b.completed ? 1 : 0);
+      if (b.completed) {
+        u.push("completed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+      } else {
+        u.push('completed_at=?'); v.push(null);
+      }
+    }
+    if (!u.length) return res.json(_serializeReminder(own, []));
+    u.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+    v.push(id, req.session.userId);
+    await run(`UPDATE personal_reminders SET ${u.join(', ')} WHERE id=? AND user_id=?`, ...v);
+    const row = await get('SELECT * FROM personal_reminders WHERE id=?', id);
+    const atts = await all('SELECT * FROM attachments WHERE reminder_id=? ORDER BY created_at ASC', id);
+    res.json(_serializeReminder(row, atts));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete. Cascades to attachment files on disk + rows.
+app.delete('/api/my-reminders/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const own = await get('SELECT id FROM personal_reminders WHERE id=? AND user_id=?', id, req.session.userId);
+    if (!own) return res.json({ ok: true }); // already gone or not yours
+    const atts = await all('SELECT filename FROM attachments WHERE reminder_id=?', id);
+    for (const a of atts) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {}
+    }
+    await run('DELETE FROM attachments WHERE reminder_id=?', id);
+    await run('DELETE FROM personal_reminders WHERE id=? AND user_id=?', id, req.session.userId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Daily in-app popup feed: reminders the current user has flagged
+// show_daily_in_app, that aren't completed, and that haven't been shown
+// today yet (per the user's wall clock — comparison is on the date prefix
+// of last_in_app_shown_at vs the request's local-day key sent by the
+// client). Returned in due-date order so today's overdue ones come first.
+app.get('/api/my-reminders/today-popup/list', requireAuth, async (req, res) => {
+  try {
+    // The client passes its local YYYY-MM-DD as ?dayKey= to handle TZ
+    // differences. Fall back to UTC today when missing.
+    const dayKey = String(req.query.dayKey || '').match(/^\d{4}-\d{2}-\d{2}$/)
+      ? String(req.query.dayKey)
+      : new Date().toISOString().slice(0, 10);
+    const rows = await all(
+      `SELECT * FROM personal_reminders
+        WHERE user_id=? AND completed=0 AND show_daily_in_app=1
+          AND (last_in_app_shown_at IS NULL OR SUBSTR(last_in_app_shown_at, 1, 10) < ?)
+        ORDER BY due_at ASC, id ASC`,
+      req.session.userId, dayKey
+    );
+    res.json(rows.map(r => _serializeReminder(r, [])));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark a reminder as having been shown in the daily popup today. Doesn't
+// complete it — just bumps last_in_app_shown_at so it doesn't reappear
+// until tomorrow. Owner-only.
+app.post('/api/my-reminders/:id/seen-today', requireAuth, async (req, res) => {
+  try {
+    await run(
+      `UPDATE personal_reminders
+          SET last_in_app_shown_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+        WHERE id=? AND user_id=?`,
+      Number(req.params.id), req.session.userId
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const row = await get('SELECT * FROM ticket_details WHERE ticket_id=?', req.params.id);
@@ -2474,7 +2702,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
       return res.status(400).json({ error: 'No file' });
     }
     const u = await getUser(req.session.userId);
-    const { ticketId, commentId, subtaskId, feedbackId, announcementId } = req.body;
+    const { ticketId, commentId, subtaskId, feedbackId, announcementId, reminderId } = req.body;
     // Verify the uploader actually has access to the parent ticket. Without
     // this a Member could attach files to anyone's ticket by id-guessing.
     let parentTicketId = ticketId || null;
@@ -2495,16 +2723,27 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
         return res.status(403).json({ error: 'Admin only' });
       }
     }
+    // Personal-reminder attachments: only the owner can attach. The reminder
+    // is private to its user_id.
+    if (reminderId) {
+      const own = await get('SELECT id FROM personal_reminders WHERE id=? AND user_id=?',
+        Number(reminderId), req.session.userId);
+      if (!own) {
+        try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+        return res.status(404).json({ error: 'Reminder not found' });
+      }
+    }
     // Feedback attachments: anyone authenticated can attach to any feedback
     // item (the feedback page is shared by everyone). No further check
     // beyond the auth middleware.
     const info = await run(
-      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id',
+      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
       ticketId || null,
       commentId ? Number(commentId) : null,
       subtaskId ? Number(subtaskId) : null,
       feedbackId ? Number(feedbackId) : null,
       announcementId ? Number(announcementId) : null,
+      reminderId ? Number(reminderId) : null,
       req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
     );
     res.json({
@@ -2530,6 +2769,16 @@ app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
   try {
     const att = await get('SELECT * FROM attachments WHERE id=?', req.params.id);
     if (!att) return res.json({ ok: true }); // already gone
+    // Personal-reminder attachments are private to the reminder's owner.
+    // Even an admin can't delete one — reminders are not workspace data.
+    if (att.reminder_id) {
+      const own = await get('SELECT id FROM personal_reminders WHERE id=? AND user_id=?',
+        att.reminder_id, req.session.userId);
+      if (!own) return res.status(404).json({ error: 'Attachment not found' });
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, att.filename)); } catch {}
+      await run('DELETE FROM attachments WHERE id=?', req.params.id);
+      return res.json({ ok: true });
+    }
     // Resolve the parent ticket id (direct or via the parent subtask) and verify access
     let ticketId = att.ticket_id;
     if (!ticketId && att.subtask_id) {

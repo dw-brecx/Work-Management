@@ -382,6 +382,35 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_ticket_reminders_due ON ticket_reminders (sent, remind_at)`,
     `CREATE INDEX IF NOT EXISTS idx_ticket_reminders_ticket_user ON ticket_reminders (ticket_id, user_id)`,
+    // Personal reminders ("My Reminders"): a private per-user task list. Rows
+    // are visible only to user_id. Optionally linked to a ticket (ticket_id),
+    // but the link is one-way — tickets never expose another user's reminders.
+    // due_at is stored as 'YYYY-MM-DD HH:MM:SS' UTC so the cron can compare
+    // directly against TO_CHAR(NOW()). When repeat_daily=1, the email cron
+    // re-fires at the same time-of-day every day until completed=1; the
+    // last_email_sent_at high-water mark prevents duplicate sends within a
+    // single day. show_daily_in_app=1 surfaces the row in the once-per-day
+    // in-app popup, with last_in_app_shown_at gating per-day display.
+    `CREATE TABLE IF NOT EXISTS personal_reminders (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      due_at TEXT NOT NULL,
+      email_enabled INTEGER DEFAULT 1,
+      repeat_daily INTEGER DEFAULT 0,
+      show_daily_in_app INTEGER DEFAULT 0,
+      completed INTEGER DEFAULT 0,
+      completed_at TEXT DEFAULT NULL,
+      last_email_sent_at TEXT DEFAULT NULL,
+      last_in_app_shown_at TEXT DEFAULT NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_personal_reminders_user ON personal_reminders (user_id, completed)`,
+    `CREATE INDEX IF NOT EXISTS idx_personal_reminders_ticket ON personal_reminders (ticket_id, user_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_personal_reminders_due ON personal_reminders (completed, email_enabled, due_at)`,
   ];
 
   for (const sql of tables) {
@@ -394,6 +423,11 @@ async function init() {
   // recordings, and pasted screenshots can be attached to either.
   await safeAlter('ALTER TABLE attachments ADD COLUMN feedback_id INTEGER');
   await safeAlter('ALTER TABLE attachments ADD COLUMN announcement_id INTEGER');
+  // Personal-reminder media: voice notes, screen recordings, files, and
+  // pasted images attach to a reminder via this column. Per-user privacy is
+  // inherited from the parent reminder row (the upload + delete routes
+  // verify the caller owns the reminder).
+  await safeAlter('ALTER TABLE attachments ADD COLUMN reminder_id INTEGER');
   // Announcements gain a 'kind' tag (feature / bugfix / update / note) so the
   // What's New feed can color-code them. Default 'update' is safe for any
   // existing row that pre-dates this column.
