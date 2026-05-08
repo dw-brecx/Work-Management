@@ -73,6 +73,7 @@ const {
   sendMeetingInviteEmail, sendMeetingReminderEmail, sendTaskAssignedEmail,
   sendDeadlineApproachingEmail, sendEventCancelledEmail,
   sendTicketReminderEmail,
+  sendPersonalReminderEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
 } = require('./email');
@@ -3169,6 +3170,62 @@ async function runTicketReminderJob() {
   } catch (e) { console.error('[cron:ticket-reminder] failed:', e.message); }
 }
 
+// Personal reminders ("My Reminders"): scan rows where the user opted in to
+// email, that aren't completed, and that are due. Two cases:
+//
+//   Case A — one-shot (repeat_daily=0):
+//     Fire once when due_at <= NOW() AND last_email_sent_at IS NULL.
+//
+//   Case B — repeat-daily (repeat_daily=1):
+//     Fire every day at the same time-of-day until completed=1. We compare
+//     SUBSTR(last_email_sent_at, 1, 10) (the YYYY-MM-DD prefix) against
+//     today's UTC date — when it's older, we re-fire. The first send still
+//     waits for due_at <= NOW() so the user picks the start time.
+//
+// last_email_sent_at is bumped on every successful send so neither case
+// double-fires within the same loop tick or day.
+async function runPersonalReminderJob() {
+  try {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const due = await all(
+      `SELECT r.*, u.email AS user_email, u.name AS user_name,
+              t.title AS ticket_title
+         FROM personal_reminders r
+         JOIN users u ON u.id = r.user_id
+         LEFT JOIN tickets t ON t.id = r.ticket_id AND t.deleted_at IS NULL
+        WHERE r.email_enabled = 1
+          AND r.completed = 0
+          AND r.due_at <= TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+          AND (
+                (r.repeat_daily = 0 AND r.last_email_sent_at IS NULL)
+             OR (r.repeat_daily = 1 AND (r.last_email_sent_at IS NULL OR SUBSTR(r.last_email_sent_at, 1, 10) < ?))
+          )
+        ORDER BY r.due_at ASC
+        LIMIT 200`,
+      todayKey
+    );
+    if (!due.length) return;
+    for (const r of due) {
+      try {
+        await sendPersonalReminderEmail({
+          toEmail: r.user_email, toName: r.user_name,
+          title: r.title, description: r.description,
+          dueAt: r.due_at, ticketId: r.ticket_id || null,
+          ticketTitle: r.ticket_title || '',
+          repeatDaily: !!r.repeat_daily,
+        });
+        await run(
+          `UPDATE personal_reminders
+              SET last_email_sent_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+            WHERE id = ?`,
+          r.id
+        );
+        console.log(`[personal-reminder] sent #${r.id} (→ ${r.user_email}${r.repeat_daily ? ', repeating daily' : ''})`);
+      } catch (e) { console.error('[personal-reminder] failed for', r.id, e.message); }
+    }
+  } catch (e) { console.error('[cron:personal-reminder] failed:', e.message); }
+}
+
 async function runOverdueDigestJob() {
   try {
     const todayKey = new Date().toISOString().slice(0, 10);
@@ -3293,9 +3350,10 @@ app.get('*', (req, res) => {
 
     // ── Email cron loops ────────────────────────────────────────────────────
     // Every 5 min: meeting reminders ~1 hour before start, ticket reminders
-    // whose remind_at has passed.
-    setInterval(runMeetingReminderJob, 5 * 60 * 1000);
-    setInterval(runTicketReminderJob,  5 * 60 * 1000);
+    // whose remind_at has passed, personal "My Reminders" (one-shot + daily).
+    setInterval(runMeetingReminderJob,  5 * 60 * 1000);
+    setInterval(runTicketReminderJob,   5 * 60 * 1000);
+    setInterval(runPersonalReminderJob, 5 * 60 * 1000);
     // Every hour: deadline-approaching warnings + overdue-digest dispatch.
     setInterval(runDeadlineWarningJob, 60 * 60 * 1000);
     setInterval(runOverdueDigestJob,   60 * 60 * 1000);
@@ -3306,11 +3364,12 @@ app.get('*', (req, res) => {
     setTimeout(() => {
       runMeetingReminderJob();
       runTicketReminderJob();
+      runPersonalReminderJob();
       runDeadlineWarningJob();
       runOverdueDigestJob();
       runTrashAutoPurgeJob();
     }, 30 * 1000);
-    console.log('✅  Email cron loops scheduled (meeting-reminder/ticket-reminder/deadline/overdue-digest).');
+    console.log('✅  Email cron loops scheduled (meeting/ticket/personal reminders, deadline, overdue-digest).');
   } catch(e) {
     console.error('❌  Failed to start:', e.message);
     process.exit(1);

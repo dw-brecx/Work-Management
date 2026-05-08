@@ -20,6 +20,7 @@
  *  16. new-device-login         sendNewDeviceLoginEmail
  *  17. overdue-digest           sendOverdueDigestEmail
  *  18. ticket-reminder          sendTicketReminderEmail   (user-set self-reminder)
+ *  19. personal-reminder        sendPersonalReminderEmail (My Reminders)
  *
  * URL conventions used in every template (path-based, clean URLs):
  *   ${APP_URL}/tickets/TKT-1069    — single ticket
@@ -1165,6 +1166,48 @@ async function sendTicketReminderEmail({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 19. PERSONAL REMINDER (My Reminders — private per-user task)
+// ─────────────────────────────────────────────────────────────────────────────
+// Fired by runPersonalReminderJob. Re-fires daily for repeat_daily=1 rows
+// until the user marks them done. Linked-ticket case adds a "Open ticket"
+// CTA + a small ticket info row; standalone reminders link to /my-reminders.
+async function sendPersonalReminderEmail({
+  toEmail, toName, title, description, dueAt, ticketId, ticketTitle, repeatDaily,
+}) {
+  if (!toEmail) return { skipped: true };
+  const subject = (repeatDaily ? 'Daily reminder: ' : 'Reminder: ') + (title || 'Personal reminder');
+  const ticketRow = ticketId
+    ? infoRow('Linked ticket', `${escapeHtml(ticketId)}${ticketTitle ? ' — ' + escapeHtml(ticketTitle) : ''}`)
+    : '';
+  const ctaHref = ticketId ? ticketUrl(ticketId) : `${APP_URL}/my-reminders`;
+  const ctaText = ticketId ? 'Open ticket'        : 'Open My Reminders';
+  const html = shell({
+    name: 'Personal reminder', subject,
+    preheader: `Reminder: ${title || ''}`,
+    headerEyebrow: repeatDaily ? 'Daily reminder' : 'Reminder',
+    headerEmoji: '🔔',
+    headerTitle: title ? escapeHtml(title) : 'Reminder',
+    headerSub: '',
+    body:
+      (description
+        ? `<div style="margin:0 0 18px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#78350f;font-size:13px;line-height:1.55;white-space:pre-wrap">${escapeHtml(description)}</div>`
+        : '') +
+      infoTable([
+        infoRow('Due', escapeHtml(dueAt || '—')),
+        ticketRow,
+      ].filter(Boolean)) +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">${
+        repeatDaily
+          ? 'You asked to be reminded about this every day. To stop, mark it done in My Reminders.'
+          : 'You set this reminder yourself. Open My Reminders to mark it done or set another.'
+      }</p>`,
+    ctaText, ctaHref,
+    footerNote: `Personal reminders are private — only you receive these.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module exports
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = {
@@ -1182,6 +1225,7 @@ module.exports = {
   sendTicketClosedEmail,
   sendOverdueDigestEmail,
   sendTicketReminderEmail,
+  sendPersonalReminderEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
   // Account
