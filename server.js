@@ -930,7 +930,11 @@ app.get('/api/projects', requireAdmin, async (req, res) => {
       // "done" when it has children and all of them are Closed/Archived.
       // A project with zero children stays "open" (just created).
       t.openChildCount = parseInt(r.open_child_count || 0, 10);
-      t.allChildrenClosed = (t.childCount > 0 && t.openChildCount === 0);
+      // A project counts as "closed" on the Projects page filter when it
+      // has no open children — either every child is Closed/Archived, OR
+      // there are no children at all (an empty project is finished by
+      // default, not stuck "Open" forever).
+      t.allChildrenClosed = (t.openChildCount === 0);
       return t;
     }));
     res.json(out);
