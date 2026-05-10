@@ -15568,8 +15568,20 @@ let _docPreviewMode = false;
 
 async function loadDocsPage() {
   // Always show the list when (re)entering the docs page; the editor is
-  // a transient state opened by clicking a row or "+ New Doc".
-  closeDocEditor();
+  // a transient state opened by clicking a row or "+ New Doc". DON'T
+  // call closeDocEditor here — that path calls loadDocsPage back and
+  // we'd loop forever. Just toggle the panes directly + flush any
+  // pending autosave from a previously-open editor.
+  if (_docSaveTimer) {
+    clearTimeout(_docSaveTimer);
+    _docSaveTimer = null;
+    if (_currentDocId) _saveDocNow();
+  }
+  _currentDocId = null;
+  const editorView = document.getElementById('docs-editor-view');
+  const listView = document.getElementById('docs-list-view');
+  if (editorView) editorView.style.display = 'none';
+  if (listView)   listView.style.display   = '';
   const tbody = document.getElementById('docs-list-tbody');
   const empty = document.getElementById('docs-list-empty');
   if (!tbody) return;
