@@ -2078,9 +2078,15 @@ app.post('/api/polish', requireAuth, async (req, res) => {
     // Polish" style: clearer, friendlier, easier for the recipient to
     // understand. Description mode allows more reorganization (paragraphs,
     // bullets); comment mode rewords sentence-by-sentence.
+    //
+    // CRITICAL: the prompts forbid refusal / clarifying questions. If the
+    // input is too short or ambiguous to improve meaningfully, the AI
+    // must return the input with at most a typo fix — never replace the
+    // user's draft with "I need more info"-style help requests.
+    const HARD_RULES = " ABSOLUTE RULES — never break these: (1) NEVER refuse. (2) NEVER ask questions or request more information. (3) NEVER add explanations, preambles, apologies, or meta-commentary. (4) NEVER address the user as 'you' or talk about yourself ('I'). (5) If the input is too short, vague, or already good, return it with at most minor typo / spelling fixes. (6) Output is ALWAYS something the user can send as-is.";
     const systemPrompt = mode === 'description'
-      ? "You polish ticket descriptions for a work-management app. Make the text clear, well-structured, and easy for a teammate to understand at first read — no back-and-forth needed. Fix grammar, awkward phrasing, and typos. Improve sentence flow and word choice. You may reorganize sentences, break long paragraphs into shorter ones, and use bullet points for lists. Aim for a friendly-professional tone (warm but not casual). Preserve all facts, ticket IDs (TKT-####), URLs, and @-mentions exactly. Never add information that wasn't there. Don't pad — be concise. Return ONLY the polished text — no preamble, no quotes, no commentary."
-      : "You polish messages in a work-management app's comment thread. Rewrite the text so the recipient understands it instantly: clearer wording, smoother flow, friendlier tone (warm but professional). Fix grammar and typos. Tighten rambling sentences. You may rephrase liberally as long as the writer's intent and every fact stays intact. Preserve ticket IDs (TKT-####), URLs, and @-mentions exactly — don't reword these. Stay concise — don't add fluff or pleasantries that weren't there. Return ONLY the polished text — no preamble, no quotes, no commentary.";
+      ? "You polish ticket descriptions for a work-management app. Make the text clear, well-structured, and easy for a teammate to understand at first read — no back-and-forth needed. Fix grammar, awkward phrasing, and typos. Improve sentence flow and word choice. You may reorganize sentences, break long paragraphs into shorter ones, and use bullet points for lists. Aim for a friendly-professional tone (warm but not casual). Preserve all facts, ticket IDs (TKT-####), URLs, and @-mentions exactly. Never add information that wasn't there. Don't pad — be concise. Return ONLY the polished text — no preamble, no quotes, no commentary." + HARD_RULES
+      : "You polish messages in a work-management app's comment thread. Rewrite the text so the recipient understands it instantly: clearer wording, smoother flow, friendlier tone (warm but professional). Fix grammar and typos. Tighten rambling sentences. You may rephrase liberally as long as the writer's intent and every fact stays intact. Preserve ticket IDs (TKT-####), URLs, and @-mentions exactly — don't reword these. Stay concise — don't add fluff or pleasantries that weren't there. Return ONLY the polished text — no preamble, no quotes, no commentary." + HARD_RULES;
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -2106,6 +2112,24 @@ app.post('/api/polish', requireAuth, async (req, res) => {
     const data = await r.json();
     const polished = (data.content?.[0]?.text || '').trim();
     if (!polished) return res.status(502).json({ error: 'AI returned empty response' });
+
+    // Safety net: detect when the model ignored the prompt and replied as
+    // an assistant ("I'd be happy to help, could you share more?"...)
+    // instead of polishing. Symptoms:
+    //   - Output starts with first-person "I/I'm/I'd" + assistant phrasing
+    //   - Output starts with "Sure"/"Of course"/"To help"/"Could you"/"Please"/"Thanks"
+    //   - Output ends with a question mark when the original didn't
+    //   - Output contains phrases like "more information", "more context",
+    //     "more details", "could you share/provide"
+    // When detected, fall back to the original text so the user's draft
+    // is never destroyed. The polish silently no-ops in that case.
+    const refusalRe = /^(I'?d be happy|I'?m happy|I'?d love|I'?ll need|I (need|can|could|would|may|am happy)|Sure(,| !)|Of course|To (help|polish|assist)|Could you|Please (provide|share|clarify)|Thanks for|Apologies)\b/i;
+    const askedQuestion = polished.endsWith('?') && !cleanText.endsWith('?');
+    const containsAsk = /\b(more (information|context|details)|could you (share|provide|clarify|tell)|please (share|provide|clarify))\b/i.test(polished);
+    if (refusalRe.test(polished) || askedQuestion || containsAsk) {
+      console.warn('[polish] suspected refusal, returning original. snippet=', polished.slice(0, 200));
+      return res.json({ polished: cleanText, fallback: true });
+    }
 
     res.json({ polished });
   } catch (e) {
