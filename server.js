@@ -2051,6 +2051,67 @@ app.post('/api/announcements/:id/ack', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── AI polish (Google-Docs-style "Help me write" for any textarea) ─────────
+// Sends the user's text to Anthropic Claude Haiku and returns a polished
+// version (clearer, more professional, same meaning). Powers the "✨
+// Polish" button in comment / description / feedback / reminder editors.
+//
+// Set ANTHROPIC_API_KEY on Render to enable. Without it the endpoint
+// returns 503 and the client button shows a friendly error — no other
+// flow breaks.
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const polishReady = !!ANTHROPIC_API_KEY;
+console.log(`[polish] ${polishReady ? 'enabled' : 'disabled (no ANTHROPIC_API_KEY)'}`);
+
+app.post('/api/polish', requireAuth, async (req, res) => {
+  if (!polishReady) {
+    return res.status(503).json({ error: 'Polish disabled — ANTHROPIC_API_KEY not set on server.' });
+  }
+  try {
+    const { text, mode } = req.body || {};
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return res.status(400).json({ error: 'text required' });
+    if (cleanText.length > 5000) return res.status(400).json({ error: 'text too long (max 5000 chars)' });
+    if (cleanText.length < 3)   return res.status(400).json({ error: 'text too short to polish' });
+
+    // Mode tweaks the system prompt — descriptions get more reorg license,
+    // comments stay close to the user's original voice. Default = comment.
+    const systemPrompt = mode === 'description'
+      ? "You polish ticket descriptions for a work-management app. Improve clarity, structure, and grammar. You may reorganize sentences and add brief structure (short paragraphs, bullet points if helpful). Preserve all factual content, technical terms, ticket IDs (TKT-####), URLs, and @-mentions. Return ONLY the polished text — no preamble, no quotes, no commentary."
+      : "You polish messages in a work-management app's comment thread. Fix grammar and typos, improve clarity. Stay close to the writer's voice — don't over-edit. Preserve meaning, technical terms, ticket IDs (TKT-####), URLs, and @-mentions exactly. Return ONLY the polished text — no preamble, no quotes, no commentary.";
+
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: cleanText }],
+      }),
+    });
+
+    if (!r.ok) {
+      const errBody = await r.text().catch(() => '');
+      console.warn('[polish] Anthropic API error:', r.status, errBody.slice(0, 300));
+      return res.status(502).json({ error: 'AI service returned ' + r.status });
+    }
+
+    const data = await r.json();
+    const polished = (data.content?.[0]?.text || '').trim();
+    if (!polished) return res.status(502).json({ error: 'AI returned empty response' });
+
+    res.json({ polished });
+  } catch (e) {
+    console.warn('[polish] failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── External apps (sidebar quick links) ────────────────────────────────────
 // Workspace-wide list of links to other apps. Anyone authenticated can
 // READ (the sidebar shows them to everyone). Only admins can CREATE,

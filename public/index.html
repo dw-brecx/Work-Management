@@ -11886,6 +11886,91 @@ async function checkAuth() {
   }
 })();
 
+// ── AI polish helper (Google-Docs-style "Help me write" button) ─────────────
+// Adds a small "✨ Polish" button near a textarea. Click → sends content
+// to /api/polish, replaces textarea with the polished version, shows an
+// "Undo" link briefly so the user can revert if they don't like it.
+// Idempotent — safe to call multiple times on the same textarea.
+function attachPolishButton(textarea, options = {}) {
+  if (!textarea || textarea._polishAttached) return;
+  textarea._polishAttached = true;
+  const mode = options.mode || 'comment';
+  const placement = options.placement || 'after'; // 'after' | 'parent-end'
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-top:5px';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.title = 'Polish writing with AI (Claude Haiku)';
+  btn.innerHTML = '✨ Polish';
+  btn.style.cssText = 'font-size:11px;padding:4px 10px;border:1px solid #c4b5fd;background:linear-gradient(135deg,#faf5ff,#ede9fe);color:#6d28d9;border-radius:5px;cursor:pointer;font-weight:500';
+  wrap.appendChild(btn);
+
+  btn.onclick = async () => {
+    const original = textarea.value;
+    if (!original.trim()) {
+      btn.title = 'Write something first';
+      setTimeout(() => btn.title = 'Polish writing with AI (Claude Haiku)', 1500);
+      return;
+    }
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Polishing…';
+    btn.style.opacity = '0.7';
+    try {
+      const r = await fetch('/api/polish', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: original, mode }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ('status ' + r.status));
+      textarea.value = data.polished || original;
+      // Trigger 'input' so anything listening to the textarea re-evaluates
+      // (auto-resize, character counters, etc.).
+      try { textarea.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+      // Inline Undo. Auto-removes after 10s.
+      const old = wrap.querySelector('.polish-undo');
+      if (old) old.remove();
+      const undo = document.createElement('button');
+      undo.type = 'button';
+      undo.className = 'polish-undo';
+      undo.textContent = '↶ Undo';
+      undo.style.cssText = 'font-size:11px;padding:4px 10px;border:1px solid var(--border);background:#fff;color:var(--text2);border-radius:5px;cursor:pointer';
+      undo.onclick = () => {
+        textarea.value = original;
+        try { textarea.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+        undo.remove();
+      };
+      wrap.appendChild(undo);
+      setTimeout(() => { try { undo.remove(); } catch {} }, 10000);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/disabled.*ANTHROPIC_API_KEY/i.test(msg)) {
+        alert("AI polish isn't enabled on the server yet. An admin needs to set ANTHROPIC_API_KEY in Render.");
+      } else {
+        alert('Polish failed: ' + msg);
+      }
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '✨ Polish';
+      btn.style.opacity = '';
+    }
+  };
+
+  // Place the wrapper. Default = right after the textarea inline; can also
+  // append to a passed parent (e.g. an actions row) via placement option.
+  if (placement === 'parent-end' && options.parent) {
+    options.parent.appendChild(wrap);
+  } else {
+    if (textarea.nextSibling) {
+      textarea.parentNode.insertBefore(wrap, textarea.nextSibling);
+    } else {
+      textarea.parentNode.appendChild(wrap);
+    }
+  }
+  return wrap;
+}
+window.attachPolishButton = attachPolishButton;
+
 // ── Generic API helpers ───────────────────────────────────────────────────────
 async function apiGet(p) {
   const r = await fetch(p);
@@ -17632,6 +17717,36 @@ window.scheduleEventForCurrentTicket = function() {
 
   // Initial load — populates the sidebar for everyone after auth bootstrap.
   setTimeout(loadExternalApps, 800);
+})();
+
+// ── Polish button bootstrap — wire into the major static textareas ──────────
+(function() {
+  function wirePolishButtons() {
+    if (typeof attachPolishButton !== 'function') return;
+    // Map of textarea id → polish mode. 'description' allows more rewriting
+    // and structure; 'comment' stays close to the writer's voice.
+    const targets = [
+      { id: 'comment-input',     mode: 'comment'     },
+      { id: 'det-desc-textarea', mode: 'description' },
+      { id: 'rem-edit-desc',     mode: 'description' },
+      { id: 'fb-new-desc',       mode: 'description' },
+      { id: 'ann-new-body',      mode: 'description' },
+    ];
+    for (const t of targets) {
+      const el = document.getElementById(t.id);
+      if (el) attachPolishButton(el, { mode: t.mode });
+    }
+  }
+  // Run after DOM is ready + give modals a moment to settle. Idempotent —
+  // attachPolishButton no-ops on textareas it already wired.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(wirePolishButtons, 400));
+  } else {
+    setTimeout(wirePolishButtons, 400);
+  }
+  // Also re-run after the auth bootstrap finishes — covers the case where
+  // a textarea is re-created inside a modal between boot and first use.
+  window.addEventListener('_wnReady', () => setTimeout(wirePolishButtons, 200));
 })();
 </script>
 </body>
