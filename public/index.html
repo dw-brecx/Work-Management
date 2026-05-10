@@ -2397,13 +2397,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       Settings
     </div>
   </div>
-  <div class="sb-bottom">
-    <div class="sb-invite">
-      <p>Work smarter together. Invite your team!</p>
-      <button onclick="openModal('invite-member')">Invite Team</button>
-    </div>
-
-  </div>
+  <div class="sb-bottom"></div>
 </div>
 <div id="sb-overlay" onclick="closeMobileSidebar()"></div>
 
@@ -5242,6 +5236,10 @@ function renderTickets() {
     // inside their project. They still show up in the user's My Tickets
     // (the 'mine' tab below) so workers see their assigned work.
     if (t.parentTicketId && currentTicketTab !== 'mine') return false;
+    // "All Tickets" = active work only (matches the badge count above).
+    // Closed / Archived live in their own tabs — user picks those tabs
+    // explicitly to see resolved items, or sets Status in the dropdown.
+    if (currentTicketTab === 'all' && !st && (t.status === 'Closed' || t.status === 'Archived')) return false;
     if (currentTicketTab === 'mine'     && !getAssignees(t).includes((window.CURRENT_USER && window.CURRENT_USER.name) || '')) return false;
     // When on Mine tab and no explicit Status filter is set, hide Closed
     // and Archived so the default view = "what's still on my plate". User
@@ -7901,10 +7899,14 @@ function renderKanban() {
   const board = document.getElementById('kanban-board');
   if (!board) return;
 
-  // Per-scope counts (so each chip can show its own number, regardless of which is active)
-  const countAssigned  = TICKETS_DATA.filter(t => ticketInScope(t, 'assigned')).length;
-  const countRequested = TICKETS_DATA.filter(t => ticketInScope(t, 'requested')).length;
-  const countReporting = TICKETS_DATA.filter(t => ticketInScope(t, 'reporting')).length;
+  // Per-scope counts (so each chip can show its own number, regardless of
+  // which is active). Counts ACTIVE tickets only — anything Closed or
+  // Archived is excluded so the badge reflects work the user still owes,
+  // not a lifetime tally including resolved items.
+  const isActive = t => t.status !== 'Closed' && t.status !== 'Archived';
+  const countAssigned  = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'assigned')).length;
+  const countRequested = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'requested')).length;
+  const countReporting = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'reporting')).length;
   const setText = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
   setText('mt-count-assigned',  countAssigned);
   setText('mt-count-requested', countRequested);
@@ -12082,9 +12084,13 @@ function syncAdminScopeToggle() {
 function updateTicketPageStats() {
   const me = (window.CURRENT_USER || {}).name || '';
   const scoped = visibleTickets();
+  // "All Tickets" means active work — Closed and Archived are excluded so
+  // the badge doesn't keep growing forever as old tickets resolve.
+  // Dedicated "Closed" / "Archived" tabs still show those buckets.
+  const isActive = t => t.status !== 'Closed' && t.status !== 'Archived';
   const counts = {
-    all:      scoped.length,
-    mine:     scoped.filter(t => getAssignees(t).includes(me)).length,
+    all:      scoped.filter(isActive).length,
+    mine:     scoped.filter(t => isActive(t) && getAssignees(t).includes(me)).length,
     open:     scoped.filter(t => t.status === 'Open').length,
     progress: scoped.filter(t => t.status === 'In Progress').length,
     review:   scoped.filter(t => t.status === 'In Review').length,
