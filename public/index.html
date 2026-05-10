@@ -3445,6 +3445,25 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
+    <!-- ========== ATTACHMENT LIGHTBOX (in-app preview) ========== -->
+    <!-- Opens in-place when the user clicks an attachment, instead of a new
+         browser tab — keeps the SPA state intact. Image / video / audio /
+         pdf rendered inline; everything else falls back to a Download
+         button. ESC or backdrop click closes. -->
+    <div id="attachment-lightbox" class="modal" style="display:none;align-items:center;justify-content:center;background:rgba(15,23,42,0.85);position:fixed;inset:0;z-index:9999;padding:20px">
+      <div onclick="closeAttachmentLightbox()" style="position:absolute;inset:0;cursor:pointer"></div>
+      <div style="position:relative;max-width:90vw;max-height:90vh;background:#fff;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);background:#fafbff;gap:12px;flex-shrink:0">
+          <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="lightbox-title">—</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <a id="lightbox-download" href="#" download class="btn-sec" style="font-size:11px;padding:5px 10px;text-decoration:none">⬇ Download</a>
+            <button onclick="closeAttachmentLightbox()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text2);padding:0 6px;line-height:1" title="Close (Esc)">×</button>
+          </div>
+        </div>
+        <div id="lightbox-body" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;background:#0b1220"></div>
+      </div>
+    </div>
+
     <!-- ========== DAILY REMINDER POPUP (auto-shown once a day) ========== -->
     <div id="modal-reminder-daily" class="modal" style="display:none">
       <div class="modal-overlay" onclick="closeDailyRemindersPopup()"></div>
@@ -13645,8 +13664,13 @@ function renderAttachmentHtml(att) {
       + '<video controls playsinline preload="metadata" src="'+safeUrl+'" style="display:block;width:100%;max-width:520px;max-height:360px;border-radius:6px;background:#000"></video>'
       + downloadLink;
   }
-  if (mime.startsWith('image/')) return '<a href="'+safeUrl+'" target="_blank" rel="noopener"><img src="'+safeUrl+'" alt="" style="max-width:280px;max-height:180px;border-radius:6px;border:1px solid var(--border);display:block"></a>';
-  return '<a href="'+safeUrl+'" target="_blank" rel="noopener" style="font-size:12px;color:var(--accent);text-decoration:underline">📄 '+_esc(att.originalName || att.filename || 'file')+'</a>';
+  // Open in the in-app lightbox instead of a new tab — keeps the user
+  // anchored in their ticket / feedback context.
+  const safeName = _esc(att.originalName || att.filename || 'file').replace(/'/g, '&#39;');
+  const safeMime = _esc(mime || '');
+  const onclick = `event.preventDefault();openAttachmentInLightbox('${safeUrl}','${safeName}','${safeMime}')`;
+  if (mime.startsWith('image/')) return '<a href="'+safeUrl+'" onclick="'+onclick+'" style="cursor:pointer"><img src="'+safeUrl+'" alt="" style="max-width:280px;max-height:180px;border-radius:6px;border:1px solid var(--border);display:block"></a>';
+  return '<a href="'+safeUrl+'" onclick="'+onclick+'" style="font-size:12px;color:var(--accent);text-decoration:underline;cursor:pointer">📄 '+_esc(att.originalName || att.filename || 'file')+'</a>';
 }
 
 // ── What's New feed (announcement timeline) ─────────────────────────────────
@@ -14099,8 +14123,8 @@ function _remRenderAttachments(atts) {
     if (mt.startsWith('video/'))
       return `<video controls playsinline src="${_esc(a.url)}" style="max-width:280px;max-height:160px;display:block;margin-top:4px;background:#000;border-radius:3px"></video>`;
     if (mt.startsWith('image/'))
-      return `<a href="${_esc(a.url)}" target="_blank"><img src="${_esc(a.url)}" style="max-width:120px;max-height:120px;border-radius:3px;margin-top:4px"></a>`;
-    return `<a href="${_esc(a.url)}" target="_blank" style="display:inline-block;font-size:11px;color:var(--accent);margin-top:4px">📄 ${_esc(a.originalName || a.filename)}</a>`;
+      return `<a href="${_esc(a.url)}" onclick="event.preventDefault();openAttachmentInLightbox('${_esc(a.url)}','${_esc(a.originalName || a.filename || 'file').replace(/'/g, '&#39;')}','${_esc(a.mimeType || '')}')" style="cursor:pointer"><img src="${_esc(a.url)}" style="max-width:120px;max-height:120px;border-radius:3px;margin-top:4px"></a>`;
+    return `<a href="${_esc(a.url)}" onclick="event.preventDefault();openAttachmentInLightbox('${_esc(a.url)}','${_esc(a.originalName || a.filename || 'file').replace(/'/g, '&#39;')}','${_esc(a.mimeType || '')}')" style="display:inline-block;font-size:11px;color:var(--accent);margin-top:4px;cursor:pointer">📄 ${_esc(a.originalName || a.filename)}</a>`;
   }).join('');
 }
 
@@ -14239,7 +14263,7 @@ function openReminderEditor(id) {
       '<div style="font-size:11px;color:var(--text3);margin-bottom:4px">Already attached:</div>' +
       existing.attachments.map(a => `
         <div style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:12px">
-          <a href="${_esc(a.url)}" target="_blank" style="flex:1;color:var(--accent);text-decoration:none">${_esc(a.originalName || a.filename)}</a>
+          <a href="${_esc(a.url)}" onclick="event.preventDefault();openAttachmentInLightbox('${_esc(a.url)}','${_esc(a.originalName || a.filename || 'file').replace(/'/g, '&#39;')}','${_esc(a.mimeType || '')}')" style="flex:1;color:var(--accent);text-decoration:none;cursor:pointer">${_esc(a.originalName || a.filename)}</a>
           <button onclick="deleteReminderAttachment(${a.id})" style="font-size:10px;padding:2px 7px;background:#fff;border:1px solid #fecaca;color:#dc2626;border-radius:3px;cursor:pointer">Remove</button>
         </div>
       `).join('');
@@ -14561,6 +14585,131 @@ async function requestUpdateOnCurrentTicket() {
     if (btn) { btn.disabled = false; btn.style.opacity = ''; }
   }
 }
+
+// ── Attachment lightbox (in-app preview instead of new tab) ────────────────
+// Renders an attachment inline by mime: image / video / audio / pdf get
+// dedicated viewers, everything else shows a Download button. Keeps the
+// SPA state intact — the user can dismiss with Esc or the X and they're
+// back exactly where they were on the ticket / feedback / reminder.
+function openAttachmentInLightbox(url, name, mime) {
+  const lb = document.getElementById('attachment-lightbox');
+  if (!lb) return;
+  const titleEl = document.getElementById('lightbox-title');
+  const dlEl = document.getElementById('lightbox-download');
+  const bodyEl = document.getElementById('lightbox-body');
+  if (!titleEl || !dlEl || !bodyEl) return;
+  const safeName = String(name || (url || '').split('/').pop() || 'file');
+  titleEl.textContent = safeName;
+  titleEl.title = safeName;
+  dlEl.href = url;
+  dlEl.setAttribute('download', safeName);
+  const m = String(mime || '').toLowerCase();
+  // Pick a viewer based on mime, falling back to extension when mime is missing.
+  const ext = (safeName.split('.').pop() || '').toLowerCase();
+  const isImage = m.startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp','svg','heic','heif'].includes(ext);
+  const isVideo = m.startsWith('video/') || ['mp4','webm','mov','m4v','mkv'].includes(ext);
+  const isAudio = m.startsWith('audio/') || ['mp3','wav','m4a','ogg','aac','flac'].includes(ext);
+  const isPdf   = m === 'application/pdf' || ext === 'pdf';
+  const safeUrl = _esc(url);
+  if (isImage) {
+    bodyEl.innerHTML = `<img src="${safeUrl}" alt="${_esc(safeName)}" style="max-width:100%;max-height:90vh;display:block;background:#0b1220">`;
+  } else if (isVideo) {
+    bodyEl.innerHTML = `<video controls playsinline autoplay src="${safeUrl}" style="max-width:100%;max-height:85vh;display:block;background:#000"></video>`;
+  } else if (isAudio) {
+    bodyEl.innerHTML = `<div style="padding:40px;background:#fff;width:100%;display:flex;flex-direction:column;align-items:center;gap:16px">
+      <div style="font-size:42px">🎤</div>
+      <audio controls autoplay src="${safeUrl}" style="width:min(480px, 80vw)"></audio>
+    </div>`;
+  } else if (isPdf) {
+    bodyEl.innerHTML = `<iframe src="${safeUrl}" style="width:88vw;height:85vh;border:none;background:#fff" title="${_esc(safeName)}"></iframe>`;
+  } else {
+    bodyEl.innerHTML = `<div style="padding:60px;background:#fff;width:100%;display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center">
+      <div style="font-size:54px">📄</div>
+      <div style="font-size:14px;color:var(--text2)">No in-app preview for this file type.</div>
+      <a href="${safeUrl}" download="${_esc(safeName)}" class="btn-primary" style="font-size:12px;padding:8px 16px;text-decoration:none">⬇ Download ${_esc(safeName)}</a>
+    </div>`;
+  }
+  lb.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeAttachmentLightbox() {
+  const lb = document.getElementById('attachment-lightbox');
+  if (!lb) return;
+  // Pause any playing media so audio doesn't keep going after close.
+  const bodyEl = document.getElementById('lightbox-body');
+  if (bodyEl) {
+    bodyEl.querySelectorAll('video, audio').forEach(el => { try { el.pause(); } catch{} });
+    bodyEl.innerHTML = '';
+  }
+  lb.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Convenience: build an inline-clickable HTML snippet for a stored
+// attachment that opens it in the lightbox instead of a new tab. Replaces
+// the old `<a target="_blank">…</a>` pattern. Works for any object with
+// { url, originalName?, filename?, mimeType? }.
+function _attLink(att, innerHtml, extraStyle) {
+  const url = att.url || ('/uploads/' + att.filename);
+  const name = att.originalName || att.filename || 'file';
+  const mime = att.mimeType || '';
+  const onclick = `event.preventDefault();openAttachmentInLightbox('${_esc(url)}','${_esc(name).replace(/'/g, '&#39;')}','${_esc(mime)}')`;
+  return `<a href="${_esc(url)}" onclick="${onclick}" style="cursor:pointer;text-decoration:none${extraStyle ? ';' + extraStyle : ''}">${innerHtml}</a>`;
+}
+
+// Global Esc handler:
+//   1. If the lightbox is open, close it.
+//   2. Otherwise, if the user is typing in an input/textarea/contenteditable,
+//      let the local handlers (cancel-edit, etc.) deal with it — don't
+//      navigate them off the page.
+//   3. Otherwise, go back one step in history. ("Esc always goes back to
+//      the previous page.")
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  // 1. Lightbox close
+  const lb = document.getElementById('attachment-lightbox');
+  if (lb && lb.style.display && lb.style.display !== 'none') {
+    closeAttachmentLightbox();
+    e.preventDefault();
+    return;
+  }
+  // 2. Don't yank focus / navigate while the user is typing
+  const t = document.activeElement;
+  const isTyping = t && (
+    t.tagName === 'INPUT' ||
+    t.tagName === 'TEXTAREA' ||
+    t.tagName === 'SELECT' ||
+    t.isContentEditable
+  );
+  if (isTyping) return;
+  // 3. Don't fight existing modals — if any common modal is visibly open,
+  //    let its own dismiss path run (clicking the X / overlay), and only
+  //    fall through to back-nav when the page chrome is the only thing
+  //    on screen. We detect "modal visible" by checking the .modal-overlay
+  //    .open class (legacy modals) and any modal whose inline display is
+  //    flex (newer ones I've added).
+  const legacyOpen = document.querySelector('.modal-overlay.open');
+  let inlineOpen = null;
+  document.querySelectorAll('#modal-reminder-edit, #modal-reminder-daily, #modal-feedback-create').forEach(el => {
+    if (el.style.display && el.style.display !== 'none') inlineOpen = el;
+  });
+  if (legacyOpen || inlineOpen) {
+    // Try to close it cleanly. Look for an explicit close affordance.
+    const target = legacyOpen || inlineOpen;
+    const btn = target.querySelector('.modal-close, [onclick*="close"]');
+    if (btn) { btn.click(); }
+    else if (legacyOpen) { legacyOpen.classList.remove('open'); }
+    else if (inlineOpen) { inlineOpen.style.display = 'none'; }
+    e.preventDefault();
+    return;
+  }
+  // 4. Back-navigate. history.back triggers the popstate router which
+  //    re-renders the previous page — works for ticket-detail → tickets,
+  //    plan-detail → planning, /my-reminders → wherever, etc.
+  e.preventDefault();
+  history.back();
+});
 
 // Used by the reminder-card "ticket pill" — open the linked ticket detail.
 function openTicketDetailById(id) {
