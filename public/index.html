@@ -7727,6 +7727,21 @@ function renderComments() {
              <span>Delete</span>
            </button>`
         : '';
+      // "No reply needed" button — shown on comments that @-mention the
+      // current user, so they can clear the dashboard's "mentions
+      // awaiting reply" count without having to actually post a reply.
+      // Match server's case-sensitive @-mention regex shape (an @ then
+      // the user's exact name at a word boundary).
+      const meName = me.name || '';
+      const _escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const mentionsMe = meName && new RegExp('(^|\\s)@' + _escRe(meName) + '(\\b|$)').test(c.text || '');
+      const isMyComment = meName && c.author === meName;
+      const noReplyBtn = mentionsMe && !isMyComment && c.id
+        ? `<button type="button" class="cmt-action" onclick="dismissMentionsOnCurrentTicket(this)">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+             <span>No reply needed</span>
+           </button>`
+        : '';
       // Replies are rendered as siblings of the parent bubble (not inside
       // it) so the parent's padding doesn't compound on every nesting
       // level. The wrapper carries the depth-based left margin.
@@ -7740,7 +7755,7 @@ function renderComments() {
                 <span class="td-comment-time">${escapeHtml(c.time)}</span>
               </div>
               <div class="td-comment-body">${formatCommentText(c.text)}</div>
-              ${(replyBtn || delBtn) ? `<div class="cmt-actions">${replyBtn}${delBtn}</div>` : ''}
+              ${(replyBtn || delBtn || noReplyBtn) ? `<div class="cmt-actions">${replyBtn}${noReplyBtn}${delBtn}</div>` : ''}
               ${replyForm}
             </div>
           </div>
@@ -7753,6 +7768,38 @@ function renderComments() {
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
 }
+
+// "No reply needed" button on an @-mention comment. Marks ALL of the
+// current user's undismissed mention notifications on this ticket as
+// dismissed, so the dashboard's "mentions awaiting reply" count drops.
+// New mentions after this still create fresh, undismissed notifications,
+// so the count comes back if someone @-mentions you again.
+window.dismissMentionsOnCurrentTicket = async function(btnEl) {
+  const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
+  const tid = (t && t.id) || window.currentDetailTicketId;
+  if (!tid) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.style.opacity = '0.55'; }
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(tid) + '/mentions/dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (!r.ok) {
+      alert('Could not mark as no-reply-needed (' + r.status + ').');
+      if (btnEl) { btnEl.disabled = false; btnEl.style.opacity = ''; }
+      return;
+    }
+    if (btnEl) {
+      btnEl.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg><span>Dismissed</span>`;
+      btnEl.style.color = 'var(--text3)';
+    }
+    // If the dashboard insights are loaded, refresh so the count drops
+    // immediately without waiting for the next dashboard navigation.
+    if (typeof loadDashboardInsights === 'function') loadDashboardInsights();
+  } catch (e) {
+    alert('Could not mark as no-reply-needed: ' + (e?.message || e));
+    if (btnEl) { btnEl.disabled = false; btnEl.style.opacity = ''; }
+  }
+};
 
 // Delete a comment (or voice note / screen recording posted as a
 // VOICENOTE:: / SCREENRECORD:: comment). Server-side gate ensures only
@@ -11632,7 +11679,9 @@ async function checkAuth() {
     }
   };
   async function retryGet(input, init) {
-    showBanner('🔄 Reconnecting to Syruvia…', false);
+    // Render redeploys typically finish in 30-60s. Keep the message
+    // friendly: this is almost always an app update, not an outage.
+    showBanner('🔄 We\'re updating the app — back in about 60 seconds. Refresh when you\'re ready.', true);
     let delay = 1500;
     const startedAt = Date.now();
     const maxMs = 75 * 1000;
@@ -11647,7 +11696,7 @@ async function checkAuth() {
         }
       } catch {}
     }
-    showBanner('Still trying to reach Syruvia. The server may be down or your connection lost.', true);
+    showBanner('Update taking longer than expected — please refresh.', true);
     // One final attempt so the caller gets a definitive response.
     try { return await _origFetch(input, init); }
     catch (err) { throw err; }

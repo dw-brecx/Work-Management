@@ -527,6 +527,11 @@ async function init() {
   // 'NOTFOUND' sentinel = "Slack workspace has no user with this email,
   // don't keep retrying". Populated lazily by slackDmUser in server.js.
   await safeAlter("ALTER TABLE users ADD COLUMN slack_user_id TEXT DEFAULT ''");
+  // Per-notification "user has triaged this" stamp. Null = active, set =
+  // user marked it handled (e.g. clicked "No reply needed" on a mention).
+  // Used to clear mentions from the dashboard's "awaiting reply" count
+  // without forcing the user to actually post a comment in response.
+  await safeAlter("ALTER TABLE notifications ADD COLUMN dismissed_at TEXT DEFAULT NULL");
 
   // Consolidate roles to the canonical three: Admin / Manager / Member.
   // Old installs may have Owner / User / Viewer values; map them onto the

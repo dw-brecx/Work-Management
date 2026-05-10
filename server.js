@@ -3082,6 +3082,24 @@ app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Dismiss all of the current user's undismissed @mention notifications
+// for a given ticket. Used by the "No reply needed" button on a comment
+// that mentioned them — lets them clear the dashboard's
+// "mentions awaiting reply" count without having to actually post a
+// reply. New mentions after this fire fresh, undismissed notifications
+// so the count comes back if someone @mentions them again.
+app.post('/api/tickets/:id/mentions/dismiss', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    await run(
+      `UPDATE notifications
+          SET dismissed_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+        WHERE user_id = ? AND ticket_id = ? AND type = 'mention' AND dismissed_at IS NULL`,
+      req.session.userId, req.params.id
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Personal dashboard stats ─────────────────────────────────────────────────
 // Returns three counts for the current user, scoped to tickets they're
 // involved in (assignee / reporter / requester / creator):
@@ -3162,8 +3180,10 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
         ...involvementArgs, cutoff
       ),
       // Pending mentions: distinct tickets where the user has a mention
-      // notification and hasn't authored a comment after that mention.
-      // Pull the actual ticket rows by joining back to tickets.
+      // notification and hasn't authored a comment after that mention,
+      // AND the notification hasn't been dismissed via the "No reply
+      // needed" button. Pull the actual ticket rows by joining back to
+      // tickets.
       all(
         `SELECT ${SELECT_LIST_COLS} FROM tickets t
           WHERE t.id IN (
@@ -3171,6 +3191,7 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
                    WHERE n.user_id = ?
                      AND n.type = 'mention'
                      AND n.ticket_id IS NOT NULL
+                     AND n.dismissed_at IS NULL
                      AND NOT EXISTS (
                            SELECT 1 FROM ticket_comments tc
                             WHERE tc.ticket_id = n.ticket_id
