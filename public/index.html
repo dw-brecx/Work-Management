@@ -5567,6 +5567,21 @@ let currentTicketId = null;
 function openTicketDetail(id) {
   const t = TICKETS_DATA.find(x => x.id === id) || TICKETS_DATA[0];
   currentTicketId = t.id;
+  // Mirror the id into window.currentDetailTicketId so the comment-fetch
+  // guard works even when the watch-panel wrapper hasn't installed yet
+  // (e.g. user navigates to /tickets/TKT-1083 right at boot, before
+  // initAttachmentFeature ran). Without this, the wrapper-based fetch
+  // never fires and the comment panel renders empty until refresh.
+  window.currentDetailTicketId = t.id;
+  // Always fetch comments here too. The wrapper in watchTicketDetailPanel
+  // also calls reloadCommentsForTicket; this guarantees the call happens
+  // even if that wrapper hasn't installed yet. reloadCommentsForTicket
+  // already guards against stale responses (currentDetailTicketId
+  // mismatch) so the duplicate call is harmless.
+  if (typeof reloadCommentsForTicket === 'function') {
+    try { localComments.length = 0; } catch {}
+    reloadCommentsForTicket(t.id, 2);
+  }
   // Seed a placeholder timeline so the panel doesn't render empty before
   // the server fetch returns. Use the ticket's real created_at — never
   // formatNowUS() with no args, which would label every freshly-opened
