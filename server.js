@@ -3585,6 +3585,11 @@ async function runTicketReminderJob() {
           dueAt: r.ticket_due, dept: r.ticket_dept,
           note: r.note || '',
         });
+        // Slack DM alongside the email so the user sees it on whichever
+        // channel they're checking. No-op when SLACK_BOT_TOKEN unset.
+        slackDmUser(r.user_id, {
+          text: `🔔 Reminder you set: check on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${r.ticket_id}|${r.ticket_id}>${r.ticket_title ? ' — ' + r.ticket_title : ''}${r.note ? `\n> ${r.note}` : ''}`,
+        }).catch(() => {});
         await run(
           `UPDATE ticket_reminders SET sent = 1, sent_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id = ?`,
           r.id
@@ -3639,6 +3644,14 @@ async function runPersonalReminderJob() {
           ticketTitle: r.ticket_title || '',
           repeatDaily: !!r.repeat_daily,
         });
+        // Slack DM alongside the email. Repeat-daily reminders fire daily
+        // until completed=1, same gate as the email.
+        const _ticketLink = r.ticket_id
+          ? ` (<${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${r.ticket_id}|${r.ticket_id}>${r.ticket_title ? ' — ' + r.ticket_title : ''})`
+          : ` (<${(process.env.APP_URL || `http://localhost:${PORT}`)}/my-reminders|My Reminders>)`;
+        slackDmUser(r.user_id, {
+          text: `${r.repeat_daily ? '🔁 Daily reminder' : '🔔 Reminder'}: *${r.title || 'Personal reminder'}*${_ticketLink}${r.description ? `\n> ${r.description.slice(0, 280)}` : ''}`,
+        }).catch(() => {});
         await run(
           `UPDATE personal_reminders
               SET last_email_sent_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
