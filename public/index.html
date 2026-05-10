@@ -8065,7 +8065,10 @@ function renderComments() {
         </div>
       `;
     }
-    el.innerHTML = tops.map(c => renderOne(c, 0)).join('');
+    // Show newest comments first at the top level so the user sees the
+    // latest activity without scrolling. Replies within a thread stay in
+    // chronological order so the conversation reads naturally top-down.
+    el.innerHTML = tops.slice().reverse().map(c => renderOne(c, 0)).join('');
   }
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
