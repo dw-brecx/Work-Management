@@ -15746,6 +15746,18 @@ initApp();
     set('dash-stat-inprogress', d.inProgress);
     set('dash-stat-overdue', d.overdue);
     set('dash-stat-completed', d.completedToday !== undefined ? d.completedToday : '');
+    // Override dashboard Total with scoped (Mine) + active count so it
+    // matches the donut next to it. /api/stats returns workspace-wide
+    // numbers — fine for the Reports page (rpt-* below) but the
+    // dashboard is personal-scope by design now.
+    try {
+      var scoped = (typeof visibleTickets === 'function')
+        ? visibleTickets()
+        : (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []);
+      var isActive = function(t) { return t.status !== 'Closed' && t.status !== 'Archived'; };
+      var totalEl = document.getElementById('dash-stat-total');
+      if (totalEl) totalEl.textContent = scoped.filter(isActive).length.toLocaleString('en-US');
+    } catch (e) {}
     // Dashboard delta labels — real percentages
     set('dash-stat-total-delta', pctDelta(d.total, d.prevTotal));
     // Hide the other fake deltas (no ids on them — patch their content via class)
