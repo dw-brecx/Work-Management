@@ -2392,6 +2392,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 11h.01M12 11h.01M15 11h.01M21 12c0 4.4-4 8-9 8a9.9 9.9 0 01-4-.8L3 21l1.8-5A8 8 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z"/></svg>
       Feedback
     </div>
+    <!-- External apps (workspace quick links) — populated by loadExternalApps.
+         Section heading hides itself when there are no apps. Admins manage
+         these in Settings → Apps. -->
+    <div id="sb-apps-section" style="display:none">
+      <div style="font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin:14px 16px 4px">Apps</div>
+      <div id="sb-apps-list"></div>
+    </div>
     <div class="nav-item" data-page="settings">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41"/></svg>
       Settings
@@ -3591,6 +3598,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div class="settings-tab admin-only" data-stab="announcements" onclick="switchSettingsTab('announcements')" id="announcements-settings-tab">
               <span class="stab-icon">📣</span> Announcements
             </div>
+            <div class="settings-tab admin-only" data-stab="apps" onclick="switchSettingsTab('apps')" id="apps-settings-tab">
+              <span class="stab-icon">🔗</span> Apps
+            </div>
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
               <span class="stab-icon">🔧</span> Admin
             </div>
@@ -3859,6 +3869,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
           <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text2)">Existing announcements</div>
           <div id="announcements-list" style="display:flex;flex-direction:column;gap:8px"></div>
+        </div>
+
+        <!-- Apps panel (admin-only) — manages the workspace quick-link list
+             that shows up in the sidebar above Settings -->
+        <div class="card settings-panel" id="settings-panel-apps" style="display:none">
+          <h2 style="font-size:14px;font-weight:700;margin-bottom:2px">Apps</h2>
+          <p style="font-size:12px;color:var(--text3);margin:0 0 14px">Quick links to other apps your team uses (Slack, Drive, Syruvia Lab, an internal dashboard, etc.). Anyone in the workspace sees these in the sidebar; only admins can add or remove them.</p>
+
+          <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px;background:var(--bg2)">
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px">Add a new app</div>
+            <div style="display:grid;grid-template-columns:60px 1fr 1fr;gap:8px;margin-bottom:8px">
+              <input type="text" id="apps-new-icon" placeholder="🔗" maxlength="4" style="font-size:18px;text-align:center;padding:8px;border:1px solid var(--border);border-radius:6px;background:#fff" title="Emoji icon (optional)"/>
+              <input type="text" id="apps-new-name" placeholder="Name (e.g. Slack)" style="font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff"/>
+              <input type="text" id="apps-new-url" placeholder="https://…" style="font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff"/>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px">
+              <span id="apps-new-status" style="font-size:11px;color:var(--text3);align-self:center"></span>
+              <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="createExternalApp()">Add</button>
+            </div>
+          </div>
+
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text2)">Existing apps</div>
+          <div id="apps-list" style="display:flex;flex-direction:column;gap:6px"></div>
         </div>
 
         <!-- Admin panel -->
@@ -17433,6 +17466,153 @@ window.scheduleEventForCurrentTicket = function() {
   window.startEditFlavorTicketTitle = startEditFlavorTicketTitle;
   window.saveEditFlavorTicketTitle = saveEditFlavorTicketTitle;
   window.cancelEditFlavorTicketTitle = cancelEditFlavorTicketTitle;
+})();
+
+// ── External apps (sidebar quick links + Settings → Apps tab) ───────────────
+(function() {
+  let APPS_CACHE = [];
+
+  async function loadExternalApps() {
+    try {
+      const items = await apiGet('/api/external-apps');
+      APPS_CACHE = Array.isArray(items) ? items : [];
+    } catch { APPS_CACHE = []; }
+    renderSidebarApps();
+    if (document.getElementById('apps-list')) renderAppsAdminList();
+  }
+
+  function renderSidebarApps() {
+    const section = document.getElementById('sb-apps-section');
+    const list = document.getElementById('sb-apps-list');
+    if (!section || !list) return;
+    if (!APPS_CACHE.length) {
+      section.style.display = 'none';
+      list.innerHTML = '';
+      return;
+    }
+    section.style.display = '';
+    list.innerHTML = APPS_CACHE.map(a => {
+      // sidebar nav-item style; opens in new tab. SVG fallback when no
+      // emoji icon is set.
+      const icon = a.icon
+        ? `<span style="font-size:14px;line-height:1;width:15px;display:inline-flex;justify-content:center">${_esc(a.icon)}</span>`
+        : `<svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`;
+      return `<a class="nav-item" href="${_esc(a.url)}" target="_blank" rel="noopener" title="${_esc(a.url)}">${icon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(a.name)}</span></a>`;
+    }).join('');
+  }
+
+  function renderAppsAdminList() {
+    const wrap = document.getElementById('apps-list');
+    if (!wrap) return;
+    if (!APPS_CACHE.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:14px;text-align:center;border:1px dashed var(--border);border-radius:8px">No apps yet. Add one above.</div>';
+      return;
+    }
+    wrap.innerHTML = APPS_CACHE.map((a, idx) => `
+      <div style="display:grid;grid-template-columns:60px 1fr 1fr auto;gap:8px;align-items:center;padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff">
+        <input type="text" value="${_esc(a.icon || '')}" maxlength="4" data-app-id="${a.id}" data-app-field="icon" oninput="onAppFieldEdit(${a.id}, 'icon', this.value)" style="font-size:18px;text-align:center;padding:6px;border:1px solid var(--border);border-radius:5px"/>
+        <input type="text" value="${_esc(a.name)}" data-app-id="${a.id}" data-app-field="name" oninput="onAppFieldEdit(${a.id}, 'name', this.value)" style="font-size:13px;padding:6px 8px;border:1px solid var(--border);border-radius:5px"/>
+        <input type="text" value="${_esc(a.url)}" data-app-id="${a.id}" data-app-field="url" oninput="onAppFieldEdit(${a.id}, 'url', this.value)" style="font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace"/>
+        <div style="display:flex;gap:4px">
+          <button onclick="moveExternalApp(${a.id}, -1)" ${idx === 0 ? 'disabled' : ''} title="Move up" style="font-size:14px;padding:4px 8px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:${idx === 0 ? 'not-allowed' : 'pointer'};opacity:${idx === 0 ? '0.4' : '1'}">↑</button>
+          <button onclick="moveExternalApp(${a.id}, 1)" ${idx === APPS_CACHE.length - 1 ? 'disabled' : ''} title="Move down" style="font-size:14px;padding:4px 8px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:${idx === APPS_CACHE.length - 1 ? 'not-allowed' : 'pointer'};opacity:${idx === APPS_CACHE.length - 1 ? '0.4' : '1'}">↓</button>
+          <button onclick="deleteExternalApp(${a.id})" title="Delete" style="font-size:14px;padding:4px 8px;background:#fff;border:1px solid #fecaca;color:#dc2626;border-radius:5px;cursor:pointer">🗑</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // Per-input debounced save for inline edits. Avoids hitting the server
+  // on every keystroke; commits 600ms after the user stops typing.
+  const _appEditTimers = {};
+  window.onAppFieldEdit = function(id, field, value) {
+    clearTimeout(_appEditTimers[id + ':' + field]);
+    _appEditTimers[id + ':' + field] = setTimeout(() => {
+      const body = {}; body[field] = value;
+      apiPut('/api/external-apps/' + id, body)
+        .then(updated => {
+          if (updated && updated.id) {
+            const i = APPS_CACHE.findIndex(x => x.id === id);
+            if (i >= 0) APPS_CACHE[i] = updated;
+            renderSidebarApps();
+          }
+        })
+        .catch(() => {});
+    }, 600);
+  };
+
+  window.createExternalApp = async function() {
+    const name = (document.getElementById('apps-new-name')?.value || '').trim();
+    const url  = (document.getElementById('apps-new-url')?.value  || '').trim();
+    const icon = (document.getElementById('apps-new-icon')?.value || '').trim();
+    const status = document.getElementById('apps-new-status');
+    if (!name)  { if (status) status.textContent = 'Name required.'; return; }
+    if (!url)   { if (status) status.textContent = 'URL required.'; return; }
+    if (!/^https?:\/\//i.test(url)) { if (status) status.textContent = 'URL must start with http:// or https://'; return; }
+    if (status) { status.textContent = 'Saving…'; status.style.color = ''; }
+    try {
+      const created = await apiPost('/api/external-apps', { name, url, icon });
+      if (created && created.error) throw new Error(created.error);
+      APPS_CACHE.push(created);
+      document.getElementById('apps-new-name').value = '';
+      document.getElementById('apps-new-url').value = '';
+      document.getElementById('apps-new-icon').value = '';
+      if (status) { status.textContent = 'Added.'; setTimeout(() => status.textContent = '', 1500); }
+      renderSidebarApps();
+      renderAppsAdminList();
+    } catch (e) {
+      if (status) { status.textContent = 'Failed: ' + (e?.message || e); status.style.color = 'var(--red)'; }
+    }
+  };
+
+  window.deleteExternalApp = async function(id) {
+    const app = APPS_CACHE.find(a => a.id === id);
+    if (!confirm(`Remove "${app?.name || 'this app'}" from the sidebar?`)) return;
+    try {
+      await apiDel('/api/external-apps/' + id);
+      APPS_CACHE = APPS_CACHE.filter(a => a.id !== id);
+      renderSidebarApps();
+      renderAppsAdminList();
+    } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+  };
+
+  window.moveExternalApp = async function(id, direction) {
+    const idx = APPS_CACHE.findIndex(a => a.id === id);
+    const newIdx = idx + direction;
+    if (idx < 0 || newIdx < 0 || newIdx >= APPS_CACHE.length) return;
+    // Swap locally for instant feedback, then persist the new order.
+    const reordered = APPS_CACHE.slice();
+    [reordered[idx], reordered[newIdx]] = [reordered[newIdx], reordered[idx]];
+    APPS_CACHE = reordered;
+    renderSidebarApps();
+    renderAppsAdminList();
+    try {
+      await apiPost('/api/external-apps/reorder', { order: APPS_CACHE.map(a => a.id) });
+    } catch (e) {
+      console.warn('[apps] reorder failed:', e?.message || e);
+    }
+  };
+
+  window.loadExternalApps = loadExternalApps;
+
+  // Hook switchSettingsTab so the admin list refreshes whenever the user
+  // opens the Apps tab. Same wrap-pattern used by Announcements.
+  function _hookAppsTab() {
+    const _origSST = window.switchSettingsTab;
+    if (typeof _origSST === 'function' && !_origSST._appsPatched) {
+      const patched = function(tab) {
+        const r = _origSST.apply(this, arguments);
+        if (tab === 'apps') loadExternalApps();
+        return r;
+      };
+      patched._appsPatched = true;
+      window.switchSettingsTab = patched;
+    }
+  }
+  setTimeout(_hookAppsTab, 1200);
+
+  // Initial load — populates the sidebar for everyone after auth bootstrap.
+  setTimeout(loadExternalApps, 800);
 })();
 </script>
 </body>

@@ -2051,6 +2051,85 @@ app.post('/api/announcements/:id/ack', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── External apps (sidebar quick links) ────────────────────────────────────
+// Workspace-wide list of links to other apps. Anyone authenticated can
+// READ (the sidebar shows them to everyone). Only admins can CREATE,
+// UPDATE, DELETE. Order by position ASC then id so a stable insertion
+// order is preserved when admins haven't reordered.
+app.get('/api/external-apps', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT id, name, url, icon, position FROM external_apps
+        ORDER BY position ASC, id ASC`
+    );
+    res.json(rows.map(r => ({
+      id: r.id, name: r.name, url: r.url, icon: r.icon || '', position: r.position || 0,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/external-apps', requireAdmin, async (req, res) => {
+  try {
+    const { name, url, icon } = req.body || {};
+    const cleanName = String(name || '').trim();
+    const cleanUrl = String(url || '').trim();
+    if (!cleanName) return res.status(400).json({ error: 'name required' });
+    if (!cleanUrl) return res.status(400).json({ error: 'url required' });
+    // Reject anything that doesn't look like an absolute URL — these are
+    // sidebar links that get target=_blank, so a relative path or a
+    // javascript:… URL would be either useless or unsafe.
+    if (!/^https?:\/\//i.test(cleanUrl)) {
+      return res.status(400).json({ error: 'url must start with http:// or https://' });
+    }
+    // New rows go to the end. Position = max(existing) + 1.
+    const maxRow = await get('SELECT COALESCE(MAX(position), 0) AS m FROM external_apps');
+    const nextPos = (maxRow?.m || 0) + 1;
+    const info = await run(
+      `INSERT INTO external_apps (name, url, icon, position, created_by)
+       VALUES (?, ?, ?, ?, ?) RETURNING id`,
+      cleanName.slice(0, 80), cleanUrl.slice(0, 500),
+      String(icon || '').slice(0, 8), nextPos, req.session.userId
+    );
+    res.status(201).json({ id: Number(info.lastInsertRowid), name: cleanName, url: cleanUrl, icon: icon || '', position: nextPos });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/external-apps/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await get('SELECT id FROM external_apps WHERE id=?', id);
+    if (!exists) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const u = []; const v = [];
+    if (b.name !== undefined) {
+      const t = String(b.name || '').trim();
+      if (!t) return res.status(400).json({ error: 'name cannot be empty' });
+      u.push('name=?'); v.push(t.slice(0, 80));
+    }
+    if (b.url !== undefined) {
+      const t = String(b.url || '').trim();
+      if (!t || !/^https?:\/\//i.test(t)) {
+        return res.status(400).json({ error: 'url must start with http:// or https://' });
+      }
+      u.push('url=?'); v.push(t.slice(0, 500));
+    }
+    if (b.icon !== undefined) { u.push('icon=?'); v.push(String(b.icon || '').slice(0, 8)); }
+    if (b.position !== undefined) { u.push('position=?'); v.push(Number(b.position) || 0); }
+    if (!u.length) return res.json({ ok: true });
+    v.push(id);
+    await run(`UPDATE external_apps SET ${u.join(', ')} WHERE id=?`, ...v);
+    const row = await get('SELECT id,name,url,icon,position FROM external_apps WHERE id=?', id);
+    res.json(row);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/external-apps/:id', requireAdmin, async (req, res) => {
+  try {
+    await run('DELETE FROM external_apps WHERE id=?', Number(req.params.id));
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Admin CRUD
 app.get('/api/announcements', requireAdmin, async (req, res) => {
   try {

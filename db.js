@@ -423,6 +423,19 @@ async function init() {
       PRIMARY KEY (user_id, ticket_id)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_ticket_views_user ON ticket_views (user_id)`,
+    // Workspace-wide quick links to other apps (Syruvia Lab, Slack, Drive,
+    // an internal dashboard, etc.). Visible to everyone in the sidebar;
+    // managed by admins under Settings → Apps. Position drives ordering.
+    `CREATE TABLE IF NOT EXISTS external_apps (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      icon TEXT DEFAULT '',
+      position INTEGER DEFAULT 0,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_external_apps_position ON external_apps (position)`,
   ];
 
   for (const sql of tables) {
