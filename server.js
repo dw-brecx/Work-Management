@@ -2074,11 +2074,13 @@ app.post('/api/polish', requireAuth, async (req, res) => {
     if (cleanText.length > 5000) return res.status(400).json({ error: 'text too long (max 5000 chars)' });
     if (cleanText.length < 3)   return res.status(400).json({ error: 'text too short to polish' });
 
-    // Mode tweaks the system prompt — descriptions get more reorg license,
-    // comments stay close to the user's original voice. Default = comment.
+    // Mode tweaks the system prompt — both modes lean into a "Google
+    // Polish" style: clearer, friendlier, easier for the recipient to
+    // understand. Description mode allows more reorganization (paragraphs,
+    // bullets); comment mode rewords sentence-by-sentence.
     const systemPrompt = mode === 'description'
-      ? "You polish ticket descriptions for a work-management app. Improve clarity, structure, and grammar. You may reorganize sentences and add brief structure (short paragraphs, bullet points if helpful). Preserve all factual content, technical terms, ticket IDs (TKT-####), URLs, and @-mentions. Return ONLY the polished text — no preamble, no quotes, no commentary."
-      : "You polish messages in a work-management app's comment thread. Fix grammar and typos, improve clarity. Stay close to the writer's voice — don't over-edit. Preserve meaning, technical terms, ticket IDs (TKT-####), URLs, and @-mentions exactly. Return ONLY the polished text — no preamble, no quotes, no commentary.";
+      ? "You polish ticket descriptions for a work-management app. Make the text clear, well-structured, and easy for a teammate to understand at first read — no back-and-forth needed. Fix grammar, awkward phrasing, and typos. Improve sentence flow and word choice. You may reorganize sentences, break long paragraphs into shorter ones, and use bullet points for lists. Aim for a friendly-professional tone (warm but not casual). Preserve all facts, ticket IDs (TKT-####), URLs, and @-mentions exactly. Never add information that wasn't there. Don't pad — be concise. Return ONLY the polished text — no preamble, no quotes, no commentary."
+      : "You polish messages in a work-management app's comment thread. Rewrite the text so the recipient understands it instantly: clearer wording, smoother flow, friendlier tone (warm but professional). Fix grammar and typos. Tighten rambling sentences. You may rephrase liberally as long as the writer's intent and every fact stays intact. Preserve ticket IDs (TKT-####), URLs, and @-mentions exactly — don't reword these. Stay concise — don't add fluff or pleasantries that weren't there. Return ONLY the polished text — no preamble, no quotes, no commentary.";
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
