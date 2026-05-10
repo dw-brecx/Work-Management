@@ -411,6 +411,18 @@ async function init() {
     `CREATE INDEX IF NOT EXISTS idx_personal_reminders_user ON personal_reminders (user_id, completed)`,
     `CREATE INDEX IF NOT EXISTS idx_personal_reminders_ticket ON personal_reminders (ticket_id, user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_personal_reminders_due ON personal_reminders (completed, email_enabled, due_at)`,
+    // Per-user "last viewed" stamp on each ticket — drives the unread
+    // highlight on the tickets list. A ticket is unread for a user when
+    // there's no row here OR last_viewed_at is older than the ticket's
+    // latest activity (new comment / status change / etc.). Upserted
+    // every time openTicketDetail runs.
+    `CREATE TABLE IF NOT EXISTS ticket_views (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      last_viewed_at TEXT NOT NULL DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      PRIMARY KEY (user_id, ticket_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_ticket_views_user ON ticket_views (user_id)`,
   ];
 
   for (const sql of tables) {

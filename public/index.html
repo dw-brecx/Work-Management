@@ -5265,14 +5265,27 @@ function renderTickets() {
     // Project rows: tinted background + an inline PROJECT badge with the
     // sub-ticket count so admins spot them at a glance in the list.
     const isProject = !!t.isProject;
-    const rowStyle = isProject ? 'cursor:pointer;background:linear-gradient(90deg,#faf5ff 0%,#fff 80%)' : 'cursor:pointer';
+    // Unread highlight: a thin indigo left border + faint indigo background
+    // so unread tickets stand out in the list without looking selected.
+    // Project tint takes priority on background; the unread bar is layered
+    // on as a box-shadow inset so both can co-exist.
+    const isUnread = !!t.unread;
+    let rowStyle = isProject
+      ? 'cursor:pointer;background:linear-gradient(90deg,#faf5ff 0%,#fff 80%)'
+      : (isUnread ? 'cursor:pointer;background:#eef2ff' : 'cursor:pointer');
+    if (isUnread) rowStyle += ';box-shadow:inset 3px 0 0 #4f46e5';
+    const titleWeight = isUnread ? '700' : '500';
+    const titleColor  = isUnread ? 'color:#1e1b4b;' : '';
     const projectPill = isProject
       ? `<span style="display:inline-block;background:#7c3aed;color:#fff;font-size:9.5px;font-weight:700;letter-spacing:.05em;padding:1px 6px;border-radius:8px;margin-right:6px;vertical-align:middle">PROJECT · ${t.childCount || 0}</span>`
       : '';
-    return `<tr class="${isSel ? 'selected' : ''}" data-tid="${t.id}" style="${rowStyle}" onclick="openTicketDetail('${t.id}')">
+    const unreadDot = isUnread
+      ? '<span title="Unread" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4f46e5;margin-right:6px;vertical-align:middle"></span>'
+      : '';
+    return `<tr class="${isSel ? 'selected' : ''}${isUnread ? ' unread' : ''}" data-tid="${t.id}" style="${rowStyle}" onclick="openTicketDetail('${t.id}')">
     <td onclick="event.stopPropagation()" style="cursor:default"><input type="checkbox" class="row-cb" data-tid="${t.id}" ${isSel ? 'checked' : ''} onchange="toggleRowSelection('${t.id}', this.checked)"/></td>
-    <td style="color:var(--accent);white-space:nowrap;font-weight:500">${t.id}</td>
-    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">${projectPill}${escapeHtml(t.title)}</td>
+    <td style="color:var(--accent);white-space:nowrap;font-weight:${titleWeight}">${t.id}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:${titleWeight};${titleColor}">${unreadDot}${projectPill}${escapeHtml(t.title)}</td>
     <td>${statusBadge(t.status)}</td>
     <td>${priorityBadge(t.priority)}</td>
     <td>${stackedAvatars(getAssignees(t))}</td>
@@ -5363,6 +5376,18 @@ function openTicketDetail(id) {
       if (currentTicketId === t.id && typeof renderTimeline === 'function') renderTimeline();
     })
     .catch(() => {});
+  // Mark this ticket as read for the current user. Server stamps
+  // ticket_views.last_viewed_at, the unread highlight on the list view
+  // disappears on the next /api/tickets fetch. Best-effort — we also
+  // optimistically clear the local flag so the list reflects the change
+  // even before the server round-trips.
+  fetch('/api/tickets/' + encodeURIComponent(t.id) + '/mark-viewed', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  }).catch(() => {});
+  if (t.unread) {
+    t.unread = false;
+    if (typeof renderTickets === 'function' && currentPage === 'tickets') renderTickets();
+  }
 }
 
 function getCurrentTicket() {

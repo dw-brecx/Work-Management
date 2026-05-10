@@ -673,7 +673,52 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
         u.id, u.name, u.id, u.name, u.id
       );
     }
-    res.json(await Promise.all(rows.map(buildTicket)));
+    const tickets = await Promise.all(rows.map(buildTicket));
+    // Per-user unread flag: a ticket is unread when the user has never
+    // viewed it OR something has happened on it since their last view.
+    // "Activity" = ticket created_at and the newest comment created_at.
+    // (Status changes write a comment + a timeline entry; the comment
+    // already counts, so we don't need to join the timeline table too.)
+    if (tickets.length) {
+      const ids = tickets.map(t => t.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const [views, lastComments] = await Promise.all([
+        all(`SELECT ticket_id, last_viewed_at FROM ticket_views
+              WHERE user_id=? AND ticket_id IN (${placeholders})`, u.id, ...ids),
+        all(`SELECT ticket_id, MAX(created_at) AS latest_at FROM ticket_comments
+              WHERE ticket_id IN (${placeholders}) GROUP BY ticket_id`, ...ids),
+      ]);
+      const viewMap = new Map(views.map(v => [v.ticket_id, v.last_viewed_at]));
+      const commentMap = new Map(lastComments.map(c => [c.ticket_id, c.latest_at]));
+      for (const t of tickets) {
+        const lastViewed = viewMap.get(t.id) || null;
+        const latestActivity = (() => {
+          const c = commentMap.get(t.id) || null;
+          if (!c) return t.created_at || null;
+          if (!t.created_at) return c;
+          return c > t.created_at ? c : t.created_at;
+        })();
+        t.unread = !lastViewed || (latestActivity && lastViewed < latestActivity);
+        t.lastViewedAt = lastViewed;
+      }
+    }
+    res.json(tickets);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mark a ticket as viewed by the current user. Upserts ticket_views
+// with the current UTC timestamp. Idempotent and cheap — called every
+// time the user opens a ticket detail page.
+app.post('/api/tickets/:id/mark-viewed', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    await run(
+      `INSERT INTO ticket_views (user_id, ticket_id, last_viewed_at)
+       VALUES (?, ?, TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+       ON CONFLICT (user_id, ticket_id)
+       DO UPDATE SET last_viewed_at = EXCLUDED.last_viewed_at`,
+      req.session.userId, req.params.id
+    );
+    res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
