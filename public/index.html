@@ -13182,24 +13182,48 @@ function watchTicketDetailPanel() {
         }
       }).catch(function(){});
       // Load real comments from API (replaces empty localComments from template)
-      apiGet('/api/tickets/' + id + '/comments').then(function(cmts) {
-        if (!Array.isArray(cmts)) return;
-        // Guard against a fast-clicker switching to another ticket before
-        // this fetch resolves — if so, ignore the stale response.
-        if (window.currentDetailTicketId !== id) return;
-        localComments.length = 0;
-        cmts.forEach(function(c) { localComments.push(c); });
-        if (typeof renderComments === 'function') renderComments();
-        // Update comment count badge
-        var badge = document.querySelector('.right-panel .section-title .badge, [data-section="comments"] .badge');
-        if (badge) badge.textContent = cmts.length;
-        var countEl = document.querySelector('.comments-count');
-        if (countEl) countEl.textContent = cmts.length;
-      }).catch(function(){});
+      // Self-healing: retry once on failure, then show a "Couldn't load —
+      // Retry" link so an empty render isn't silently a lie. Without this,
+      // a single failed fetch made the user think a ticket had no comments
+      // when it actually had a lot.
+      reloadCommentsForTicket(id, 2);
       return r;
     };
   }
 }
+
+// Fetch comments for a ticket and paint into the comments drawer.
+// Retries on failure (one auto-retry after 1.5s by default). When all
+// retries are exhausted, replaces the empty-state with a clear error +
+// Retry link so the user knows the request failed instead of seeing a
+// silent "No comments yet" lie.
+async function reloadCommentsForTicket(id, retriesLeft) {
+  if (typeof retriesLeft !== 'number') retriesLeft = 1;
+  try {
+    const cmts = await apiGet('/api/tickets/' + encodeURIComponent(id) + '/comments');
+    if (!Array.isArray(cmts)) throw new Error('not-array');
+    if (window.currentDetailTicketId !== id) return; // user navigated away
+    localComments.length = 0;
+    cmts.forEach(c => localComments.push(c));
+    if (typeof renderComments === 'function') renderComments();
+    const badge = document.querySelector('.right-panel .section-title .badge, [data-section="comments"] .badge');
+    if (badge) badge.textContent = cmts.length;
+    const countEl = document.querySelector('.comments-count');
+    if (countEl) countEl.textContent = cmts.length;
+  } catch (err) {
+    console.warn('[comments] fetch failed for', id, '—', err && err.message, 'retries left:', retriesLeft);
+    if (retriesLeft > 0 && window.currentDetailTicketId === id) {
+      setTimeout(() => reloadCommentsForTicket(id, retriesLeft - 1), 1500);
+      return;
+    }
+    if (window.currentDetailTicketId !== id) return;
+    const drawer = document.getElementById('cmt-drawer-list');
+    if (drawer) {
+      drawer.innerHTML = `<div class="td-comment-empty" style="color:var(--red)">Couldn't load comments. <a onclick="reloadCommentsForTicket('${escapeAttr(id)}', 2)" style="color:var(--accent);cursor:pointer;text-decoration:underline">Retry</a></div>`;
+    }
+  }
+}
+window.reloadCommentsForTicket = reloadCommentsForTicket;
 
 // Kept as a thin alias for legacy callers (some code paths still call this
 // after an upload to refresh the panel). The polling-and-waiting variant is
