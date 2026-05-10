@@ -124,23 +124,27 @@ async function _resolveSlackUserId(user) {
 //   { text: "...", blocks: [...] }      rich block-kit layout
 // Failures are swallowed; this is a side-effect of other workflows.
 async function slackDmUser(userId, payload) {
-  if (!slackReady || !userId) return { skipped: true };
+  if (!slackReady) { console.log('[slack] dm skip — token not set'); return { skipped: true }; }
+  if (!userId) { console.log('[slack] dm skip — no userId'); return { skipped: true }; }
   try {
+    console.log(`[slack] dm attempt → userId=${userId} payloadKeys=${Object.keys(payload||{}).join(',')}`);
     const u = await get(
       'SELECT id, name, email, slack_user_id FROM users WHERE id=?',
       userId
     );
-    if (!u) return { skipped: true };
+    if (!u) { console.log(`[slack] dm skip — no user row for id=${userId}`); return { skipped: true }; }
+    if (!u.email) { console.log(`[slack] dm skip — user ${u.name} has no email`); return { skipped: true }; }
     const sid = await _resolveSlackUserId(u);
-    if (!sid) return { skipped: true };
+    if (!sid) { console.log(`[slack] dm skip — could not resolve Slack user_id for ${u.email}`); return { skipped: true }; }
     const data = await _slackApi('chat.postMessage', { channel: sid, ...payload });
     if (!data.ok) {
-      console.warn('[slack] postMessage failed for', u.email, ':', data.error);
+      console.warn(`[slack] postMessage failed for ${u.email} (sid=${sid}):`, data.error, 'response:', JSON.stringify(data).slice(0, 300));
       return { error: data.error };
     }
+    console.log(`[slack] dm sent → ${u.email}`);
     return { ok: true };
   } catch (e) {
-    console.warn('[slack] DM failed:', e.message);
+    console.warn('[slack] DM failed:', e.message, e.stack);
     return { error: e.message };
   }
 }
