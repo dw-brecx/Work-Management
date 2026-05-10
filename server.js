@@ -3049,17 +3049,50 @@ app.post('/api/projects/from-template', requireAdmin, async (req, res) => {
 //              external_url; row click opens in a new tab
 // All three share the same list view; the title column carries the
 // human-readable name, the type icon disambiguates.
+//
+// Visibility — public docs are visible to every authenticated user;
+// private docs are visible only to: the creator, admins/managers, or
+// users explicitly added via doc_shares. The /uploads/* file URL stays
+// publicly fetchable regardless (so Office Online viewer can render).
+
+// SQL fragment that filters docs by visibility for the current user.
+// Inlined into the queries below; takes (userId, isAdmin0or1) twice.
+const _docVisibilityWhere = `(
+  d.visibility = 'public'
+  OR ? = 1
+  OR d.created_by = ?
+  OR EXISTS (SELECT 1 FROM doc_shares s WHERE s.doc_id = d.id AND s.user_id = ?)
+)`;
+async function _canSeeDoc(userId, isAdmin, docId) {
+  if (isAdmin) return true;
+  const d = await get('SELECT created_by, visibility FROM docs WHERE id=?', docId);
+  if (!d) return false;
+  if (d.visibility === 'public') return true;
+  if (d.created_by === userId) return true;
+  const share = await get('SELECT 1 AS ok FROM doc_shares WHERE doc_id=? AND user_id=?', docId, userId);
+  return !!share;
+}
+async function _canManageDoc(userId, isAdmin, docId) {
+  if (isAdmin) return true;
+  const d = await get('SELECT created_by FROM docs WHERE id=?', docId);
+  return d && d.created_by === userId;
+}
+
 app.get('/api/docs', requireAuth, async (req, res) => {
   try {
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role) ? 1 : 0;
     const rows = await all(`
-      SELECT d.id, d.title, d.parent_id, d.type, d.external_url, d.created_at, d.updated_at,
+      SELECT d.id, d.title, d.parent_id, d.type, d.external_url, d.visibility, d.created_by, d.created_at, d.updated_at,
              cu.name AS created_by_name,
              uu.name AS updated_by_name
         FROM docs d
         LEFT JOIN users cu ON cu.id = d.created_by
         LEFT JOIN users uu ON uu.id = d.updated_by
+       WHERE ${_docVisibilityWhere}
        ORDER BY d.updated_at DESC, d.id DESC
-       LIMIT 500`);
+       LIMIT 500`,
+      isAdmin, req.session.userId, req.session.userId);
     if (!rows.length) return res.json([]);
     // Bundle attached files in one batch query — list view shows the
     // filename / mime so the type icon can render correctly.
@@ -3079,6 +3112,10 @@ app.get('/api/docs', requireAuth, async (req, res) => {
         title: r.title || 'Untitled',
         type: r.type || 'markdown',
         externalUrl: r.external_url || '',
+        visibility: r.visibility || 'public',
+        // Mark whether the current user owns or admins this doc — drives
+        // whether the Share button is enabled on the row.
+        canManage: !!(isAdmin || (r.created_by === req.session.userId)),
         parentId: r.parent_id || null,
         file: f ? {
           attachmentId: f.id, filename: f.filename,
@@ -3099,8 +3136,13 @@ app.get('/api/docs', requireAuth, async (req, res) => {
 app.get('/api/docs/:id', requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (!await _canSeeDoc(req.session.userId, isAdmin, id)) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     const r = await get(`
-      SELECT d.id, d.title, d.body, d.parent_id, d.type, d.external_url, d.created_at, d.updated_at,
+      SELECT d.id, d.title, d.body, d.parent_id, d.type, d.external_url, d.visibility, d.created_by, d.created_at, d.updated_at,
              cu.name AS created_by_name,
              uu.name AS updated_by_name
         FROM docs d
@@ -3116,6 +3158,8 @@ app.get('/api/docs/:id', requireAuth, async (req, res) => {
       id: r.id, title: r.title || 'Untitled', body: r.body || '',
       type: r.type || 'markdown',
       externalUrl: r.external_url || '',
+      visibility: r.visibility || 'public',
+      canManage: !!(isAdmin || (r.created_by === req.session.userId)),
       parentId: r.parent_id || null,
       file: f ? {
         attachmentId: f.id, filename: f.filename,
@@ -3131,6 +3175,65 @@ app.get('/api/docs/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Share-management endpoints. Only the doc creator (or an admin/manager)
+// can read or write the share list. Returns the explicit user grants
+// for a private doc (public docs return [] but the endpoint still works
+// so the UI can flip a public→private and immediately add users).
+app.get('/api/docs/:id/shares', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (!await _canManageDoc(req.session.userId, isAdmin, id)) {
+      return res.status(403).json({ error: 'Only the doc creator or an admin can manage sharing.' });
+    }
+    const rows = await all(
+      `SELECT s.user_id, u.name, u.email
+         FROM doc_shares s
+         JOIN users u ON u.id = s.user_id
+        WHERE s.doc_id=?
+        ORDER BY u.name ASC`, id);
+    res.json(rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/docs/:id/shares', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const userIdRaw = req.body?.userId;
+    const userId = userIdRaw ? Number(userIdRaw) : null;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (!await _canManageDoc(req.session.userId, isAdmin, id)) {
+      return res.status(403).json({ error: 'Only the doc creator or an admin can manage sharing.' });
+    }
+    const target = await get('SELECT id FROM users WHERE id=?', userId);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    await run(
+      `INSERT INTO doc_shares (doc_id, user_id, granted_by)
+       VALUES (?, ?, ?)
+       ON CONFLICT (doc_id, user_id) DO NOTHING`,
+      id, userId, req.session.userId
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/docs/:id/shares/:userId', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = Number(req.params.userId);
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (!await _canManageDoc(req.session.userId, isAdmin, id)) {
+      return res.status(403).json({ error: 'Only the doc creator or an admin can manage sharing.' });
+    }
+    await run('DELETE FROM doc_shares WHERE doc_id=? AND user_id=?', id, userId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/docs', requireAuth, async (req, res) => {
   try {
     const title = String(req.body?.title || 'Untitled').trim() || 'Untitled';
@@ -3138,6 +3241,7 @@ app.post('/api/docs', requireAuth, async (req, res) => {
     const parentId = req.body?.parentId ? Number(req.body.parentId) : null;
     const rawType = String(req.body?.type || 'markdown').toLowerCase();
     const type = ['markdown', 'file', 'link'].includes(rawType) ? rawType : 'markdown';
+    const visibility = String(req.body?.visibility || 'public').toLowerCase() === 'private' ? 'private' : 'public';
     let externalUrl = '';
     if (type === 'link') {
       externalUrl = String(req.body?.externalUrl || '').trim();
@@ -3147,16 +3251,17 @@ app.post('/api/docs', requireAuth, async (req, res) => {
       }
     }
     const info = await run(
-      `INSERT INTO docs (title, body, parent_id, type, external_url, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO docs (title, body, parent_id, type, external_url, visibility, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       title.slice(0, 200), body.slice(0, 200000), parentId,
-      type, externalUrl.slice(0, 1000),
+      type, externalUrl.slice(0, 1000), visibility,
       req.session.userId, req.session.userId
     );
-    const row = await get('SELECT id, title, body, type, external_url, created_at, updated_at FROM docs WHERE id=?', Number(info.lastInsertRowid));
+    const row = await get('SELECT id, title, body, type, external_url, visibility, created_at, updated_at FROM docs WHERE id=?', Number(info.lastInsertRowid));
     res.status(201).json({
       id: row.id, title: row.title, body: row.body || '',
       type: row.type, externalUrl: row.external_url || '',
+      visibility: row.visibility,
       createdAt: row.created_at, updatedAt: row.updated_at,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -3184,6 +3289,17 @@ app.put('/api/docs/:id', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'externalUrl must start with http:// or https://' });
       }
       u.push('external_url=?'); v.push(url.slice(0, 1000));
+    }
+    if (req.body?.visibility !== undefined) {
+      // Only the doc creator (or admin) can change visibility — same
+      // gate the share endpoints use.
+      const me = await getUser(req.session.userId);
+      const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+      if (!await _canManageDoc(req.session.userId, isAdmin, id)) {
+        return res.status(403).json({ error: 'Only the doc creator or an admin can change visibility.' });
+      }
+      const vis = String(req.body.visibility).toLowerCase() === 'private' ? 'private' : 'public';
+      u.push('visibility=?'); v.push(vis);
     }
     if (!u.length) return res.json({ ok: true });
     u.push('updated_by=?'); v.push(req.session.userId);

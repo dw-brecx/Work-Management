@@ -503,6 +503,21 @@ async function init() {
   // attachments.doc_id links an uploaded file to its parent doc — same
   // pattern used for ticket / comment / feedback / reminder attachments.
   await safeAlter('ALTER TABLE attachments ADD COLUMN doc_id INTEGER');
+  // Per-doc visibility. public = anyone in the workspace can see it
+  // (default); private = only the creator + admins + users explicitly
+  // added via doc_shares. The file URL itself (/uploads/*) is still
+  // publicly fetchable — visibility gates the listing + GET-by-id only.
+  await safeAlter("ALTER TABLE docs ADD COLUMN visibility TEXT DEFAULT 'public'");
+  // Per-(doc, user) explicit access grants. Only checked when the doc's
+  // visibility = 'private'. Public docs ignore this table entirely.
+  await pool.query(`CREATE TABLE IF NOT EXISTS doc_shares (
+    doc_id INTEGER NOT NULL REFERENCES docs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    granted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    granted_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    PRIMARY KEY (doc_id, user_id)
+  )`);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_doc_shares_user ON doc_shares (user_id)');
   // Announcements gain a 'kind' tag (feature / bugfix / update / note) so the
   // What's New feed can color-code them. Default 'update' is safe for any
   // existing row that pre-dates this column.
