@@ -2519,25 +2519,25 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
 
       <div class="stat-grid">
-        <div class="stat-card">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('total')" title="Click to see your active tickets">
           <div class="stat-icon" style="background:#eff6ff"><svg width="16" height="16" fill="#3b82f6" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg></div>
           <div class="stat-label">Total Tickets</div>
           <div class="stat-value" id="dash-stat-total">0</div>
           <div class="stat-change up" id="dash-stat-total-delta"></div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('inProgress')" title="Click to see in-progress tickets">
           <div class="stat-icon" style="background:#fefce8"><svg width="16" height="16" fill="#eab308" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3" stroke="white" fill="none" stroke-width="1.5"/></svg></div>
           <div class="stat-label">In Progress</div>
           <div class="stat-value" id="dash-stat-inprogress">0</div>
           <div class="stat-change up"></div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('overdue')" title="Click to see overdue tickets">
           <div class="stat-icon" style="background:#fef2f2"><svg width="16" height="16" fill="#ef4444" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01" stroke="white" fill="none" stroke-width="1.8"/></svg></div>
           <div class="stat-label">Overdue</div>
           <div class="stat-value" id="dash-stat-overdue" style="color:var(--red)">0</div>
           <div class="stat-change dn"></div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('completedToday')" title="Click to see tickets you completed today">
           <div class="stat-icon" style="background:#f0fdf4"><svg width="16" height="16" fill="#22c55e" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/></svg></div>
           <div class="stat-label">Completed Today</div>
           <div class="stat-value" id="dash-stat-completed">0</div>
@@ -4824,7 +4824,7 @@ function fmtNum(n) { return n.toLocaleString('en-US'); }
 // in DASH_INSIGHTS so the click-to-expand drawer can render without
 // re-fetching. Called when the user lands on the dashboard. Cards
 // show "—" until the response arrives so the layout doesn't jump.
-let DASH_INSIGHTS = { unread: [], stale: [], pending: [], openCategory: null };
+let DASH_INSIGHTS = { unread: [], stale: [], pending: [], completedToday: [], openCategory: null };
 async function loadDashboardInsights() {
   const setVal = (id, n) => {
     const el = document.getElementById(id);
@@ -4839,6 +4839,11 @@ async function loadDashboardInsights() {
     DASH_INSIGHTS.unread  = stats?.unreadTickets || [];
     DASH_INSIGHTS.stale   = stats?.staleTickets || [];
     DASH_INSIGHTS.pending = stats?.pendingMentionTickets || [];
+    DASH_INSIGHTS.completedToday = stats?.completedTodayTickets || [];
+    // Override "Completed Today" with the accurate scoped count from the
+    // dashboard endpoint (the legacy /api/stats query was wrong before
+    // the closed_at column landed; even fixed it's workspace-wide).
+    setVal('dash-stat-completed', stats?.completedTodayCount || 0);
     // If the user already had a drawer open when this refreshed, repaint it.
     if (DASH_INSIGHTS.openCategory) renderInsightDrawer(DASH_INSIGHTS.openCategory);
   } catch (e) {
@@ -4849,7 +4854,10 @@ async function loadDashboardInsights() {
 }
 
 // Open / close the inline drawer that lists the tickets behind a single
-// insight card. Pass null (or click the same card twice) to close.
+// stat card (top row OR insights row). Pass null (or click the same card
+// twice) to close. Top-row categories (total/inProgress/overdue) are
+// computed from local TICKETS_DATA on demand so we don't round-trip the
+// server for data the SPA already has.
 function toggleInsightDrawer(category) {
   const drawer = document.getElementById('dash-insight-drawer');
   if (!drawer) return;
@@ -4859,6 +4867,20 @@ function toggleInsightDrawer(category) {
     DASH_INSIGHTS.openCategory = null;
     return;
   }
+  // Compute local-data categories on demand. Scope to Mine via
+  // visibleTickets so the drawer matches the cards above (which are
+  // also scoped). Filter Closed/Archived for "total" so it matches
+  // the active count shown on the card.
+  try {
+    const scoped = (typeof visibleTickets === 'function') ? visibleTickets() : TICKETS_DATA;
+    if (category === 'total') {
+      DASH_INSIGHTS.total = scoped.filter(t => t.status !== 'Closed' && t.status !== 'Archived');
+    } else if (category === 'inProgress') {
+      DASH_INSIGHTS.inProgress = scoped.filter(t => t.status === 'In Progress');
+    } else if (category === 'overdue') {
+      DASH_INSIGHTS.overdue = scoped.filter(t => t.overdue);
+    }
+  } catch {}
   DASH_INSIGHTS.openCategory = category;
   renderInsightDrawer(category);
   drawer.style.display = '';
@@ -4873,6 +4895,10 @@ function renderInsightDrawer(category) {
     unread:  { label: 'Unread tickets', empty: 'Nothing unread — you\'re caught up.' },
     stale:   { label: 'Stale tickets (no activity in 2+ days)', empty: 'Nothing stale.' },
     pending: { label: 'Mentions awaiting your reply', empty: 'No pending mentions.' },
+    total:   { label: 'Your active tickets', empty: 'No active tickets.' },
+    inProgress: { label: 'Your in-progress tickets', empty: 'Nothing in progress.' },
+    overdue: { label: 'Your overdue tickets', empty: 'Nothing overdue.' },
+    completedToday: { label: 'Tickets you completed today', empty: 'Nothing closed today.' },
   }[category] || { label: 'Tickets', empty: 'Nothing here.' };
   const rows = DASH_INSIGHTS[category] || [];
   titleEl.textContent = `${meta.label} (${rows.length})`;

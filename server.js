@@ -1098,7 +1098,17 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
     if (reporter!==undefined) { u.push('reporter=?');   v.push(reporter);
                                 u.push('reporter_user_id=?'); v.push(await resolveUserIdByName(reporter)); }
     if (priority!==undefined) { u.push('priority=?');   v.push(priority); }
-    if (status!==undefined)   { u.push('status=?');     v.push(status); }
+    if (status!==undefined)   {
+      u.push('status=?');     v.push(status);
+      // Stamp closed_at when transitioning into Closed; clear it on
+      // any other status (reopen). Drives the dashboard's accurate
+      // "Completed today" count.
+      if (status === 'Closed' && exists.status !== 'Closed') {
+        u.push("closed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+      } else if (status !== 'Closed' && exists.status === 'Closed') {
+        u.push('closed_at=?'); v.push(null);
+      }
+    }
     if (dept!==undefined)     { u.push('dept=?');       v.push(dept); }
     if (due!==undefined)      { u.push('due=?');        v.push(due); }
     if (overdue!==undefined)  { u.push('overdue=?');    v.push(overdue?1:0); }
@@ -3143,7 +3153,9 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
     // what the dashboard fold-out needs to render rows.
     const SELECT_LIST_COLS = `t.id, t.title, t.status, t.priority, t.assignee, t.due, t.dept`;
 
-    const [unreadRows, staleRows, mentionRows] = await Promise.all([
+    // Today's UTC date prefix for the closed_at LIKE comparison below.
+    const todayUtcKey = new Date().toISOString().slice(0, 10);
+    const [unreadRows, staleRows, mentionRows, completedTodayRows] = await Promise.all([
       // Unread: ticket the user is involved in, deleted_at IS NULL, AND
       // either no ticket_views row OR the row is older than the latest
       // activity. Latest activity = MAX(created_at, latest comment).
@@ -3205,6 +3217,18 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
           LIMIT 50`,
         u.id, u.id, u.name
       ),
+      // Completed today: scoped tickets that closed today (UTC). Uses
+      // tickets.closed_at, stamped by the PUT route on status→Closed.
+      all(
+        `SELECT ${SELECT_LIST_COLS} FROM tickets t
+          WHERE t.deleted_at IS NULL
+            AND t.status = 'Closed'
+            AND t.closed_at LIKE ?
+            AND ${involvementSql}
+          ORDER BY t.closed_at DESC
+          LIMIT 50`,
+        todayUtcKey + '%', ...involvementArgs
+      ),
     ]);
 
     const _shape = r => ({
@@ -3215,10 +3239,12 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
       unreadCount: unreadRows.length,
       staleCount: staleRows.length,
       pendingMentionsCount: mentionRows.length,
+      completedTodayCount: completedTodayRows.length,
       staleThresholdDays: 2,
       unreadTickets: unreadRows.map(_shape),
       staleTickets: staleRows.map(_shape),
       pendingMentionTickets: mentionRows.map(_shape),
+      completedTodayTickets: completedTodayRows.map(_shape),
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -3305,8 +3331,10 @@ app.get('/api/stats', requireAuth, async (req, res) => {
     }
 
     const todayStr = now.toISOString().slice(0, 10);
+    // closed_at is stamped when status flips to Closed; matches "tickets
+    // closed today" (was wrongly checking created_at before).
     const completedTodayRow = await get(
-      `SELECT COUNT(*) as c FROM tickets WHERE deleted_at IS NULL AND status='Closed' AND created_at LIKE '${todayStr}%' ${assigneeClause}`
+      `SELECT COUNT(*) as c FROM tickets WHERE deleted_at IS NULL AND status='Closed' AND closed_at LIKE '${todayStr}%' ${assigneeClause}`
     );
     const prevNow = new Date(); prevNow.setMonth(prevNow.getMonth() - 1);
     const py = prevNow.getFullYear(), pm = String(prevNow.getMonth() + 1).padStart(2, '0');

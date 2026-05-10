@@ -532,6 +532,19 @@ async function init() {
   // Used to clear mentions from the dashboard's "awaiting reply" count
   // without forcing the user to actually post a comment in response.
   await safeAlter("ALTER TABLE notifications ADD COLUMN dismissed_at TEXT DEFAULT NULL");
+  // Stamped when a ticket's status flips to Closed (and cleared on reopen).
+  // Used by the dashboard's "Completed today" card — we used to fudge this
+  // as "tickets created today that happen to be Closed" which is wrong.
+  await safeAlter("ALTER TABLE tickets ADD COLUMN closed_at TEXT DEFAULT NULL");
+  // Back-fill: any currently-Closed ticket that has no closed_at gets
+  // its created_at as a best-effort stand-in (we don't have the real
+  // close time for historical rows). Marks them as "closed before the
+  // closed_at column existed" so they never appear in today's count by
+  // accident. New closes from now on get NOW() set in the PUT route.
+  await run(
+    `UPDATE tickets SET closed_at = created_at
+       WHERE status = 'Closed' AND closed_at IS NULL`
+  );
 
   // Consolidate roles to the canonical three: Admin / Manager / Member.
   // Old installs may have Owner / User / Viewer values; map them onto the
