@@ -11566,6 +11566,94 @@ async function checkAuth() {
   } catch { return null; }
 }
 
+// ── Deploy-gap handler ────────────────────────────────────────────────────────
+// Render attaches a persistent disk for /data/uploads, which disables
+// zero-downtime deploys — every push to main causes ~30-60s of 502s
+// from Render's edge while the new container boots. This wrapper makes
+// that gap invisible to users who already have the SPA loaded:
+//
+//   - GETs that fail with 5xx OR network error auto-retry with backoff
+//     for up to ~75s. POST/PUT/DELETE pass through unmodified — they may
+//     not be safe to retry (could double-submit).
+//   - A small amber banner appears at the top of the screen during the
+//     outage and disappears on the next successful response.
+//   - After the cap (~75s), retries stop and the banner switches to a
+//     "Refresh page" prompt so a real outage doesn't lie about itself.
+(function() {
+  if (window._deployGapInstalled) return;
+  window._deployGapInstalled = true;
+  const _origFetch = window.fetch.bind(window);
+  let bannerEl = null;
+  let outageActive = false;
+  function showBanner(msg, refreshable) {
+    if (!bannerEl) {
+      bannerEl = document.createElement('div');
+      bannerEl.id = 'deploy-gap-banner';
+      bannerEl.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#f59e0b;color:#fff;padding:7px 14px;font-size:12px;font-weight:500;text-align:center;z-index:99999;box-shadow:0 2px 8px rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;gap:10px';
+      document.body.appendChild(bannerEl);
+    }
+    bannerEl.innerHTML = refreshable
+      ? `<span>${msg}</span><button onclick="location.reload()" style="background:rgba(0,0,0,0.2);color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer">Refresh now</button>`
+      : `<span>${msg}</span>`;
+    bannerEl.style.display = 'flex';
+    outageActive = true;
+  }
+  function hideBanner() {
+    if (bannerEl) bannerEl.style.display = 'none';
+    outageActive = false;
+  }
+  // Drop the banner on the first successful response after an outage.
+  function recordSuccess() { if (outageActive) hideBanner(); }
+  function isGet(init) {
+    return !init || !init.method || String(init.method).toUpperCase() === 'GET';
+  }
+  // Treat 502 / 503 / 504 as deploy-gap signals. 500/501 are likely real
+  // bugs — let those through to the existing error handling so they're
+  // visible.
+  function isDeployGapStatus(s) { return s === 502 || s === 503 || s === 504; }
+  window.fetch = async function(input, init) {
+    // Non-GET: try once, no retry. Pass through everything.
+    if (!isGet(init)) {
+      const r = await _origFetch(input, init);
+      if (r.ok) recordSuccess();
+      return r;
+    }
+    // GET: try once normally.
+    try {
+      const r = await _origFetch(input, init);
+      if (r.ok || !isDeployGapStatus(r.status)) {
+        if (r.ok) recordSuccess();
+        return r;
+      }
+      return await retryGet(input, init);
+    } catch (err) {
+      // Network error (no response) — treat like 502 and retry.
+      return await retryGet(input, init);
+    }
+  };
+  async function retryGet(input, init) {
+    showBanner('🔄 Reconnecting to Syruvia…', false);
+    let delay = 1500;
+    const startedAt = Date.now();
+    const maxMs = 75 * 1000;
+    while (Date.now() - startedAt < maxMs) {
+      await new Promise(res => setTimeout(res, delay));
+      delay = Math.min(delay * 1.4, 5000);
+      try {
+        const r = await _origFetch(input, init);
+        if (r.ok || !isDeployGapStatus(r.status)) {
+          recordSuccess();
+          return r;
+        }
+      } catch {}
+    }
+    showBanner('Still trying to reach Syruvia. The server may be down or your connection lost.', true);
+    // One final attempt so the caller gets a definitive response.
+    try { return await _origFetch(input, init); }
+    catch (err) { throw err; }
+  }
+})();
+
 // ── Generic API helpers ───────────────────────────────────────────────────────
 async function apiGet(p) {
   const r = await fetch(p);
