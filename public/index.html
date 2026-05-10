@@ -2547,26 +2547,34 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
       <!-- Personal insights row — always shows you, never the workspace -->
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin:18px 0 8px">Your insights</div>
-      <div class="stat-grid" style="margin-bottom:20px">
-        <div class="stat-card" style="cursor:pointer" onclick="navigate('tickets')" title="Tickets you haven't opened, or that have new activity since you last viewed them">
+      <div class="stat-grid" style="margin-bottom:8px">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('unread')" title="Click to see the list">
           <div class="stat-icon" style="background:#eef2ff"><svg width="16" height="16" fill="none" stroke="#4f46e5" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h12"/></svg></div>
           <div class="stat-label">Unread tickets</div>
           <div class="stat-value" id="dash-insight-unread" style="color:#4f46e5">—</div>
-          <div class="stat-change up" style="visibility:hidden">.</div>
+          <div class="stat-change up" id="dash-insight-unread-hint" style="font-size:10px;color:var(--text3);font-weight:400">click to expand</div>
         </div>
-        <div class="stat-card" title="Open tickets you're involved in with no activity in 2+ days">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('stale')" title="Click to see the list">
           <div class="stat-icon" style="background:#fef3c7"><svg width="16" height="16" fill="none" stroke="#d97706" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
           <div class="stat-label">Stale (no activity 2+ days)</div>
           <div class="stat-value" id="dash-insight-stale" style="color:#d97706">—</div>
-          <div class="stat-change up" style="visibility:hidden">.</div>
+          <div class="stat-change up" id="dash-insight-stale-hint" style="font-size:10px;color:var(--text3);font-weight:400">click to expand</div>
         </div>
-        <div class="stat-card" title="Tickets where you were @mentioned but haven't replied yet">
+        <div class="stat-card" style="cursor:pointer" onclick="toggleInsightDrawer('pending')" title="Click to see the list">
           <div class="stat-icon" style="background:#fce7f3"><svg width="16" height="16" fill="none" stroke="#db2777" stroke-width="2" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></div>
           <div class="stat-label">Mentions awaiting your reply</div>
           <div class="stat-value" id="dash-insight-pending" style="color:#db2777">—</div>
-          <div class="stat-change up" style="visibility:hidden">.</div>
+          <div class="stat-change up" id="dash-insight-pending-hint" style="font-size:10px;color:var(--text3);font-weight:400">click to expand</div>
         </div>
         <div class="stat-card" style="visibility:hidden">.</div>
+      </div>
+      <!-- Drawer for the clicked insight category — populated by toggleInsightDrawer -->
+      <div id="dash-insight-drawer" style="display:none;background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div id="dash-insight-drawer-title" style="font-size:13px;font-weight:600">—</div>
+          <button onclick="toggleInsightDrawer(null)" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0 4px;line-height:1" title="Close">×</button>
+        </div>
+        <div id="dash-insight-drawer-list"></div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:20px">
@@ -4812,10 +4820,11 @@ function captureDashboardBaseline() {
 
 function fmtNum(n) { return n.toLocaleString('en-US'); }
 
-// Pull personal-insight counts from the server (unread / stale / pending
-// mentions) and paint them into the three insight cards. Called when the
-// user lands on the dashboard. The cards show "—" until the response
-// arrives so the layout doesn't jump.
+// Pull personal-insight counts + ticket lists from the server. Cached
+// in DASH_INSIGHTS so the click-to-expand drawer can render without
+// re-fetching. Called when the user lands on the dashboard. Cards
+// show "—" until the response arrives so the layout doesn't jump.
+let DASH_INSIGHTS = { unread: [], stale: [], pending: [], openCategory: null };
 async function loadDashboardInsights() {
   const setVal = (id, n) => {
     const el = document.getElementById(id);
@@ -4827,11 +4836,76 @@ async function loadDashboardInsights() {
     setVal('dash-insight-unread',  stats?.unreadCount);
     setVal('dash-insight-stale',   stats?.staleCount);
     setVal('dash-insight-pending', stats?.pendingMentionsCount);
+    DASH_INSIGHTS.unread  = stats?.unreadTickets || [];
+    DASH_INSIGHTS.stale   = stats?.staleTickets || [];
+    DASH_INSIGHTS.pending = stats?.pendingMentionTickets || [];
+    // If the user already had a drawer open when this refreshed, repaint it.
+    if (DASH_INSIGHTS.openCategory) renderInsightDrawer(DASH_INSIGHTS.openCategory);
   } catch (e) {
     setVal('dash-insight-unread',  0);
     setVal('dash-insight-stale',   0);
     setVal('dash-insight-pending', 0);
   }
+}
+
+// Open / close the inline drawer that lists the tickets behind a single
+// insight card. Pass null (or click the same card twice) to close.
+function toggleInsightDrawer(category) {
+  const drawer = document.getElementById('dash-insight-drawer');
+  if (!drawer) return;
+  // Same category clicked again → toggle closed.
+  if (!category || DASH_INSIGHTS.openCategory === category) {
+    drawer.style.display = 'none';
+    DASH_INSIGHTS.openCategory = null;
+    return;
+  }
+  DASH_INSIGHTS.openCategory = category;
+  renderInsightDrawer(category);
+  drawer.style.display = '';
+  drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function renderInsightDrawer(category) {
+  const titleEl = document.getElementById('dash-insight-drawer-title');
+  const listEl = document.getElementById('dash-insight-drawer-list');
+  if (!titleEl || !listEl) return;
+  const meta = {
+    unread:  { label: 'Unread tickets', empty: 'Nothing unread — you\'re caught up.' },
+    stale:   { label: 'Stale tickets (no activity in 2+ days)', empty: 'Nothing stale.' },
+    pending: { label: 'Mentions awaiting your reply', empty: 'No pending mentions.' },
+  }[category] || { label: 'Tickets', empty: 'Nothing here.' };
+  const rows = DASH_INSIGHTS[category] || [];
+  titleEl.textContent = `${meta.label} (${rows.length})`;
+  if (!rows.length) {
+    listEl.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:10px 0">${meta.empty}</div>`;
+    return;
+  }
+  listEl.innerHTML = `
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:var(--bg2);text-align:left">
+          <th style="padding:6px 10px;font-size:10px;font-weight:500;color:var(--text3)">ID</th>
+          <th style="padding:6px 10px;font-size:10px;font-weight:500;color:var(--text3)">Title</th>
+          <th style="padding:6px 10px;font-size:10px;font-weight:500;color:var(--text3)">Status</th>
+          <th style="padding:6px 10px;font-size:10px;font-weight:500;color:var(--text3)">Priority</th>
+          <th style="padding:6px 10px;font-size:10px;font-weight:500;color:var(--text3)">Assignee</th>
+          <th style="padding:6px 10px;font-size:10px;font-weight:500;color:var(--text3)">Due</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(t => `
+          <tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="openTicketDetail('${escapeAttr(t.id)}')">
+            <td style="padding:6px 10px;font-size:11.5px;color:var(--accent);white-space:nowrap">${escapeHtml(t.id)}</td>
+            <td style="padding:6px 10px;font-size:11.5px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.title || '')}</td>
+            <td style="padding:6px 10px">${statusBadge(t.status || 'Open')}</td>
+            <td style="padding:6px 10px">${priorityBadge(t.priority || 'Medium')}</td>
+            <td style="padding:6px 10px;font-size:11px;color:var(--text2)">${escapeHtml(t.assignee || '—')}</td>
+            <td style="padding:6px 10px;font-size:11px;color:var(--text3);white-space:nowrap">${escapeHtml(t.due || '')}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
 }
 
 function initDashboard() {
@@ -4858,6 +4932,17 @@ function initDashboard() {
   setStat('dash-stat-inprogress', DASH_BASELINE.inProgress, delta.inProgress);
   setStat('dash-stat-overdue',    DASH_BASELINE.overdue,    delta.overdue);
   setStat('dash-stat-completed',  DASH_BASELINE.completed,  delta.completed);
+  // Override Total Tickets so it matches the donut: scoped to the user's
+  // visible tickets AND excluding Closed/Archived (active work only).
+  // Without this, the card showed the whole workspace (37) while the
+  // donut next to it showed 25 — confusing on a dashboard meant to be
+  // personal.
+  try {
+    const scoped = (typeof visibleTickets === 'function') ? visibleTickets() : TICKETS_DATA;
+    const activeCount = scoped.filter(t => t.status !== 'Closed' && t.status !== 'Archived').length;
+    const totalEl = document.getElementById('dash-stat-total');
+    if (totalEl) totalEl.textContent = fmtNum(activeCount);
+  } catch {}
 
   // Subtle visual pulse if total just went up — only when called as a refresh
   if (delta.total > 0) {

@@ -3121,12 +3121,16 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
     )`;
     const involvementArgs = [u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id];
 
-    const [unreadRow, staleRow, mentionsRow] = await Promise.all([
+    // Common projection for the inline ticket lists. Kept light — just
+    // what the dashboard fold-out needs to render rows.
+    const SELECT_LIST_COLS = `t.id, t.title, t.status, t.priority, t.assignee, t.due, t.dept`;
+
+    const [unreadRows, staleRows, mentionRows] = await Promise.all([
       // Unread: ticket the user is involved in, deleted_at IS NULL, AND
       // either no ticket_views row OR the row is older than the latest
       // activity. Latest activity = MAX(created_at, latest comment).
-      get(
-        `SELECT COUNT(*)::int AS n FROM tickets t
+      all(
+        `SELECT ${SELECT_LIST_COLS} FROM tickets t
            LEFT JOIN ticket_views v ON v.ticket_id = t.id AND v.user_id = ?
            LEFT JOIN (SELECT ticket_id, MAX(created_at) AS latest_at
                         FROM ticket_comments GROUP BY ticket_id) lc
@@ -3136,45 +3140,64 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
             AND (
                   v.last_viewed_at IS NULL
                OR v.last_viewed_at < COALESCE(lc.latest_at, t.created_at)
-            )`,
+            )
+          ORDER BY COALESCE(lc.latest_at, t.created_at) DESC
+          LIMIT 50`,
         u.id, ...involvementArgs
       ),
       // Stale: open (not Closed/Archived) tickets where the latest activity
-      // is more than 2 days ago.
-      get(
-        `SELECT COUNT(*)::int AS n FROM tickets t
+      // is more than 2 days ago. Order by oldest activity first — those
+      // are the ones most likely to need a poke.
+      all(
+        `SELECT ${SELECT_LIST_COLS} FROM tickets t
            LEFT JOIN (SELECT ticket_id, MAX(created_at) AS latest_at
                         FROM ticket_comments GROUP BY ticket_id) lc
                 ON lc.ticket_id = t.id
           WHERE t.deleted_at IS NULL
             AND t.status NOT IN ('Closed', 'Archived')
             AND ${involvementSql}
-            AND COALESCE(lc.latest_at, t.created_at) < ?`,
+            AND COALESCE(lc.latest_at, t.created_at) < ?
+          ORDER BY COALESCE(lc.latest_at, t.created_at) ASC
+          LIMIT 50`,
         ...involvementArgs, cutoff
       ),
       // Pending mentions: distinct tickets where the user has a mention
       // notification and hasn't authored a comment after that mention.
-      get(
-        `SELECT COUNT(DISTINCT n.ticket_id)::int AS n FROM notifications n
-          WHERE n.user_id = ?
-            AND n.type = 'mention'
-            AND n.ticket_id IS NOT NULL
-            AND NOT EXISTS (
-                  SELECT 1 FROM ticket_comments tc
-                   WHERE tc.ticket_id = n.ticket_id
-                     AND (tc.author_user_id = ?
-                          OR (tc.author_user_id IS NULL AND tc.author = ?))
-                     AND tc.created_at > n.created_at
-                )`,
+      // Pull the actual ticket rows by joining back to tickets.
+      all(
+        `SELECT ${SELECT_LIST_COLS} FROM tickets t
+          WHERE t.id IN (
+                  SELECT DISTINCT n.ticket_id FROM notifications n
+                   WHERE n.user_id = ?
+                     AND n.type = 'mention'
+                     AND n.ticket_id IS NOT NULL
+                     AND NOT EXISTS (
+                           SELECT 1 FROM ticket_comments tc
+                            WHERE tc.ticket_id = n.ticket_id
+                              AND (tc.author_user_id = ?
+                                   OR (tc.author_user_id IS NULL AND tc.author = ?))
+                              AND tc.created_at > n.created_at
+                         )
+                )
+            AND t.deleted_at IS NULL
+          ORDER BY t.id DESC
+          LIMIT 50`,
         u.id, u.id, u.name
       ),
     ]);
 
+    const _shape = r => ({
+      id: r.id, title: r.title, status: r.status, priority: r.priority,
+      assignee: r.assignee || '', due: r.due || '', dept: r.dept || '',
+    });
     res.json({
-      unreadCount: unreadRow?.n || 0,
-      staleCount: staleRow?.n || 0,
-      pendingMentionsCount: mentionsRow?.n || 0,
+      unreadCount: unreadRows.length,
+      staleCount: staleRows.length,
+      pendingMentionsCount: mentionRows.length,
       staleThresholdDays: 2,
+      unreadTickets: unreadRows.map(_shape),
+      staleTickets: staleRows.map(_shape),
+      pendingMentionTickets: mentionRows.map(_shape),
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
