@@ -3041,10 +3041,18 @@ app.post('/api/projects/from-template', requireAdmin, async (req, res) => {
 // and write any doc. parent_id is wired in advance for future subpages
 // but the current MVP renders a flat list ordered by most-recently-
 // updated. A doc with body='' is treated as "Untitled / blank".
+// Docs come in three flavors (column `type`):
+//   markdown — inline markdown body, opens in the editor
+//   file     — an uploaded file lives in attachments.doc_id; row click
+//              opens the lightbox or downloads
+//   link     — external URL (Google Sheets / Notion / etc.) in
+//              external_url; row click opens in a new tab
+// All three share the same list view; the title column carries the
+// human-readable name, the type icon disambiguates.
 app.get('/api/docs', requireAuth, async (req, res) => {
   try {
     const rows = await all(`
-      SELECT d.id, d.title, d.parent_id, d.created_at, d.updated_at,
+      SELECT d.id, d.title, d.parent_id, d.type, d.external_url, d.created_at, d.updated_at,
              cu.name AS created_by_name,
              uu.name AS updated_by_name
         FROM docs d
@@ -3052,15 +3060,39 @@ app.get('/api/docs', requireAuth, async (req, res) => {
         LEFT JOIN users uu ON uu.id = d.updated_by
        ORDER BY d.updated_at DESC, d.id DESC
        LIMIT 500`);
-    res.json(rows.map(r => ({
-      id: r.id,
-      title: r.title || 'Untitled',
-      parentId: r.parent_id || null,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-      createdBy: r.created_by_name || '',
-      updatedBy: r.updated_by_name || '',
-    })));
+    if (!rows.length) return res.json([]);
+    // Bundle attached files in one batch query — list view shows the
+    // filename / mime so the type icon can render correctly.
+    const ids = rows.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const atts = await all(
+      `SELECT id, doc_id, filename, original_name, mime_type, size
+         FROM attachments WHERE doc_id IN (${placeholders})`,
+      ...ids
+    );
+    const fileByDoc = new Map();
+    for (const a of atts) fileByDoc.set(a.doc_id, a);
+    res.json(rows.map(r => {
+      const f = fileByDoc.get(r.id);
+      return {
+        id: r.id,
+        title: r.title || 'Untitled',
+        type: r.type || 'markdown',
+        externalUrl: r.external_url || '',
+        parentId: r.parent_id || null,
+        file: f ? {
+          attachmentId: f.id, filename: f.filename,
+          originalName: f.original_name || f.filename,
+          mimeType: f.mime_type || '',
+          size: f.size || 0,
+          url: '/uploads/' + f.filename,
+        } : null,
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        createdBy: r.created_by_name || '',
+        updatedBy: r.updated_by_name || '',
+      };
+    }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3068,7 +3100,7 @@ app.get('/api/docs/:id', requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const r = await get(`
-      SELECT d.id, d.title, d.body, d.parent_id, d.created_at, d.updated_at,
+      SELECT d.id, d.title, d.body, d.parent_id, d.type, d.external_url, d.created_at, d.updated_at,
              cu.name AS created_by_name,
              uu.name AS updated_by_name
         FROM docs d
@@ -3076,9 +3108,22 @@ app.get('/api/docs/:id', requireAuth, async (req, res) => {
         LEFT JOIN users uu ON uu.id = d.updated_by
        WHERE d.id=?`, id);
     if (!r) return res.status(404).json({ error: 'Not found' });
+    const f = await get(
+      'SELECT id, filename, original_name, mime_type, size FROM attachments WHERE doc_id=? ORDER BY id DESC LIMIT 1',
+      id
+    );
     res.json({
       id: r.id, title: r.title || 'Untitled', body: r.body || '',
+      type: r.type || 'markdown',
+      externalUrl: r.external_url || '',
       parentId: r.parent_id || null,
+      file: f ? {
+        attachmentId: f.id, filename: f.filename,
+        originalName: f.original_name || f.filename,
+        mimeType: f.mime_type || '',
+        size: f.size || 0,
+        url: '/uploads/' + f.filename,
+      } : null,
       createdAt: r.created_at, updatedAt: r.updated_at,
       createdBy: r.created_by_name || '',
       updatedBy: r.updated_by_name || '',
@@ -3091,26 +3136,39 @@ app.post('/api/docs', requireAuth, async (req, res) => {
     const title = String(req.body?.title || 'Untitled').trim() || 'Untitled';
     const body  = String(req.body?.body  || '');
     const parentId = req.body?.parentId ? Number(req.body.parentId) : null;
+    const rawType = String(req.body?.type || 'markdown').toLowerCase();
+    const type = ['markdown', 'file', 'link'].includes(rawType) ? rawType : 'markdown';
+    let externalUrl = '';
+    if (type === 'link') {
+      externalUrl = String(req.body?.externalUrl || '').trim();
+      if (!externalUrl) return res.status(400).json({ error: 'externalUrl required for type=link' });
+      if (!/^https?:\/\//i.test(externalUrl)) {
+        return res.status(400).json({ error: 'externalUrl must start with http:// or https://' });
+      }
+    }
     const info = await run(
-      `INSERT INTO docs (title, body, parent_id, created_by, updated_by)
-       VALUES (?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO docs (title, body, parent_id, type, external_url, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       title.slice(0, 200), body.slice(0, 200000), parentId,
+      type, externalUrl.slice(0, 1000),
       req.session.userId, req.session.userId
     );
-    const row = await get('SELECT id, title, body, created_at, updated_at FROM docs WHERE id=?', Number(info.lastInsertRowid));
+    const row = await get('SELECT id, title, body, type, external_url, created_at, updated_at FROM docs WHERE id=?', Number(info.lastInsertRowid));
     res.status(201).json({
       id: row.id, title: row.title, body: row.body || '',
+      type: row.type, externalUrl: row.external_url || '',
       createdAt: row.created_at, updatedAt: row.updated_at,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Patch any of: title, body. Stamps updated_by + updated_at on every
-// change so the list view's "last edited by X • date" stays accurate.
+// Patch any of: title, body, externalUrl. Stamps updated_by + updated_at
+// on every change so the list view's "last edited by X • date" stays
+// accurate.
 app.put('/api/docs/:id', requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const exists = await get('SELECT id FROM docs WHERE id=?', id);
+    const exists = await get('SELECT id, type FROM docs WHERE id=?', id);
     if (!exists) return res.status(404).json({ error: 'Not found' });
     const u = []; const v = [];
     if (req.body?.title !== undefined) {
@@ -3119,6 +3177,13 @@ app.put('/api/docs/:id', requireAuth, async (req, res) => {
     }
     if (req.body?.body !== undefined) {
       u.push('body=?'); v.push(String(req.body.body || '').slice(0, 200000));
+    }
+    if (req.body?.externalUrl !== undefined) {
+      const url = String(req.body.externalUrl || '').trim();
+      if (url && !/^https?:\/\//i.test(url)) {
+        return res.status(400).json({ error: 'externalUrl must start with http:// or https://' });
+      }
+      u.push('external_url=?'); v.push(url.slice(0, 1000));
     }
     if (!u.length) return res.json({ ok: true });
     u.push('updated_by=?'); v.push(req.session.userId);
@@ -3132,7 +3197,16 @@ app.put('/api/docs/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/docs/:id', requireAuth, async (req, res) => {
   try {
-    await run('DELETE FROM docs WHERE id=?', Number(req.params.id));
+    const id = Number(req.params.id);
+    // Cascade-clean any uploaded file from disk before dropping the row.
+    // The attachments rows themselves cascade via FK, but the on-disk
+    // files would otherwise leak.
+    const atts = await all('SELECT filename FROM attachments WHERE doc_id=?', id);
+    for (const a of atts) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, a.filename)); } catch {}
+    }
+    await run('DELETE FROM attachments WHERE doc_id=?', id);
+    await run('DELETE FROM docs WHERE id=?', id);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3537,7 +3611,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
       });
     }
     const u = await getUser(req.session.userId);
-    const { ticketId, commentId, subtaskId, feedbackId, announcementId, reminderId } = req.body;
+    const { ticketId, commentId, subtaskId, feedbackId, announcementId, reminderId, docId } = req.body;
     // Verify the uploader actually has access to the parent ticket. Without
     // this a Member could attach files to anyone's ticket by id-guessing.
     let parentTicketId = ticketId || null;
@@ -3572,13 +3646,14 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
     // item (the feedback page is shared by everyone). No further check
     // beyond the auth middleware.
     const info = await run(
-      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
+      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,doc_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
       ticketId || null,
       commentId ? Number(commentId) : null,
       subtaskId ? Number(subtaskId) : null,
       feedbackId ? Number(feedbackId) : null,
       announcementId ? Number(announcementId) : null,
       reminderId ? Number(reminderId) : null,
+      docId ? Number(docId) : null,
       req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
     );
     res.json({

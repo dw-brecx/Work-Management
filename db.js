@@ -494,6 +494,15 @@ async function init() {
   // inherited from the parent reminder row (the upload + delete routes
   // verify the caller owns the reminder).
   await safeAlter('ALTER TABLE attachments ADD COLUMN reminder_id INTEGER');
+  // Docs got upgraded from "markdown editor only" to a general document
+  // library that can hold uploaded files (Word/Excel/PDF/zip/etc.) and
+  // external links (Google Sheets, Google Docs, Notion pages) alongside
+  // inline markdown notes. type drives which UI surface a doc opens in.
+  await safeAlter("ALTER TABLE docs ADD COLUMN type TEXT DEFAULT 'markdown'");
+  await safeAlter("ALTER TABLE docs ADD COLUMN external_url TEXT DEFAULT ''");
+  // attachments.doc_id links an uploaded file to its parent doc — same
+  // pattern used for ticket / comment / feedback / reminder attachments.
+  await safeAlter('ALTER TABLE attachments ADD COLUMN doc_id INTEGER');
   // Announcements gain a 'kind' tag (feature / bugfix / update / note) so the
   // What's New feed can color-code them. Default 'update' is safe for any
   // existing row that pre-dates this column.

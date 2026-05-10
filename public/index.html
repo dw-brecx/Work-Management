@@ -3447,9 +3447,23 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <div id="docs-list-view">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:4px;flex-wrap:wrap">
           <h1 style="font-size:20px;font-weight:600;margin:0">Docs</h1>
-          <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="createNewDoc()">+ New Doc</button>
+          <div style="position:relative">
+            <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="toggleNewDocMenu(event)">+ New Doc ▾</button>
+            <div id="docs-new-menu" style="display:none;position:absolute;top:100%;right:0;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.12);min-width:220px;z-index:100;padding:4px">
+              <button onclick="docsMenuPickFile()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 12px;background:none;border:none;cursor:pointer;font-size:13px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span style="font-size:18px">📎</span><div><div style="font-weight:500">Upload file</div><div style="font-size:10.5px;color:var(--text3)">Word, Excel, PDF, ZIP, anything</div></div>
+              </button>
+              <button onclick="openAddLinkModal()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 12px;background:none;border:none;cursor:pointer;font-size:13px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span style="font-size:18px">🔗</span><div><div style="font-weight:500">Add external link</div><div style="font-size:10.5px;color:var(--text3)">Google Sheets, Google Docs, Notion…</div></div>
+              </button>
+              <button onclick="createMarkdownDoc()" style="display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 12px;background:none;border:none;cursor:pointer;font-size:13px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span style="font-size:18px">📝</span><div><div style="font-weight:500">Markdown note</div><div style="font-size:10.5px;color:var(--text3)">Inline editor for SOPs, notes, runbooks</div></div>
+              </button>
+            </div>
+            <input type="file" id="docs-file-input" style="display:none" onchange="docsHandleFilePicked(this)"/>
+          </div>
         </div>
-        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Workspace documents — SOPs, runbooks, project notes, anything. Markdown supported. Anyone can read / write any doc.</p>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Workspace document library — upload files, link to external docs (Google Sheets / Notion / etc.), or write markdown notes. Anyone can read / write.</p>
         <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;max-width:1100px">
           <table style="width:100%;border-collapse:collapse">
             <thead>
@@ -3644,6 +3658,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           <span id="spawn-status" style="font-size:11px;color:var(--text3);align-self:center;margin-right:auto"></span>
           <button onclick="closeSpawnFromTemplateModal()" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:pointer">Cancel</button>
           <button class="btn-primary" id="spawn-submit" style="font-size:12px;padding:7px 14px" onclick="submitSpawnFromTemplate()">Create project</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== ADD-LINK MODAL (Docs → external link) ========== -->
+    <div id="modal-doc-link" style="display:none;align-items:center;justify-content:center;background:rgba(15,23,42,0.55);position:fixed;inset:0;z-index:9999;padding:20px;box-sizing:border-box">
+      <div onclick="closeAddLinkModal()" style="position:absolute;inset:0;cursor:pointer"></div>
+      <div style="position:relative;width:min(95vw, 480px);background:#fff;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:#fafbff">
+          <div style="font-size:14px;font-weight:600">🔗 Add external link</div>
+          <button onclick="closeAddLinkModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);padding:0 6px;line-height:1">×</button>
+        </div>
+        <div style="padding:18px">
+          <p style="font-size:11.5px;color:var(--text3);margin:0 0 14px">Save a link to a Google Sheet, Google Doc, Notion page, or anywhere else with a URL. Anyone in the workspace can click to open.</p>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Title</label>
+          <input id="doc-link-title" type="text" placeholder="e.g. Q4 Marketing Sheet" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;margin-bottom:12px"/>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">URL</label>
+          <input id="doc-link-url" type="url" placeholder="https://docs.google.com/…" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px"/>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--border);background:#fafbff">
+          <span id="doc-link-status" style="font-size:11px;color:var(--text3);align-self:center;margin-right:auto"></span>
+          <button onclick="closeAddLinkModal()" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:pointer">Cancel</button>
+          <button class="btn-primary" id="doc-link-submit" style="font-size:12px;padding:7px 14px" onclick="submitAddLink()">Add link</button>
         </div>
       </div>
     </div>
@@ -15605,30 +15642,162 @@ function renderDocsList() {
     return;
   }
   if (empty) empty.style.display = 'none';
-  tbody.innerHTML = DOCS_CACHE.map(d => `
-    <tr style="border-top:1px solid var(--border);cursor:pointer" onclick="openDoc(${d.id})" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background=''">
-      <td style="padding:10px 12px;font-size:13px;font-weight:500">📄 ${_esc(d.title || 'Untitled')}</td>
-      <td style="padding:10px 12px;font-size:11.5px;color:var(--text3)">${_esc(_fmtUtcLocal(d.updatedAt))}</td>
-      <td style="padding:10px 12px;font-size:11.5px;color:var(--text3)">${_esc(d.updatedBy || d.createdBy || '—')}</td>
-      <td style="padding:10px 12px;text-align:right" onclick="event.stopPropagation()">
-        <button onclick="deleteDocFromList(${d.id})" title="Delete" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:4px 8px">🗑</button>
-      </td>
-    </tr>
-  `).join('');
+  tbody.innerHTML = DOCS_CACHE.map(d => {
+    // Pick the row icon + click handler based on doc type. The handler
+    // string is built inline so the row's onclick just dispatches without
+    // needing per-row closures.
+    let icon, onClick;
+    if (d.type === 'file' && d.file) {
+      icon = '📎';
+      onClick = `openAttachmentInLightbox('${_esc(d.file.url)}','${_esc(d.file.originalName || d.title || '').replace(/'/g, '&#39;')}','${_esc(d.file.mimeType || '')}')`;
+    } else if (d.type === 'link') {
+      icon = '🔗';
+      onClick = `window.open('${_esc(d.externalUrl || '#')}','_blank','noopener')`;
+    } else {
+      icon = '📝';
+      onClick = `openDoc(${d.id})`;
+    }
+    const meta = d.type === 'link'
+      ? `<span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:6px">${_esc((d.externalUrl || '').replace(/^https?:\/\//, '').slice(0, 60))}</span>`
+      : (d.type === 'file' && d.file
+          ? `<span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:6px">${_esc(d.file.originalName || '')} · ${(d.file.size/1024).toFixed(1)} KB</span>`
+          : '');
+    return `
+      <tr style="border-top:1px solid var(--border);cursor:pointer" onclick="${onClick}" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background=''">
+        <td style="padding:10px 12px;font-size:13px;font-weight:500">${icon} ${_esc(d.title || 'Untitled')}${meta}</td>
+        <td style="padding:10px 12px;font-size:11.5px;color:var(--text3)">${_esc(_fmtUtcLocal(d.updatedAt))}</td>
+        <td style="padding:10px 12px;font-size:11.5px;color:var(--text3)">${_esc(d.updatedBy || d.createdBy || '—')}</td>
+        <td style="padding:10px 12px;text-align:right;white-space:nowrap" onclick="event.stopPropagation()">
+          ${d.type === 'markdown' ? `<button onclick="openDoc(${d.id})" title="Open editor" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text2);cursor:pointer;font-size:11px;padding:3px 8px;margin-right:4px">Open</button>` : ''}
+          <button onclick="renameDocFromList(${d.id})" title="Rename" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:13px;padding:4px 8px">✎</button>
+          <button onclick="deleteDocFromList(${d.id})" title="Delete" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:4px 8px">🗑</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
 }
 
-window.createNewDoc = async function() {
+// ── New-doc menu (Upload file / Add link / Markdown note) ─────────────────
+window.toggleNewDocMenu = function(ev) {
+  if (ev) ev.stopPropagation();
+  const menu = document.getElementById('docs-new-menu');
+  if (!menu) return;
+  const open = menu.style.display !== 'none';
+  menu.style.display = open ? 'none' : '';
+  if (!open) {
+    // Close on next outside-click.
+    setTimeout(() => {
+      const closer = (e) => {
+        if (!menu.contains(e.target)) {
+          menu.style.display = 'none';
+          document.removeEventListener('click', closer);
+        }
+      };
+      document.addEventListener('click', closer);
+    }, 0);
+  }
+};
+
+window.docsMenuPickFile = function() {
+  document.getElementById('docs-new-menu').style.display = 'none';
+  document.getElementById('docs-file-input').click();
+};
+
+window.docsHandleFilePicked = async function(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  // Reset the input so picking the same file twice still fires change.
+  input.value = '';
+  // Default the doc title to the filename without extension.
+  const guessTitle = (file.name || 'Untitled').replace(/\.[^.]+$/, '');
+  // Two-step: create the doc row (type=file), then upload the file
+  // referencing its id. Server cleans up the file if the doc gets
+  // deleted later.
+  let created;
   try {
-    const created = await apiPost('/api/docs', { title: 'Untitled', body: '' });
+    created = await apiPost('/api/docs', { title: guessTitle, type: 'file' });
+    if (!created || created.error) throw new Error(created?.error || 'create failed');
+  } catch (e) {
+    alert('Could not create doc row: ' + (e?.message || e));
+    return;
+  }
+  try {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    fd.append('docId', String(created.id));
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      // If upload failed, roll back the doc row so we don't leave an empty file-doc.
+      try { await apiDel('/api/docs/' + created.id); } catch {}
+      throw new Error(data.error || ('upload status ' + r.status));
+    }
+    // Reload the list so the new file appears with the correct icon + size.
+    loadDocsPage();
+  } catch (e) { alert('Upload failed: ' + (e?.message || e)); }
+};
+
+window.openAddLinkModal = function() {
+  document.getElementById('docs-new-menu').style.display = 'none';
+  document.getElementById('doc-link-title').value = '';
+  document.getElementById('doc-link-url').value = '';
+  document.getElementById('doc-link-status').textContent = '';
+  document.getElementById('modal-doc-link').style.display = 'flex';
+  setTimeout(() => document.getElementById('doc-link-title').focus(), 50);
+};
+
+window.closeAddLinkModal = function() {
+  document.getElementById('modal-doc-link').style.display = 'none';
+};
+
+window.submitAddLink = async function() {
+  const title = (document.getElementById('doc-link-title').value || '').trim();
+  const url   = (document.getElementById('doc-link-url').value   || '').trim();
+  const status = document.getElementById('doc-link-status');
+  if (!title) { status.textContent = 'Title required.'; return; }
+  if (!url || !/^https?:\/\//i.test(url)) { status.textContent = 'URL must start with http:// or https://'; return; }
+  status.textContent = 'Saving…';
+  try {
+    const r = await apiPost('/api/docs', { title, type: 'link', externalUrl: url });
+    if (r?.error) throw new Error(r.error);
+    closeAddLinkModal();
+    loadDocsPage();
+  } catch (e) {
+    status.textContent = 'Failed: ' + (e?.message || e);
+    status.style.color = 'var(--red)';
+  }
+};
+
+window.createMarkdownDoc = async function() {
+  document.getElementById('docs-new-menu').style.display = 'none';
+  try {
+    const created = await apiPost('/api/docs', { title: 'Untitled', body: '', type: 'markdown' });
     if (!created || created.error) throw new Error(created?.error || 'create failed');
     DOCS_CACHE.unshift({
-      id: created.id, title: created.title, parentId: null,
+      id: created.id, title: created.title, type: 'markdown',
+      externalUrl: '', file: null, parentId: null,
       createdAt: created.createdAt, updatedAt: created.updatedAt,
       createdBy: (window.CURRENT_USER || {}).name || '',
       updatedBy: (window.CURRENT_USER || {}).name || '',
     });
     openDoc(created.id);
   } catch (e) { alert('Could not create doc: ' + (e?.message || e)); }
+};
+
+// Legacy alias — old buttons may still call this.
+window.createNewDoc = window.createMarkdownDoc;
+
+// Inline rename for any doc type — just pops a prompt and PATCHes the title.
+window.renameDocFromList = async function(id) {
+  const d = DOCS_CACHE.find(x => x.id === id);
+  if (!d) return;
+  const nv = prompt('Rename doc:', d.title || '');
+  if (!nv || nv.trim() === d.title) return;
+  try {
+    await apiPut('/api/docs/' + id, { title: nv.trim() });
+    d.title = nv.trim();
+    renderDocsList();
+  } catch (e) { alert('Could not rename: ' + (e?.message || e)); }
 };
 
 window.openDoc = async function(id) {
