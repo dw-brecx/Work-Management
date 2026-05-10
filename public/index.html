@@ -13673,6 +13673,20 @@ function createMediaComposer(mountEl, opts = {}) {
 // ── Helper: render one stored attachment as inline media ────────────────────
 function _esc(s) { return String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 
+// Convert a UTC DB timestamp (e.g. "2026-05-10 06:24:07") to the user's
+// local time, formatted like "May 10, 2:24 AM" — no seconds, year shown
+// only when it's not the current year. Returns the input unchanged if it
+// doesn't parse, so legacy / pre-formatted strings pass through safely.
+function _fmtUtcLocal(s) {
+  if (!s) return '';
+  const str = String(s);
+  // If it's already a non-ISO display string (e.g. "May 10, 2026") leave it.
+  if (!/^\d{4}-\d{2}-\d{2}/.test(str)) return str;
+  const d = new Date(str.replace(' ', 'T') + (str.includes('Z') ? '' : 'Z'));
+  if (isNaN(d)) return str;
+  return formatNowUS(d);
+}
+
 // Probe whether the current browser can decode this video container/codec.
 // canPlayType returns '', 'maybe', or 'probably'. Empty string = definitely
 // not playable; treat that as "show the download fallback link". Anything
@@ -13743,7 +13757,7 @@ function renderWhatsNewFeed() {
       <div id="ann-card-${a.id}" data-aid="${a.id}" style="border:1px solid var(--border);border-radius:10px;padding:16px 18px;background:#fff;scroll-margin-top:80px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
           <span style="font-size:10.5px;font-weight:700;letter-spacing:.04em;background:${k.bg};color:${k.color};padding:2px 8px;border-radius:10px">${k.label}</span>
-          <span style="font-size:11px;color:var(--text3)">${_esc(a.author?.name || '')}${a.author?.name?' · ':''}${_esc(a.createdAt || '')}</span>
+          <span style="font-size:11px;color:var(--text3)">${_esc(a.author?.name || '')}${a.author?.name?' · ':''}${_esc(_fmtUtcLocal(a.createdAt))}</span>
         </div>
         ${a.title ? `<div style="font-size:14px;font-weight:600;margin-bottom:4px">${_esc(a.title)}</div>` : ''}
         ${a.body ? `<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap">${_esc(a.body)}</div>` : ''}
@@ -13864,7 +13878,7 @@ function renderFeedbackFeed() {
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
           <span style="font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;background:${k.bg};color:${k.color};padding:2px 8px;border-radius:10px">${k.label}</span>
           <span style="font-size:10.5px;font-weight:600;background:${s.bg};color:${s.color};padding:2px 8px;border-radius:10px">${s.label}</span>
-          <span style="font-size:11px;color:var(--text3);margin-left:auto">${_esc(it.createdBy?.name || '')}${it.createdBy?.name?' · ':''}${_esc(it.createdAt || '')}</span>
+          <span style="font-size:11px;color:var(--text3);margin-left:auto">${_esc(it.createdBy?.name || '')}${it.createdBy?.name?' · ':''}${_esc(_fmtUtcLocal(it.createdAt))}</span>
         </div>
         <div style="font-size:13.5px;font-weight:600;margin-bottom:4px;cursor:pointer" onclick="toggleFeedbackExpanded(${it.id})">${_esc(it.title || '(no title)')}</div>
         ${it.description ? `<div style="font-size:12.5px;color:var(--text2);white-space:pre-wrap">${typeof _linkifyTicketRefs === 'function' ? _linkifyTicketRefs(_esc(it.description)) : _esc(it.description)}</div>` : ''}
@@ -13938,7 +13952,7 @@ function renderFeedbackDetailHtml(item) {
     const isAdminAuthor = ((c.author?.role || '') + '').toLowerCase() === 'admin';
     const adminTag = isAdminAuthor ? ' <span style="background:#ede9fe;color:#7c3aed;padding:1px 6px;border-radius:8px;font-size:9.5px;font-weight:600;letter-spacing:.04em">ADMIN</span>' : '';
     return `<div style="padding:8px 10px;background:#fafbff;border-radius:6px;margin-bottom:6px">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${_esc(c.author?.name || '')}${adminTag} · ${_esc(c.createdAt || '')}</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${_esc(c.author?.name || '')}${adminTag} · ${_esc(_fmtUtcLocal(c.createdAt))}</div>
       <div style="font-size:12.5px;white-space:pre-wrap;line-height:1.55">${_renderFeedbackCommentBody(c.text)}</div>
     </div>`;
   }).join('') || '<div style="color:var(--text3);font-size:11px;margin-bottom:8px">No replies yet.</div>';
