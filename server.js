@@ -65,6 +65,86 @@ async function sendPushToUser(userId, payload) {
   }
   return { sent, removed };
 }
+
+// ── Slack DM dispatch ────────────────────────────────────────────────────────
+// Configured via SLACK_BOT_TOKEN env var (the xoxb-... Bot User OAuth Token
+// from a Slack App with chat:write + users:read + users:read.email scopes).
+// When unset the helper is a no-op so callers can fan out fire-and-forget.
+//
+// To DM a user we need their Slack user_id, which we look up by email the
+// first time and cache on users.slack_user_id. Empty = "not yet looked up";
+// 'NOTFOUND' sentinel = "Slack workspace has no user with this email" so
+// we don't keep hammering the API.
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+const slackReady = !!SLACK_BOT_TOKEN;
+console.log(`[slack] ${slackReady ? 'enabled' : 'disabled (no SLACK_BOT_TOKEN)'}`);
+
+async function _slackApi(method, body) {
+  const r = await fetch('https://slack.com/api/' + method, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+    },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+async function _resolveSlackUserId(user) {
+  if (!user || !user.email) return null;
+  if (user.slack_user_id === 'NOTFOUND') return null;
+  if (user.slack_user_id) return user.slack_user_id;
+  // Slack's lookupByEmail only takes a query param, not a JSON body.
+  const r = await fetch(
+    'https://slack.com/api/users.lookupByEmail?email=' + encodeURIComponent(user.email),
+    { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
+  );
+  const data = await r.json();
+  if (!data.ok) {
+    if (data.error === 'users_not_found') {
+      // Cache the miss so we don't ping Slack on every event for this user.
+      try { await run('UPDATE users SET slack_user_id=? WHERE id=?', 'NOTFOUND', user.id); } catch {}
+    } else {
+      console.warn(`[slack] lookupByEmail(${user.email}) failed:`, data.error);
+    }
+    return null;
+  }
+  const sid = data.user?.id;
+  if (sid) {
+    try { await run('UPDATE users SET slack_user_id=? WHERE id=?', sid, user.id); } catch {}
+  }
+  return sid || null;
+}
+
+// Send a Slack DM to the given Syruvia user. payload is passed through to
+// chat.postMessage minus `channel` (we set it to the resolved user_id).
+// Pass either:
+//   { text: "..." }                     simple text message
+//   { text: "...", blocks: [...] }      rich block-kit layout
+// Failures are swallowed; this is a side-effect of other workflows.
+async function slackDmUser(userId, payload) {
+  if (!slackReady || !userId) return { skipped: true };
+  try {
+    const u = await get(
+      'SELECT id, name, email, slack_user_id FROM users WHERE id=?',
+      userId
+    );
+    if (!u) return { skipped: true };
+    const sid = await _resolveSlackUserId(u);
+    if (!sid) return { skipped: true };
+    const data = await _slackApi('chat.postMessage', { channel: sid, ...payload });
+    if (!data.ok) {
+      console.warn('[slack] postMessage failed for', u.email, ':', data.error);
+      return { error: data.error };
+    }
+    return { ok: true };
+  } catch (e) {
+    console.warn('[slack] DM failed:', e.message);
+    return { error: e.message };
+  }
+}
+
 const {
   sendInviteEmail, sendWelcomeEmail, sendActivateAccountEmail,
   sendForgotPasswordEmail, sendPasswordChangedEmail, sendNewDeviceLoginEmail,
@@ -983,6 +1063,10 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
           tag: 'ticket-' + id,
           url: '/tickets/' + id,
         }).catch(()=>{});
+        // Slack DM (no-op when SLACK_BOT_TOKEN unset).
+        slackDmUser(target.id, {
+          text: `🎫 *${creator?.name || 'Someone'}* assigned you to <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${id}|${id}>${title ? ' — ' + title : ''}`,
+        }).catch(()=>{});
       }
     }
     res.status(201).json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id)));
@@ -1055,6 +1139,10 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
               description: tkt?.req || '',
               tags: (() => { try { return JSON.parse(tkt?.tags_json || '[]'); } catch { return []; } })(),
             }));
+            // Slack DM — same payload shape as the create-time assign.
+            slackDmUser(target.id, {
+              text: `🎫 *${assigner?.name || 'Someone'}* assigned you to <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}`,
+            }).catch(()=>{});
           }
         }
       }
@@ -1270,6 +1358,11 @@ app.post('/api/tickets/:id/request-update', requireAuth, requireTicketAccess, as
         body:  `${requester.name || 'A teammate'} is asking for an update`,
         tag:   'update-request-' + ticketId,
         url:   '/tickets/' + ticketId,
+      }).catch(() => {});
+      // Slack DM (no-op when SLACK_BOT_TOKEN unset).
+      const _ticketUrl = (process.env.APP_URL || `http://localhost:${PORT}`) + '/tickets/' + ticketId;
+      slackDmUser(u.id, {
+        text: `📩 *${requester.name || 'A teammate'}* is asking for an update on <${_ticketUrl}|${ticketId}>${t.title ? ' — ' + t.title : ''}${note ? `\n> ${note}` : ''}`,
       }).catch(() => {});
       notifiedNames.push(u.name);
     }
@@ -1594,6 +1687,10 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
           body: text.trim().slice(0, 140),
           tag: 'ticket-' + req.params.id + '-cmt',
           url: '/tickets/' + req.params.id,
+        }).catch(()=>{});
+        // Slack DM with the mentioning author + a quoted comment snippet.
+        slackDmUser(mentioned.id, {
+          text: `💬 *${u.name}* mentioned you on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
         }).catch(()=>{});
       }
     }

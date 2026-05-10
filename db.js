@@ -522,6 +522,11 @@ async function init() {
   await safeAlter("ALTER TABLE cal_events ADD COLUMN deadline_warned INTEGER DEFAULT 0");
   await safeAlter("ALTER TABLE tickets ADD COLUMN closed_email_sent INTEGER DEFAULT 0");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
+  // Cached Slack user id (looked up via users.lookupByEmail the first time
+  // we want to DM this user). Empty string = "not yet looked up";
+  // 'NOTFOUND' sentinel = "Slack workspace has no user with this email,
+  // don't keep retrying". Populated lazily by slackDmUser in server.js.
+  await safeAlter("ALTER TABLE users ADD COLUMN slack_user_id TEXT DEFAULT ''");
 
   // Consolidate roles to the canonical three: Admin / Manager / Member.
   // Old installs may have Owner / User / Viewer values; map them onto the
