@@ -3082,6 +3082,103 @@ app.delete('/api/attachments/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Personal dashboard stats ─────────────────────────────────────────────────
+// Returns three counts for the current user, scoped to tickets they're
+// involved in (assignee / reporter / requester / creator):
+//
+//   unread          — tickets they've never opened OR have new activity
+//                     since their last view (matches the unread pill in
+//                     the tickets list).
+//   staleCount      — open tickets with no activity (no comment) in 2+
+//                     days. "Activity" = MAX(created_at, latest comment).
+//   pendingMentions — tickets where the user has a 'mention' notification
+//                     and hasn't posted a comment on that ticket since.
+//
+// Each count is cheap (one aggregate query), so we run them in parallel.
+app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
+  try {
+    const u = await getUser(req.session.userId);
+    if (!u) return res.status(401).json({ error: 'Not signed in' });
+    // Cutoff for "stale" — anything older than 2 days from now (UTC).
+    // Stored timestamps are TO_CHAR'd 'YYYY-MM-DD HH24:MI:SS' UTC text;
+    // lexicographic compare with another such string works correctly.
+    const cutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+      .toISOString().replace('T', ' ').slice(0, 19);
+    // Shared "user is involved" filter — same shape as /api/tickets list.
+    const involvementSql = `(
+      t.assignee_user_id = ?
+      OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+      OR EXISTS (
+           SELECT 1 FROM ticket_assignees ta
+            WHERE ta.ticket_id = t.id
+              AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+         )
+      OR t.reporter_user_id = ?
+      OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+      OR t.req_user_id = ?
+      OR (t.req_user_id IS NULL AND t.req = ?)
+      OR t.created_by = ?
+    )`;
+    const involvementArgs = [u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id];
+
+    const [unreadRow, staleRow, mentionsRow] = await Promise.all([
+      // Unread: ticket the user is involved in, deleted_at IS NULL, AND
+      // either no ticket_views row OR the row is older than the latest
+      // activity. Latest activity = MAX(created_at, latest comment).
+      get(
+        `SELECT COUNT(*)::int AS n FROM tickets t
+           LEFT JOIN ticket_views v ON v.ticket_id = t.id AND v.user_id = ?
+           LEFT JOIN (SELECT ticket_id, MAX(created_at) AS latest_at
+                        FROM ticket_comments GROUP BY ticket_id) lc
+                ON lc.ticket_id = t.id
+          WHERE t.deleted_at IS NULL
+            AND ${involvementSql}
+            AND (
+                  v.last_viewed_at IS NULL
+               OR v.last_viewed_at < COALESCE(lc.latest_at, t.created_at)
+            )`,
+        u.id, ...involvementArgs
+      ),
+      // Stale: open (not Closed/Archived) tickets where the latest activity
+      // is more than 2 days ago.
+      get(
+        `SELECT COUNT(*)::int AS n FROM tickets t
+           LEFT JOIN (SELECT ticket_id, MAX(created_at) AS latest_at
+                        FROM ticket_comments GROUP BY ticket_id) lc
+                ON lc.ticket_id = t.id
+          WHERE t.deleted_at IS NULL
+            AND t.status NOT IN ('Closed', 'Archived')
+            AND ${involvementSql}
+            AND COALESCE(lc.latest_at, t.created_at) < ?`,
+        ...involvementArgs, cutoff
+      ),
+      // Pending mentions: distinct tickets where the user has a mention
+      // notification and hasn't authored a comment after that mention.
+      get(
+        `SELECT COUNT(DISTINCT n.ticket_id)::int AS n FROM notifications n
+          WHERE n.user_id = ?
+            AND n.type = 'mention'
+            AND n.ticket_id IS NOT NULL
+            AND NOT EXISTS (
+                  SELECT 1 FROM ticket_comments tc
+                   WHERE tc.ticket_id = n.ticket_id
+                     AND (tc.author_user_id = ?
+                          OR (tc.author_user_id IS NULL AND tc.author = ?))
+                     AND tc.created_at > n.created_at
+                )`,
+        u.id, u.id, u.name
+      ),
+    ]);
+
+    res.json({
+      unreadCount: unreadRow?.n || 0,
+      staleCount: staleRow?.n || 0,
+      pendingMentionsCount: mentionsRow?.n || 0,
+      staleThresholdDays: 2,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 app.get('/api/stats', requireAuth, async (req, res) => {
   try {
