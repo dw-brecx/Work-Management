@@ -477,6 +477,82 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_docs_parent ON docs (parent_id)`,
     `CREATE INDEX IF NOT EXISTS idx_docs_updated ON docs (updated_at DESC)`,
+    // Workspace chat (ClickUp-style). Three flavours of conversation share
+    // one "channel" row: type='channel' (named room, optionally private with
+    // explicit member list), type='dm' (1:1 — dm_key is the deterministic
+    // sorted "minId:maxId" pair so we never create two DM rows for the same
+    // pair), and type='group' (>=3-person ad-hoc DM). Membership lives in
+    // chat_channel_members; messages in chat_messages (parent_message_id
+    // links a reply to its parent — drives threads). Reactions + mentions
+    // are their own tables. Attachments piggy-back on the existing
+    // `attachments` table via a new chat_message_id column.
+    `CREATE TABLE IF NOT EXISTS chat_channels (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL DEFAULT 'channel',
+      is_private INTEGER NOT NULL DEFAULT 0,
+      dm_key TEXT,
+      topic TEXT NOT NULL DEFAULT '',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      last_message_at TEXT
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channels_dm_key ON chat_channels (dm_key) WHERE dm_key IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_channels_type ON chat_channels (type)`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_channels_last_msg ON chat_channels (last_message_at DESC)`,
+    // Members: who's in the channel, what they've read, mute / notify prefs.
+    // last_read_message_id is the largest message id this user has marked
+    // read — drives unread badges. notify is one of 'all' (every message),
+    // 'mentions' (only @mentions), 'none' (mute completely).
+    `CREATE TABLE IF NOT EXISTS chat_channel_members (
+      channel_id INTEGER NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member',
+      joined_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      last_read_message_id INTEGER NOT NULL DEFAULT 0,
+      last_read_at TEXT,
+      notify TEXT NOT NULL DEFAULT 'all',
+      hidden INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (channel_id, user_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_members_user ON chat_channel_members (user_id)`,
+    `CREATE TABLE IF NOT EXISTS chat_messages (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL REFERENCES chat_channels(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      parent_message_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
+      body TEXT NOT NULL DEFAULT '',
+      edited_at TEXT,
+      deleted_at TEXT,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages (channel_id, id DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages (parent_message_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages (user_id)`,
+    // One row per (message, user, emoji). Composite primary key prevents the
+    // same user from reacting twice with the same emoji; multiple emojis
+    // per user on a single message are fine.
+    `CREATE TABLE IF NOT EXISTS chat_message_reactions (
+      message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      emoji TEXT NOT NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      PRIMARY KEY (message_id, user_id, emoji)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_reactions_msg ON chat_message_reactions (message_id)`,
+    // One row per @mention parsed out of a message. Drives:
+    //   * unread-mention badge (count where user_id=me and seen_at IS NULL)
+    //   * push + email fan-out at send time (server inserts a row per match)
+    //   * the dashboard "awaiting reply" panel (later)
+    `CREATE TABLE IF NOT EXISTS chat_mentions (
+      message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      seen_at TEXT,
+      PRIMARY KEY (message_id, user_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_mentions_user ON chat_mentions (user_id, seen_at)`,
   ];
 
   for (const sql of tables) {
@@ -503,6 +579,10 @@ async function init() {
   // attachments.doc_id links an uploaded file to its parent doc — same
   // pattern used for ticket / comment / feedback / reminder attachments.
   await safeAlter('ALTER TABLE attachments ADD COLUMN doc_id INTEGER');
+  // Same pattern again for chat message attachments — files dropped into
+  // the chat composer are uploaded via /api/upload with chatMessageId set
+  // and surface inline under the message that pinned them.
+  await safeAlter('ALTER TABLE attachments ADD COLUMN chat_message_id INTEGER');
   // Per-doc visibility. public = anyone in the workspace can see it
   // (default); private = only the creator + admins + users explicitly
   // added via doc_shares. The file URL itself (/uploads/*) is still
@@ -648,6 +728,32 @@ async function init() {
     if (!await get('SELECT id FROM departments WHERE name=?', name))
       await run('INSERT INTO departments (name) VALUES (?)', name);
   }
+
+  // Seed the #general chat channel everyone joins automatically. Idempotent:
+  // only inserted if no public 'general' channel exists yet. Every existing
+  // user is added as a member; new users get auto-joined at registration.
+  try {
+    const generalRow = await get(
+      "SELECT id FROM chat_channels WHERE type='channel' AND lower(name)='general'"
+    );
+    let generalId = generalRow ? generalRow.id : null;
+    if (!generalId) {
+      const ins = await run(
+        "INSERT INTO chat_channels (name, description, type, is_private, created_by) VALUES (?,?,?,?,?) RETURNING id",
+        'general', 'Workspace-wide announcements and chatter.', 'channel', 0, null
+      );
+      generalId = ins.lastInsertRowid;
+    }
+    if (generalId) {
+      const everyone = await all('SELECT id FROM users');
+      for (const u of (everyone || [])) {
+        await run(
+          'INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+          generalId, u.id
+        );
+      }
+    }
+  } catch (e) { console.warn('[seed] #general chat channel:', e.message); }
 
   // Seed default flavor-launch tasks (template). Only inserted if the table is empty.
   const flavorRows = await get('SELECT COUNT(*) AS n FROM flavor_tasks');

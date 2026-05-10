@@ -1350,6 +1350,58 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .switch input:checked + .slider:before{transform:translateX(16px)}
   .switch input:focus-visible + .slider{box-shadow:0 0 0 3px rgba(0,72,116,.18)}
 
+  /* ── CHAT ──────────────────────────────────────────────────────────────── */
+  .chat-ch-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;color:var(--text2);user-select:none}
+  .chat-ch-row:hover{background:rgba(59,130,246,.07)}
+  .chat-ch-row.active{background:rgba(59,130,246,.15);color:var(--text);font-weight:500}
+  .chat-ch-row .ch-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat-ch-row .ch-presence{width:8px;height:8px;border-radius:50%;background:#cbd5e1;flex-shrink:0}
+  .chat-ch-row .ch-presence.online{background:#10b981}
+  .chat-ch-row .unread-pill{background:var(--accent);color:#fff;font-size:10px;font-weight:600;padding:1px 6px;border-radius:9px;min-width:16px;text-align:center}
+  .chat-ch-row .mention-pill{background:#ef4444;color:#fff;font-size:10px;font-weight:600;padding:1px 6px;border-radius:9px;min-width:16px;text-align:center}
+  .chat-ch-row.has-unread{color:var(--text);font-weight:600}
+
+  .chat-msg{display:flex;gap:10px;padding:6px 4px;border-radius:6px;position:relative}
+  .chat-msg:hover{background:#fafbff}
+  .chat-msg .msg-avatar{width:32px;height:32px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;overflow:hidden;background:#3b82f6}
+  .chat-msg .msg-avatar img{width:100%;height:100%;object-fit:cover}
+  .chat-msg .msg-body{flex:1;min-width:0}
+  .chat-msg .msg-meta{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+  .chat-msg .msg-author{font-size:13px;font-weight:600;color:var(--text)}
+  .chat-msg .msg-time{font-size:10.5px;color:var(--text3)}
+  .chat-msg .msg-text{font-size:13px;line-height:1.45;color:var(--text);white-space:pre-wrap;word-wrap:break-word}
+  .chat-msg .msg-text .mention{background:rgba(59,130,246,.13);color:var(--accent);padding:1px 4px;border-radius:4px;font-weight:500}
+  .chat-msg.is-mention-me{background:rgba(255,193,7,.07);border-left:3px solid #f59e0b;padding-left:7px}
+  .chat-msg .msg-edited{font-size:10px;color:var(--text3);margin-left:6px}
+  .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px}
+  .chat-msg .msg-actions{position:absolute;top:-12px;right:8px;display:none;gap:2px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(15,23,42,.08);padding:2px;z-index:5}
+  .chat-msg:hover .msg-actions{display:flex}
+  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:13px;padding:4px 7px;border-radius:5px;color:var(--text2)}
+  .chat-msg .msg-action-btn:hover{background:var(--bg2);color:var(--text)}
+  .chat-msg .msg-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chat-msg .msg-att{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text);text-decoration:none;max-width:300px}
+  .chat-msg .msg-att .att-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat-msg .msg-att img{max-width:280px;max-height:200px;border-radius:6px}
+  .chat-msg .msg-att-img{padding:0;border:none;background:none;display:block}
+  .chat-msg .msg-reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+  .chat-reaction{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;background:#fff;border:1px solid var(--border);border-radius:11px;font-size:11.5px;cursor:pointer;color:var(--text2)}
+  .chat-reaction.mine{background:rgba(59,130,246,.12);border-color:var(--accent);color:var(--accent)}
+  .chat-reaction:hover{background:#f1f5f9}
+  .chat-reaction-add{display:inline-flex;align-items:center;justify-content:center;width:24px;height:22px;border-radius:11px;border:1px dashed var(--border);background:transparent;cursor:pointer;color:var(--text3);font-size:11px}
+  .chat-reaction-add:hover{background:var(--bg2);color:var(--text2)}
+  .chat-msg .msg-thread-link{display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:11.5px;color:var(--accent);cursor:pointer;background:none;border:none;padding:2px 6px;border-radius:6px}
+  .chat-msg .msg-thread-link:hover{background:rgba(59,130,246,.08)}
+  .chat-day-divider{display:flex;align-items:center;gap:10px;margin:18px 0 6px;font-size:11px;color:var(--text3)}
+  .chat-day-divider:before,.chat-day-divider:after{content:'';flex:1;height:1px;background:var(--border)}
+  .chat-att-preview{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:11.5px}
+  .chat-att-preview .rm{cursor:pointer;color:var(--text3);font-weight:600}
+  .chat-att-preview .rm:hover{color:#ef4444}
+  .chat-mention-item{padding:7px 10px;cursor:pointer;font-size:12.5px;display:flex;align-items:center;gap:8px;border-radius:6px}
+  .chat-mention-item:hover,.chat-mention-item.active{background:rgba(59,130,246,.12);color:var(--accent)}
+  .chat-emoji-popup{position:absolute;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.12);padding:8px;display:flex;flex-wrap:wrap;gap:4px;max-width:240px;z-index:300}
+  .chat-emoji-popup button{background:none;border:none;cursor:pointer;font-size:18px;padding:4px 6px;border-radius:6px}
+  .chat-emoji-popup button:hover{background:var(--bg2)}
+
 </style>
 
   <!-- Modern light redesign -->
@@ -2359,6 +2411,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <div class="nav-item" data-page="docs">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
       Docs
+    </div>
+    <div class="nav-item" data-page="chat">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Chat <span class="badge" id="nav-chat-badge" style="display:none"></span>
     </div>
     <div class="nav-item admin-only" data-page="projects">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -3579,6 +3635,157 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <div id="rem-daily-list" style="display:flex;flex-direction:column;gap:10px"></div>
         <div style="display:flex;justify-content:flex-end;margin-top:14px">
           <button onclick="closeDailyRemindersPopup()" class="btn-primary" style="font-size:12px;padding:7px 14px">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== CHAT (workspace messaging) ========== -->
+    <!-- Layout: left rail = channels + DMs, right pane = active conversation.
+         A second right column (#chat-thread-pane) slides in for a thread view.
+         All state is loaded once into CHAT_STATE then mutated by WS events. -->
+    <div id="page-chat" class="page" style="padding:0;height:calc(100vh - 60px)">
+      <div id="chat-shell" style="display:flex;height:100%;background:#fff;border-radius:12px;border:1px solid var(--border);overflow:hidden">
+        <!-- LEFT RAIL: channels + DMs -->
+        <aside id="chat-left" style="width:260px;flex:0 0 260px;border-right:1px solid var(--border);background:#fafbff;display:flex;flex-direction:column">
+          <div style="padding:14px 14px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div style="font-size:14px;font-weight:600">Chat</div>
+            <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="openChatNewMenu(event)" title="New conversation">+ New ▾</button>
+            <div id="chat-new-menu" style="display:none;position:absolute;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.12);min-width:200px;z-index:200;padding:4px;margin-top:32px;margin-left:120px">
+              <button onclick="openChatNewChannelModal()" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;background:none;border:none;cursor:pointer;font-size:12.5px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span>#</span><span>New channel</span>
+              </button>
+              <button onclick="openChatBrowseModal()" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;background:none;border:none;cursor:pointer;font-size:12.5px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span>🔍</span><span>Browse channels</span>
+              </button>
+              <button onclick="openChatNewDmModal()" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;background:none;border:none;cursor:pointer;font-size:12.5px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span>💬</span><span>Direct message</span>
+              </button>
+              <button onclick="openChatNewGroupModal()" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 10px;background:none;border:none;cursor:pointer;font-size:12.5px;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+                <span>👥</span><span>Group chat</span>
+              </button>
+            </div>
+          </div>
+          <div style="padding:8px 10px">
+            <input id="chat-search" type="text" placeholder="Filter channels…" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;outline:none" oninput="renderChatChannelList()"/>
+          </div>
+          <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-top:6px">Channels</div>
+          <div id="chat-channels-list" style="overflow-y:auto;flex:1;padding:4px 6px"></div>
+          <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">Direct messages</div>
+          <div id="chat-dms-list" style="overflow-y:auto;padding:4px 6px;max-height:40%"></div>
+        </aside>
+
+        <!-- MAIN PANE: active conversation -->
+        <main id="chat-main" style="flex:1;display:flex;flex-direction:column;min-width:0">
+          <header id="chat-header" style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              <div id="chat-header-icon" style="font-size:18px">#</div>
+              <div style="min-width:0">
+                <div id="chat-header-name" style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pick a conversation</div>
+                <div id="chat-header-sub" style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px" id="chat-header-actions"></div>
+          </header>
+          <div id="chat-empty" style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:13px;text-align:center;padding:30px">
+            <div>
+              <div style="font-size:42px;margin-bottom:10px">💬</div>
+              <div style="font-weight:500;color:var(--text2)">No conversation open</div>
+              <div style="margin-top:6px">Pick a channel on the left, or click <strong>+ New</strong> to start one.</div>
+            </div>
+          </div>
+          <div id="chat-messages-scroll" style="display:none;flex:1;overflow-y:auto;padding:14px 18px;background:#fff" onscroll="onChatScroll()"></div>
+          <div id="chat-typing" style="display:none;font-size:11px;color:var(--text3);padding:2px 18px"></div>
+          <div id="chat-composer-wrap" style="display:none;border-top:1px solid var(--border);background:#fff;padding:10px 14px">
+            <div id="chat-attachments-preview" style="display:none;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+            <div style="display:flex;align-items:flex-end;gap:8px">
+              <button class="btn-sec" style="padding:6px 8px;font-size:14px" title="Attach file" onclick="document.getElementById('chat-file-input').click()">📎</button>
+              <input type="file" id="chat-file-input" multiple style="display:none" onchange="onChatFilePicked(this)"/>
+              <textarea id="chat-input" placeholder="Type a message — @ to mention, Enter to send, Shift+Enter for newline" rows="1" style="flex:1;resize:none;border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;max-height:160px;min-height:38px" oninput="autoSizeChatInput(this);onChatInputChange()" onkeydown="onChatComposerKey(event)"></textarea>
+              <button class="btn-primary" style="padding:8px 14px;font-size:12px" onclick="sendChatMessage()" id="chat-send-btn">Send</button>
+            </div>
+            <div id="chat-mention-popup" style="display:none;position:absolute;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.12);max-height:220px;overflow-y:auto;z-index:200;min-width:180px"></div>
+          </div>
+        </main>
+
+        <!-- THREAD PANE (right) — slides in when a reply view is opened -->
+        <aside id="chat-thread-pane" style="display:none;width:340px;flex:0 0 340px;border-left:1px solid var(--border);background:#fff;flex-direction:column">
+          <header style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+            <div style="font-size:13px;font-weight:600">Thread</div>
+            <button onclick="closeChatThread()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0">×</button>
+          </header>
+          <div id="chat-thread-parent" style="padding:12px 16px;border-bottom:1px solid var(--border);background:#fafbff"></div>
+          <div id="chat-thread-replies" style="flex:1;overflow-y:auto;padding:10px 14px"></div>
+          <div style="border-top:1px solid var(--border);padding:10px 12px">
+            <div style="display:flex;gap:6px">
+              <textarea id="chat-thread-input" placeholder="Reply in thread…" rows="1" style="flex:1;resize:none;border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12.5px;font-family:inherit;outline:none;max-height:120px;min-height:34px" oninput="autoSizeChatInput(this)" onkeydown="onChatThreadKey(event)"></textarea>
+              <button class="btn-primary" style="padding:6px 12px;font-size:12px" onclick="sendChatThreadReply()">Send</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <!-- New channel modal -->
+      <div id="chat-new-channel-modal" class="modal-bg" style="display:none">
+        <div class="modal-content" style="max-width:440px;padding:22px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h2 style="font-size:15px;font-weight:600;margin:0">New channel</h2>
+            <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
+          </div>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px">Name</label>
+          <input id="chat-new-name" type="text" placeholder="e.g. design-team" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;margin-bottom:10px"/>
+          <label style="display:block;font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px">Description (optional)</label>
+          <input id="chat-new-desc" type="text" placeholder="What's this channel about?" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;margin-bottom:10px"/>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:12px;cursor:pointer">
+            <input type="checkbox" id="chat-new-private"/>
+            <span>Make private — only invited members can see it</span>
+          </label>
+          <div id="chat-new-members-wrap" style="display:none;margin-bottom:10px">
+            <label style="display:block;font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px">Add members</label>
+            <div id="chat-new-members-list" style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px"></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn-sec" style="font-size:12px;padding:7px 14px" onclick="closeChatModals()">Cancel</button>
+            <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitChatNewChannel()">Create</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Browse channels modal -->
+      <div id="chat-browse-modal" class="modal-bg" style="display:none">
+        <div class="modal-content" style="max-width:520px;padding:22px;max-height:80vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h2 style="font-size:15px;font-weight:600;margin:0">Browse channels</h2>
+            <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
+          </div>
+          <div id="chat-browse-list" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div id="chat-browse-empty" style="display:none;color:var(--text3);font-size:12.5px;text-align:center;padding:20px">No public channels to join — you're already in all of them.</div>
+        </div>
+      </div>
+
+      <!-- New DM / group modals reuse one container -->
+      <div id="chat-new-dm-modal" class="modal-bg" style="display:none">
+        <div class="modal-content" style="max-width:440px;padding:22px;max-height:80vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h2 id="chat-new-dm-title" style="font-size:15px;font-weight:600;margin:0">New direct message</h2>
+            <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
+          </div>
+          <input id="chat-new-dm-search" type="text" placeholder="Search people…" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none;margin-bottom:10px" oninput="renderChatNewDmList()"/>
+          <div id="chat-new-dm-list" style="max-height:280px;overflow-y:auto"></div>
+          <div id="chat-new-group-actions" style="display:none;margin-top:12px;justify-content:flex-end;gap:8px">
+            <button class="btn-sec" style="font-size:12px;padding:7px 14px" onclick="closeChatModals()">Cancel</button>
+            <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitChatNewGroup()">Create group</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Channel info / settings modal (rename, members, leave) -->
+      <div id="chat-info-modal" class="modal-bg" style="display:none">
+        <div class="modal-content" style="max-width:480px;padding:22px;max-height:80vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h2 style="font-size:15px;font-weight:600;margin:0">Channel info</h2>
+            <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
+          </div>
+          <div id="chat-info-body"></div>
         </div>
       </div>
     </div>
@@ -4901,6 +5108,7 @@ window.PAGE_PATHS = {
   'my-tickets':  '/my-tickets',
   'my-reminders':'/my-reminders',
   'docs':         '/docs',
+  'chat':        '/chat',
   'planning':    '/planning',
   'flavors':     '/flavors',
   'calendar':    '/calendar',
@@ -4959,6 +5167,7 @@ function navigate(page) {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
       'my-reminders': 'My Reminders',
       'docs': 'Docs',
+      'chat': 'Chat',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
       'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
       'projects': 'Projects',
@@ -4987,6 +5196,9 @@ function navigate(page) {
   }
   if (page === 'docs' && typeof loadDocsPage === 'function') {
     loadDocsPage();
+  }
+  if (page === 'chat' && typeof openChatPage === 'function') {
+    openChatPage();
   }
 }
 
@@ -17361,6 +17573,7 @@ window.refreshPageData = refreshPageData;
     'my-tickets':  '/my-tickets',
     'my-reminders':'/my-reminders',
   'docs':         '/docs',
+  'chat':        '/chat',
     'planning':    '/planning',
     'flavors':     '/flavors',
     'calendar':    '/calendar',
@@ -18807,6 +19020,1440 @@ window.scheduleEventForCurrentTicket = function() {
   // a textarea is re-created inside a modal between boot and first use.
   window.addEventListener('_wnReady', () => setTimeout(wirePolishButtons, 200));
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORKSPACE CHAT — ClickUp / Slack-style messaging
+// ═══════════════════════════════════════════════════════════════════════════
+// Single source of truth for the chat page. CHAT_STATE holds the loaded
+// channel list, messages per channel, the active channel, and the open WS
+// socket. Server pushes new messages and edits via the WS; the REST API is
+// only used for initial load + send + admin actions.
+
+const CHAT_STATE = {
+  socket: null,
+  socketBackoff: 1000,
+  channels: [],                  // every channel the user is a member of
+  channelsById: new Map(),
+  messagesByChannel: new Map(),  // channelId → [message]
+  hasMoreByChannel: new Map(),   // channelId → bool (more history exists)
+  activeChannelId: null,
+  activeThreadParentId: null,
+  threadReplies: [],
+  pendingAttachments: [],        // attachments uploaded but not yet sent
+  typingTimers: new Map(),       // channelId|userId → timeout
+  typingState: new Map(),        // channelId → { userId → expiresAt }
+  loaded: false,
+  unreadTotal: 0,
+  unreadMentions: 0,
+  userDirectory: [],             // workspace users for picker / mentions
+  userDirectoryLoadedAt: 0,
+  mentionPopup: { open: false, anchor: null, query: '', selected: 0, matches: [] },
+};
+
+// ── WebSocket lifecycle ────────────────────────────────────────────────────
+function chatWsConnect() {
+  if (!window.CURRENT_USER || !window.CURRENT_USER.id) return;
+  if (CHAT_STATE.socket && (CHAT_STATE.socket.readyState === WebSocket.OPEN ||
+                            CHAT_STATE.socket.readyState === WebSocket.CONNECTING)) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = proto + '//' + location.host + '/ws/chat';
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { console.warn('[chat] WS open failed', e); return; }
+  CHAT_STATE.socket = ws;
+  ws.addEventListener('open', () => {
+    CHAT_STATE.socketBackoff = 1000;
+    console.log('[chat] WS connected');
+  });
+  ws.addEventListener('message', (ev) => {
+    let data; try { data = JSON.parse(ev.data); } catch { return; }
+    chatHandleWsEvent(data);
+  });
+  ws.addEventListener('close', () => {
+    CHAT_STATE.socket = null;
+    // Exponential backoff up to 30s.
+    const wait = Math.min(CHAT_STATE.socketBackoff, 30000);
+    CHAT_STATE.socketBackoff = Math.min(CHAT_STATE.socketBackoff * 2, 30000);
+    setTimeout(chatWsConnect, wait);
+  });
+  ws.addEventListener('error', () => { try { ws.close(); } catch {} });
+}
+
+function chatWsSend(payload) {
+  const ws = CHAT_STATE.socket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify(payload)); } catch {}
+}
+
+// Dispatch a single inbound WS event. Most types simply mutate state and
+// trigger a re-render of whatever pane is affected.
+function chatHandleWsEvent(ev) {
+  if (!ev || !ev.type) return;
+  switch (ev.type) {
+    case 'hello':
+      // Server confirmed our auth — trigger an unread refresh so the badge
+      // reflects new messages we missed while disconnected.
+      chatRefreshUnread();
+      break;
+    case 'message:new':
+      chatOnNewMessage(ev.message);
+      break;
+    case 'message:update':
+      chatOnUpdateMessage(ev.message);
+      break;
+    case 'message:delete':
+      chatOnDeleteMessage(ev.channelId, ev.messageId);
+      break;
+    case 'channel:new':
+      chatOnNewChannel(ev.channel);
+      break;
+    case 'channel:update':
+      chatOnUpdateChannel(ev.channel);
+      break;
+    case 'channel:delete':
+      chatOnDeleteChannel(ev.channelId);
+      break;
+    case 'channel:read':
+      chatOnRemoteRead(ev.channelId, ev.lastReadMessageId);
+      break;
+    case 'channel:member-joined':
+    case 'channel:member-left':
+      // Channel object is included on join; just upsert.
+      if (ev.channel) chatOnUpdateChannel(ev.channel);
+      break;
+    case 'typing':
+      chatOnTyping(ev.channelId, ev.userId);
+      break;
+  }
+}
+
+// ── State mutation handlers ────────────────────────────────────────────────
+function chatOnNewMessage(msg) {
+  if (!msg || !msg.channelId) return;
+  const list = CHAT_STATE.messagesByChannel.get(msg.channelId) || [];
+  // Skip if we already have this id (e.g. POST response inserted it before WS arrived).
+  if (list.some(m => m.id === msg.id)) return;
+  const me = window.CURRENT_USER || {};
+  // If this is OUR own message arriving via WS, look for an optimistic
+  // placeholder we already inserted on send and swap it in place — so the
+  // user doesn't see "their message twice."
+  if (msg.userId === me.id && !msg.parentMessageId) {
+    const i = list.findIndex(m => m._optimistic && m.body === msg.body && m.userId === msg.userId);
+    if (i >= 0) {
+      const oldId = list[i].id;
+      list[i] = msg;
+      CHAT_STATE.messagesByChannel.set(msg.channelId, list);
+      const node = document.querySelector(`[data-msg-id="${oldId}"]`);
+      if (node) node.outerHTML = renderChatMessageHtml(msg);
+      return;
+    }
+  }
+  if (msg.parentMessageId) {
+    // Thread reply — bump parent's replyCount when we have it cached.
+    const parent = list.find(m => m.id === msg.parentMessageId);
+    if (parent) {
+      parent.replyCount = (parent.replyCount || 0) + 1;
+      parent.lastReplyAt = msg.createdAt;
+    }
+    // If the thread pane is open on this parent, append.
+    if (CHAT_STATE.activeThreadParentId === msg.parentMessageId) {
+      CHAT_STATE.threadReplies.push(msg);
+      renderChatThread();
+    }
+  } else {
+    list.push(msg);
+    CHAT_STATE.messagesByChannel.set(msg.channelId, list);
+  }
+  const channel = CHAT_STATE.channelsById.get(msg.channelId);
+  if (channel) {
+    channel.lastMessage = {
+      id: msg.id, body: msg.body, userId: msg.userId,
+      authorName: msg.author ? msg.author.name : '', createdAt: msg.createdAt,
+    };
+    channel.lastMessageAt = msg.createdAt;
+    // Bump unread for everyone except the sender.
+    if (msg.userId !== (window.CURRENT_USER && window.CURRENT_USER.id)) {
+      const isActive = (CHAT_STATE.activeChannelId === msg.channelId) &&
+                       (currentPage === 'chat') && document.visibilityState === 'visible';
+      if (!isActive) {
+        channel.unread = (channel.unread || 0) + 1;
+        if ((msg.mentions || []).some(m => m.id === (window.CURRENT_USER && window.CURRENT_USER.id))) {
+          channel.mentionUnread = (channel.mentionUnread || 0) + 1;
+        }
+      } else {
+        // Active channel — auto-mark read at the message id we just saw.
+        channel.me = channel.me || { lastReadMessageId: 0 };
+        channel.me.lastReadMessageId = msg.id;
+        chatMarkRead(msg.channelId, msg.id);
+      }
+    } else {
+      // Our own message — fold our read cursor forward.
+      channel.me = channel.me || { lastReadMessageId: 0 };
+      channel.me.lastReadMessageId = msg.id;
+    }
+  }
+  renderChatChannelList();
+  if (CHAT_STATE.activeChannelId === msg.channelId && !msg.parentMessageId) {
+    appendChatMessageNode(msg);
+    chatScrollToBottom();
+  }
+  chatRecomputeUnreadTotals();
+  // Sound / vibrate cue for incoming non-self messages.
+  if (msg.userId !== (window.CURRENT_USER && window.CURRENT_USER.id)) {
+    try { navigator.vibrate && navigator.vibrate(20); } catch {}
+  }
+}
+
+function chatOnUpdateMessage(msg) {
+  if (!msg || !msg.channelId) return;
+  const list = CHAT_STATE.messagesByChannel.get(msg.channelId) || [];
+  const idx = list.findIndex(m => m.id === msg.id);
+  if (idx >= 0) list[idx] = msg;
+  if (CHAT_STATE.activeChannelId === msg.channelId) {
+    const node = document.querySelector(`[data-msg-id="${msg.id}"]`);
+    if (node) node.outerHTML = renderChatMessageHtml(msg);
+  }
+  if (CHAT_STATE.activeThreadParentId) {
+    if (msg.id === CHAT_STATE.activeThreadParentId) renderChatThread();
+    else if (msg.parentMessageId === CHAT_STATE.activeThreadParentId) {
+      const i = CHAT_STATE.threadReplies.findIndex(r => r.id === msg.id);
+      if (i >= 0) { CHAT_STATE.threadReplies[i] = msg; renderChatThread(); }
+    }
+  }
+}
+
+function chatOnDeleteMessage(channelId, messageId) {
+  const list = CHAT_STATE.messagesByChannel.get(channelId) || [];
+  const m = list.find(x => x.id === messageId);
+  if (m) {
+    m.deletedAt = new Date().toISOString();
+    m.body = '';
+    m.attachments = [];
+    m.reactions = [];
+  }
+  if (CHAT_STATE.activeChannelId === channelId) {
+    const node = document.querySelector(`[data-msg-id="${messageId}"]`);
+    if (node && m) node.outerHTML = renderChatMessageHtml(m);
+  }
+}
+
+function chatOnNewChannel(channel) {
+  if (!channel || !channel.id) return;
+  if (CHAT_STATE.channelsById.has(channel.id)) {
+    chatOnUpdateChannel(channel);
+    return;
+  }
+  CHAT_STATE.channels.push(channel);
+  CHAT_STATE.channelsById.set(channel.id, channel);
+  renderChatChannelList();
+  chatRecomputeUnreadTotals();
+}
+
+function chatOnUpdateChannel(channel) {
+  if (!channel || !channel.id) return;
+  const existing = CHAT_STATE.channelsById.get(channel.id);
+  if (existing) Object.assign(existing, channel);
+  else { CHAT_STATE.channels.push(channel); CHAT_STATE.channelsById.set(channel.id, channel); }
+  renderChatChannelList();
+  if (CHAT_STATE.activeChannelId === channel.id) renderChatHeader();
+}
+
+function chatOnDeleteChannel(channelId) {
+  const idx = CHAT_STATE.channels.findIndex(c => c.id === channelId);
+  if (idx >= 0) CHAT_STATE.channels.splice(idx, 1);
+  CHAT_STATE.channelsById.delete(channelId);
+  CHAT_STATE.messagesByChannel.delete(channelId);
+  if (CHAT_STATE.activeChannelId === channelId) {
+    CHAT_STATE.activeChannelId = null;
+    renderChatActiveChannel();
+  }
+  renderChatChannelList();
+}
+
+function chatOnRemoteRead(channelId, lastReadMessageId) {
+  const c = CHAT_STATE.channelsById.get(channelId);
+  if (!c) return;
+  c.me = c.me || { lastReadMessageId: 0 };
+  if (lastReadMessageId > c.me.lastReadMessageId) c.me.lastReadMessageId = lastReadMessageId;
+  c.unread = 0; c.mentionUnread = 0;
+  renderChatChannelList();
+  chatRecomputeUnreadTotals();
+}
+
+function chatOnTyping(channelId, userId) {
+  if (!CHAT_STATE.typingState.has(channelId)) CHAT_STATE.typingState.set(channelId, new Map());
+  const map = CHAT_STATE.typingState.get(channelId);
+  map.set(userId, Date.now() + 4000);
+  if (CHAT_STATE.activeChannelId === channelId) renderChatTyping();
+  // Auto-clear after 4s.
+  setTimeout(() => {
+    const m = CHAT_STATE.typingState.get(channelId);
+    if (!m) return;
+    if ((m.get(userId) || 0) <= Date.now()) m.delete(userId);
+    if (CHAT_STATE.activeChannelId === channelId) renderChatTyping();
+  }, 4200);
+}
+
+// ── Page entry ────────────────────────────────────────────────────────────
+async function openChatPage() {
+  // Hide the create-ticket FAB on chat — same way docs / settings do it.
+  document.body.classList.remove('fab-create-ticket');
+  if (!CHAT_STATE.loaded) {
+    chatWsConnect();
+    await chatLoadChannels();
+    await chatLoadUsers();
+    CHAT_STATE.loaded = true;
+  }
+  // Honour ?channel=N in the URL when arriving via deep link.
+  const params = new URLSearchParams(location.search || '');
+  const wantedId = Number(params.get('channel')) || null;
+  if (wantedId && CHAT_STATE.channelsById.has(wantedId)) {
+    selectChatChannel(wantedId);
+  } else if (CHAT_STATE.activeChannelId && CHAT_STATE.channelsById.has(CHAT_STATE.activeChannelId)) {
+    selectChatChannel(CHAT_STATE.activeChannelId);
+  } else if (CHAT_STATE.channels.length) {
+    // Default to #general if present, else most-recent.
+    const general = CHAT_STATE.channels.find(c => c.type === 'channel' && c.name === 'general');
+    selectChatChannel((general || CHAT_STATE.channels[0]).id);
+  } else {
+    renderChatChannelList();
+  }
+  renderChatChannelList();
+}
+
+async function chatLoadChannels() {
+  try {
+    const r = await fetch('/api/chat/me');
+    if (!r.ok) throw new Error('load failed');
+    const data = await r.json();
+    CHAT_STATE.channels = data.channels || [];
+    CHAT_STATE.channelsById = new Map(CHAT_STATE.channels.map(c => [c.id, c]));
+    chatRecomputeUnreadTotals();
+  } catch (e) {
+    console.warn('[chat] load channels failed', e);
+  }
+}
+
+async function chatLoadUsers() {
+  // Refresh at most once a minute — the picker doesn't change often.
+  if (Date.now() - CHAT_STATE.userDirectoryLoadedAt < 60000 && CHAT_STATE.userDirectory.length) return;
+  try {
+    const r = await fetch('/api/chat/users');
+    if (!r.ok) throw new Error('load failed');
+    CHAT_STATE.userDirectory = await r.json();
+    CHAT_STATE.userDirectoryLoadedAt = Date.now();
+  } catch (e) { console.warn('[chat] load users', e); }
+}
+
+async function chatRefreshUnread() {
+  try {
+    const r = await fetch('/api/chat/unread');
+    if (!r.ok) return;
+    const data = await r.json();
+    CHAT_STATE.unreadTotal = data.total || 0;
+    CHAT_STATE.unreadMentions = data.mentions || 0;
+    // Patch each channel's unread count from the snapshot.
+    for (const [cid, info] of Object.entries(data.perChannel || {})) {
+      const c = CHAT_STATE.channelsById.get(Number(cid));
+      if (c) {
+        c.unread = info.unread || 0;
+        c.mentionUnread = info.mentions || 0;
+      }
+    }
+    updateChatNavBadge();
+    renderChatChannelList();
+  } catch {}
+}
+
+function chatRecomputeUnreadTotals() {
+  let total = 0; let mentions = 0;
+  for (const c of CHAT_STATE.channels) {
+    total += c.unread || 0;
+    mentions += c.mentionUnread || 0;
+  }
+  CHAT_STATE.unreadTotal = total;
+  CHAT_STATE.unreadMentions = mentions;
+  updateChatNavBadge();
+}
+
+function updateChatNavBadge() {
+  const b = document.getElementById('nav-chat-badge');
+  if (!b) return;
+  if (CHAT_STATE.unreadTotal > 0) {
+    b.textContent = CHAT_STATE.unreadMentions > 0
+      ? `@${CHAT_STATE.unreadMentions}`
+      : (CHAT_STATE.unreadTotal > 99 ? '99+' : String(CHAT_STATE.unreadTotal));
+    b.style.display = '';
+    b.style.background = CHAT_STATE.unreadMentions > 0 ? '#ef4444' : '';
+  } else {
+    b.style.display = 'none';
+  }
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────
+function chatChannelDisplayName(c) {
+  if (c.type === 'channel') return '#' + c.name;
+  if (c.type === 'dm') {
+    const me = window.CURRENT_USER || {};
+    const other = (c.members || []).find(m => m.id !== me.id) || (c.members || [])[0];
+    return other ? other.name : 'Direct message';
+  }
+  if (c.type === 'group') {
+    const me = window.CURRENT_USER || {};
+    const others = (c.members || []).filter(m => m.id !== me.id);
+    if (!others.length) return 'Group chat';
+    return others.map(o => o.name).slice(0, 3).join(', ') + (others.length > 3 ? ` +${others.length - 3}` : '');
+  }
+  return c.name || 'Conversation';
+}
+
+function chatChannelIcon(c) {
+  if (c.type === 'channel') return c.isPrivate ? '🔒' : '#';
+  if (c.type === 'dm') return '💬';
+  return '👥';
+}
+
+function renderChatChannelList() {
+  const filter = (document.getElementById('chat-search')?.value || '').toLowerCase().trim();
+  const channelsRoot = document.getElementById('chat-channels-list');
+  const dmsRoot = document.getElementById('chat-dms-list');
+  if (!channelsRoot || !dmsRoot) return;
+  const channels = [], dms = [];
+  for (const c of CHAT_STATE.channels) {
+    const display = chatChannelDisplayName(c).toLowerCase();
+    if (filter && !display.includes(filter)) continue;
+    (c.type === 'channel' ? channels : dms).push(c);
+  }
+  // Sort channels alphabetically; DMs by recency.
+  channels.sort((a, b) => a.name.localeCompare(b.name));
+  dms.sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
+  channelsRoot.innerHTML = channels.map(c => renderChatChannelRow(c)).join('') ||
+    '<div style="padding:10px;color:var(--text3);font-size:11.5px">No channels yet.</div>';
+  dmsRoot.innerHTML = dms.map(c => renderChatChannelRow(c)).join('') ||
+    '<div style="padding:10px;color:var(--text3);font-size:11.5px">No DMs yet.</div>';
+}
+
+function renderChatChannelRow(c) {
+  const isActive = CHAT_STATE.activeChannelId === c.id;
+  const unread = c.unread || 0;
+  const mentions = c.mentionUnread || 0;
+  const cls = ['chat-ch-row'];
+  if (isActive) cls.push('active');
+  if (unread > 0) cls.push('has-unread');
+  return `<div class="${cls.join(' ')}" onclick="selectChatChannel(${c.id})">
+    <div style="font-size:13px;width:18px;text-align:center;flex-shrink:0">${chatChannelIcon(c)}</div>
+    <div class="ch-name">${escapeHtml(chatChannelDisplayName(c))}</div>
+    ${mentions > 0 ? `<span class="mention-pill">@${mentions}</span>` :
+      unread > 0 ? `<span class="unread-pill">${unread > 99 ? '99+' : unread}</span>` : ''}
+  </div>`;
+}
+
+function renderChatHeader() {
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const nameEl = document.getElementById('chat-header-name');
+  const iconEl = document.getElementById('chat-header-icon');
+  const subEl  = document.getElementById('chat-header-sub');
+  const actionsEl = document.getElementById('chat-header-actions');
+  iconEl.textContent = chatChannelIcon(c);
+  nameEl.textContent = chatChannelDisplayName(c);
+  if (c.type === 'channel') {
+    const memberWord = c.members.length === 1 ? 'member' : 'members';
+    subEl.textContent = `${c.members.length} ${memberWord}` + (c.description ? ' · ' + c.description : '');
+  } else if (c.type === 'group') {
+    subEl.textContent = `Group · ${c.members.length} members`;
+  } else {
+    subEl.textContent = 'Direct message';
+  }
+  actionsEl.innerHTML = `
+    <button class="btn-sec" style="font-size:11px;padding:5px 9px" onclick="openChatInfoModal(${c.id})">${c.type === 'channel' ? 'Channel info' : 'Conversation info'}</button>
+  `;
+}
+
+function renderChatTyping() {
+  const wrap = document.getElementById('chat-typing');
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) { wrap.style.display = 'none'; return; }
+  const map = CHAT_STATE.typingState.get(c.id);
+  if (!map || !map.size) { wrap.style.display = 'none'; return; }
+  const me = window.CURRENT_USER || {};
+  const names = [];
+  const now = Date.now();
+  for (const [uid, exp] of map.entries()) {
+    if (exp < now) continue;
+    if (uid === me.id) continue;
+    const member = c.members.find(m => m.id === uid);
+    if (member) names.push(member.name);
+  }
+  if (!names.length) { wrap.style.display = 'none'; return; }
+  const text = names.length === 1 ? `${names[0]} is typing…` :
+               names.length === 2 ? `${names[0]} and ${names[1]} are typing…` :
+                                    'Several people are typing…';
+  wrap.textContent = text;
+  wrap.style.display = '';
+}
+
+function renderChatActiveChannel() {
+  const empty = document.getElementById('chat-empty');
+  const scroll = document.getElementById('chat-messages-scroll');
+  const composer = document.getElementById('chat-composer-wrap');
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) {
+    empty.style.display = '';
+    scroll.style.display = 'none';
+    composer.style.display = 'none';
+    document.getElementById('chat-header-name').textContent = 'Pick a conversation';
+    document.getElementById('chat-header-sub').textContent = '';
+    document.getElementById('chat-header-icon').textContent = '#';
+    document.getElementById('chat-header-actions').innerHTML = '';
+    return;
+  }
+  empty.style.display = 'none';
+  scroll.style.display = '';
+  composer.style.display = '';
+  renderChatHeader();
+  renderChatMessages();
+}
+
+function renderChatMessages() {
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const scroll = document.getElementById('chat-messages-scroll');
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  const hasMore = CHAT_STATE.hasMoreByChannel.get(c.id);
+  let html = '';
+  if (hasMore) {
+    html += `<div style="text-align:center;padding:6px"><button class="btn-sec" style="font-size:11px;padding:5px 12px" onclick="loadMoreChatMessages()">Load older messages</button></div>`;
+  }
+  let lastDay = '';
+  for (const m of list) {
+    const day = (m.createdAt || '').slice(0, 10);
+    if (day && day !== lastDay) {
+      html += `<div class="chat-day-divider">${formatChatDay(day)}</div>`;
+      lastDay = day;
+    }
+    html += renderChatMessageHtml(m);
+  }
+  scroll.innerHTML = html;
+  chatScrollToBottom();
+  // Update read cursor to the latest visible message.
+  if (list.length) {
+    const lastId = list[list.length - 1].id;
+    chatMarkRead(c.id, lastId);
+  }
+}
+
+function appendChatMessageNode(msg) {
+  const scroll = document.getElementById('chat-messages-scroll');
+  if (!scroll) return;
+  const list = CHAT_STATE.messagesByChannel.get(msg.channelId) || [];
+  const prev = list[list.length - 2];
+  const day = (msg.createdAt || '').slice(0, 10);
+  const prevDay = prev ? (prev.createdAt || '').slice(0, 10) : '';
+  let html = '';
+  if (day && day !== prevDay) html += `<div class="chat-day-divider">${formatChatDay(day)}</div>`;
+  html += renderChatMessageHtml(msg);
+  scroll.insertAdjacentHTML('beforeend', html);
+}
+
+function renderChatMessageHtml(m) {
+  const me = window.CURRENT_USER || {};
+  const isMine = m.userId === me.id;
+  const isMentionMe = (m.mentions || []).some(x => x.id === me.id);
+  const author = m.author || { name: 'Unknown', avatarUrl: '', color: '#94a3b8' };
+  const initial = (author.name || '?').slice(0, 1).toUpperCase();
+  const avatar = author.avatarUrl
+    ? `<img src="${escapeHtml(author.avatarUrl)}" alt="">`
+    : initial;
+  const isThreadParent = !!m.replyCount;
+  if (m.deletedAt) {
+    return `<div class="chat-msg" data-msg-id="${m.id}">
+      <div class="msg-avatar" style="background:${escapeHtml(author.color)}">${avatar}</div>
+      <div class="msg-body">
+        <div class="msg-meta">
+          <span class="msg-author">${escapeHtml(author.name)}</span>
+          <span class="msg-time">${formatChatTime(m.createdAt)}</span>
+        </div>
+        <div class="msg-deleted">[message deleted]</div>
+      </div>
+    </div>`;
+  }
+  const bodyHtml = renderChatBodyMarkup(m.body || '', m.mentions || []);
+  const reactionsHtml = renderChatReactions(m);
+  const attsHtml = renderChatAttachments(m.attachments || []);
+  const editedTag = m.editedAt ? `<span class="msg-edited">(edited)</span>` : '';
+  const threadHtml = isThreadParent
+    ? `<button class="msg-thread-link" onclick="openChatThread(${m.id})">💬 ${m.replyCount} ${m.replyCount === 1 ? 'reply' : 'replies'}</button>`
+    : '';
+  const actions = `<div class="msg-actions">
+      <button class="msg-action-btn" title="Add reaction" onclick="openChatReactionPicker(event, ${m.id})">😀</button>
+      <button class="msg-action-btn" title="Reply in thread" onclick="openChatThread(${m.id})">💬</button>
+      ${isMine ? `<button class="msg-action-btn" title="Edit" onclick="startChatEdit(${m.id})">✏️</button>
+                  <button class="msg-action-btn" title="Delete" onclick="deleteChatMessage(${m.id})">🗑</button>` : ''}
+    </div>`;
+  return `<div class="chat-msg ${isMentionMe ? 'is-mention-me' : ''}" data-msg-id="${m.id}">
+    ${actions}
+    <div class="msg-avatar" style="background:${escapeHtml(author.color)}">${avatar}</div>
+    <div class="msg-body">
+      <div class="msg-meta">
+        <span class="msg-author">${escapeHtml(author.name)}</span>
+        <span class="msg-time">${formatChatTime(m.createdAt)}</span>
+        ${editedTag}
+      </div>
+      <div class="msg-text">${bodyHtml}</div>
+      ${attsHtml}
+      ${reactionsHtml}
+      ${threadHtml}
+    </div>
+  </div>`;
+}
+
+function renderChatBodyMarkup(body, mentions) {
+  if (!body) return '';
+  let html = escapeHtml(body);
+  // Highlight @mentions of real users (longest-match — preserves "John Doe").
+  const namesByLength = (mentions || []).map(m => m.name).filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  for (const n of namesByLength) {
+    const safe = escapeHtml(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('@' + safe, 'g');
+    html = html.replace(re, `<span class="mention">@${escapeHtml(n)}</span>`);
+  }
+  // Auto-link URLs.
+  html = html.replace(/\b(https?:\/\/[^\s<]+)/g, (u) =>
+    `<a href="${u}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline">${u}</a>`);
+  return html;
+}
+
+function renderChatAttachments(atts) {
+  if (!atts || !atts.length) return '';
+  return `<div class="msg-attachments">${atts.map(a => {
+    const isImg = (a.mimeType || '').startsWith('image/');
+    if (isImg) {
+      return `<a href="${escapeHtml(a.url)}" target="_blank" class="msg-att msg-att-img"><img src="${escapeHtml(a.url)}" alt="${escapeHtml(a.originalName)}"/></a>`;
+    }
+    const isAudio = (a.mimeType || '').startsWith('audio/');
+    const isVideo = (a.mimeType || '').startsWith('video/');
+    if (isAudio) return `<audio controls src="${escapeHtml(a.url)}" style="max-width:280px"></audio>`;
+    if (isVideo) return `<video controls src="${escapeHtml(a.url)}" style="max-width:320px;border-radius:8px"></video>`;
+    return `<a href="${escapeHtml(a.url)}" target="_blank" class="msg-att" download="${escapeHtml(a.originalName)}">
+      <span>📎</span><span class="att-name">${escapeHtml(a.originalName)}</span><span style="color:var(--text3);font-size:11px">${formatBytes(a.size)}</span>
+    </a>`;
+  }).join('')}</div>`;
+}
+
+function renderChatReactions(m) {
+  const list = m.reactions || [];
+  const me = window.CURRENT_USER || {};
+  const hasAny = list.length > 0;
+  if (!hasAny) return '';
+  return `<div class="msg-reactions">${list.map(r => {
+    const mine = (r.userIds || []).includes(me.id);
+    return `<button class="chat-reaction ${mine ? 'mine' : ''}" onclick="toggleChatReaction(${m.id}, ${JSON.stringify(r.emoji)}, ${mine})">${escapeHtml(r.emoji)} ${r.count}</button>`;
+  }).join('')}<button class="chat-reaction-add" onclick="openChatReactionPicker(event, ${m.id})">+</button></div>`;
+}
+
+function formatBytes(n) {
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function formatChatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return '';
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+         d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatChatDay(day) {
+  if (!day) return '';
+  const d = new Date(day + 'T00:00:00');
+  if (isNaN(d.getTime())) return day;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const ystr = new Date(today.getTime() - 86400000);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === ystr.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+
+function chatScrollToBottom() {
+  const scroll = document.getElementById('chat-messages-scroll');
+  if (scroll) scroll.scrollTop = scroll.scrollHeight;
+}
+
+function onChatScroll() {
+  const scroll = document.getElementById('chat-messages-scroll');
+  if (!scroll) return;
+  if (scroll.scrollTop < 80) {
+    const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+    if (c && CHAT_STATE.hasMoreByChannel.get(c.id)) loadMoreChatMessages();
+  }
+}
+
+// ── Selecting / loading a channel ──────────────────────────────────────────
+async function selectChatChannel(channelId) {
+  const c = CHAT_STATE.channelsById.get(channelId);
+  if (!c) return;
+  CHAT_STATE.activeChannelId = channelId;
+  CHAT_STATE.pendingAttachments = [];
+  renderChatPendingAttachments();
+  renderChatChannelList();
+  renderChatActiveChannel();
+  // Update URL so reload / share keeps the channel open.
+  try {
+    const target = '/chat?channel=' + channelId;
+    if (location.pathname + location.search !== target) {
+      history.replaceState({ page: 'chat' }, '', target);
+    }
+  } catch {}
+  closeChatThread();
+  if (!CHAT_STATE.messagesByChannel.has(channelId)) {
+    await loadInitialChatMessages(channelId);
+  } else {
+    renderChatMessages();
+  }
+  // Focus the composer on selection.
+  setTimeout(() => { document.getElementById('chat-input')?.focus(); }, 50);
+}
+
+async function loadInitialChatMessages(channelId) {
+  try {
+    const r = await fetch(`/api/chat/channels/${channelId}/messages?limit=50`);
+    if (!r.ok) throw new Error('load failed');
+    const data = await r.json();
+    CHAT_STATE.messagesByChannel.set(channelId, data.messages || []);
+    CHAT_STATE.hasMoreByChannel.set(channelId, !!data.hasMore);
+    renderChatMessages();
+  } catch (e) { console.warn('[chat] load messages', e); }
+}
+
+async function loadMoreChatMessages() {
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  if (!list.length) return;
+  const oldest = list[0].id;
+  try {
+    const r = await fetch(`/api/chat/channels/${c.id}/messages?before=${oldest}&limit=50`);
+    if (!r.ok) return;
+    const data = await r.json();
+    const merged = [...(data.messages || []), ...list];
+    CHAT_STATE.messagesByChannel.set(c.id, merged);
+    CHAT_STATE.hasMoreByChannel.set(c.id, !!data.hasMore);
+    const scroll = document.getElementById('chat-messages-scroll');
+    const prevHeight = scroll.scrollHeight;
+    renderChatMessages();
+    // Preserve scroll position after prepending.
+    scroll.scrollTop = scroll.scrollHeight - prevHeight;
+  } catch (e) { console.warn('[chat] load more', e); }
+}
+
+// ── Composer ──────────────────────────────────────────────────────────────
+function autoSizeChatInput(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+
+function onChatComposerKey(ev) {
+  // Mention popup keyboard nav.
+  if (CHAT_STATE.mentionPopup.open) {
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      CHAT_STATE.mentionPopup.selected = Math.min(
+        CHAT_STATE.mentionPopup.selected + 1,
+        CHAT_STATE.mentionPopup.matches.length - 1
+      );
+      renderChatMentionPopup();
+      return;
+    }
+    if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      CHAT_STATE.mentionPopup.selected = Math.max(CHAT_STATE.mentionPopup.selected - 1, 0);
+      renderChatMentionPopup();
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === 'Tab') {
+      ev.preventDefault();
+      pickChatMention(CHAT_STATE.mentionPopup.selected);
+      return;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeChatMentionPopup();
+      return;
+    }
+  }
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    sendChatMessage();
+  }
+}
+
+function onChatThreadKey(ev) {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    sendChatThreadReply();
+  }
+}
+
+function onChatInputChange() {
+  const el = document.getElementById('chat-input');
+  if (!el) return;
+  const before = el.value.slice(0, el.selectionStart);
+  const m = before.match(/(?:^|\s)@([\w .'-]{0,30})$/);
+  if (m) {
+    CHAT_STATE.mentionPopup.query = m[1].toLowerCase();
+    CHAT_STATE.mentionPopup.matches = (CHAT_STATE.userDirectory || [])
+      .filter(u => u.name.toLowerCase().includes(CHAT_STATE.mentionPopup.query))
+      .slice(0, 8);
+    CHAT_STATE.mentionPopup.selected = 0;
+    if (CHAT_STATE.mentionPopup.matches.length) {
+      CHAT_STATE.mentionPopup.open = true;
+      renderChatMentionPopup();
+    } else { closeChatMentionPopup(); }
+  } else { closeChatMentionPopup(); }
+  // Typing indicator (throttled to ~3s).
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (c) {
+    const key = 'tx:' + c.id;
+    const last = CHAT_STATE.typingTimers.get(key) || 0;
+    if (Date.now() - last > 2500) {
+      chatWsSend({ type: 'typing', channelId: c.id });
+      CHAT_STATE.typingTimers.set(key, Date.now());
+    }
+  }
+}
+
+function renderChatMentionPopup() {
+  const popup = document.getElementById('chat-mention-popup');
+  if (!popup) return;
+  const matches = CHAT_STATE.mentionPopup.matches;
+  if (!matches.length) { popup.style.display = 'none'; return; }
+  popup.innerHTML = matches.map((u, i) => `
+    <div class="chat-mention-item ${i === CHAT_STATE.mentionPopup.selected ? 'active' : ''}" onclick="pickChatMention(${i})">
+      <div style="width:22px;height:22px;border-radius:50%;background:${escapeHtml(u.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600">${escapeHtml(u.name.slice(0,1).toUpperCase())}</div>
+      <span>${escapeHtml(u.name)}</span>
+    </div>
+  `).join('');
+  popup.style.display = 'block';
+  const input = document.getElementById('chat-input');
+  if (input) {
+    const rect = input.getBoundingClientRect();
+    popup.style.position = 'fixed';
+    popup.style.left = rect.left + 'px';
+    popup.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  }
+}
+
+function closeChatMentionPopup() {
+  CHAT_STATE.mentionPopup.open = false;
+  CHAT_STATE.mentionPopup.matches = [];
+  const popup = document.getElementById('chat-mention-popup');
+  if (popup) popup.style.display = 'none';
+}
+
+function pickChatMention(idx) {
+  const u = CHAT_STATE.mentionPopup.matches[idx];
+  if (!u) return;
+  const el = document.getElementById('chat-input');
+  const cursor = el.selectionStart;
+  const before = el.value.slice(0, cursor);
+  const after = el.value.slice(cursor);
+  const replaced = before.replace(/@([\w .'-]{0,30})$/, '@' + u.name + ' ');
+  el.value = replaced + after;
+  const newPos = replaced.length;
+  el.setSelectionRange(newPos, newPos);
+  closeChatMentionPopup();
+  el.focus();
+}
+
+async function onChatFilePicked(input) {
+  const files = Array.from(input.files || []);
+  input.value = '';
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert('Upload failed: ' + (err.error || r.statusText));
+        continue;
+      }
+      const att = await r.json();
+      CHAT_STATE.pendingAttachments.push(att);
+    } catch (e) { alert('Upload failed: ' + e.message); }
+  }
+  renderChatPendingAttachments();
+}
+
+function renderChatPendingAttachments() {
+  const wrap = document.getElementById('chat-attachments-preview');
+  if (!wrap) return;
+  if (!CHAT_STATE.pendingAttachments.length) { wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+  wrap.style.display = 'flex';
+  wrap.innerHTML = CHAT_STATE.pendingAttachments.map((a, i) => `
+    <div class="chat-att-preview">
+      <span>📎</span><span>${escapeHtml(a.originalName)}</span>
+      <span class="rm" onclick="removeChatPendingAttachment(${i})">×</span>
+    </div>
+  `).join('');
+}
+
+function removeChatPendingAttachment(i) {
+  // Best-effort — also delete on server.
+  const a = CHAT_STATE.pendingAttachments[i];
+  if (a) fetch(`/api/attachments/${a.id}`, { method: 'DELETE' }).catch(()=>{});
+  CHAT_STATE.pendingAttachments.splice(i, 1);
+  renderChatPendingAttachments();
+}
+
+async function sendChatMessage() {
+  const el = document.getElementById('chat-input');
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const body = (el.value || '').trim();
+  const attachmentIds = CHAT_STATE.pendingAttachments.map(a => a.id);
+  if (!body && !attachmentIds.length) return;
+  const sentAttachments = CHAT_STATE.pendingAttachments.slice();
+  el.value = '';
+  CHAT_STATE.pendingAttachments = [];
+  renderChatPendingAttachments();
+  autoSizeChatInput(el);
+  closeChatMentionPopup();
+  // Optimistic insert with a temp id so the user sees their message instantly.
+  const me = window.CURRENT_USER || {};
+  const tempId = -Date.now();
+  const optimistic = {
+    id: tempId, channelId: c.id, parentMessageId: null, userId: me.id,
+    author: { id: me.id, name: me.name, avatarUrl: me.avatarUrl || '', color: me.color || '#2563eb' },
+    body, attachments: sentAttachments, reactions: [], mentions: [],
+    replyCount: 0, lastReplyAt: null, editedAt: null, deletedAt: null,
+    createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    _optimistic: true,
+  };
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  list.push(optimistic);
+  CHAT_STATE.messagesByChannel.set(c.id, list);
+  appendChatMessageNode(optimistic);
+  chatScrollToBottom();
+  try {
+    const r = await fetch(`/api/chat/channels/${c.id}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body, attachmentIds }),
+    });
+    if (!r.ok) throw new Error('send failed');
+    const real = await r.json();
+    // Replace optimistic with real row (WS will also fire — chatOnNewMessage de-dupes).
+    const i = list.findIndex(m => m.id === tempId);
+    if (i >= 0) {
+      list[i] = real;
+      const node = document.querySelector(`[data-msg-id="${tempId}"]`);
+      if (node) node.outerHTML = renderChatMessageHtml(real);
+    }
+  } catch (e) {
+    console.warn('[chat] send failed', e);
+    const i = list.findIndex(m => m.id === tempId);
+    if (i >= 0) list.splice(i, 1);
+    const node = document.querySelector(`[data-msg-id="${tempId}"]`);
+    if (node) node.remove();
+    alert('Send failed — please try again.');
+  }
+}
+
+async function chatMarkRead(channelId, messageId) {
+  if (!channelId || !messageId || messageId < 0) return;
+  const c = CHAT_STATE.channelsById.get(channelId);
+  if (!c) return;
+  c.me = c.me || { lastReadMessageId: 0 };
+  if (messageId <= c.me.lastReadMessageId) return;
+  c.me.lastReadMessageId = messageId;
+  c.unread = 0; c.mentionUnread = 0;
+  renderChatChannelList();
+  chatRecomputeUnreadTotals();
+  try {
+    await fetch(`/api/chat/channels/${channelId}/read`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lastReadMessageId: messageId }),
+    });
+  } catch {}
+}
+
+// ── Edit / delete / reactions ──────────────────────────────────────────────
+async function startChatEdit(messageId) {
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  const m = list.find(x => x.id === messageId);
+  if (!m) return;
+  const next = prompt('Edit message:', m.body || '');
+  if (next === null) return;
+  const trimmed = next.trim();
+  if (!trimmed) return;
+  try {
+    const r = await fetch(`/api/chat/messages/${messageId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: trimmed }),
+    });
+    if (!r.ok) throw new Error('edit failed');
+    // WS message:update will repaint.
+  } catch (e) { alert('Edit failed: ' + e.message); }
+}
+
+async function deleteChatMessage(messageId) {
+  if (!confirm('Delete this message?')) return;
+  try {
+    await fetch(`/api/chat/messages/${messageId}`, { method: 'DELETE' });
+    // WS message:delete repaints.
+  } catch (e) { alert('Delete failed: ' + e.message); }
+}
+
+const CHAT_EMOJIS = ['👍','❤️','😂','🎉','🙏','🔥','👀','😮','😢','✅','❌','🚀','💯','👏','🤔','😎'];
+
+function openChatReactionPicker(ev, messageId) {
+  ev?.stopPropagation();
+  closeChatReactionPicker();
+  const popup = document.createElement('div');
+  popup.className = 'chat-emoji-popup';
+  popup.id = 'chat-reaction-popup';
+  popup.innerHTML = CHAT_EMOJIS.map(e => `<button onclick="addChatReaction(${messageId}, ${JSON.stringify(e)})">${e}</button>`).join('');
+  document.body.appendChild(popup);
+  const rect = ev.target.getBoundingClientRect();
+  popup.style.top = (rect.bottom + 4) + 'px';
+  popup.style.left = Math.max(8, rect.left - 100) + 'px';
+  setTimeout(() => {
+    document.addEventListener('click', closeChatReactionPickerOnce, { once: true });
+  }, 50);
+}
+
+function closeChatReactionPickerOnce(ev) {
+  if (ev && ev.target.closest && ev.target.closest('#chat-reaction-popup')) return;
+  closeChatReactionPicker();
+}
+
+function closeChatReactionPicker() {
+  const p = document.getElementById('chat-reaction-popup');
+  if (p) p.remove();
+}
+
+async function addChatReaction(messageId, emoji) {
+  closeChatReactionPicker();
+  try {
+    await fetch(`/api/chat/messages/${messageId}/reactions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emoji }),
+    });
+  } catch (e) { console.warn('[chat] react', e); }
+}
+
+async function toggleChatReaction(messageId, emoji, mine) {
+  if (mine) {
+    try {
+      await fetch(`/api/chat/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, { method: 'DELETE' });
+    } catch {}
+  } else {
+    addChatReaction(messageId, emoji);
+  }
+}
+
+// ── Threads ───────────────────────────────────────────────────────────────
+async function openChatThread(parentId) {
+  CHAT_STATE.activeThreadParentId = parentId;
+  document.getElementById('chat-thread-pane').style.display = 'flex';
+  document.getElementById('chat-thread-replies').innerHTML = '<div style="color:var(--text3);font-size:12px;padding:14px">Loading…</div>';
+  document.getElementById('chat-thread-parent').innerHTML = '';
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  const parent = list.find(m => m.id === parentId);
+  if (parent) {
+    document.getElementById('chat-thread-parent').innerHTML = renderChatMessageHtml(parent);
+  }
+  try {
+    const r = await fetch(`/api/chat/channels/${c.id}/messages?parent=${parentId}`);
+    if (!r.ok) throw new Error('thread load');
+    const data = await r.json();
+    CHAT_STATE.threadReplies = data.messages || [];
+    renderChatThread();
+  } catch (e) { console.warn('[chat] thread load', e); }
+}
+
+function renderChatThread() {
+  const repliesEl = document.getElementById('chat-thread-replies');
+  if (!repliesEl) return;
+  if (!CHAT_STATE.threadReplies.length) {
+    repliesEl.innerHTML = '<div style="color:var(--text3);font-size:11.5px;padding:14px;text-align:center">No replies yet — start the thread.</div>';
+    return;
+  }
+  repliesEl.innerHTML = CHAT_STATE.threadReplies.map(renderChatMessageHtml).join('');
+  repliesEl.scrollTop = repliesEl.scrollHeight;
+}
+
+function closeChatThread() {
+  CHAT_STATE.activeThreadParentId = null;
+  CHAT_STATE.threadReplies = [];
+  const pane = document.getElementById('chat-thread-pane');
+  if (pane) pane.style.display = 'none';
+}
+
+async function sendChatThreadReply() {
+  const el = document.getElementById('chat-thread-input');
+  const body = (el.value || '').trim();
+  if (!body) return;
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c || !CHAT_STATE.activeThreadParentId) return;
+  el.value = '';
+  autoSizeChatInput(el);
+  try {
+    const r = await fetch(`/api/chat/channels/${c.id}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body, parentMessageId: CHAT_STATE.activeThreadParentId }),
+    });
+    if (!r.ok) throw new Error('reply failed');
+    // WS message:new will repaint.
+  } catch (e) { alert('Reply failed: ' + e.message); }
+}
+
+// ── Modals (new channel, browse, new DM, group, info) ──────────────────────
+function openChatNewMenu(ev) {
+  ev?.stopPropagation();
+  const m = document.getElementById('chat-new-menu');
+  m.style.display = m.style.display === 'block' ? 'none' : 'block';
+  setTimeout(() => {
+    document.addEventListener('click', closeChatNewMenuOnce, { once: true });
+  }, 50);
+}
+function closeChatNewMenuOnce(ev) {
+  if (ev && ev.target.closest && ev.target.closest('#chat-new-menu')) return;
+  const m = document.getElementById('chat-new-menu');
+  if (m) m.style.display = 'none';
+}
+
+function closeChatModals() {
+  ['chat-new-channel-modal','chat-browse-modal','chat-new-dm-modal','chat-info-modal'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.style.display = 'none';
+  });
+  CHAT_STATE._newGroupSelected = null;
+}
+
+function openChatNewChannelModal() {
+  closeChatNewMenuOnce();
+  document.getElementById('chat-new-name').value = '';
+  document.getElementById('chat-new-desc').value = '';
+  document.getElementById('chat-new-private').checked = false;
+  document.getElementById('chat-new-members-wrap').style.display = 'none';
+  document.getElementById('chat-new-channel-modal').style.display = 'flex';
+  document.getElementById('chat-new-private').onchange = (e) => {
+    document.getElementById('chat-new-members-wrap').style.display = e.target.checked ? 'block' : 'none';
+    if (e.target.checked) renderChatNewMembersList();
+  };
+}
+
+function renderChatNewMembersList() {
+  const list = document.getElementById('chat-new-members-list');
+  if (!list) return;
+  list.innerHTML = (CHAT_STATE.userDirectory || []).map(u => `
+    <label style="display:flex;align-items:center;gap:8px;padding:5px 8px;font-size:12.5px;cursor:pointer;border-radius:5px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+      <input type="checkbox" data-uid="${u.id}"/>
+      <div style="width:22px;height:22px;border-radius:50%;background:${escapeHtml(u.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600">${escapeHtml(u.name.slice(0,1).toUpperCase())}</div>
+      <span>${escapeHtml(u.name)}</span>
+    </label>
+  `).join('');
+}
+
+async function submitChatNewChannel() {
+  const name = document.getElementById('chat-new-name').value.trim();
+  const desc = document.getElementById('chat-new-desc').value.trim();
+  const isPrivate = document.getElementById('chat-new-private').checked;
+  if (!name) { alert('Channel name required'); return; }
+  let members = [];
+  if (isPrivate) {
+    members = Array.from(document.querySelectorAll('#chat-new-members-list input:checked'))
+      .map(e => Number(e.dataset.uid));
+  }
+  try {
+    const r = await fetch('/api/chat/channels', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description: desc, isPrivate, members }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert(err.error || 'Failed to create channel');
+      return;
+    }
+    const c = await r.json();
+    closeChatModals();
+    chatOnNewChannel(c);
+    selectChatChannel(c.id);
+  } catch (e) { alert('Create failed: ' + e.message); }
+}
+
+async function openChatBrowseModal() {
+  closeChatNewMenuOnce();
+  const modal = document.getElementById('chat-browse-modal');
+  modal.style.display = 'flex';
+  const root = document.getElementById('chat-browse-list');
+  const empty = document.getElementById('chat-browse-empty');
+  root.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
+  empty.style.display = 'none';
+  try {
+    const r = await fetch('/api/chat/channels/browse');
+    const list = r.ok ? await r.json() : [];
+    if (!list.length) {
+      root.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    root.innerHTML = list.map(c => `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px">
+        <div>
+          <div style="font-size:13px;font-weight:500">#${escapeHtml(c.name)}</div>
+          <div style="font-size:11.5px;color:var(--text3)">${escapeHtml(c.description || '')} · ${c.memberCount} member${c.memberCount === 1 ? '' : 's'}</div>
+        </div>
+        <button class="btn-primary" style="font-size:11.5px;padding:6px 12px" onclick="joinChatChannel(${c.id})">Join</button>
+      </div>
+    `).join('');
+  } catch (e) { root.innerHTML = '<div style="color:#ef4444;font-size:12px">Failed to load.</div>'; }
+}
+
+async function joinChatChannel(channelId) {
+  try {
+    const r = await fetch(`/api/chat/channels/${channelId}/join`, { method: 'POST' });
+    if (!r.ok) { alert('Could not join channel.'); return; }
+    const c = await r.json();
+    closeChatModals();
+    chatOnNewChannel(c);
+    selectChatChannel(c.id);
+  } catch (e) { alert('Join failed: ' + e.message); }
+}
+
+function openChatNewDmModal() {
+  closeChatNewMenuOnce();
+  document.getElementById('chat-new-dm-title').textContent = 'New direct message';
+  document.getElementById('chat-new-group-actions').style.display = 'none';
+  CHAT_STATE._newGroupSelected = null;
+  document.getElementById('chat-new-dm-search').value = '';
+  document.getElementById('chat-new-dm-modal').style.display = 'flex';
+  renderChatNewDmList();
+}
+
+function openChatNewGroupModal() {
+  closeChatNewMenuOnce();
+  document.getElementById('chat-new-dm-title').textContent = 'New group chat';
+  document.getElementById('chat-new-group-actions').style.display = 'flex';
+  CHAT_STATE._newGroupSelected = new Set();
+  document.getElementById('chat-new-dm-search').value = '';
+  document.getElementById('chat-new-dm-modal').style.display = 'flex';
+  renderChatNewDmList();
+}
+
+function renderChatNewDmList() {
+  const filter = document.getElementById('chat-new-dm-search').value.toLowerCase().trim();
+  const list = (CHAT_STATE.userDirectory || []).filter(u =>
+    !filter || u.name.toLowerCase().includes(filter) || (u.email || '').toLowerCase().includes(filter));
+  const root = document.getElementById('chat-new-dm-list');
+  const isGroup = !!CHAT_STATE._newGroupSelected;
+  root.innerHTML = list.map(u => {
+    if (isGroup) {
+      const checked = CHAT_STATE._newGroupSelected.has(u.id) ? 'checked' : '';
+      return `<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;cursor:pointer;border-radius:6px" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+        <input type="checkbox" ${checked} onchange="toggleGroupMember(${u.id}, this.checked)"/>
+        <div style="width:28px;height:28px;border-radius:50%;background:${escapeHtml(u.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600">${escapeHtml(u.name.slice(0,1).toUpperCase())}</div>
+        <div><div style="font-size:13px">${escapeHtml(u.name)}</div><div style="font-size:11px;color:var(--text3)">${escapeHtml(u.email || '')}</div></div>
+      </label>`;
+    }
+    return `<button onclick="startChatDm(${u.id})" style="display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;background:none;border:none;cursor:pointer;border-radius:6px;text-align:left" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background='none'">
+      <div style="width:28px;height:28px;border-radius:50%;background:${escapeHtml(u.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600">${escapeHtml(u.name.slice(0,1).toUpperCase())}</div>
+      <div><div style="font-size:13px">${escapeHtml(u.name)}</div><div style="font-size:11px;color:var(--text3)">${escapeHtml(u.email || '')}</div></div>
+    </button>`;
+  }).join('');
+}
+
+function toggleGroupMember(userId, on) {
+  if (!CHAT_STATE._newGroupSelected) return;
+  if (on) CHAT_STATE._newGroupSelected.add(userId);
+  else CHAT_STATE._newGroupSelected.delete(userId);
+}
+
+async function submitChatNewGroup() {
+  const ids = Array.from(CHAT_STATE._newGroupSelected || []);
+  if (ids.length < 2) { alert('Pick at least 2 people for a group chat'); return; }
+  try {
+    const r = await fetch('/api/chat/group', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ members: ids }),
+    });
+    if (!r.ok) { alert('Failed to create group.'); return; }
+    const c = await r.json();
+    closeChatModals();
+    chatOnNewChannel(c);
+    selectChatChannel(c.id);
+  } catch (e) { alert('Create failed: ' + e.message); }
+}
+
+async function startChatDm(otherUserId) {
+  try {
+    const r = await fetch(`/api/chat/dm/${otherUserId}`, { method: 'POST' });
+    if (!r.ok) { alert('Could not open DM.'); return; }
+    const c = await r.json();
+    closeChatModals();
+    chatOnNewChannel(c);
+    selectChatChannel(c.id);
+  } catch (e) { alert('DM failed: ' + e.message); }
+}
+
+function openChatInfoModal(channelId) {
+  const c = CHAT_STATE.channelsById.get(channelId);
+  if (!c) return;
+  const me = window.CURRENT_USER || {};
+  const isCreator = c.createdBy === me.id;
+  const body = document.getElementById('chat-info-body');
+  let html = `<div style="font-size:13px;font-weight:600;margin-bottom:6px">${escapeHtml(chatChannelDisplayName(c))}</div>`;
+  if (c.type === 'channel') {
+    html += `<div style="font-size:12px;color:var(--text2);margin-bottom:14px">${escapeHtml(c.description || 'No description')}</div>`;
+  }
+  html += `<div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 6px">Members (${c.members.length})</div>`;
+  html += `<div style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">`;
+  for (const m of c.members) {
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border)">
+      <div style="width:26px;height:26px;border-radius:50%;background:${escapeHtml(m.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:600">${escapeHtml((m.name || '?').slice(0,1).toUpperCase())}</div>
+      <div style="flex:1"><div style="font-size:12.5px">${escapeHtml(m.name)}</div>${m.role === 'admin' ? '<div style="font-size:10.5px;color:var(--accent)">Channel admin</div>' : ''}</div>
+      ${(c.type === 'channel' && (isCreator || (me.permRole === 'Admin' || me.permRole === 'Manager')) && m.id !== me.id && c.name !== 'general')
+        ? `<button class="btn-sec" style="font-size:11px;padding:4px 10px" onclick="removeChatMember(${c.id}, ${m.id})">Remove</button>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+  if (c.type === 'channel') {
+    html += `<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-sec" style="font-size:11.5px;padding:6px 12px" onclick="openChatAddMembersModal(${c.id})">+ Add members</button>
+      ${(isCreator || me.permRole === 'Admin' || me.permRole === 'Manager') && c.name !== 'general'
+        ? `<button class="btn-sec" style="font-size:11.5px;padding:6px 12px;color:#ef4444;border-color:#ef4444" onclick="deleteChatChannel(${c.id})">Delete channel</button>` : ''}
+      ${c.name !== 'general' ? `<button class="btn-sec" style="font-size:11.5px;padding:6px 12px" onclick="leaveChatChannel(${c.id})">Leave</button>` : ''}
+    </div>`;
+  } else if (c.type === 'group' || c.type === 'dm') {
+    html += `<div style="margin-top:14px"><button class="btn-sec" style="font-size:11.5px;padding:6px 12px" onclick="leaveChatChannel(${c.id})">Hide conversation</button></div>`;
+  }
+  // Notification preference selector
+  html += `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+    <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Notify me about</div>
+    <div style="display:flex;gap:6px">
+      ${['all','mentions','none'].map(v => `<button onclick="setChatNotify(${c.id}, '${v}')" class="btn-sec" style="font-size:11px;padding:6px 12px;${(c.me?.notify || 'all') === v ? 'background:var(--accent);color:#fff;border-color:var(--accent)' : ''}">${v === 'all' ? 'All messages' : v === 'mentions' ? 'Only @mentions' : 'Nothing'}</button>`).join('')}
+    </div>
+  </div>`;
+  body.innerHTML = html;
+  document.getElementById('chat-info-modal').style.display = 'flex';
+}
+
+async function setChatNotify(channelId, pref) {
+  try {
+    await fetch(`/api/chat/channels/${channelId}/notify`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notify: pref }),
+    });
+    const c = CHAT_STATE.channelsById.get(channelId);
+    if (c) {
+      c.me = c.me || {};
+      c.me.notify = pref;
+      openChatInfoModal(channelId);
+    }
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function leaveChatChannel(channelId) {
+  if (!confirm('Leave this conversation?')) return;
+  try {
+    await fetch(`/api/chat/channels/${channelId}/leave`, { method: 'POST' });
+    closeChatModals();
+    chatOnDeleteChannel(channelId);
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function deleteChatChannel(channelId) {
+  if (!confirm('Delete this channel and all its messages? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`/api/chat/channels/${channelId}`, { method: 'DELETE' });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Delete failed'); return; }
+    closeChatModals();
+    chatOnDeleteChannel(channelId);
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function removeChatMember(channelId, userId) {
+  if (!confirm('Remove this member?')) return;
+  try {
+    await fetch(`/api/chat/channels/${channelId}/members/${userId}`, { method: 'DELETE' });
+    // The server will update the channel via WS too.
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+function openChatAddMembersModal(channelId) {
+  const c = CHAT_STATE.channelsById.get(channelId);
+  if (!c) return;
+  const inChannel = new Set(c.members.map(m => m.id));
+  const candidates = (CHAT_STATE.userDirectory || []).filter(u => !inChannel.has(u.id));
+  if (!candidates.length) { alert('Everyone is already in this channel.'); return; }
+  // Reuse the "new DM" modal as a multi-picker.
+  document.getElementById('chat-new-dm-title').textContent = `Add members to #${c.name}`;
+  document.getElementById('chat-new-dm-search').value = '';
+  CHAT_STATE._newGroupSelected = new Set();
+  document.getElementById('chat-new-dm-modal').style.display = 'flex';
+  // Hijack the actions bar to a single confirm button.
+  const actions = document.getElementById('chat-new-group-actions');
+  actions.style.display = 'flex';
+  actions.innerHTML = `<button class="btn-sec" style="font-size:12px;padding:7px 14px" onclick="closeChatModals()">Cancel</button>
+                       <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitChatAddMembers(${channelId})">Add</button>`;
+  // Render with only candidates.
+  const orig = CHAT_STATE.userDirectory;
+  CHAT_STATE.userDirectory = candidates;
+  renderChatNewDmList();
+  CHAT_STATE.userDirectory = orig;
+}
+
+async function submitChatAddMembers(channelId) {
+  const ids = Array.from(CHAT_STATE._newGroupSelected || []);
+  if (!ids.length) { alert('Pick at least one person'); return; }
+  try {
+    const r = await fetch(`/api/chat/channels/${channelId}/members`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userIds: ids }),
+    });
+    if (!r.ok) { alert('Failed to add'); return; }
+    closeChatModals();
+    // Restore default actions for the next "new group" use.
+    const actions = document.getElementById('chat-new-group-actions');
+    actions.innerHTML = `<button class="btn-sec" style="font-size:12px;padding:7px 14px" onclick="closeChatModals()">Cancel</button>
+                         <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitChatNewGroup()">Create group</button>`;
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+// ── Auth bootstrap hook ───────────────────────────────────────────────────
+// Open the WS as soon as we know who the user is. We also keep a polling
+// fallback that refreshes the unread badge every 60s in case the WS dropped.
+window.addEventListener('_wnReady', () => {
+  if (window.CURRENT_USER && window.CURRENT_USER.id) {
+    chatWsConnect();
+    chatRefreshUnread();
+    setInterval(chatRefreshUnread, 60 * 1000);
+  }
+});
+// Visibility handler: when the tab regains focus, refresh unread + auto-mark
+// the active channel read.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!CHAT_STATE.loaded) return;
+  chatRefreshUnread();
+  if (currentPage === 'chat' && CHAT_STATE.activeChannelId) {
+    const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+    const list = CHAT_STATE.messagesByChannel.get(CHAT_STATE.activeChannelId) || [];
+    if (c && list.length) chatMarkRead(c.id, list[list.length - 1].id);
+  }
+});
+
 </script>
 </body>
 </html>

@@ -301,7 +301,10 @@ if (IS_PROD && !process.env.SESSION_SECRET) {
   console.error('FATAL: SESSION_SECRET is not set in production. Set it in Render env vars.');
   process.exit(1);
 }
-app.use(session({
+// Hold the configured middleware in a variable so the WebSocket upgrade
+// handler (defined further down) can reuse it to authenticate sockets via
+// the same session cookie that authenticates regular requests.
+const sessionMiddleware = session({
   store: new PgSession({ pool, tableName: 'session', createTableIfMissing: false }),
   secret: process.env.SESSION_SECRET || 'syruvia-dev-secret',
   resave: false,
@@ -313,7 +316,8 @@ app.use(session({
     sameSite: 'lax',                 // CSRF defense for cross-site POSTs
     secure: IS_PROD,                 // require HTTPS in production
   }
-}));
+});
+app.use(sessionMiddleware);
 
 // Serve uploaded files (avatars, attachments, voice notes) from UPLOADS_DIR.
 // In production UPLOADS_DIR is /data/uploads (outside public/), so this route
@@ -464,6 +468,10 @@ app.post('/api/auth/register', async (req, res) => {
 
     // Welcome email — fire & forget so a mail outage doesn't block sign-up.
     fireEmail('welcome', () => sendWelcomeEmail({ toEmail: norm, toName: name.trim() }));
+    // Auto-add to #general so the new user lands in chat with one channel.
+    if (typeof app.locals.chatAutoJoinGeneral === 'function') {
+      app.locals.chatAutoJoinGeneral(Number(info.lastInsertRowid)).catch(()=>{});
+    }
 
     res.json({ id:Number(info.lastInsertRowid), name:name.trim(), email:norm, role, dept, permRole:'Member' });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -3727,7 +3735,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
       });
     }
     const u = await getUser(req.session.userId);
-    const { ticketId, commentId, subtaskId, feedbackId, announcementId, reminderId, docId } = req.body;
+    const { ticketId, commentId, subtaskId, feedbackId, announcementId, reminderId, docId, chatMessageId } = req.body;
     // Verify the uploader actually has access to the parent ticket. Without
     // this a Member could attach files to anyone's ticket by id-guessing.
     let parentTicketId = ticketId || null;
@@ -3738,6 +3746,22 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
     if (parentTicketId && !await canAccessTicket(req, parentTicketId)) {
       try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
       return res.status(404).json({ error: 'Ticket not found' });
+    }
+    // Chat-message attachments: only the message author may attach files
+    // (and only if they're still a member of the channel — covers the case
+    // where someone leaves a private channel and then tries to upload).
+    if (chatMessageId) {
+      const m = await get('SELECT id, channel_id, user_id FROM chat_messages WHERE id=?', Number(chatMessageId));
+      if (!m || m.user_id !== req.session.userId) {
+        try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+        return res.status(404).json({ error: 'Message not found' });
+      }
+      const member = await get('SELECT 1 FROM chat_channel_members WHERE channel_id=? AND user_id=?',
+        m.channel_id, req.session.userId);
+      if (!member) {
+        try { fs.unlinkSync(path.join(UPLOADS_DIR, req.file.filename)); } catch {}
+        return res.status(403).json({ error: 'Not a member of this channel' });
+      }
     }
     // Announcement attachments: only an admin can attach to one (the create
     // and edit routes are admin-only too). Reject non-admins to keep the
@@ -3762,7 +3786,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
     // item (the feedback page is shared by everyone). No further check
     // beyond the auth middleware.
     const info = await run(
-      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,doc_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
+      'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,doc_id,chat_message_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
       ticketId || null,
       commentId ? Number(commentId) : null,
       subtaskId ? Number(subtaskId) : null,
@@ -3770,6 +3794,7 @@ app.post('/api/upload', requireAuth, upload.single('file'), async (req, res) => 
       announcementId ? Number(announcementId) : null,
       reminderId ? Number(reminderId) : null,
       docId ? Number(docId) : null,
+      chatMessageId ? Number(chatMessageId) : null,
       req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, u.name
     );
     res.json({
@@ -4108,6 +4133,10 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
 
     // Welcome email — admin-created accounts also get an onboarding email.
     fireEmail('admin-created-welcome', () => sendWelcomeEmail({ toEmail: u.email, toName: u.name }));
+    // Auto-add the new user to #general so they have at least one channel.
+    if (typeof app.locals.chatAutoJoinGeneral === 'function') {
+      app.locals.chatAutoJoinGeneral(u.id).catch(()=>{});
+    }
 
     res.json({ id: u.id, name: u.name, email: u.email, role: u.role, dept: u.dept, permRole: u.perm_role });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -4729,6 +4758,924 @@ app.patch('/api/tickets/:id/link-flavor', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Workspace chat ────────────────────────────────────────────────────────────
+// ClickUp / Slack–style chat. Three flavours of "channel" share one table:
+//   * type='channel' — named room, optionally private with explicit member list
+//   * type='dm'      — 1:1 between exactly two users (dm_key = "min:max" sorted)
+//   * type='group'   — ad-hoc 3+ person DM
+//
+// Realtime is over a single WebSocket connection per browser tab, mounted on
+// the main HTTP server further down. The WS authenticates by reusing the
+// Express session middleware, so the same login cookie works for both REST
+// and the socket — no separate token plumbing.
+const WebSocket = require('ws');
+const http = require('http');
+
+// userId → Set<ws>. A user can have multiple sockets (multiple tabs / devices).
+const wsClientsByUser = new Map();
+
+function wsRegister(userId, ws) {
+  if (!wsClientsByUser.has(userId)) wsClientsByUser.set(userId, new Set());
+  wsClientsByUser.get(userId).add(ws);
+}
+function wsUnregister(userId, ws) {
+  const set = wsClientsByUser.get(userId);
+  if (!set) return;
+  set.delete(ws);
+  if (!set.size) wsClientsByUser.delete(userId);
+}
+function wsSendToUser(userId, payload) {
+  const set = wsClientsByUser.get(userId);
+  if (!set || !set.size) return;
+  const json = JSON.stringify(payload);
+  for (const ws of set) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(json); } catch {}
+    }
+  }
+}
+async function wsBroadcastToChannel(channelId, payload, exceptUserId) {
+  let members = [];
+  try {
+    members = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', channelId);
+  } catch { return; }
+  for (const m of members) {
+    if (exceptUserId && m.user_id === exceptUserId) continue;
+    wsSendToUser(m.user_id, payload);
+  }
+}
+
+// Deterministic key for a 1:1 DM channel — "min:max" of the two user ids.
+// Lets us upsert-by-key without scanning members.
+function chatDmKey(a, b) {
+  const x = Number(a), y = Number(b);
+  return (x < y ? `${x}:${y}` : `${y}:${x}`);
+}
+
+// Verify the calling session is a member of the given channel. Returns the
+// member row or null. Routes that need write access call this and 404 on
+// null to keep "no access" indistinguishable from "doesn't exist".
+async function chatGetMembership(req, channelId) {
+  if (!req.session?.userId) return null;
+  return get(
+    'SELECT * FROM chat_channel_members WHERE channel_id=? AND user_id=?',
+    channelId, req.session.userId
+  );
+}
+
+// Pull every @name token out of a raw message body and resolve them against
+// real users. Longest-prefix match (mirrors the comment mention parser),
+// case-insensitive. Returns an array of { id, name } user rows — no dupes.
+async function chatParseMentions(body) {
+  if (!body) return [];
+  // Match an @ followed by 1+ word/space chars (we'll trim back to a real
+  // user via DB lookup). Greedy by design — we want "@John Doe", not "@John".
+  const tokens = String(body).match(/@([\w][\w .'-]{0,40})/g) || [];
+  if (!tokens.length) return [];
+  const users = await all('SELECT id, name FROM users');
+  const seen = new Set();
+  const out = [];
+  for (const tok of tokens) {
+    const raw = tok.slice(1).trim().toLowerCase(); // drop leading @
+    if (!raw) continue;
+    // Find the user whose name forms the longest prefix of this token.
+    let best = null;
+    for (const u of users) {
+      const n = (u.name || '').toLowerCase();
+      if (!n) continue;
+      if (raw === n || raw.startsWith(n + ' ') || raw.startsWith(n)) {
+        if (!best || n.length > best.name.length) best = u;
+      }
+    }
+    if (best && !seen.has(best.id)) {
+      seen.add(best.id);
+      out.push(best);
+    }
+  }
+  return out;
+}
+
+// Hydrate one or more raw chat_messages rows into the wire shape used by the
+// REST + WS API. Pulls author display info, attachments, reactions (grouped
+// by emoji), reply count for thread previews, and the parsed mention list.
+async function chatHydrateMessages(rows) {
+  if (!rows || !rows.length) return [];
+  const ids = rows.map(r => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const [authors, attachments, reactionRows, replyRows, mentionRows] = await Promise.all([
+    (async () => {
+      const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))];
+      if (!userIds.length) return [];
+      const ph = userIds.map(() => '?').join(',');
+      return all(`SELECT id, name, avatar_url, color FROM users WHERE id IN (${ph})`, ...userIds);
+    })(),
+    all(
+      `SELECT id, chat_message_id, filename, original_name, mime_type, size, uploader, created_at
+         FROM attachments WHERE chat_message_id IN (${placeholders})`,
+      ...ids
+    ),
+    all(
+      `SELECT message_id, emoji, user_id FROM chat_message_reactions
+         WHERE message_id IN (${placeholders})`,
+      ...ids
+    ),
+    all(
+      `SELECT parent_message_id AS pid, COUNT(*) AS n,
+              MAX(created_at) AS last_reply_at
+         FROM chat_messages
+        WHERE parent_message_id IN (${placeholders}) AND deleted_at IS NULL
+        GROUP BY parent_message_id`,
+      ...ids
+    ),
+    all(
+      `SELECT m.message_id, m.user_id, u.name FROM chat_mentions m
+         LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.message_id IN (${placeholders})`,
+      ...ids
+    ),
+  ]);
+  const authorById = new Map(authors.map(a => [a.id, a]));
+  const attsByMsg = new Map();
+  for (const a of attachments) {
+    if (!attsByMsg.has(a.chat_message_id)) attsByMsg.set(a.chat_message_id, []);
+    attsByMsg.get(a.chat_message_id).push({
+      id: a.id, filename: a.filename, originalName: a.original_name,
+      mimeType: a.mime_type, size: a.size, uploader: a.uploader,
+      createdAt: a.created_at, url: `/uploads/${a.filename}`,
+    });
+  }
+  const reactionsByMsg = new Map();
+  for (const r of reactionRows) {
+    if (!reactionsByMsg.has(r.message_id)) reactionsByMsg.set(r.message_id, new Map());
+    const byEmoji = reactionsByMsg.get(r.message_id);
+    if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, []);
+    byEmoji.get(r.emoji).push(r.user_id);
+  }
+  const repliesByMsg = new Map(replyRows.map(r => [r.pid, r]));
+  const mentionsByMsg = new Map();
+  for (const m of mentionRows) {
+    if (!mentionsByMsg.has(m.message_id)) mentionsByMsg.set(m.message_id, []);
+    mentionsByMsg.get(m.message_id).push({ id: m.user_id, name: m.name || '' });
+  }
+  return rows.map(r => {
+    const author = authorById.get(r.user_id) || null;
+    const reactionMap = reactionsByMsg.get(r.id);
+    const reactions = reactionMap
+      ? [...reactionMap.entries()].map(([emoji, userIds]) => ({ emoji, userIds, count: userIds.length }))
+      : [];
+    const reply = repliesByMsg.get(r.id);
+    return {
+      id: r.id,
+      channelId: r.channel_id,
+      parentMessageId: r.parent_message_id || null,
+      userId: r.user_id,
+      author: author ? {
+        id: author.id, name: author.name, avatarUrl: author.avatar_url || '',
+        color: author.color || '#2563eb',
+      } : null,
+      body: r.deleted_at ? '' : r.body,
+      attachments: r.deleted_at ? [] : (attsByMsg.get(r.id) || []),
+      reactions: r.deleted_at ? [] : reactions,
+      mentions: mentionsByMsg.get(r.id) || [],
+      replyCount: reply ? Number(reply.n) : 0,
+      lastReplyAt: reply ? reply.last_reply_at : null,
+      editedAt: r.edited_at || null,
+      deletedAt: r.deleted_at || null,
+      createdAt: r.created_at,
+    };
+  });
+}
+
+// Serialise one channel for the channel list — adds member-list (id+name),
+// the current user's unread count, and the latest message preview.
+async function chatSerializeChannel(channel, currentUserId) {
+  const members = await all(
+    `SELECT u.id, u.name, u.avatar_url, u.color, m.role, m.last_read_message_id, m.notify
+       FROM chat_channel_members m
+       JOIN users u ON u.id = m.user_id
+      WHERE m.channel_id = ?
+      ORDER BY u.name`,
+    channel.id
+  );
+  let myMember = null;
+  if (currentUserId) {
+    myMember = members.find(m => m.id === currentUserId) || null;
+  }
+  // Unread = messages with id > last_read_message_id and not authored by me.
+  let unread = 0;
+  let mentionUnread = 0;
+  if (myMember) {
+    const u = await get(
+      `SELECT COUNT(*) AS n FROM chat_messages
+         WHERE channel_id = ? AND id > ? AND user_id <> ? AND deleted_at IS NULL`,
+      channel.id, myMember.last_read_message_id || 0, currentUserId
+    );
+    unread = u ? Number(u.n) : 0;
+    const mu = await get(
+      `SELECT COUNT(*) AS n FROM chat_mentions cm
+         JOIN chat_messages m ON m.id = cm.message_id
+        WHERE m.channel_id = ? AND cm.user_id = ?
+          AND m.id > ? AND m.deleted_at IS NULL`,
+      channel.id, currentUserId, myMember.last_read_message_id || 0
+    );
+    mentionUnread = mu ? Number(mu.n) : 0;
+  }
+  // Latest non-deleted message for the preview row.
+  const last = await get(
+    `SELECT m.id, m.body, m.user_id, m.created_at, u.name AS author_name
+       FROM chat_messages m LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.channel_id = ? AND m.deleted_at IS NULL
+      ORDER BY m.id DESC LIMIT 1`,
+    channel.id
+  );
+  return {
+    id: channel.id,
+    name: channel.name,
+    description: channel.description || '',
+    type: channel.type,
+    isPrivate: !!channel.is_private,
+    topic: channel.topic || '',
+    dmKey: channel.dm_key || null,
+    createdBy: channel.created_by,
+    createdAt: channel.created_at,
+    lastMessageAt: channel.last_message_at,
+    members: members.map(m => ({
+      id: m.id, name: m.name, avatarUrl: m.avatar_url || '',
+      color: m.color || '#2563eb', role: m.role,
+    })),
+    me: myMember ? {
+      role: myMember.role, lastReadMessageId: myMember.last_read_message_id || 0,
+      notify: myMember.notify || 'all',
+    } : null,
+    unread,
+    mentionUnread,
+    lastMessage: last ? {
+      id: last.id, body: last.body, userId: last.user_id,
+      authorName: last.author_name || '', createdAt: last.created_at,
+    } : null,
+  };
+}
+
+// GET /api/chat/me — initial bootstrap for the chat page. Returns every
+// channel the current user is a member of (channels + DMs), each with its
+// unread count, member list, and latest-message preview.
+app.get('/api/chat/me', requireAuth, async (req, res) => {
+  try {
+    const channels = await all(
+      `SELECT c.* FROM chat_channels c
+         JOIN chat_channel_members m ON m.channel_id = c.id
+        WHERE m.user_id = ? AND m.hidden = 0
+        ORDER BY COALESCE(c.last_message_at, c.created_at) DESC`,
+      req.session.userId
+    );
+    const out = [];
+    for (const c of channels) out.push(await chatSerializeChannel(c, req.session.userId));
+    res.json({ channels: out });
+  } catch (e) { console.error('[chat:me]', e); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/chat/users — workspace directory used by "new chat" + add-member
+// pickers. Excludes the caller (you can't DM yourself).
+app.get('/api/chat/users', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT id, name, email, avatar_url, color, perm_role, dept
+         FROM users WHERE id <> ? ORDER BY name`,
+      req.session.userId
+    );
+    res.json(rows.map(u => ({
+      id: u.id, name: u.name, email: u.email, avatarUrl: u.avatar_url || '',
+      color: u.color || '#2563eb', permRole: u.perm_role, dept: u.dept,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/chat/channels/browse — public channels the caller hasn't joined
+// yet. Used by the "Browse channels" modal so they can join without an invite.
+app.get('/api/chat/channels/browse', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT c.id, c.name, c.description, c.created_at,
+              (SELECT COUNT(*) FROM chat_channel_members WHERE channel_id = c.id) AS member_count
+         FROM chat_channels c
+        WHERE c.type = 'channel' AND c.is_private = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM chat_channel_members m
+             WHERE m.channel_id = c.id AND m.user_id = ?
+          )
+        ORDER BY c.name ASC`,
+      req.session.userId
+    );
+    res.json(rows.map(r => ({
+      id: r.id, name: r.name, description: r.description || '',
+      memberCount: Number(r.member_count || 0), createdAt: r.created_at,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels — create a new channel. Public channels are
+// joinable by anyone via /browse; private channels can only be joined when
+// added explicitly by a member with role='admin' (or the original creator).
+app.post('/api/chat/channels', requireAuth, async (req, res) => {
+  try {
+    const { name, description, isPrivate, members } = req.body || {};
+    const cleanName = String(name || '').trim().replace(/\s+/g, '-').toLowerCase().slice(0, 40);
+    if (!cleanName) return res.status(400).json({ error: 'Channel name required' });
+    // Reject duplicates of the same public channel name (DMs use dm_key, so
+    // they're handled separately and don't collide with channels).
+    const dup = await get(
+      "SELECT id FROM chat_channels WHERE type='channel' AND lower(name)=?",
+      cleanName
+    );
+    if (dup) return res.status(409).json({ error: 'A channel with that name already exists' });
+    const ins = await run(
+      `INSERT INTO chat_channels (name, description, type, is_private, created_by)
+       VALUES (?,?,?,?,?) RETURNING id`,
+      cleanName, String(description || '').slice(0, 500), 'channel',
+      isPrivate ? 1 : 0, req.session.userId
+    );
+    const channelId = ins.lastInsertRowid;
+    // Creator joins as admin so they can rename/delete and manage members.
+    await run(
+      'INSERT INTO chat_channel_members (channel_id, user_id, role) VALUES (?,?,?)',
+      channelId, req.session.userId, 'admin'
+    );
+    // Optional initial member list for private channels.
+    const memberIds = Array.isArray(members) ? members.map(Number).filter(n => n && n !== req.session.userId) : [];
+    for (const uid of memberIds) {
+      await run(
+        'INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+        channelId, uid
+      );
+    }
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', channelId);
+    const channel = await chatSerializeChannel(row, req.session.userId);
+    // Notify every member's open sockets so the channel appears in their
+    // sidebar without a refresh.
+    for (const m of channel.members) {
+      wsSendToUser(m.id, { type: 'channel:new', channel });
+    }
+    res.status(201).json(channel);
+  } catch (e) { console.error('[chat:create]', e); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/chat/channels/:id — full channel info for the caller. 404 when
+// they're not a member (private) or the channel doesn't exist.
+app.get('/api/chat/channels/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const member = await chatGetMembership(req, id);
+    if (!member && row.is_private) return res.status(404).json({ error: 'Not found' });
+    res.json(await chatSerializeChannel(row, req.session.userId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/chat/channels/:id — rename / change topic / privacy. Only the
+// channel creator or a workspace admin can edit.
+app.put('/api/chat/channels/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row || row.type !== 'channel') return res.status(404).json({ error: 'Not found' });
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (row.created_by !== req.session.userId && !isAdmin) {
+      return res.status(403).json({ error: 'Only the channel creator can edit it' });
+    }
+    const { name, description, topic, isPrivate } = req.body || {};
+    const upd = []; const args = [];
+    if (name !== undefined) {
+      const cleanName = String(name).trim().replace(/\s+/g, '-').toLowerCase().slice(0, 40);
+      if (!cleanName) return res.status(400).json({ error: 'Channel name required' });
+      // 'general' is reserved — don't let anyone rename or repoint it.
+      if (row.name === 'general' && cleanName !== 'general') {
+        return res.status(400).json({ error: 'The #general channel cannot be renamed' });
+      }
+      upd.push('name=?'); args.push(cleanName);
+    }
+    if (description !== undefined) { upd.push('description=?'); args.push(String(description).slice(0, 500)); }
+    if (topic !== undefined) { upd.push('topic=?'); args.push(String(topic).slice(0, 200)); }
+    if (isPrivate !== undefined) { upd.push('is_private=?'); args.push(isPrivate ? 1 : 0); }
+    upd.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+    if (upd.length) {
+      args.push(id);
+      await run(`UPDATE chat_channels SET ${upd.join(',')} WHERE id=?`, ...args);
+    }
+    const fresh = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    const channel = await chatSerializeChannel(fresh, req.session.userId);
+    wsBroadcastToChannel(id, { type: 'channel:update', channel });
+    res.json(channel);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/chat/channels/:id — creator/admin only. #general is protected.
+app.delete('/api/chat/channels/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row) return res.json({ ok: true });
+    if (row.type === 'channel' && row.name === 'general') {
+      return res.status(400).json({ error: '#general cannot be deleted' });
+    }
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (row.created_by !== req.session.userId && !isAdmin) {
+      return res.status(403).json({ error: 'Only the channel creator can delete it' });
+    }
+    const memberRows = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', id);
+    await run('DELETE FROM chat_channels WHERE id=?', id);
+    for (const m of memberRows) wsSendToUser(m.user_id, { type: 'channel:delete', channelId: id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels/:id/join — public-channel self-service join.
+app.post('/api/chat/channels/:id/join', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row || row.type !== 'channel') return res.status(404).json({ error: 'Not found' });
+    if (row.is_private) {
+      // Private channels require explicit invite.
+      const existing = await chatGetMembership(req, id);
+      if (!existing) return res.status(403).json({ error: 'This channel is private. An admin must add you.' });
+    }
+    await run(
+      'INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT (channel_id, user_id) DO UPDATE SET hidden=0',
+      id, req.session.userId
+    );
+    const channel = await chatSerializeChannel(row, req.session.userId);
+    wsBroadcastToChannel(id, { type: 'channel:member-joined', channelId: id, userId: req.session.userId, channel });
+    res.json(channel);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels/:id/leave — leave a channel. The #general room and
+// DMs can't be left (the latter would orphan history); instead members can
+// hide DMs from their sidebar via the same endpoint.
+app.post('/api/chat/channels/:id/leave', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (row.type === 'channel' && row.name === 'general') {
+      return res.status(400).json({ error: 'You cannot leave #general' });
+    }
+    if (row.type === 'dm' || row.type === 'group') {
+      // Hide instead of delete — a future message will un-hide it.
+      await run('UPDATE chat_channel_members SET hidden=1 WHERE channel_id=? AND user_id=?',
+        id, req.session.userId);
+    } else {
+      await run('DELETE FROM chat_channel_members WHERE channel_id=? AND user_id=?',
+        id, req.session.userId);
+    }
+    wsBroadcastToChannel(id, { type: 'channel:member-left', channelId: id, userId: req.session.userId });
+    wsSendToUser(req.session.userId, { type: 'channel:delete', channelId: id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels/:id/members — add one or more users. Caller must
+// already be a member; for private channels this is the only way new people
+// get in.
+app.post('/api/chat/channels/:id/members', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row || row.type !== 'channel') return res.status(404).json({ error: 'Not found' });
+    const myMember = await chatGetMembership(req, id);
+    if (!myMember) return res.status(404).json({ error: 'Not found' });
+    const userIds = Array.isArray(req.body?.userIds)
+      ? req.body.userIds.map(Number).filter(n => n)
+      : [];
+    if (!userIds.length) return res.status(400).json({ error: 'No users specified' });
+    for (const uid of userIds) {
+      await run(
+        'INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT (channel_id, user_id) DO UPDATE SET hidden=0',
+        id, uid
+      );
+    }
+    const channel = await chatSerializeChannel(row, req.session.userId);
+    for (const uid of userIds) wsSendToUser(uid, { type: 'channel:new', channel });
+    wsBroadcastToChannel(id, { type: 'channel:update', channel });
+    res.json(channel);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/chat/channels/:id/members/:userId — remove someone. Self-remove
+// is equivalent to leaving (use /leave instead). Only the channel creator or
+// a workspace admin can remove a different user.
+app.delete('/api/chat/channels/:id/members/:userId', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const targetId = Number(req.params.userId);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row || row.type !== 'channel') return res.status(404).json({ error: 'Not found' });
+    if (row.name === 'general') return res.status(400).json({ error: 'Cannot remove from #general' });
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (targetId !== req.session.userId && row.created_by !== req.session.userId && !isAdmin) {
+      return res.status(403).json({ error: 'Only the channel creator can remove members' });
+    }
+    await run('DELETE FROM chat_channel_members WHERE channel_id=? AND user_id=?', id, targetId);
+    wsSendToUser(targetId, { type: 'channel:delete', channelId: id });
+    wsBroadcastToChannel(id, { type: 'channel:member-left', channelId: id, userId: targetId });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/dm/:userId — get-or-create a 1:1 DM channel with another
+// user. Idempotent: the dm_key unique index guarantees one row per pair.
+app.post('/api/chat/dm/:userId', requireAuth, async (req, res) => {
+  try {
+    const otherId = Number(req.params.userId);
+    if (!otherId || otherId === req.session.userId) return res.status(400).json({ error: 'Invalid user' });
+    const other = await get('SELECT id, name FROM users WHERE id=?', otherId);
+    if (!other) return res.status(404).json({ error: 'User not found' });
+    const key = chatDmKey(req.session.userId, otherId);
+    let row = await get('SELECT * FROM chat_channels WHERE dm_key=?', key);
+    if (!row) {
+      const ins = await run(
+        `INSERT INTO chat_channels (name, type, dm_key, created_by) VALUES (?,?,?,?) RETURNING id`,
+        '', 'dm', key, req.session.userId
+      );
+      const channelId = ins.lastInsertRowid;
+      for (const uid of [req.session.userId, otherId]) {
+        await run(
+          'INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+          channelId, uid
+        );
+      }
+      row = await get('SELECT * FROM chat_channels WHERE id=?', channelId);
+    } else {
+      // If either side previously hid the DM, un-hide it on re-open.
+      await run('UPDATE chat_channel_members SET hidden=0 WHERE channel_id=? AND user_id IN (?,?)',
+        row.id, req.session.userId, otherId);
+    }
+    const channel = await chatSerializeChannel(row, req.session.userId);
+    wsSendToUser(otherId, { type: 'channel:new', channel: await chatSerializeChannel(row, otherId) });
+    res.json(channel);
+  } catch (e) { console.error('[chat:dm]', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/group — create a 3+ person group DM. members[] is the list
+// of *other* user ids; the creator is implicitly added.
+app.post('/api/chat/group', requireAuth, async (req, res) => {
+  try {
+    const memberIds = Array.isArray(req.body?.members)
+      ? [...new Set(req.body.members.map(Number).filter(n => n && n !== req.session.userId))]
+      : [];
+    if (memberIds.length < 2) return res.status(400).json({ error: 'A group needs at least 3 people' });
+    const ins = await run(
+      `INSERT INTO chat_channels (name, type, created_by) VALUES (?,?,?) RETURNING id`,
+      '', 'group', req.session.userId
+    );
+    const channelId = ins.lastInsertRowid;
+    for (const uid of [req.session.userId, ...memberIds]) {
+      await run('INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+        channelId, uid);
+    }
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', channelId);
+    const channel = await chatSerializeChannel(row, req.session.userId);
+    for (const uid of memberIds) wsSendToUser(uid, { type: 'channel:new', channel: await chatSerializeChannel(row, uid) });
+    res.status(201).json(channel);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/chat/channels/:id/messages — paginated message history. Backwards-
+// scrolling pagination via ?before=<msgId>&limit=50. Returns oldest-first
+// inside the page (so the client can append-or-prepend either way).
+app.get('/api/chat/channels/:id/messages', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const member = await chatGetMembership(req, id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+    const before = Number(req.query.before) || 0;
+    const parent = req.query.parent ? Number(req.query.parent) : null;
+    let rows;
+    if (parent) {
+      // Thread view — messages whose parent_message_id == this id, oldest first.
+      rows = await all(
+        `SELECT * FROM chat_messages
+          WHERE channel_id = ? AND parent_message_id = ?
+          ORDER BY id ASC LIMIT ?`,
+        id, parent, limit
+      );
+    } else if (before) {
+      rows = await all(
+        `SELECT * FROM chat_messages
+          WHERE channel_id = ? AND parent_message_id IS NULL AND id < ?
+          ORDER BY id DESC LIMIT ?`,
+        id, before, limit
+      );
+      rows = rows.reverse();
+    } else {
+      rows = await all(
+        `SELECT * FROM chat_messages
+          WHERE channel_id = ? AND parent_message_id IS NULL
+          ORDER BY id DESC LIMIT ?`,
+        id, limit
+      );
+      rows = rows.reverse();
+    }
+    const messages = await chatHydrateMessages(rows);
+    res.json({ messages, hasMore: rows.length === limit });
+  } catch (e) { console.error('[chat:list]', e); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels/:id/messages — send a message (or thread reply).
+// body: { body, parentMessageId?, attachmentIds? }
+// attachmentIds is the optional list of attachment rows whose chat_message_id
+// should be stamped with this new id (the client uploaded them in advance
+// with chatMessageId omitted).
+app.post('/api/chat/channels/:id/messages', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const member = await chatGetMembership(req, id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    const body = String(req.body?.body || '').trim();
+    const parentId = req.body?.parentMessageId ? Number(req.body.parentMessageId) : null;
+    const attachmentIds = Array.isArray(req.body?.attachmentIds)
+      ? req.body.attachmentIds.map(Number).filter(n => n) : [];
+    if (!body && !attachmentIds.length) {
+      return res.status(400).json({ error: 'Message cannot be empty' });
+    }
+    if (parentId) {
+      const parent = await get('SELECT id, channel_id FROM chat_messages WHERE id=?', parentId);
+      if (!parent || parent.channel_id !== id) return res.status(400).json({ error: 'Bad parent' });
+    }
+    const ins = await run(
+      `INSERT INTO chat_messages (channel_id, user_id, parent_message_id, body) VALUES (?,?,?,?) RETURNING id`,
+      id, req.session.userId, parentId, body
+    );
+    const messageId = ins.lastInsertRowid;
+    // Stamp the channel's last_message_at so the sidebar list re-orders.
+    await run(
+      "UPDATE chat_channels SET last_message_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+      id
+    );
+    // Adopt any pre-uploaded attachments authored by the same user.
+    if (attachmentIds.length) {
+      for (const aid of attachmentIds) {
+        await run(
+          `UPDATE attachments SET chat_message_id=? WHERE id=? AND uploader=?`,
+          messageId, aid, (await getUser(req.session.userId))?.name || ''
+        );
+      }
+    }
+    // Resolve mentions and write rows so unread-mention counters work.
+    const mentions = await chatParseMentions(body);
+    for (const m of mentions) {
+      await run('INSERT INTO chat_mentions (message_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+        messageId, m.id);
+    }
+    // Mark the sender as having "read up to" their own message — otherwise
+    // their own chat appears as unread to themselves.
+    await run(
+      "UPDATE chat_channel_members SET last_read_message_id=?, last_read_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE channel_id=? AND user_id=?",
+      messageId, id, req.session.userId
+    );
+    // Un-hide the channel for everyone (e.g. someone receiving a DM after
+    // having previously hidden it).
+    await run('UPDATE chat_channel_members SET hidden=0 WHERE channel_id=?', id);
+    const [hydrated] = await chatHydrateMessages([
+      await get('SELECT * FROM chat_messages WHERE id=?', messageId),
+    ]);
+    // Broadcast to every member's socket — the sender's optimistic UI will
+    // de-dupe on `id`.
+    wsBroadcastToChannel(id, { type: 'message:new', message: hydrated });
+    // Push + email fan-out for @mentions and DMs. Fire-and-forget.
+    (async () => {
+      try {
+        const channel = await get('SELECT * FROM chat_channels WHERE id=?', id);
+        const sender = await getUser(req.session.userId);
+        const senderName = sender?.name || 'Someone';
+        const memberRows = await all(
+          `SELECT u.id, u.name, u.email, m.notify
+             FROM chat_channel_members m JOIN users u ON u.id = m.user_id
+            WHERE m.channel_id = ? AND m.user_id <> ?`,
+          id, req.session.userId
+        );
+        const mentionedIds = new Set(mentions.map(m => m.id));
+        for (const r of memberRows) {
+          const isDm = channel.type === 'dm' || channel.type === 'group';
+          const isMention = mentionedIds.has(r.id);
+          // Honour notify pref: 'none' = silent, 'mentions' = only on mention,
+          // 'all' = anything. DMs are always notification-worthy regardless.
+          let notify = false;
+          if (r.notify === 'none') notify = false;
+          else if (r.notify === 'mentions') notify = isMention || isDm;
+          else notify = true;
+          if (!notify) continue;
+          // In-app notification row drives the bell + the unread badge for
+          // users who aren't on the chat page right now.
+          const previewBody = body.length > 140 ? body.slice(0, 137) + '…' : body;
+          const channelLabel = channel.type === 'dm' ? `from ${senderName}` :
+                                channel.type === 'group' ? `in a group chat with ${senderName}` :
+                                `in #${channel.name}`;
+          const text = (isMention ? `${senderName} mentioned you ${channelLabel}` :
+                       isDm        ? `New message from ${senderName}` :
+                                      `New message ${channelLabel}`) +
+                       (previewBody ? ` — "${previewBody}"` : '');
+          await run(
+            'INSERT INTO notifications (user_id,type,icon,text,unread) VALUES (?,?,?,?,1)',
+            r.id, isMention ? 'chat-mention' : 'chat', isMention ? '@' : '💬', text
+          );
+          // Push notification on installed PWAs.
+          sendPushToUser(r.id, {
+            title: isMention ? `${senderName} mentioned you` : senderName,
+            body: previewBody || (hydrated.attachments.length ? '📎 sent a file' : ''),
+            tag: 'chat-' + id,
+            url: '/chat?channel=' + id,
+          }).catch(()=>{});
+        }
+      } catch (e) { console.warn('[chat:notify]', e.message); }
+    })();
+    res.status(201).json(hydrated);
+  } catch (e) { console.error('[chat:send]', e); res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/chat/messages/:id — edit your own message body. Re-parses
+// mentions and replaces the chat_mentions rows so newly-added @names get
+// added; ones you removed simply lose their notification but keep history.
+app.patch('/api/chat/messages/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const m = await get('SELECT * FROM chat_messages WHERE id=?', id);
+    if (!m) return res.status(404).json({ error: 'Not found' });
+    if (m.user_id !== req.session.userId) return res.status(403).json({ error: 'Not your message' });
+    if (m.deleted_at) return res.status(400).json({ error: 'Message has been deleted' });
+    const body = String(req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'Body required' });
+    await run(
+      "UPDATE chat_messages SET body=?, edited_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+      body, id
+    );
+    // Re-resolve mentions: insert any new ones, leave existing rows alone.
+    const mentions = await chatParseMentions(body);
+    for (const mm of mentions) {
+      await run('INSERT INTO chat_mentions (message_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+        id, mm.id);
+    }
+    const [hydrated] = await chatHydrateMessages([await get('SELECT * FROM chat_messages WHERE id=?', id)]);
+    wsBroadcastToChannel(m.channel_id, { type: 'message:update', message: hydrated });
+    res.json(hydrated);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/chat/messages/:id — soft-delete (replace body with placeholder).
+// Author or workspace admin only.
+app.delete('/api/chat/messages/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const m = await get('SELECT * FROM chat_messages WHERE id=?', id);
+    if (!m) return res.json({ ok: true });
+    const me = await getUser(req.session.userId);
+    const isAdmin = me && ['Admin','Manager'].includes(me.perm_role);
+    if (m.user_id !== req.session.userId && !isAdmin) return res.status(403).json({ error: 'Forbidden' });
+    await run(
+      "UPDATE chat_messages SET deleted_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+      id
+    );
+    wsBroadcastToChannel(m.channel_id, { type: 'message:delete', channelId: m.channel_id, messageId: id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/messages/:id/reactions — add an emoji reaction. Idempotent
+// (same user+emoji is a no-op). Returns the updated reaction list.
+app.post('/api/chat/messages/:id/reactions', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const emoji = String(req.body?.emoji || '').trim().slice(0, 16);
+    if (!emoji) return res.status(400).json({ error: 'Emoji required' });
+    const m = await get('SELECT id, channel_id FROM chat_messages WHERE id=?', id);
+    if (!m) return res.status(404).json({ error: 'Not found' });
+    const member = await chatGetMembership(req, m.channel_id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    await run(
+      'INSERT INTO chat_message_reactions (message_id, user_id, emoji) VALUES (?,?,?) ON CONFLICT DO NOTHING',
+      id, req.session.userId, emoji
+    );
+    const [hydrated] = await chatHydrateMessages([await get('SELECT * FROM chat_messages WHERE id=?', id)]);
+    wsBroadcastToChannel(m.channel_id, { type: 'message:update', message: hydrated });
+    res.json(hydrated);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/chat/messages/:id/reactions/:emoji — remove your own reaction.
+app.delete('/api/chat/messages/:id/reactions/:emoji', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const emoji = decodeURIComponent(req.params.emoji);
+    const m = await get('SELECT id, channel_id FROM chat_messages WHERE id=?', id);
+    if (!m) return res.json({ ok: true });
+    await run(
+      'DELETE FROM chat_message_reactions WHERE message_id=? AND user_id=? AND emoji=?',
+      id, req.session.userId, emoji
+    );
+    const [hydrated] = await chatHydrateMessages([await get('SELECT * FROM chat_messages WHERE id=?', id)]);
+    wsBroadcastToChannel(m.channel_id, { type: 'message:update', message: hydrated });
+    res.json(hydrated);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels/:id/read — mark the caller's unread cursor up to
+// (and including) the given message id. Idempotent; never moves backwards.
+app.post('/api/chat/channels/:id/read', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const lastId = Number(req.body?.lastReadMessageId) || 0;
+    const member = await chatGetMembership(req, id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    if (lastId > (member.last_read_message_id || 0)) {
+      await run(
+        "UPDATE chat_channel_members SET last_read_message_id=?, last_read_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE channel_id=? AND user_id=?",
+        lastId, id, req.session.userId
+      );
+      // Mark mentions up to that point as seen so the badge clears.
+      await run(
+        "UPDATE chat_mentions SET seen_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE user_id=? AND message_id IN (SELECT id FROM chat_messages WHERE channel_id=? AND id<=?) AND seen_at IS NULL",
+        req.session.userId, id, lastId
+      );
+      // Tell *the user's other tabs* that this channel was just read so
+      // their unread badge clears too.
+      wsSendToUser(req.session.userId, {
+        type: 'channel:read', channelId: id, lastReadMessageId: lastId,
+      });
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/chat/channels/:id/notify — change notification preference for the
+// caller in this channel: 'all' | 'mentions' | 'none'.
+app.put('/api/chat/channels/:id/notify', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const pref = String(req.body?.notify || 'all');
+    if (!['all','mentions','none'].includes(pref)) return res.status(400).json({ error: 'Bad notify value' });
+    const member = await chatGetMembership(req, id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    await run('UPDATE chat_channel_members SET notify=? WHERE channel_id=? AND user_id=?',
+      pref, id, req.session.userId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/chat/unread — total unread + per-channel unread for the sidebar
+// badge. Cheap aggregate; safe to poll on a 30s timer as a WS-fallback.
+app.get('/api/chat/unread', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT m.channel_id,
+              (SELECT COUNT(*) FROM chat_messages cm
+                WHERE cm.channel_id = m.channel_id
+                  AND cm.id > m.last_read_message_id
+                  AND cm.user_id <> ?
+                  AND cm.deleted_at IS NULL) AS unread,
+              (SELECT COUNT(*) FROM chat_mentions x
+                JOIN chat_messages mx ON mx.id = x.message_id
+                WHERE x.user_id = ?
+                  AND mx.channel_id = m.channel_id
+                  AND mx.id > m.last_read_message_id
+                  AND mx.deleted_at IS NULL) AS mentions
+         FROM chat_channel_members m
+        WHERE m.user_id = ? AND m.hidden = 0`,
+      req.session.userId, req.session.userId, req.session.userId
+    );
+    let total = 0; let totalMentions = 0;
+    const perChannel = {};
+    for (const r of rows) {
+      const u = Number(r.unread || 0); const mx = Number(r.mentions || 0);
+      total += u; totalMentions += mx;
+      perChannel[r.channel_id] = { unread: u, mentions: mx };
+    }
+    res.json({ total, mentions: totalMentions, perChannel });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Auto-add new (just-registered or just-invited) users to #general so they
+// have a channel waiting on first chat-page load. Best-effort; never throws.
+async function chatAutoJoinGeneral(userId) {
+  try {
+    const general = await get(
+      "SELECT id FROM chat_channels WHERE type='channel' AND lower(name)='general'"
+    );
+    if (!general) return;
+    await run(
+      'INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+      general.id, userId
+    );
+  } catch {}
+}
+// Expose so the registration / invite-accept routes can call it. Existing
+// routes don't call us; we patch them below by wrapping the response.
+app.locals.chatAutoJoinGeneral = chatAutoJoinGeneral;
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 (async () => {
   try {
@@ -4753,11 +5700,74 @@ app.patch('/api/tickets/:id/link-flavor', requireAuth, async (req, res) => {
     // single deploy. Removed entirely — soft-delete is the proper mechanism for any
     // future cleanup, and admins can use Settings → Reset Data when they want a wipe.
 
-    app.listen(PORT, () => {
+    // Wrap Express in an http.Server so we can mount the chat WebSocket on
+    // the same port/host as REST. The session cookie authenticates both.
+    const httpServer = http.createServer(app);
+    const wss = new WebSocket.Server({ noServer: true });
+
+    httpServer.on('upgrade', (request, socket, head) => {
+      if (!request.url || !request.url.startsWith('/ws/chat')) {
+        socket.destroy();
+        return;
+      }
+      // Run the same session middleware on the upgrade request so we can
+      // read req.session.userId from the cookie. We hand it a no-op response
+      // stub — express-session expects res.setHeader/getHeader/on/end to
+      // exist, but for an existing logged-in session (saveUninitialized=false)
+      // it never actually writes a Set-Cookie header back during the upgrade.
+      const fakeRes = {
+        setHeader() {}, getHeader() {}, removeHeader() {},
+        on() { return this; }, once() { return this; }, end() {}, write() {},
+      };
+      sessionMiddleware(request, fakeRes, (err) => {
+        if (err) { socket.destroy(); return; }
+        const uid = request.session && request.session.userId;
+        if (!uid) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          ws.userId = uid;
+          wss.emit('connection', ws, request);
+        });
+      });
+    });
+
+    wss.on('connection', (ws) => {
+      const uid = ws.userId;
+      wsRegister(uid, ws);
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
+      ws.on('message', async (raw) => {
+        let data; try { data = JSON.parse(raw.toString()); } catch { return; }
+        // Typing indicator: client sends { type:'typing', channelId } and we
+        // fan it out to the other channel members. Throttled by the client.
+        if (data && data.type === 'typing' && data.channelId) {
+          wsBroadcastToChannel(Number(data.channelId), {
+            type: 'typing', channelId: Number(data.channelId), userId: uid,
+          }, uid);
+        }
+        if (data && data.type === 'ping') {
+          try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
+        }
+      });
+      ws.on('close', () => wsUnregister(uid, ws));
+      try { ws.send(JSON.stringify({ type: 'hello', userId: uid })); } catch {}
+    });
+    // Heartbeat — drop dead sockets so we don't fan out to a void.
+    setInterval(() => {
+      for (const ws of wss.clients) {
+        if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
+        ws.isAlive = false;
+        try { ws.ping(); } catch {}
+      }
+    }, 30 * 1000);
+
+    httpServer.listen(PORT, () => {
       console.log(`✅  Syruvia running at http://localhost:${PORT}`);
       console.log(`   Default login: admin@worknest.com / admin123`);
-      console.log(`   No on-start ticket cleanup — your data is safe across deploys.`);
-      console.log(`   Status is end-user controlled only; never reset on boot.`);
+      console.log(`   Chat WebSocket mounted at ws://localhost:${PORT}/ws/chat`);
     });
 
     // ── Email cron loops ────────────────────────────────────────────────────
