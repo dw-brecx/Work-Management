@@ -7778,7 +7778,7 @@ function renderComments() {
             <div class="td-comment-bubble" style="${isReply ? 'background:#fafbff' : ''}">
               <div class="td-comment-head">
                 <span class="td-comment-name">${escapeHtml(c.author)}</span>
-                <span class="td-comment-time">${escapeHtml(c.time)}</span>
+                <span class="td-comment-time">${escapeHtml(c.createdAt ? _fmtUtcLocal(c.createdAt) : (c.time || ''))}</span>
               </div>
               <div class="td-comment-body">${formatCommentText(c.text)}</div>
               ${(replyBtn || delBtn || noReplyBtn) ? `<div class="cmt-actions">${replyBtn}${noReplyBtn}${delBtn}</div>` : ''}

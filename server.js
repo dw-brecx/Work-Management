@@ -1654,7 +1654,12 @@ app.get('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (re
       id:r.id, parentId: r.parent_id || null,
       author: r.author_name_now || r.author,
       init: r.author_init, bg: r.author_bg, col: r.author_col,
-      text: r.text, time: timeAgo(r.created_at)
+      text: r.text,
+      // Raw UTC stamp — client formats this in the user's local time.
+      // `time` retained as a server-formatted fallback for any legacy
+      // caller, but the client prefers createdAt when present.
+      createdAt: r.created_at,
+      time: timeAgo(r.created_at),
     })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -1773,7 +1778,8 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       }).catch(()=>{});
     }
 
-    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), time: formatUSDateTime(new Date().toISOString()) });
+    const _nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), createdAt: _nowUtc, time: formatUSDateTime(new Date().toISOString()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
