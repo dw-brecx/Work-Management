@@ -1726,6 +1726,9 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
           tag: 'ticket-' + req.params.id + '-cmt',
           url: '/tickets/' + req.params.id,
         }).catch(()=>{});
+        slackDmUser(parentInfo.user_id, {
+          text: `↩ *${u.name}* replied to your comment on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+        }).catch(()=>{});
       }
     }
 
@@ -1750,6 +1753,13 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         body: text.trim().slice(0, 140),
         tag: 'ticket-' + req.params.id + '-cmt',
         url: '/tickets/' + req.params.id,
+      }).catch(()=>{});
+      // Slack DM to every watcher (same fan-out as email + push). Without
+      // this an assignee gets an email when someone comments but no DM —
+      // looks like the @mention path is broken when actually the
+      // watcher block is the one that fired.
+      slackDmUser(w.id, {
+        text: `💬 *${u.name}* commented on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
       }).catch(()=>{});
     }
 
