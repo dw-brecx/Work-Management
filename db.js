@@ -521,6 +521,9 @@ async function init() {
   await safeAlter("ALTER TABLE cal_events ADD COLUMN reminder_sent INTEGER DEFAULT 0");
   await safeAlter("ALTER TABLE cal_events ADD COLUMN deadline_warned INTEGER DEFAULT 0");
   await safeAlter("ALTER TABLE tickets ADD COLUMN closed_email_sent INTEGER DEFAULT 0");
+  // Syruvia Lab integration — link a ticket to a flavor formula
+  await safeAlter("ALTER TABLE tickets ADD COLUMN syruvia_flavor_id TEXT DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN syruvia_flavor_name TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
   // Cached Slack user id (looked up via users.lookupByEmail the first time
   // we want to DM this user). Empty string = "not yet looked up";
