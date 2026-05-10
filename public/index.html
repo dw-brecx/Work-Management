@@ -12755,7 +12755,7 @@ async function loadTicketAttachments(ticketId) {
             </div>`;
         } else if (att.mimeType.startsWith('image/')) {
           row.style.cursor = 'pointer';
-          row.onclick = () => window.open(att.url, '_blank');
+          row.onclick = () => openAttachmentInLightbox(att.url, att.originalName || att.filename, att.mimeType);
           row.innerHTML = `
             <img src="${safeUrl}" alt="${safeName}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0">
             <div style="flex:1;min-width:0">
@@ -12768,7 +12768,7 @@ async function loadTicketAttachments(ticketId) {
           const bg = ext==='PDF'?'#fef2f2':ext==='DOC'?'#eff6ff':'#f0fdf4';
           const col = ext==='PDF'?'#dc2626':ext==='DOC'?'#2563eb':'#16a34a';
           row.style.cursor = 'pointer';
-          row.onclick = () => window.open(att.url, '_blank');
+          row.onclick = () => openAttachmentInLightbox(att.url, att.originalName || att.filename, att.mimeType);
           row.innerHTML = `
             <div style="width:28px;height:28px;background:${bg};border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:${col};flex-shrink:0">${escapeHtml(ext)}</div>
             <div style="flex:1;min-width:0">
@@ -12818,7 +12818,9 @@ async function loadTicketAttachments(ticketId) {
           if (att.mimeType.startsWith('audio/')) {
             el.innerHTML = `<div style="font-size:11px;color:var(--text2);margin-bottom:3px">🎤 ${escapeHtml(att.uploader || '')}</div><audio controls src="${safeUrl}" style="width:100%;height:30px"></audio>`;
           } else {
-            el.innerHTML = `<img src="${safeUrl}" alt="${escapeAttr(att.originalName || '')}" onclick="window.open(this.src,'_blank')" style="width:100%;border-radius:8px;cursor:pointer;max-height:120px;object-fit:cover">`;
+            const safeOrig = escapeAttr(att.originalName || att.filename || 'image');
+            const safeMime = escapeAttr(att.mimeType || '');
+            el.innerHTML = `<img src="${safeUrl}" alt="${safeOrig}" onclick="openAttachmentInLightbox('${safeUrl}','${safeOrig.replace(/'/g, '&#39;')}','${safeMime}')" style="width:100%;border-radius:8px;cursor:pointer;max-height:120px;object-fit:cover">`;
           }
           sec.appendChild(el);
         });
