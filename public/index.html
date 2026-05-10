@@ -15481,6 +15481,20 @@ function openAttachmentInLightbox(url, name, mime) {
   const isVideo = m.startsWith('video/') || ['mp4','webm','mov','m4v','mkv'].includes(ext);
   const isAudio = m.startsWith('audio/') || ['mp3','wav','m4a','ogg','aac','flac'].includes(ext);
   const isPdf   = m === 'application/pdf' || ext === 'pdf';
+  // Office docs render via Microsoft's free embed viewer. Requires the
+  // file to be reachable from Microsoft's servers — our /uploads/* path
+  // is unauthenticated so that works. The viewer URL needs an absolute
+  // (with-scheme) URL to the file.
+  const officeExts = ['doc','docx','xls','xlsx','ppt','pptx'];
+  const officeMimes = [
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ];
+  const isOffice = officeExts.includes(ext) || officeMimes.includes(m);
   const safeUrl = _esc(url);
   if (isImage) {
     bodyEl.innerHTML = `<img src="${safeUrl}" alt="${_esc(safeName)}" style="max-width:100%;max-height:90vh;display:block;background:#0b1220">`;
@@ -15493,6 +15507,17 @@ function openAttachmentInLightbox(url, name, mime) {
     </div>`;
   } else if (isPdf) {
     bodyEl.innerHTML = `<iframe src="${safeUrl}" style="width:88vw;height:85vh;border:none;background:#fff" title="${_esc(safeName)}"></iframe>`;
+  } else if (isOffice) {
+    // Build absolute file URL — Microsoft's viewer fetches it server-side.
+    const absUrl = url.startsWith('http') ? url : (window.location.origin + url);
+    const viewerUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(absUrl);
+    bodyEl.innerHTML = `<div style="display:flex;flex-direction:column;width:88vw;height:85vh;background:#fff">
+      <iframe src="${_esc(viewerUrl)}" style="flex:1;width:100%;border:none" title="${_esc(safeName)}"></iframe>
+      <div style="padding:6px 10px;font-size:10.5px;color:var(--text3);border-top:1px solid var(--border);background:#fafbff;display:flex;justify-content:space-between;align-items:center">
+        <span>Powered by Microsoft Office Online viewer</span>
+        <a href="${safeUrl}" download="${_esc(safeName)}" style="color:var(--accent);text-decoration:none">⬇ Download original</a>
+      </div>
+    </div>`;
   } else {
     bodyEl.innerHTML = `<div style="padding:60px;background:#fff;width:100%;display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center">
       <div style="font-size:54px">📄</div>
