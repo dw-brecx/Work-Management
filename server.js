@@ -2074,19 +2074,28 @@ app.post('/api/polish', requireAuth, async (req, res) => {
     if (cleanText.length > 5000) return res.status(400).json({ error: 'text too long (max 5000 chars)' });
     if (cleanText.length < 3)   return res.status(400).json({ error: 'text too short to polish' });
 
-    // Mode tweaks the system prompt — both modes lean into a "Google
-    // Polish" style: clearer, friendlier, easier for the recipient to
-    // understand. Description mode allows more reorganization (paragraphs,
-    // bullets); comment mode rewords sentence-by-sentence.
+    // Mode tweaks the system prompt:
+    //   light       → spell + grammar fixes only, almost no rewriting.
+    //                 Used by the "✓ Polish" button.
+    //   comment     → full Google-Polish-style rewrite, sentence-by-
+    //                 sentence. Used by "✨ Rewrite" on comments.
+    //   description → same heavy rewrite + permission to reorganize
+    //                 into paragraphs / bullets. Used by "✨ Rewrite"
+    //                 on long-form description fields.
     //
-    // CRITICAL: the prompts forbid refusal / clarifying questions. If the
-    // input is too short or ambiguous to improve meaningfully, the AI
-    // must return the input with at most a typo fix — never replace the
-    // user's draft with "I need more info"-style help requests.
+    // CRITICAL: every prompt forbids refusal / clarifying questions. If
+    // the input is too short or ambiguous, the AI must return it with
+    // at most a typo fix — never replace the user's draft with "I need
+    // more info"-style help requests.
     const HARD_RULES = " ABSOLUTE RULES — never break these: (1) NEVER refuse. (2) NEVER ask questions or request more information. (3) NEVER add explanations, preambles, apologies, or meta-commentary. (4) NEVER address the user as 'you' or talk about yourself ('I'). (5) If the input is too short, vague, or already good, return it with at most minor typo / spelling fixes. (6) Output is ALWAYS something the user can send as-is.";
-    const systemPrompt = mode === 'description'
-      ? "You polish ticket descriptions for a work-management app. Make the text clear, well-structured, and easy for a teammate to understand at first read — no back-and-forth needed. Fix grammar, awkward phrasing, and typos. Improve sentence flow and word choice. You may reorganize sentences, break long paragraphs into shorter ones, and use bullet points for lists. Aim for a friendly-professional tone (warm but not casual). Preserve all facts, ticket IDs (TKT-####), URLs, and @-mentions exactly. Never add information that wasn't there. Don't pad — be concise. Return ONLY the polished text — no preamble, no quotes, no commentary." + HARD_RULES
-      : "You polish messages in a work-management app's comment thread. Rewrite the text so the recipient understands it instantly: clearer wording, smoother flow, friendlier tone (warm but professional). Fix grammar and typos. Tighten rambling sentences. You may rephrase liberally as long as the writer's intent and every fact stays intact. Preserve ticket IDs (TKT-####), URLs, and @-mentions exactly — don't reword these. Stay concise — don't add fluff or pleasantries that weren't there. Return ONLY the polished text — no preamble, no quotes, no commentary." + HARD_RULES;
+    let systemPrompt;
+    if (mode === 'light') {
+      systemPrompt = "You are a spell-check and minor-grammar editor for messages in a work-management app. Make ONLY conservative fixes: typos, obvious spelling mistakes, missing punctuation, basic subject-verb agreement, and capital letters at sentence starts. DO NOT rephrase, DO NOT restructure, DO NOT add or remove words beyond what's needed for the fix, DO NOT change tone or style. Preserve sentence structure, casual phrasing, contractions, line breaks, ticket IDs (TKT-####), URLs, and @-mentions exactly. If the text already looks fine, return it unchanged. Output ONLY the corrected text — same length, same voice, same structure." + HARD_RULES;
+    } else if (mode === 'description') {
+      systemPrompt = "You polish ticket descriptions for a work-management app. Make the text clear, well-structured, and easy for a teammate to understand at first read — no back-and-forth needed. Fix grammar, awkward phrasing, and typos. Improve sentence flow and word choice. You may reorganize sentences, break long paragraphs into shorter ones, and use bullet points for lists. Aim for a friendly-professional tone (warm but not casual). Preserve all facts, ticket IDs (TKT-####), URLs, and @-mentions exactly. Never add information that wasn't there. Don't pad — be concise. Return ONLY the polished text — no preamble, no quotes, no commentary." + HARD_RULES;
+    } else {
+      systemPrompt = "You polish messages in a work-management app's comment thread. Rewrite the text so the recipient understands it instantly: clearer wording, smoother flow, friendlier tone (warm but professional). Fix grammar and typos. Tighten rambling sentences. You may rephrase liberally as long as the writer's intent and every fact stays intact. Preserve ticket IDs (TKT-####), URLs, and @-mentions exactly — don't reword these. Stay concise — don't add fluff or pleasantries that weren't there. Return ONLY the polished text — no preamble, no quotes, no commentary." + HARD_RULES;
+    }
 
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',

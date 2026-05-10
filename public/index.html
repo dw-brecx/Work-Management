@@ -11901,35 +11901,53 @@ async function checkAuth() {
   }
 })();
 
-// ── AI polish helper (Google-Docs-style "Help me write" button) ─────────────
-// Adds a small "✨ Polish" button near a textarea. Click → sends content
-// to /api/polish, replaces textarea with the polished version, shows an
-// "Undo" link briefly so the user can revert if they don't like it.
+// ── AI polish helper (Google-Docs-style "Help me write") ────────────────────
+// Adds two small buttons under a textarea:
+//   ✓ Polish   → spell + grammar fixes only, almost no rewriting
+//   ✨ Rewrite → full Google-Polish-style rewrite (clearer, friendlier)
+// Click either → sends content to /api/polish with the matching mode,
+// replaces the textarea with the result, shows an "Undo" link briefly.
 // Idempotent — safe to call multiple times on the same textarea.
+//
+// options.mode chooses the heavy-rewrite mode for the Rewrite button:
+//   'comment' (default)     — sentence-by-sentence rewrite
+//   'description'           — may reorganize, add bullets / paragraphs
 function attachPolishButton(textarea, options = {}) {
   if (!textarea || textarea._polishAttached) return;
   textarea._polishAttached = true;
-  const mode = options.mode || 'comment';
-  const placement = options.placement || 'after'; // 'after' | 'parent-end'
+  const heavyMode = options.mode || 'comment';
+  const placement = options.placement || 'after';
 
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-top:5px';
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.title = 'Polish writing with AI (Claude Haiku)';
-  btn.innerHTML = '✨ Polish';
-  btn.style.cssText = 'font-size:11px;padding:4px 10px;border:1px solid #c4b5fd;background:linear-gradient(135deg,#faf5ff,#ede9fe);color:#6d28d9;border-radius:5px;cursor:pointer;font-weight:500';
-  wrap.appendChild(btn);
+  wrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap';
 
-  btn.onclick = async () => {
+  // Light: spell check + minor fixes only. Default-styled, less attention-grabbing.
+  const polishBtn = document.createElement('button');
+  polishBtn.type = 'button';
+  polishBtn.title = 'Spell check + minor grammar fixes (no rewriting)';
+  polishBtn.innerHTML = '✓ Polish';
+  polishBtn.style.cssText = 'font-size:11px;padding:4px 10px;border:1px solid var(--border);background:#fff;color:var(--text2);border-radius:5px;cursor:pointer;font-weight:500';
+
+  // Heavy: full rewrite. Purple/magic styling — the "do something" button.
+  const rewriteBtn = document.createElement('button');
+  rewriteBtn.type = 'button';
+  rewriteBtn.title = 'Rewrite with AI for clarity + tone (may change wording)';
+  rewriteBtn.innerHTML = '✨ Rewrite';
+  rewriteBtn.style.cssText = 'font-size:11px;padding:4px 10px;border:1px solid #c4b5fd;background:linear-gradient(135deg,#faf5ff,#ede9fe);color:#6d28d9;border-radius:5px;cursor:pointer;font-weight:500';
+
+  wrap.appendChild(polishBtn);
+  wrap.appendChild(rewriteBtn);
+
+  async function runAI(btn, mode, label) {
     const original = textarea.value;
     if (!original.trim()) {
       btn.title = 'Write something first';
-      setTimeout(() => btn.title = 'Polish writing with AI (Claude Haiku)', 1500);
+      setTimeout(() => btn.title = label === 'Polish' ? 'Spell check + minor grammar fixes (no rewriting)' : 'Rewrite with AI for clarity + tone (may change wording)', 1500);
       return;
     }
     btn.disabled = true;
-    btn.innerHTML = '⏳ Polishing…';
+    const origHtml = btn.innerHTML;
+    btn.innerHTML = '⏳ ' + label + '…';
     btn.style.opacity = '0.7';
     try {
       const r = await fetch('/api/polish', {
@@ -11960,19 +11978,20 @@ function attachPolishButton(textarea, options = {}) {
     } catch (e) {
       const msg = String(e?.message || e);
       if (/disabled.*ANTHROPIC_API_KEY/i.test(msg)) {
-        alert("AI polish isn't enabled on the server yet. An admin needs to set ANTHROPIC_API_KEY in Render.");
+        alert("AI " + label.toLowerCase() + " isn't enabled on the server yet. An admin needs to set ANTHROPIC_API_KEY in Render.");
       } else {
-        alert('Polish failed: ' + msg);
+        alert(label + ' failed: ' + msg);
       }
     } finally {
       btn.disabled = false;
-      btn.innerHTML = '✨ Polish';
+      btn.innerHTML = origHtml;
       btn.style.opacity = '';
     }
-  };
+  }
 
-  // Place the wrapper. Default = right after the textarea inline; can also
-  // append to a passed parent (e.g. an actions row) via placement option.
+  polishBtn.onclick  = () => runAI(polishBtn,  'light',     'Polish');
+  rewriteBtn.onclick = () => runAI(rewriteBtn, heavyMode,   'Rewrite');
+
   if (placement === 'parent-end' && options.parent) {
     options.parent.appendChild(wrap);
   } else {
