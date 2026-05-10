@@ -978,7 +978,7 @@ app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
 
 app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
-    const { id: clientId, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist, parentTicketId } = req.body;
+    const { id: clientId, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist, parentTicketId, syruvia_flavor_id, syruvia_flavor_name } = req.body;
     if (!title) return res.status(400).json({ error:'title required' });
     // Validate parent (if creating a sub-ticket): must exist, not be soft-
     // deleted, must itself be a project, and must NOT itself have a parent
@@ -1010,11 +1010,12 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
     const assigneeUid = await resolveUserIdByName(assignee);
     const reporterUid = await resolveUserIdByName(reporter);
     const reqUid      = await resolveUserIdByName(reqName);
-    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,parent_ticket_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
+    await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,parent_ticket_id,syruvia_flavor_id,syruvia_flavor_name)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)`,
       id, title, reqName||'', assignee||'', reporter||'', priority||'Medium', status||'Open',
       dept||'Engineering', due||'', created||'', overdue?1:0, JSON.stringify(tags||[]), req.session.userId,
-      assigneeUid, reporterUid, reqUid, resolvedParent);
+      assigneeUid, reporterUid, reqUid, resolvedParent,
+      syruvia_flavor_id || null, syruvia_flavor_name || null);
     // Persist the description from the create modal. Audit had this as
     // outstanding: req.body.description was being read for the email but
     // never written, so descriptions silently disappeared on every create.
@@ -3927,7 +3928,76 @@ app.get('*', (req, res) => {
   if (/\.(svg|png|jpg|jpeg|gif|webp|ico|js|css|map|json|webmanifest|webm|mp4|mov|m4a|mp3|wav|ogg|pdf)$/i.test(req.path)) {
     return res.status(404).send('Not found');
   }
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  // Inject cross-app config so the frontend can call Syruvia's bridge API
+  // without hard-coding the URL in the HTML. We send a tiny inline script
+  // that sets window globals before the app JS loads.
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  let html = fs.readFileSync(indexPath, 'utf8');
+  const inject = `<script>
+    window.__SYRUVIA_URL__       = ${JSON.stringify(process.env.SYRUVIA_URL      || '')};
+    window.__CROSS_APP_SECRET__  = ${JSON.stringify(process.env.CROSS_APP_SECRET || '')};
+  </script>`;
+  html = html.replace('<head>', '<head>' + inject);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
+
+// ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
+// Cross-app API for syncing tickets ↔ Syruvia Lab flavors.
+// All bridge routes require the shared CROSS_APP_SECRET in the Authorization header.
+const CROSS_APP_SECRET = process.env.CROSS_APP_SECRET || '';
+const SYRUVIA_URL      = process.env.SYRUVIA_URL      || '';
+
+function bridgeCors(req, res, next) {
+  res.header('Access-Control-Allow-Origin', SYRUVIA_URL || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+}
+function requireBridgeSecret(req, res, next) {
+  if (!CROSS_APP_SECRET) return res.status(503).json({ error: 'Bridge not configured — set CROSS_APP_SECRET env var' });
+  if (req.headers['authorization'] !== `Bearer ${CROSS_APP_SECRET}`) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+}
+
+// GET /api/bridge/flavor-tickets?flavor_id=X — all tickets linked to a Syruvia flavor
+app.options('/api/bridge/flavor-tickets', bridgeCors);
+app.get('/api/bridge/flavor-tickets', bridgeCors, requireBridgeSecret, async (req, res) => {
+  try {
+    const { flavor_id } = req.query;
+    if (!flavor_id) return res.json([]);
+    const rows = await all(
+      `SELECT id, title, status, priority, assignee, due, created, overdue, syruvia_flavor_id, syruvia_flavor_name
+       FROM tickets WHERE syruvia_flavor_id = ? AND deleted_at IS NULL ORDER BY id DESC`,
+      String(flavor_id)
+    );
+    res.json(rows || []);
+  } catch (e) { console.error('[bridge] flavor-tickets error:', e.message); res.json([]); }
+});
+
+// GET /api/bridge/calendar-events — tickets with due dates (for Syruvia's calendar)
+app.options('/api/bridge/calendar-events', bridgeCors);
+app.get('/api/bridge/calendar-events', bridgeCors, requireBridgeSecret, async (req, res) => {
+  try {
+    const tickets = await all(
+      `SELECT id, title, status, priority, due, assignee, syruvia_flavor_id, syruvia_flavor_name
+       FROM tickets WHERE due != '' AND deleted_at IS NULL AND status != 'Closed' ORDER BY id DESC LIMIT 300`
+    );
+    res.json({ tickets: tickets || [] });
+  } catch (e) { console.error('[bridge] calendar-events error:', e.message); res.json({ tickets: [] }); }
+});
+
+// PATCH /api/tickets/:id/link-flavor — link/unlink a Syruvia flavor (requires login)
+app.patch('/api/tickets/:id/link-flavor', requireAuth, async (req, res) => {
+  try {
+    const { syruvia_flavor_id, syruvia_flavor_name } = req.body;
+    await run(
+      'UPDATE tickets SET syruvia_flavor_id=?, syruvia_flavor_name=? WHERE id=? AND deleted_at IS NULL',
+      syruvia_flavor_id || null, syruvia_flavor_name || null, req.params.id
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
