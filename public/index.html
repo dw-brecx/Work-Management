@@ -5311,16 +5311,41 @@ let currentTicketId = null;
 function openTicketDetail(id) {
   const t = TICKETS_DATA.find(x => x.id === id) || TICKETS_DATA[0];
   currentTicketId = t.id;
-  // Ensure a timeline exists for this ticket
+  // Seed a placeholder timeline so the panel doesn't render empty before
+  // the server fetch returns. Use the ticket's real created_at — never
+  // formatNowUS() with no args, which would label every freshly-opened
+  // ticket with today's clock as the creation moment.
   if (!TICKET_TIMELINES[t.id]) {
+    let createdSub = t.created || '';
+    if (t.created_at) {
+      const d = new Date(String(t.created_at).replace(' ', 'T') + (String(t.created_at).includes('Z') ? '' : 'Z'));
+      if (!isNaN(d)) createdSub = formatNowUS(d);
+    }
     TICKET_TIMELINES[t.id] = [
-      {dot:'var(--green)', text:`Ticket created by ${t.req}`, sub: formatNowUS()},
+      {dot:'var(--green)', text:`Ticket created by ${t.req || 'someone'}`, sub: createdSub},
     ];
   }
   closeAllActionPanels();
   renderTicketDetail();
   initDetailComments();
   navigate('ticket-detail');
+  // Pull the canonical activity timeline from the server. Replaces the
+  // placeholder above, and brings in any real entries logged by other
+  // users / other sessions (status changes, reassignments, update
+  // requests, etc.) that aren't in this client's local cache.
+  apiGet('/api/tickets/' + encodeURIComponent(t.id) + '/timeline')
+    .then(rows => {
+      if (!Array.isArray(rows)) return;
+      // Server returns oldest-first; the local cache convention used by
+      // logActivity is newest-first (it unshifts). Reverse to match.
+      TICKET_TIMELINES[t.id] = rows.slice().reverse().map(r => ({
+        dot: r.dot || 'var(--accent)',
+        text: r.text || '',
+        sub: r.sub || '',
+      }));
+      if (currentTicketId === t.id && typeof renderTimeline === 'function') renderTimeline();
+    })
+    .catch(() => {});
 }
 
 function getCurrentTicket() {
