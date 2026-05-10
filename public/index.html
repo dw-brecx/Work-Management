@@ -2356,6 +2356,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
       My Reminders <span class="badge" id="nav-reminders-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" data-page="docs">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+      Docs
+    </div>
     <div class="nav-item admin-only" data-page="projects">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
@@ -3433,6 +3437,53 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
       <div id="my-reminders-list" style="display:flex;flex-direction:column;gap:10px;max-width:820px"></div>
       <div id="my-reminders-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No reminders yet — click "+ New Reminder" to add one.</div>
+    </div>
+
+    <!-- ========== DOCS (workspace document store) ========== -->
+    <!-- Two states share the same page id: list view and editor view.
+         loadDocsPage() and openDoc() flip between them via display. -->
+    <div id="page-docs" class="page">
+      <!-- LIST VIEW -->
+      <div id="docs-list-view">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:4px;flex-wrap:wrap">
+          <h1 style="font-size:20px;font-weight:600;margin:0">Docs</h1>
+          <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="createNewDoc()">+ New Doc</button>
+        </div>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Workspace documents — SOPs, runbooks, project notes, anything. Markdown supported. Anyone can read / write any doc.</p>
+        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;max-width:1100px">
+          <table style="width:100%;border-collapse:collapse">
+            <thead>
+              <tr style="background:var(--bg2);text-align:left">
+                <th style="padding:8px 12px;font-size:10px;font-weight:600;color:var(--text3)">Title</th>
+                <th style="padding:8px 12px;font-size:10px;font-weight:600;color:var(--text3)">Updated</th>
+                <th style="padding:8px 12px;font-size:10px;font-weight:600;color:var(--text3)">By</th>
+                <th style="padding:8px 12px;width:60px"></th>
+              </tr>
+            </thead>
+            <tbody id="docs-list-tbody"></tbody>
+          </table>
+        </div>
+        <div id="docs-list-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No docs yet — click "+ New Doc" to start.</div>
+      </div>
+
+      <!-- EDITOR VIEW -->
+      <div id="docs-editor-view" style="display:none">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <button onclick="closeDocEditor()" class="td-back-btn" title="Back to docs" aria-label="Back to docs" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer">←</button>
+          <span style="color:var(--text3);font-size:12px">Docs</span>
+          <span style="color:var(--text3);font-size:12px">›</span>
+          <span id="doc-edit-breadcrumb" style="font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</span>
+          <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <span id="doc-save-status" style="font-size:11px;color:var(--text3)">Saved</span>
+            <button id="doc-view-toggle" onclick="toggleDocPreview()" class="btn-sec" style="font-size:11px;padding:5px 12px">👁 Preview</button>
+            <button onclick="deleteCurrentDoc()" style="font-size:11px;padding:5px 12px;background:#fff;border:1px solid #fecaca;color:#dc2626;border-radius:5px;cursor:pointer">Delete</button>
+          </span>
+        </div>
+        <input id="doc-edit-title" type="text" placeholder="Untitled" style="width:100%;font-size:24px;font-weight:700;padding:8px 0;border:none;outline:none;background:transparent;border-bottom:1px solid transparent" oninput="onDocTitleInput()" onfocus="this.style.borderBottomColor='var(--border)'" onblur="this.style.borderBottomColor='transparent'"/>
+        <div id="doc-edit-meta" style="font-size:11px;color:var(--text3);margin:4px 0 14px">—</div>
+        <textarea id="doc-edit-body" placeholder="Start writing… (Markdown supported — # heading, **bold**, - bullets, [link](https://…))" oninput="onDocBodyInput()" style="width:100%;min-height:60vh;font-size:14px;line-height:1.6;padding:12px 14px;border:1px solid var(--border);border-radius:8px;background:#fff;resize:vertical;font-family:inherit;outline:none"></textarea>
+        <div id="doc-preview" style="display:none;min-height:60vh;font-size:14px;line-height:1.6;padding:14px;border:1px solid var(--border);border-radius:8px;background:#fff"></div>
+      </div>
     </div>
 
     <!-- ========== REMINDER EDITOR MODAL (create / edit) ========== -->
@@ -4775,6 +4826,7 @@ window.PAGE_PATHS = {
   'tickets':     '/tickets',
   'my-tickets':  '/my-tickets',
   'my-reminders':'/my-reminders',
+  'docs':         '/docs',
   'planning':    '/planning',
   'flavors':     '/flavors',
   'calendar':    '/calendar',
@@ -4832,6 +4884,7 @@ function navigate(page) {
     const titles = {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
       'my-reminders': 'My Reminders',
+      'docs': 'Docs',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
       'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
       'projects': 'Projects',
@@ -4857,6 +4910,9 @@ function navigate(page) {
   }
   if (page === 'dashboard' && typeof loadDashboardInsights === 'function') {
     loadDashboardInsights();
+  }
+  if (page === 'docs' && typeof loadDocsPage === 'function') {
+    loadDocsPage();
   }
 }
 
@@ -15498,6 +15554,201 @@ function openTicketDetailById(id) {
   try { history.pushState({}, '', '/tickets/' + encodeURIComponent(id)); window.dispatchEvent(new PopStateEvent('popstate')); } catch {}
 }
 
+// ── Workspace docs (Notion-style document store) ───────────────────────────
+// Two views in the same #page-docs container:
+//   docs-list-view    table of all docs (title / updated / by)
+//   docs-editor-view  title + markdown body + live preview toggle
+// loadDocsPage() shows the list; openDoc(id) flips to the editor with
+// debounced autosave on title + body edits.
+let DOCS_CACHE = [];
+let _currentDocId = null;
+let _docOriginal = { title: '', body: '' };
+let _docSaveTimer = null;
+let _docPreviewMode = false;
+
+async function loadDocsPage() {
+  // Always show the list when (re)entering the docs page; the editor is
+  // a transient state opened by clicking a row or "+ New Doc".
+  closeDocEditor();
+  const tbody = document.getElementById('docs-list-tbody');
+  const empty = document.getElementById('docs-list-empty');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;color:var(--text3);font-size:12px;text-align:center">Loading…</td></tr>';
+  try {
+    const items = await apiGet('/api/docs');
+    DOCS_CACHE = Array.isArray(items) ? items : [];
+    renderDocsList();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="4" style="padding:14px;color:#dc2626;font-size:12px;text-align:center">Failed to load docs.</td></tr>';
+  }
+}
+
+function renderDocsList() {
+  const tbody = document.getElementById('docs-list-tbody');
+  const empty = document.getElementById('docs-list-empty');
+  if (!tbody) return;
+  if (!DOCS_CACHE.length) {
+    tbody.innerHTML = '';
+    if (empty) empty.style.display = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  tbody.innerHTML = DOCS_CACHE.map(d => `
+    <tr style="border-top:1px solid var(--border);cursor:pointer" onclick="openDoc(${d.id})" onmouseenter="this.style.background='var(--bg2)'" onmouseleave="this.style.background=''">
+      <td style="padding:10px 12px;font-size:13px;font-weight:500">📄 ${_esc(d.title || 'Untitled')}</td>
+      <td style="padding:10px 12px;font-size:11.5px;color:var(--text3)">${_esc(_fmtUtcLocal(d.updatedAt))}</td>
+      <td style="padding:10px 12px;font-size:11.5px;color:var(--text3)">${_esc(d.updatedBy || d.createdBy || '—')}</td>
+      <td style="padding:10px 12px;text-align:right" onclick="event.stopPropagation()">
+        <button onclick="deleteDocFromList(${d.id})" title="Delete" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px;padding:4px 8px">🗑</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+window.createNewDoc = async function() {
+  try {
+    const created = await apiPost('/api/docs', { title: 'Untitled', body: '' });
+    if (!created || created.error) throw new Error(created?.error || 'create failed');
+    DOCS_CACHE.unshift({
+      id: created.id, title: created.title, parentId: null,
+      createdAt: created.createdAt, updatedAt: created.updatedAt,
+      createdBy: (window.CURRENT_USER || {}).name || '',
+      updatedBy: (window.CURRENT_USER || {}).name || '',
+    });
+    openDoc(created.id);
+  } catch (e) { alert('Could not create doc: ' + (e?.message || e)); }
+};
+
+window.openDoc = async function(id) {
+  document.getElementById('docs-list-view').style.display = 'none';
+  const editor = document.getElementById('docs-editor-view');
+  editor.style.display = '';
+  _currentDocId = id;
+  _docPreviewMode = false;
+  document.getElementById('doc-preview').style.display = 'none';
+  document.getElementById('doc-edit-body').style.display = '';
+  document.getElementById('doc-view-toggle').textContent = '👁 Preview';
+  document.getElementById('doc-edit-title').value = '';
+  document.getElementById('doc-edit-body').value = '';
+  document.getElementById('doc-edit-meta').textContent = 'Loading…';
+  document.getElementById('doc-edit-breadcrumb').textContent = '—';
+  document.getElementById('doc-save-status').textContent = '';
+  try {
+    const d = await apiGet('/api/docs/' + id);
+    if (!d || d.error) throw new Error(d?.error || 'fetch failed');
+    document.getElementById('doc-edit-title').value = d.title || '';
+    document.getElementById('doc-edit-body').value = d.body || '';
+    document.getElementById('doc-edit-breadcrumb').textContent = d.title || 'Untitled';
+    document.getElementById('doc-edit-meta').textContent =
+      `Last edited by ${d.updatedBy || d.createdBy || '—'} · ${_fmtUtcLocal(d.updatedAt)}`;
+    document.getElementById('doc-save-status').textContent = 'Saved';
+    _docOriginal = { title: d.title || '', body: d.body || '' };
+  } catch (e) {
+    document.getElementById('doc-edit-meta').textContent = 'Failed to load.';
+  }
+};
+
+window.closeDocEditor = function() {
+  // Force a final flush of any pending autosave before leaving.
+  if (_docSaveTimer) {
+    clearTimeout(_docSaveTimer);
+    _docSaveTimer = null;
+    if (_currentDocId) _saveDocNow();
+  }
+  _currentDocId = null;
+  document.getElementById('docs-editor-view').style.display = 'none';
+  document.getElementById('docs-list-view').style.display = '';
+  // Refresh list so the latest title / updated time + edits are visible.
+  if (currentPage === 'docs') loadDocsPage();
+};
+
+function _scheduleDocSave() {
+  if (!_currentDocId) return;
+  document.getElementById('doc-save-status').textContent = 'Saving…';
+  if (_docSaveTimer) clearTimeout(_docSaveTimer);
+  _docSaveTimer = setTimeout(_saveDocNow, 800);
+}
+
+async function _saveDocNow() {
+  if (!_currentDocId) return;
+  _docSaveTimer = null;
+  const title = document.getElementById('doc-edit-title').value;
+  const body  = document.getElementById('doc-edit-body').value;
+  // Skip if nothing changed since last load — saves a round-trip on
+  // accidental focus events.
+  if (title === _docOriginal.title && body === _docOriginal.body) {
+    document.getElementById('doc-save-status').textContent = 'Saved';
+    return;
+  }
+  try {
+    const r = await apiPut('/api/docs/' + _currentDocId, { title, body });
+    if (r?.error) throw new Error(r.error);
+    _docOriginal = { title, body };
+    document.getElementById('doc-save-status').textContent = 'Saved';
+    document.getElementById('doc-edit-breadcrumb').textContent = title || 'Untitled';
+    if (r?.updatedAt) {
+      document.getElementById('doc-edit-meta').textContent =
+        `Last edited by ${(window.CURRENT_USER || {}).name || '—'} · ${_fmtUtcLocal(r.updatedAt)}`;
+    }
+    // Update the cached row so the list reflects the change on back-nav.
+    const i = DOCS_CACHE.findIndex(x => x.id === _currentDocId);
+    if (i >= 0) {
+      DOCS_CACHE[i].title = title || 'Untitled';
+      DOCS_CACHE[i].updatedAt = r?.updatedAt || DOCS_CACHE[i].updatedAt;
+      DOCS_CACHE[i].updatedBy = (window.CURRENT_USER || {}).name || DOCS_CACHE[i].updatedBy;
+    }
+  } catch (e) {
+    document.getElementById('doc-save-status').textContent = 'Save failed';
+  }
+}
+
+window.onDocTitleInput = _scheduleDocSave;
+window.onDocBodyInput  = _scheduleDocSave;
+
+window.toggleDocPreview = function() {
+  _docPreviewMode = !_docPreviewMode;
+  const ta = document.getElementById('doc-edit-body');
+  const pv = document.getElementById('doc-preview');
+  const btn = document.getElementById('doc-view-toggle');
+  if (_docPreviewMode) {
+    pv.innerHTML = _mdRender(ta.value || '*Nothing to preview yet.*');
+    pv.style.display = '';
+    ta.style.display = 'none';
+    btn.textContent = '✏ Edit';
+  } else {
+    pv.style.display = 'none';
+    ta.style.display = '';
+    btn.textContent = '👁 Preview';
+  }
+};
+
+window.deleteCurrentDoc = async function() {
+  if (!_currentDocId) return;
+  const title = document.getElementById('doc-edit-title').value || 'this doc';
+  if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+  try {
+    await apiDel('/api/docs/' + _currentDocId);
+    DOCS_CACHE = DOCS_CACHE.filter(x => x.id !== _currentDocId);
+    // Skip the autosave-on-close that closeDocEditor() would otherwise
+    // trigger — we're deleting, not saving.
+    if (_docSaveTimer) { clearTimeout(_docSaveTimer); _docSaveTimer = null; }
+    _currentDocId = null;
+    document.getElementById('docs-editor-view').style.display = 'none';
+    document.getElementById('docs-list-view').style.display = '';
+    renderDocsList();
+  } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+};
+
+window.deleteDocFromList = async function(id) {
+  const d = DOCS_CACHE.find(x => x.id === id);
+  if (!confirm(`Delete "${d?.title || 'this doc'}"? This cannot be undone.`)) return;
+  try {
+    await apiDel('/api/docs/' + id);
+    DOCS_CACHE = DOCS_CACHE.filter(x => x.id !== id);
+    renderDocsList();
+  } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+};
+
 // ── Trash page (admin-only) ────────────────────────────────────────────────
 async function loadTrashPage() {
   const wrap = document.getElementById('trash-list');
@@ -16697,6 +16948,7 @@ async function refreshPageData(page) {
     if (page === 'projects'    && typeof loadProjectsPage === 'function') loadProjectsPage();
     if (page === 'trash'       && typeof loadTrashPage === 'function') loadTrashPage();
     if (page === 'my-reminders' && typeof loadMyRemindersPage === 'function') loadMyRemindersPage();
+    if (page === 'docs'         && typeof loadDocsPage === 'function') loadDocsPage();
   } catch (err) {
     // Keep stale data — the user will see what they had before the failed nav.
     console.warn('[router] refreshPageData failed for', page, '—', err?.message || err);
@@ -16732,6 +16984,7 @@ window.refreshPageData = refreshPageData;
     'tickets':     '/tickets',
     'my-tickets':  '/my-tickets',
     'my-reminders':'/my-reminders',
+  'docs':         '/docs',
     'planning':    '/planning',
     'flavors':     '/flavors',
     'calendar':    '/calendar',

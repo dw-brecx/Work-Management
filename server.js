@@ -3036,6 +3036,107 @@ app.post('/api/projects/from-template', requireAdmin, async (req, res) => {
   }
 });
 
+// ── Workspace docs ─────────────────────────────────────────────────────────
+// Notion / ClickUp-style document store. Anyone authenticated can read
+// and write any doc. parent_id is wired in advance for future subpages
+// but the current MVP renders a flat list ordered by most-recently-
+// updated. A doc with body='' is treated as "Untitled / blank".
+app.get('/api/docs', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT d.id, d.title, d.parent_id, d.created_at, d.updated_at,
+             cu.name AS created_by_name,
+             uu.name AS updated_by_name
+        FROM docs d
+        LEFT JOIN users cu ON cu.id = d.created_by
+        LEFT JOIN users uu ON uu.id = d.updated_by
+       ORDER BY d.updated_at DESC, d.id DESC
+       LIMIT 500`);
+    res.json(rows.map(r => ({
+      id: r.id,
+      title: r.title || 'Untitled',
+      parentId: r.parent_id || null,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      createdBy: r.created_by_name || '',
+      updatedBy: r.updated_by_name || '',
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/docs/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await get(`
+      SELECT d.id, d.title, d.body, d.parent_id, d.created_at, d.updated_at,
+             cu.name AS created_by_name,
+             uu.name AS updated_by_name
+        FROM docs d
+        LEFT JOIN users cu ON cu.id = d.created_by
+        LEFT JOIN users uu ON uu.id = d.updated_by
+       WHERE d.id=?`, id);
+    if (!r) return res.status(404).json({ error: 'Not found' });
+    res.json({
+      id: r.id, title: r.title || 'Untitled', body: r.body || '',
+      parentId: r.parent_id || null,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+      createdBy: r.created_by_name || '',
+      updatedBy: r.updated_by_name || '',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/docs', requireAuth, async (req, res) => {
+  try {
+    const title = String(req.body?.title || 'Untitled').trim() || 'Untitled';
+    const body  = String(req.body?.body  || '');
+    const parentId = req.body?.parentId ? Number(req.body.parentId) : null;
+    const info = await run(
+      `INSERT INTO docs (title, body, parent_id, created_by, updated_by)
+       VALUES (?, ?, ?, ?, ?) RETURNING id`,
+      title.slice(0, 200), body.slice(0, 200000), parentId,
+      req.session.userId, req.session.userId
+    );
+    const row = await get('SELECT id, title, body, created_at, updated_at FROM docs WHERE id=?', Number(info.lastInsertRowid));
+    res.status(201).json({
+      id: row.id, title: row.title, body: row.body || '',
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Patch any of: title, body. Stamps updated_by + updated_at on every
+// change so the list view's "last edited by X • date" stays accurate.
+app.put('/api/docs/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await get('SELECT id FROM docs WHERE id=?', id);
+    if (!exists) return res.status(404).json({ error: 'Not found' });
+    const u = []; const v = [];
+    if (req.body?.title !== undefined) {
+      const t = String(req.body.title || '').trim() || 'Untitled';
+      u.push('title=?'); v.push(t.slice(0, 200));
+    }
+    if (req.body?.body !== undefined) {
+      u.push('body=?'); v.push(String(req.body.body || '').slice(0, 200000));
+    }
+    if (!u.length) return res.json({ ok: true });
+    u.push('updated_by=?'); v.push(req.session.userId);
+    u.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+    v.push(id);
+    await run(`UPDATE docs SET ${u.join(', ')} WHERE id=?`, ...v);
+    const row = await get('SELECT updated_at FROM docs WHERE id=?', id);
+    res.json({ ok: true, updatedAt: row?.updated_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/docs/:id', requireAuth, async (req, res) => {
+  try {
+    await run('DELETE FROM docs WHERE id=?', Number(req.params.id));
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Calendar events ───────────────────────────────────────────────────────────
 app.get('/api/events', requireAuth, async (req, res) => {
   try {

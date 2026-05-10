@@ -460,6 +460,23 @@ async function init() {
       days_offset INTEGER DEFAULT 7
     )`,
     `CREATE INDEX IF NOT EXISTS idx_project_template_tasks_tpl ON project_template_tasks (template_id, position)`,
+    // Workspace docs — a notion/ClickUp-style document store. Anyone in the
+    // workspace can read/write any doc (no per-doc ACL yet). parent_id +
+    // position are wired in advance so subpages can be added later without
+    // a schema migration.
+    `CREATE TABLE IF NOT EXISTS docs (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT 'Untitled',
+      body TEXT NOT NULL DEFAULT '',
+      parent_id INTEGER REFERENCES docs(id) ON DELETE CASCADE,
+      position INTEGER DEFAULT 0,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_docs_parent ON docs (parent_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_docs_updated ON docs (updated_at DESC)`,
   ];
 
   for (const sql of tables) {
