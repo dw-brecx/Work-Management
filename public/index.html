@@ -3395,7 +3395,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
     <!-- ========== PROJECTS (admin-only — list of promoted parent tickets) ========== -->
     <div id="page-projects" class="page">
-      <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Projects</h1>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:4px;flex-wrap:wrap">
+        <h1 style="font-size:20px;font-weight:600;margin:0">Projects</h1>
+        <button class="btn-primary admin-only" style="font-size:12px;padding:7px 14px" onclick="openSpawnFromTemplateModal()">🔁 New from template</button>
+      </div>
       <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Tickets promoted to projects with all their sub-tickets. End users see each sub-ticket in their My Tickets.</p>
       <!-- Filter strip: Open / Closed / All. A project counts as "closed"
            once every sub-ticket under it is Closed or Archived. -->
@@ -3568,6 +3571,32 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
+    <!-- ========== SPAWN-FROM-TEMPLATE MODAL (Recurring Projects) ========== -->
+    <div id="modal-spawn-template" style="display:none;align-items:center;justify-content:center;background:rgba(15,23,42,0.55);position:fixed;inset:0;z-index:9999;padding:20px;box-sizing:border-box">
+      <div onclick="closeSpawnFromTemplateModal()" style="position:absolute;inset:0;cursor:pointer"></div>
+      <div style="position:relative;width:min(95vw, 560px);max-height:90vh;background:#fff;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:#fafbff">
+          <div style="font-size:14px;font-weight:600">🔁 New project from template</div>
+          <button onclick="closeSpawnFromTemplateModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);padding:0 6px;line-height:1">×</button>
+        </div>
+        <div style="padding:18px;overflow:auto">
+          <p style="font-size:11.5px;color:var(--text3);margin:0 0 14px">Pick a saved template — we'll create a parent project plus one child ticket per template task. {project} placeholders in task titles get replaced with the project name.</p>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Template</label>
+          <select id="spawn-template-id" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;background:#fff;margin-bottom:12px"></select>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Project name</label>
+          <input id="spawn-project-name" type="text" placeholder="e.g. February email blast" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;margin-bottom:12px"/>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Launch / due date <span style="color:var(--text3);font-weight:400">(optional — defaults to today; child tickets use this + each task's days_offset)</span></label>
+          <input id="spawn-due-date" type="date" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px"/>
+          <div id="spawn-preview" style="font-size:11.5px;color:var(--text2);background:var(--bg2);padding:10px 12px;border-radius:6px;margin-top:8px;display:none"></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--border);background:#fafbff">
+          <span id="spawn-status" style="font-size:11px;color:var(--text3);align-self:center;margin-right:auto"></span>
+          <button onclick="closeSpawnFromTemplateModal()" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:pointer">Cancel</button>
+          <button class="btn-primary" id="spawn-submit" style="font-size:12px;padding:7px 14px" onclick="submitSpawnFromTemplate()">Create project</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ========== SETTINGS ========== -->
     <div id="page-settings" class="page">
       <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Settings</h1>
@@ -3600,6 +3629,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             </div>
             <div class="settings-tab admin-only" data-stab="apps" onclick="switchSettingsTab('apps')" id="apps-settings-tab">
               <span class="stab-icon">🔗</span> Apps
+            </div>
+            <div class="settings-tab admin-only" data-stab="recurring-projects" onclick="switchSettingsTab('recurring-projects')" id="recurring-projects-settings-tab">
+              <span class="stab-icon">🔁</span> Recurring Projects
             </div>
             <div class="settings-tab" data-stab="admin" onclick="switchSettingsTab('admin')" id="admin-settings-tab" style="display:none">
               <span class="stab-icon">🔧</span> Admin
@@ -3892,6 +3924,25 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
           <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text2)">Existing apps</div>
           <div id="apps-list" style="display:flex;flex-direction:column;gap:6px"></div>
+        </div>
+
+        <!-- Recurring Projects panel (admin-only) — manage named project
+             templates that can be spawned with one click from /projects -->
+        <div class="card settings-panel" id="settings-panel-recurring-projects" style="display:none">
+          <h2 style="font-size:14px;font-weight:700;margin-bottom:2px">Recurring Projects</h2>
+          <p style="font-size:12px;color:var(--text3);margin:0 0 14px">Save bundles of tickets that you create over and over (e.g. "Email campaign for web customers" → 3 tickets). From the Projects page, an admin can pick a template and spawn the whole project + all its child tickets in one click. Use <code>{project}</code> in a task title to insert the project name.</p>
+
+          <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px;background:var(--bg2)">
+            <div style="font-size:12px;font-weight:600;margin-bottom:8px">New template</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" id="rp-new-name" placeholder="Template name (e.g. Email campaign for web customers)" style="flex:1;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fff"/>
+              <span id="rp-new-status" style="font-size:11px;color:var(--text3)"></span>
+              <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="createProjectTemplate()">Create</button>
+            </div>
+          </div>
+
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text2)">Existing templates</div>
+          <div id="rp-list" style="display:flex;flex-direction:column;gap:8px"></div>
         </div>
 
         <!-- Admin panel -->
@@ -17821,6 +17872,278 @@ window.scheduleEventForCurrentTicket = function() {
 
   // Initial load — populates the sidebar for everyone after auth bootstrap.
   setTimeout(loadExternalApps, 800);
+})();
+
+// ── Recurring projects (templates + spawn modal) ────────────────────────────
+(function() {
+  let RP_TEMPLATES = [];
+
+  // ----- Settings tab: template management -----
+
+  async function loadProjectTemplates() {
+    try {
+      const items = await apiGet('/api/project-templates');
+      RP_TEMPLATES = Array.isArray(items) ? items : [];
+    } catch { RP_TEMPLATES = []; }
+    renderProjectTemplatesList();
+  }
+
+  function renderProjectTemplatesList() {
+    const wrap = document.getElementById('rp-list');
+    if (!wrap) return;
+    if (!RP_TEMPLATES.length) {
+      wrap.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:14px;text-align:center;border:1px dashed var(--border);border-radius:8px">No templates yet. Create one above to get started.</div>';
+      return;
+    }
+    wrap.innerHTML = RP_TEMPLATES.map(t => {
+      const isOpen = t._expanded;
+      const tasksHtml = isOpen
+        ? renderProjectTemplateTasksEditor(t)
+        : '';
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;background:#fff" data-tpl-id="${t.id}">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer" onclick="toggleProjectTemplate(${t.id})">
+            <span style="font-size:14px">${isOpen ? '▼' : '▶'}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600">${_esc(t.name)}</div>
+              <div style="font-size:10.5px;color:var(--text3);margin-top:1px">${t.taskCount} task${t.taskCount === 1 ? '' : 's'}</div>
+            </div>
+            <button onclick="event.stopPropagation();renameProjectTemplate(${t.id})" title="Rename" style="font-size:11px;padding:4px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer">Rename</button>
+            <button onclick="event.stopPropagation();deleteProjectTemplate(${t.id})" title="Delete" style="font-size:11px;padding:4px 8px;background:#fff;border:1px solid #fecaca;color:#dc2626;border-radius:4px;cursor:pointer">Delete</button>
+          </div>
+          ${tasksHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderProjectTemplateTasksEditor(t) {
+    const tasks = t._tasks || [];
+    const teamOptions = (typeof TEAM_DATA !== 'undefined' ? TEAM_DATA : [])
+      .map(m => `<option value="${_esc(m.name)}">${_esc(m.name)}</option>`).join('');
+    const deptOptions = ['General','Engineering','Design','Support','Operations','Management','Marketing']
+      .map(d => `<option value="${d}">${d}</option>`).join('');
+    const priorityOptions = ['Low','Medium','High','Urgent']
+      .map(p => `<option value="${p}">${p}</option>`).join('');
+    const rows = tasks.map((tk, i) => `
+      <div style="display:grid;grid-template-columns:30px 2fr 1.2fr 1fr 70px 70px 30px;gap:6px;align-items:center;padding:6px;border-bottom:1px solid var(--border)" data-row="${i}">
+        <span style="font-size:11px;color:var(--text3);text-align:center">${i + 1}.</span>
+        <input type="text" value="${_esc(tk.title || tk.titleTemplate || '')}" placeholder="Task title (use {project} for the project name)" data-tpl-field="title" style="font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:4px"/>
+        <select data-tpl-field="assignee" style="font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:4px">
+          <option value="">— Unassigned —</option>${teamOptions.replace(`value="${_esc(tk.assignee || '')}"`, `value="${_esc(tk.assignee || '')}" selected`)}
+        </select>
+        <select data-tpl-field="dept" style="font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:4px">
+          ${deptOptions.replace(`value="${tk.dept || 'General'}"`, `value="${tk.dept || 'General'}" selected`)}
+        </select>
+        <select data-tpl-field="priority" style="font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:4px">
+          ${priorityOptions.replace(`value="${tk.priority || 'Medium'}"`, `value="${tk.priority || 'Medium'}" selected`)}
+        </select>
+        <input type="number" min="0" value="${Number(tk.daysOffset ?? tk.days_offset ?? 7)}" data-tpl-field="daysOffset" title="Days from project launch date" style="font-size:12px;padding:5px 7px;border:1px solid var(--border);border-radius:4px;text-align:center"/>
+        <button onclick="removeProjectTemplateTaskRow(${t.id}, ${i})" title="Delete task" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:14px">×</button>
+      </div>
+    `).join('');
+    return `
+      <div style="border-top:1px solid var(--border);padding:10px 12px;background:var(--bg2)">
+        <div style="display:grid;grid-template-columns:30px 2fr 1.2fr 1fr 70px 70px 30px;gap:6px;padding:0 6px 4px;font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.04em">
+          <span></span><span>Title</span><span>Assignee</span><span>Department</span><span>Priority</span><span>Days+</span><span></span>
+        </div>
+        <div id="rp-tasks-${t.id}" style="background:#fff;border:1px solid var(--border);border-radius:6px">
+          ${rows || '<div style="padding:14px;color:var(--text3);font-size:12px;text-align:center">No tasks yet. Click "+ Add task" below.</div>'}
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px;flex-wrap:wrap">
+          <button onclick="addProjectTemplateTaskRow(${t.id})" style="font-size:11.5px;padding:5px 12px;background:#fff;border:1px dashed var(--accent);color:var(--accent);border-radius:5px;cursor:pointer">+ Add task</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="rp-save-status-${t.id}" style="font-size:11px;color:var(--text3)"></span>
+            <button class="btn-primary" style="font-size:11.5px;padding:5px 12px" onclick="saveProjectTemplateTasks(${t.id})">Save tasks</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  window.toggleProjectTemplate = async function(id) {
+    const t = RP_TEMPLATES.find(x => x.id === id);
+    if (!t) return;
+    if (t._expanded) {
+      t._expanded = false;
+      renderProjectTemplatesList();
+      return;
+    }
+    // Lazy-load tasks the first time the row expands.
+    if (!t._tasks) {
+      try {
+        const full = await apiGet('/api/project-templates/' + id);
+        t._tasks = full?.tasks || [];
+      } catch { t._tasks = []; }
+    }
+    t._expanded = true;
+    renderProjectTemplatesList();
+  };
+
+  window.createProjectTemplate = async function() {
+    const name = (document.getElementById('rp-new-name')?.value || '').trim();
+    const status = document.getElementById('rp-new-status');
+    if (!name) { if (status) status.textContent = 'Name required.'; return; }
+    if (status) { status.textContent = 'Saving…'; status.style.color = ''; }
+    try {
+      const created = await apiPost('/api/project-templates', { name });
+      if (created && created.error) throw new Error(created.error);
+      RP_TEMPLATES.push({ ...created, taskCount: 0, _expanded: true, _tasks: [] });
+      document.getElementById('rp-new-name').value = '';
+      if (status) { status.textContent = 'Created.'; setTimeout(() => status.textContent = '', 1500); }
+      renderProjectTemplatesList();
+    } catch (e) {
+      if (status) { status.textContent = 'Failed: ' + (e?.message || e); status.style.color = 'var(--red)'; }
+    }
+  };
+
+  window.renameProjectTemplate = async function(id) {
+    const t = RP_TEMPLATES.find(x => x.id === id);
+    if (!t) return;
+    const nv = prompt('New name for this template:', t.name);
+    if (!nv || nv.trim() === t.name) return;
+    try {
+      await apiPut('/api/project-templates/' + id, { name: nv.trim() });
+      t.name = nv.trim();
+      renderProjectTemplatesList();
+    } catch (e) { alert('Could not rename: ' + (e?.message || e)); }
+  };
+
+  window.deleteProjectTemplate = async function(id) {
+    const t = RP_TEMPLATES.find(x => x.id === id);
+    if (!confirm(`Delete template "${t?.name || 'this template'}"? Existing projects spawned from it stay intact.`)) return;
+    try {
+      await apiDel('/api/project-templates/' + id);
+      RP_TEMPLATES = RP_TEMPLATES.filter(x => x.id !== id);
+      renderProjectTemplatesList();
+    } catch (e) { alert('Could not delete: ' + (e?.message || e)); }
+  };
+
+  window.addProjectTemplateTaskRow = function(id) {
+    const t = RP_TEMPLATES.find(x => x.id === id);
+    if (!t) return;
+    if (!t._tasks) t._tasks = [];
+    t._tasks.push({ title: '', assignee: '', dept: 'General', priority: 'Medium', daysOffset: 7 });
+    renderProjectTemplatesList();
+  };
+
+  window.removeProjectTemplateTaskRow = function(id, idx) {
+    const t = RP_TEMPLATES.find(x => x.id === id);
+    if (!t || !t._tasks) return;
+    t._tasks.splice(idx, 1);
+    renderProjectTemplatesList();
+  };
+
+  window.saveProjectTemplateTasks = async function(id) {
+    const t = RP_TEMPLATES.find(x => x.id === id);
+    if (!t) return;
+    // Pull current edits out of the DOM rather than relying on input events.
+    const rows = document.querySelectorAll(`#rp-tasks-${id} > div[data-row]`);
+    const tasks = [];
+    rows.forEach(row => {
+      const title = row.querySelector('[data-tpl-field="title"]')?.value || '';
+      if (!title.trim()) return;
+      tasks.push({
+        title: title.trim(),
+        assignee: row.querySelector('[data-tpl-field="assignee"]')?.value || '',
+        dept: row.querySelector('[data-tpl-field="dept"]')?.value || 'General',
+        priority: row.querySelector('[data-tpl-field="priority"]')?.value || 'Medium',
+        daysOffset: Number(row.querySelector('[data-tpl-field="daysOffset"]')?.value) || 0,
+      });
+    });
+    const status = document.getElementById('rp-save-status-' + id);
+    if (status) status.textContent = 'Saving…';
+    try {
+      await apiPut('/api/project-templates/' + id + '/tasks', { tasks });
+      t._tasks = tasks;
+      t.taskCount = tasks.length;
+      if (status) { status.textContent = 'Saved.'; setTimeout(() => status.textContent = '', 2000); }
+      renderProjectTemplatesList();
+    } catch (e) {
+      if (status) { status.textContent = 'Failed.'; status.style.color = 'var(--red)'; }
+      alert('Save failed: ' + (e?.message || e));
+    }
+  };
+
+  // ----- Spawn modal: create a real project from a template -----
+
+  window.openSpawnFromTemplateModal = async function() {
+    const m = document.getElementById('modal-spawn-template');
+    if (!m) return;
+    // Fetch fresh list each open so admin's recent template adds appear.
+    try {
+      const items = await apiGet('/api/project-templates');
+      const sel = document.getElementById('spawn-template-id');
+      if (!Array.isArray(items) || !items.length) {
+        if (sel) sel.innerHTML = '<option value="">— No templates yet — add one in Settings → Recurring Projects —</option>';
+      } else {
+        sel.innerHTML = items.map(t => `<option value="${t.id}">${_esc(t.name)} (${t.taskCount} task${t.taskCount === 1 ? '' : 's'})</option>`).join('');
+      }
+    } catch (e) {
+      console.warn('[recurring-projects] list failed:', e?.message || e);
+    }
+    document.getElementById('spawn-project-name').value = '';
+    // Default due date = today.
+    const today = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    document.getElementById('spawn-due-date').value = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
+    document.getElementById('spawn-status').textContent = '';
+    document.getElementById('spawn-preview').style.display = 'none';
+    m.style.display = 'flex';
+    setTimeout(() => document.getElementById('spawn-project-name').focus(), 50);
+  };
+
+  window.closeSpawnFromTemplateModal = function() {
+    const m = document.getElementById('modal-spawn-template');
+    if (m) m.style.display = 'none';
+  };
+
+  window.submitSpawnFromTemplate = async function() {
+    const templateId = Number(document.getElementById('spawn-template-id')?.value);
+    const projectName = (document.getElementById('spawn-project-name')?.value || '').trim();
+    const dueDate = document.getElementById('spawn-due-date')?.value || '';
+    const status = document.getElementById('spawn-status');
+    const submitBtn = document.getElementById('spawn-submit');
+    if (!templateId)   { status.textContent = 'Pick a template.'; return; }
+    if (!projectName)  { status.textContent = 'Project name required.'; return; }
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Creating…'; }
+    status.textContent = '';
+    try {
+      const r = await apiPost('/api/projects/from-template', { templateId, projectName, dueDate });
+      if (r?.error) throw new Error(r.error);
+      status.textContent = `Created ${r.children?.length || 0} ticket${(r.children?.length || 0) === 1 ? '' : 's'} under ${r.project?.id || 'project'}.`;
+      // Refresh the projects list + tickets cache, then close.
+      try {
+        const tickets = await apiGet('/api/tickets');
+        if (Array.isArray(tickets)) {
+          TICKETS_DATA.length = 0;
+          tickets.forEach(t => TICKETS_DATA.push(t));
+        }
+      } catch {}
+      if (typeof loadProjectsPage === 'function') loadProjectsPage();
+      setTimeout(() => closeSpawnFromTemplateModal(), 800);
+    } catch (e) {
+      status.textContent = 'Failed: ' + (e?.message || e);
+      status.style.color = 'var(--red)';
+    } finally {
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Create project'; }
+    }
+  };
+
+  // Hook switchSettingsTab so the templates list refreshes on tab open.
+  function _hookRecurringProjectsTab() {
+    const _origSST = window.switchSettingsTab;
+    if (typeof _origSST === 'function' && !_origSST._rpPatched) {
+      const patched = function(tab) {
+        const r = _origSST.apply(this, arguments);
+        if (tab === 'recurring-projects') loadProjectTemplates();
+        return r;
+      };
+      patched._rpPatched = true;
+      window.switchSettingsTab = patched;
+    }
+  }
+  setTimeout(_hookRecurringProjectsTab, 1200);
 })();
 
 // ── Polish button bootstrap — wire into the major static textareas ──────────

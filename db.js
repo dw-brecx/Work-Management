@@ -436,6 +436,30 @@ async function init() {
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_external_apps_position ON external_apps (position)`,
+    // Recurring-project templates: named bundles of tasks the admin can
+    // spawn into a real project + child tickets in one click. Same idea
+    // as flavor_tasks but with multiple named templates instead of one
+    // global one — different recurring workflows (e.g. "Email campaign",
+    // "Trade show booth") each have their own task list.
+    `CREATE TABLE IF NOT EXISTS project_templates (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE TABLE IF NOT EXISTS project_template_tasks (
+      id SERIAL PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES project_templates(id) ON DELETE CASCADE,
+      position INTEGER DEFAULT 0,
+      title_template TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      assignee TEXT DEFAULT '',
+      dept TEXT DEFAULT 'General',
+      priority TEXT DEFAULT 'Medium',
+      days_offset INTEGER DEFAULT 7
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_project_template_tasks_tpl ON project_template_tasks (template_id, position)`,
   ];
 
   for (const sql of tables) {

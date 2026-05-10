@@ -2800,6 +2800,238 @@ app.delete('/api/worktasks/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Recurring project templates ─────────────────────────────────────────────
+// Admin-curated bundles of tasks the team uses repeatedly. From the
+// Projects page, an admin can spawn a new project + all its child
+// tickets in one call by referencing a template id. Same idea as
+// flavor_tasks but supports multiple named templates.
+//
+// Read-list is open to any authenticated user (so the spawn picker can
+// show options); writes (template + task management) are admin-only.
+app.get('/api/project-templates', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT pt.id, pt.name, pt.description, pt.created_at,
+             COALESCE(tc.task_count, 0)::int AS task_count
+        FROM project_templates pt
+        LEFT JOIN (
+          SELECT template_id, COUNT(*) AS task_count
+            FROM project_template_tasks
+           GROUP BY template_id
+        ) tc ON tc.template_id = pt.id
+       ORDER BY pt.id ASC`);
+    res.json(rows.map(r => ({
+      id: r.id, name: r.name, description: r.description || '',
+      createdAt: r.created_at, taskCount: r.task_count,
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/project-templates/:id', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const tpl = await get('SELECT id, name, description, created_at FROM project_templates WHERE id=?', id);
+    if (!tpl) return res.status(404).json({ error: 'Not found' });
+    const tasks = await all(
+      `SELECT id, position, title_template, description, assignee, dept, priority, days_offset
+         FROM project_template_tasks
+        WHERE template_id=?
+        ORDER BY position ASC, id ASC`, id
+    );
+    res.json({
+      id: tpl.id, name: tpl.name, description: tpl.description || '',
+      createdAt: tpl.created_at,
+      tasks: tasks.map(t => ({
+        id: t.id, position: t.position || 0,
+        titleTemplate: t.title_template,
+        description: t.description || '',
+        assignee: t.assignee || '',
+        dept: t.dept || 'General',
+        priority: t.priority || 'Medium',
+        daysOffset: Number(t.days_offset || 0),
+      })),
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/project-templates', requireAdmin, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const description = String(req.body?.description || '').trim();
+    const info = await run(
+      `INSERT INTO project_templates (name, description, created_by)
+       VALUES (?, ?, ?) RETURNING id`,
+      name.slice(0, 200), description.slice(0, 1000), req.session.userId
+    );
+    res.status(201).json({ id: Number(info.lastInsertRowid), name, description, taskCount: 0 });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/project-templates/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await get('SELECT id FROM project_templates WHERE id=?', id);
+    if (!exists) return res.status(404).json({ error: 'Not found' });
+    const u = []; const v = [];
+    if (req.body?.name !== undefined) {
+      const n = String(req.body.name || '').trim();
+      if (!n) return res.status(400).json({ error: 'name cannot be empty' });
+      u.push('name=?'); v.push(n.slice(0, 200));
+    }
+    if (req.body?.description !== undefined) {
+      u.push('description=?'); v.push(String(req.body.description || '').slice(0, 1000));
+    }
+    if (!u.length) return res.json({ ok: true });
+    v.push(id);
+    await run(`UPDATE project_templates SET ${u.join(', ')} WHERE id=?`, ...v);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/project-templates/:id', requireAdmin, async (req, res) => {
+  try {
+    await run('DELETE FROM project_templates WHERE id=?', Number(req.params.id));
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Bulk replace the task list for a template. Body: { tasks: [{title,
+// assignee, dept, priority, daysOffset, description}, ...] }. Like the
+// flavor-tasks editor — drop everything, re-insert in the given order.
+app.put('/api/project-templates/:id/tasks', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await get('SELECT id FROM project_templates WHERE id=?', id);
+    if (!exists) return res.status(404).json({ error: 'Not found' });
+    const tasks = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+    await withTx(async (tx) => {
+      await tx.run('DELETE FROM project_template_tasks WHERE template_id=?', id);
+      let pos = 1;
+      for (const t of tasks) {
+        const title = String(t?.title ?? t?.titleTemplate ?? '').trim();
+        if (!title) continue;
+        await tx.run(
+          `INSERT INTO project_template_tasks
+             (template_id, position, title_template, description, assignee, dept, priority, days_offset)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, pos++, title.slice(0, 300),
+          String(t?.description || '').slice(0, 2000),
+          String(t?.assignee || ''),
+          String(t?.dept || 'General'),
+          String(t?.priority || 'Medium'),
+          Number(t?.daysOffset ?? t?.days_offset ?? 7) || 0
+        );
+      }
+    });
+    res.json({ ok: true, count: tasks.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Spawn a real project + child tickets from a template. Mirrors how
+// /api/flavors creates tickets, but the parent is a project (is_project=1)
+// and children carry parent_ticket_id pointing at it.
+//
+// Body: { templateId, projectName, dueDate?, tag? }
+//   - dueDate (YYYY-MM-DD): used as the launch baseline for daysOffset.
+//     Defaults to today if omitted.
+//   - tag (string): added to every spawned ticket so they group in lists.
+//     Defaults to "Project: {projectName}".
+//
+// Returns the parent project + the list of child tickets created.
+app.post('/api/projects/from-template', requireAdmin, async (req, res) => {
+  try {
+    const templateId = Number(req.body?.templateId);
+    const projectName = String(req.body?.projectName || '').trim();
+    if (!templateId) return res.status(400).json({ error: 'templateId required' });
+    if (!projectName) return res.status(400).json({ error: 'projectName required' });
+    const tpl = await get('SELECT id, name FROM project_templates WHERE id=?', templateId);
+    if (!tpl) return res.status(404).json({ error: 'Template not found' });
+    const tasks = await all(
+      'SELECT * FROM project_template_tasks WHERE template_id=? ORDER BY position ASC, id ASC',
+      templateId
+    );
+    if (!tasks.length) return res.status(409).json({ error: 'Template has no tasks. Add some in Settings → Recurring Projects.' });
+
+    const u = await getUser(req.session.userId);
+    const launchDate = (req.body?.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(req.body.dueDate))
+      ? req.body.dueDate
+      : new Date().toISOString().slice(0, 10);
+    const launchMs = new Date(launchDate + 'T00:00:00').getTime();
+    const tag = String(req.body?.tag || `Project: ${projectName}`).slice(0, 80);
+    const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    const result = await withTx(async (tx) => {
+      // Same advisory lock used by /api/tickets + /api/flavors so
+      // concurrent spawns can't race on ticket-id allocation.
+      await tx.run('SELECT pg_advisory_xact_lock(91501)');
+      const maxRow = await tx.get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+      let nextNum = 1000;
+      if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+
+      // Parent project ticket. Title = the user-provided projectName.
+      // Due date defaults to the latest child due so the project envelope
+      // covers all the work inside it.
+      nextNum += 1;
+      const parentId = 'TKT-' + nextNum;
+      const lastDueMs = launchMs + Math.max(0, ...tasks.map(t => Number(t.days_offset || 0))) * 86400000;
+      const parentDue = new Date(lastDueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      await tx.run(
+        `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,is_project,reporter_user_id,req_user_id)
+         VALUES (?, ?, ?, '', ?, 'Medium', 'Open', 'General', ?, ?, 0, ?, 0, ?, 1, ?, ?)`,
+        parentId, projectName, u?.name || '', u?.name || '',
+        parentDue, createdStr, JSON.stringify([tag]), req.session.userId,
+        u?.id || null, u?.id || null
+      );
+      await tx.run('INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?) ON CONFLICT DO NOTHING',
+        parentId, `Spawned from template: ${tpl.name}`);
+
+      const children = [];
+      for (const row of tasks) {
+        nextNum += 1;
+        const tktId = 'TKT-' + nextNum;
+        // {project} placeholder so templates can reference the project name.
+        const title = (row.title_template || '').replace(/\{project\}/gi, projectName);
+        const dueMs = launchMs + Number(row.days_offset || 0) * 86400000;
+        const due = new Date(dueMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const assigneeRow = row.assignee
+          ? await tx.get('SELECT id,name,email FROM users WHERE name=? ORDER BY id ASC LIMIT 1', row.assignee)
+          : null;
+        await tx.run(
+          `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,parent_ticket_id)
+           VALUES (?,?,?,?,?,?,'Open',?,?,?,0,?,0,?,?,?,?,?)`,
+          tktId, title, u?.name || '', row.assignee || '', u?.name || '',
+          row.priority || 'Medium', row.dept || 'General',
+          due, createdStr, JSON.stringify([tag]), req.session.userId,
+          assigneeRow?.id || null, u?.id || null, u?.id || null, parentId
+        );
+        await tx.run(
+          'INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?) ON CONFLICT DO NOTHING',
+          tktId, row.description || ''
+        );
+        if (row.assignee) {
+          await tx.run(
+            'INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING',
+            tktId, row.assignee, assigneeRow?.id || null
+          );
+        }
+        children.push({ id: tktId, title, assignee: row.assignee || '', due });
+      }
+      return { parentId, children };
+    });
+
+    res.status(201).json({
+      ok: true,
+      project: { id: result.parentId, title: projectName },
+      children: result.children,
+      templateName: tpl.name,
+    });
+  } catch(e) {
+    console.error('[projects/from-template] failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Calendar events ───────────────────────────────────────────────────────────
 app.get('/api/events', requireAuth, async (req, res) => {
   try {
