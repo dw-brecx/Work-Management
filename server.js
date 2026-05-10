@@ -1689,7 +1689,23 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
     const emailedUserIds = new Set([req.session.userId]);
 
     // ── @-mentions: mention email + in-app notification ───────────────────
-    const mentions = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
+    // Greedy regex captures the longest letter-and-spaces run after @
+    // (e.g. "@Eli did you create the subtasks" → captures the whole
+    // phrase). We then try progressively shorter prefixes against
+    // users.name so "@Eli did you …" still resolves to "Eli". Multi-word
+    // names ("John Smith") still match correctly because the longest
+    // prefix is tried first.
+    const mentionRaw = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
+    const matchedNames = new Set();
+    for (const captured of mentionRaw) {
+      const words = captured.split(' ');
+      for (let len = words.length; len >= 1; len--) {
+        const candidate = words.slice(0, len).join(' ');
+        const found = await get('SELECT name FROM users WHERE name=? LIMIT 1', candidate);
+        if (found) { matchedNames.add(found.name); break; }
+      }
+    }
+    const mentions = Array.from(matchedNames);
     for (const name of mentions) {
       const mentioned = await get('SELECT id,name,email,role,dept FROM users WHERE name=?', name);
       if (mentioned && !emailedUserIds.has(mentioned.id)) {
