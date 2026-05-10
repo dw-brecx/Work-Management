@@ -3443,10 +3443,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <!-- Opens in-place when the user clicks an attachment, instead of a new
          browser tab — keeps the SPA state intact. Image / video / audio /
          pdf rendered inline; everything else falls back to a Download
-         button. ESC or backdrop click closes. -->
-    <div id="attachment-lightbox" class="modal" style="display:none;align-items:center;justify-content:center;background:rgba(15,23,42,0.85);position:fixed;inset:0;z-index:9999;padding:20px">
+         button. ESC or backdrop click closes. NB: deliberately not using
+         class="modal" — that class hardcodes width:460px which would
+         collapse the lightbox into a thin column. -->
+    <div id="attachment-lightbox" style="display:none;align-items:center;justify-content:center;background:rgba(15,23,42,0.85);position:fixed;inset:0;z-index:9999;padding:20px;box-sizing:border-box">
       <div onclick="closeAttachmentLightbox()" style="position:absolute;inset:0;cursor:pointer"></div>
-      <div style="position:relative;max-width:90vw;max-height:90vh;background:#fff;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)">
+      <div style="position:relative;width:min(95vw, 1200px);max-width:95vw;max-height:92vh;background:#fff;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5)">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);background:#fafbff;gap:12px;flex-shrink:0">
           <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="lightbox-title">—</div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
@@ -3454,7 +3456,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <button onclick="closeAttachmentLightbox()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text2);padding:0 6px;line-height:1" title="Close (Esc)">×</button>
           </div>
         </div>
-        <div id="lightbox-body" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;background:#0b1220"></div>
+        <div id="lightbox-body" style="flex:1;min-height:0;overflow:auto;display:flex;align-items:flex-start;justify-content:center;background:#0b1220;padding:8px"></div>
       </div>
     </div>
 
