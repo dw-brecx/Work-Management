@@ -5612,6 +5612,10 @@ function openTicketDetail(id) {
       TICKET_TIMELINES[t.id] = rows.slice().reverse().map(r => ({
         dot: r.dot || 'var(--accent)',
         text: r.text || '',
+        // Prefer the raw UTC createdAt (formatted into the viewer's local
+        // time below). Server-rendered `sub` is a fallback for legacy
+        // rows that pre-date the column.
+        createdAt: r.createdAt || null,
         sub: r.sub || '',
       }));
       if (currentTicketId === t.id && typeof renderTimeline === 'function') renderTimeline();
@@ -7110,6 +7114,11 @@ function renderTimeline() {
   const t = getCurrentTicket();
   if (!t) return;
   const items = TICKET_TIMELINES[t.id] || [];
+  // Prefer the raw UTC `createdAt` (formatted in the viewer's local
+  // timezone) over the server-rendered `sub` (which formats in UTC).
+  const subFor = a => (a.createdAt && typeof _fmtUtcLocal === 'function')
+    ? _fmtUtcLocal(a.createdAt)
+    : (a.sub || '');
 
   // Right-side compact timeline
   const el = document.getElementById('det-timeline');
@@ -7120,7 +7129,7 @@ function renderTimeline() {
         ${i < items.length - 1 ? '<div class="tl-line"></div>' : ''}
         <div>
           <div class="tl-text">${escapeHtml(a.text)}</div>
-          <div class="tl-sub">${escapeHtml(a.sub)}</div>
+          <div class="tl-sub">${escapeHtml(subFor(a))}</div>
         </div>
       </div>
     `).join('');
@@ -7137,7 +7146,7 @@ function renderTimeline() {
           <div style="width:8px;height:8px;border-radius:50%;background:${a.dot};margin-top:6px;flex-shrink:0"></div>
           <div style="flex:1;min-width:0">
             <div style="font-size:12.5px;color:var(--text);line-height:1.5">${escapeHtml(a.text)}</div>
-            <div style="font-size:10.5px;color:var(--text3);margin-top:2px">${escapeHtml(a.sub)}</div>
+            <div style="font-size:10.5px;color:var(--text3);margin-top:2px">${escapeHtml(subFor(a))}</div>
           </div>
         </div>
       `).join('');

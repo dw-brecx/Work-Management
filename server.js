@@ -1861,9 +1861,19 @@ app.get('/api/tickets/:id/timeline', requireAuth, requireTicketAccess, async (re
     const rows = await all('SELECT * FROM ticket_timelines WHERE ticket_id=? ORDER BY created_at DESC', req.params.id);
     if (!rows.length) {
       const t = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
-      if (t) return res.json([{ dot:'var(--green)', text:'Ticket created', sub: formatUSDateTime(t.created_at) || t.created }]);
+      if (t) return res.json([{
+        dot: 'var(--green)', text: 'Ticket created',
+        // Raw UTC stamp — client formats in user's local time. `sub`
+        // retained as a fallback for any legacy renderer.
+        createdAt: t.created_at,
+        sub: formatUSDateTime(t.created_at) || t.created,
+      }]);
     }
-    res.json(rows.map(r=>({ id:r.id, dot:r.dot, text:r.text, sub: formatUSDateTime(r.created_at) || r.sub })));
+    res.json(rows.map(r => ({
+      id: r.id, dot: r.dot, text: r.text,
+      createdAt: r.created_at,
+      sub: formatUSDateTime(r.created_at) || r.sub,
+    })));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
