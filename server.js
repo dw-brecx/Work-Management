@@ -3220,6 +3220,81 @@ app.get('/api/admin/tickets/dump', requireAdmin, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Diagnose Slack integration. Admin-only. Either:
+//   GET  /api/admin/slack/diagnose                       → high-level status
+//   POST /api/admin/slack/test  body { userId } or {email} → try to DM them
+// The test endpoint forces a fresh email lookup (clears the cached
+// slack_user_id first) and reports each step separately so you can tell
+// whether the failure is "user not found in Slack workspace", "missing
+// scope", "auth bad", or "send blocked".
+app.get('/api/admin/slack/diagnose', requireAdmin, async (req, res) => {
+  try {
+    if (!slackReady) return res.json({ ready: false, reason: 'SLACK_BOT_TOKEN not set on server' });
+    // auth.test confirms the token is valid + tells us which workspace.
+    const auth = await _slackApi('auth.test', {});
+    res.json({
+      ready: true,
+      tokenValid: !!auth.ok,
+      workspace: auth.team || null,
+      botUser: auth.user || null,
+      botUserId: auth.user_id || null,
+      authError: auth.ok ? null : auth.error,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/admin/slack/test', requireAdmin, async (req, res) => {
+  try {
+    if (!slackReady) return res.status(400).json({ error: 'SLACK_BOT_TOKEN not set on server' });
+    let { userId, email } = req.body || {};
+    let user;
+    if (userId) {
+      user = await get('SELECT id, name, email, slack_user_id FROM users WHERE id=?', Number(userId));
+    } else if (email) {
+      user = await get('SELECT id, name, email, slack_user_id FROM users WHERE email=?', String(email));
+    }
+    if (!user) return res.status(404).json({ error: 'No matching user', userId, email });
+    // Clear the cache so we always do a fresh lookup for the diagnostic.
+    await run("UPDATE users SET slack_user_id='' WHERE id=?", user.id);
+    user.slack_user_id = '';
+    // Step 1: lookup by email
+    const lookupR = await fetch(
+      'https://slack.com/api/users.lookupByEmail?email=' + encodeURIComponent(user.email),
+      { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } }
+    );
+    const lookupData = await lookupR.json();
+    if (!lookupData.ok) {
+      return res.json({
+        step: 'lookupByEmail', ok: false,
+        syruviaUser: { id: user.id, name: user.name, email: user.email },
+        slackError: lookupData.error,
+        hint: lookupData.error === 'users_not_found'
+          ? `Slack workspace has no user with email ${user.email}. Either change the user's email in Syruvia (Settings → Users) so it matches their Slack email, or add this email as an alternate in Slack.`
+          : lookupData.error === 'missing_scope'
+            ? `The Slack App's bot token is missing the 'users:read.email' scope. Re-install the app with that scope added.`
+            : null,
+      });
+    }
+    const sid = lookupData.user.id;
+    await run('UPDATE users SET slack_user_id=? WHERE id=?', sid, user.id);
+    // Step 2: send a real test DM
+    const postData = await _slackApi('chat.postMessage', {
+      channel: sid,
+      text: `🧪 Syruvia test DM — if you see this, Slack notifications are working. (Triggered by an admin from Settings.)`,
+    });
+    res.json({
+      step: 'chat.postMessage', ok: !!postData.ok,
+      syruviaUser: { id: user.id, name: user.name, email: user.email },
+      slackUser: lookupData.user,
+      slackUserId: sid,
+      slackError: postData.ok ? null : postData.error,
+      hint: !postData.ok && postData.error === 'missing_scope'
+        ? `The Slack App's bot token is missing the 'chat:write' scope. Re-install the app with that scope added.`
+        : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Diagnose attachment storage health. Walks the attachments table and
 // stats every referenced file on disk, returning the rows that are
 // missing, zero-byte, or whose on-disk size doesn't match the DB. Use
