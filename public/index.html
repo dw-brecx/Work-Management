@@ -1406,9 +1406,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg.is-mention-me:not(.is-mine) .msg-bubble{background:#fff7e6;box-shadow:inset 3px 0 0 #f59e0b}
   .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px;padding:6px 12px;background:#f1f5f9;border-radius:14px}
   /* Hover toolbar — sits IMMEDIATELY beside the bubble (right of incoming,
-     left of own). Anchored to .msg-body so it lands on the bubble edge
-     instead of the far edge of the message row. */
-  .chat-msg .msg-body{position:relative}
+     left of own). Anchored to .msg-bubble itself so it lands on the
+     bubble's real rendered edges, not to .msg-body which can be wider
+     when bubble content is short. */
+  .chat-msg .msg-bubble{position:relative;min-width:48px}
   .chat-msg .msg-actions{position:absolute;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:1px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px rgba(15,23,42,.10);padding:3px;z-index:5;opacity:0;visibility:hidden;transition:opacity .12s ease, visibility .12s ease}
   .chat-msg:not(.is-mine) .msg-actions{left:100%;margin-left:6px}
   .chat-msg.is-mine .msg-actions{right:100%;margin-right:6px}
@@ -1440,6 +1441,32 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-pill .comp-send svg{width:18px;height:18px}
   .chat-pill .comp-send:hover{background:#1d4ed8;transform:translateY(-1px)}
   .chat-pill .comp-send:active{transform:translateY(0)}
+  /* Recording overlay — replaces the pill's normal controls while a voice
+     note is being captured, so the user has a clearly visible Stop button
+     instead of having to tap the mic icon again. */
+  .chat-pill .rec-overlay{display:none;flex:1;align-items:center;gap:10px;padding:0 8px}
+  .chat-pill.recording .rec-overlay{display:flex}
+  .chat-pill.recording > *:not(.rec-overlay){display:none !important}
+  .chat-pill .rec-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#dc2626;animation:chatRecPulse 1s ease-in-out infinite}
+  @keyframes chatRecPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
+  .chat-pill .rec-label{font-size:13px;font-weight:600;color:#dc2626}
+  .chat-pill .rec-time{font-size:13px;font-variant-numeric:tabular-nums;color:var(--text2);font-weight:600;flex:1}
+  .chat-pill .rec-cancel{background:#fff;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:500;cursor:pointer}
+  .chat-pill .rec-cancel:hover{background:#f1f5f9;color:#dc2626;border-color:#dc2626}
+  .chat-pill .rec-stop{background:#dc2626;color:#fff;border:0;border-radius:8px;padding:7px 14px;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(220,38,38,.3)}
+  .chat-pill .rec-stop:hover{background:#b91c1c;transform:translateY(-1px)}
+  /* Voice icon pulses red while recording (the dot is the overlay's, this
+     is a fallback in case overlay is dismissed). */
+  .chat-pill .comp-icon{position:relative}
+  .chat-pill .comp-icon.recording{background:#fee2e2;color:#dc2626}
+  /* Swipe-to-reply on mobile — bubble translates as the user drags right
+     and a reply icon appears on the left side. Released past threshold
+     triggers setChatReplyTo(). */
+  .chat-msg{transition:transform .2s ease}
+  .chat-msg.swiping{transition:none}
+  .chat-msg::before{content:'↩';position:absolute;left:8px;top:50%;transform:translateY(-50%) scale(0);opacity:0;color:#3b82f6;font-size:18px;background:#dbeafe;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:transform .15s ease,opacity .15s ease;pointer-events:none;font-weight:700}
+  .chat-msg.swiping::before{opacity:.85;transform:translateY(-50%) scale(1)}
+  .chat-msg.will-reply::before{opacity:1;transform:translateY(-50%) scale(1.15);background:#3b82f6;color:#fff}
   /* Collapse the hidden mediaComposer's bordered button row; keep the
      pending-attachment previews + the recording timer visible inline. */
   #chat-media-mount .media-composer{background:transparent !important;border:0 !important;padding:0 !important;margin:0 !important}
@@ -3921,7 +3948,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
                  icons below. Pending-attachment previews + voice-recording timer
                  still show inline. -->
             <div id="chat-media-mount"></div>
-            <div class="chat-pill">
+            <div class="chat-pill" id="chat-pill">
               <button type="button" class="comp-icon" title="Attach file" onclick="chatComposerAttach('file')" aria-label="Attach file">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
               </button>
@@ -3935,6 +3962,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <button type="button" class="comp-send" onclick="sendChatMessage()" id="chat-send-btn" aria-label="Send">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
               </button>
+              <!-- Recording overlay — shown when chat-pill has class .recording.
+                   Hides the normal pill controls and gives the user a clearly
+                   labelled Stop button (the old "tap the mic again" was hidden). -->
+              <div class="rec-overlay">
+                <span class="rec-dot"></span>
+                <span class="rec-label">Recording</span>
+                <span class="rec-time" id="chat-rec-time">0:00</span>
+                <button type="button" class="rec-cancel" onclick="chatVoiceCancel()" aria-label="Cancel">Cancel</button>
+                <button type="button" class="rec-stop" onclick="chatComposerAttach('voice')" aria-label="Stop and attach">⏹ Stop &amp; attach</button>
+              </div>
             </div>
             <div id="chat-polish-mount" style="margin-top:6px"></div>
             <div id="chat-composer-hint" style="font-size:10.5px;color:var(--text3);margin-top:6px;padding:0 4px">
@@ -20548,12 +20585,14 @@ function renderChatMessageHtml(m, prev) {
   // Bubble holds the (optional) quote card + body + (if present) attachments.
   // Footer below the bubble: time + (edited) tag + reactions + thread link.
   const bubbleInner = `${quoteHtml}${bodyHtml}${attsHtml}`;
+  // ${actions} lives INSIDE the bubble so its absolute positioning (left:
+  // 100% / right: 100%) anchors to the bubble's actual rendered edges —
+  // not to .msg-body, which can be wider than the bubble.
   return `<div class="${cls.join(' ')}" data-msg-id="${m.id}">
-    ${actions}
     <div class="msg-avatar" style="background:${escapeHtml(author.color)}">${avatar}</div>
     <div class="msg-body">
       ${showAuthor ? `<span class="msg-author">${escapeHtml(author.name)}</span>` : ''}
-      <div class="msg-bubble">${bubbleInner}</div>
+      <div class="msg-bubble">${bubbleInner}${actions}</div>
       ${reactionsHtml}
       ${confirmHtml}
       <div class="msg-time">${formatChatTime(m.createdAt)}${editedTag}${threadHtml ? ' · ' : ''}</div>
@@ -20839,22 +20878,25 @@ window.chatComposerAttach = function(kind) {
   }
 };
 
-// Mirror the hidden voice button's recording state on the visible pill icon
-// (so the user gets the red "recording" affordance + the live timer that
-// would otherwise be hidden inside the collapsed mediaComposer).
+// Mirror the hidden voice button's recording state on the visible pill —
+// flips the whole pill into a clearly-labelled "Recording … [Stop]"
+// overlay rather than asking the user to press the mic icon again.
 function chatSyncRecordingState() {
   const hiddenVoice = document.querySelector('#chat-media-mount .mc-voice-btn');
   const hiddenTimer = document.querySelector('#chat-media-mount .mc-rec-timer');
+  const pill = document.getElementById('chat-pill');
   const pillVoice = document.getElementById('chat-comp-voice');
-  if (!hiddenVoice || !pillVoice) return;
-  // The mediaComposer toggles inline background:#fee2e2 on the voice button
-  // while recording. Use that as the signal.
-  const isRecording = (hiddenVoice.style.background || '').includes('fee2e2');
-  pillVoice.classList.toggle('recording', isRecording);
-  if (isRecording && hiddenTimer) {
-    pillVoice.dataset.recTime = (hiddenTimer.textContent || '').trim();
-  } else {
-    delete pillVoice.dataset.recTime;
+  const timeEl = document.getElementById('chat-rec-time');
+  if (!hiddenVoice || !pill) return;
+  // The mediaComposer rewrites the button's innerHTML to a Stop rect SVG
+  // while recording. innerHTML is a reliable signal (style.background gets
+  // normalised to rgb(...) on read in most browsers, so string-matching
+  // the hex code failed silently — that's why recording UI never showed).
+  const isRecording = /\brect\b/i.test(hiddenVoice.innerHTML);
+  pill.classList.toggle('recording', isRecording);
+  if (pillVoice) pillVoice.classList.toggle('recording', isRecording);
+  if (timeEl && hiddenTimer) {
+    timeEl.textContent = (hiddenTimer.textContent || '0:00').trim() || '0:00';
   }
 }
 // Poll on a 500ms cadence whenever the chat page is mounted. Cheap enough
@@ -20862,6 +20904,89 @@ function chatSyncRecordingState() {
 setInterval(() => {
   if (currentPage === 'chat') chatSyncRecordingState();
 }, 500);
+
+// Cancel button on the recording overlay: stops the recorder and removes
+// the resulting voice-note attachment so it isn't sent.
+window.chatVoiceCancel = function() {
+  const hiddenVoice = document.querySelector('#chat-media-mount .mc-voice-btn');
+  if (!hiddenVoice) return;
+  // Snapshot pending-file count BEFORE we stop — the mediaComposer pushes
+  // a new file on onstop, which we'll remove right after.
+  const before = (CHAT_STATE._mediaComposer?.getFiles() || []).length;
+  hiddenVoice.click();
+  // Give the recorder a tick to fire onstop + addPreview, then drop the
+  // newly-pushed file. The mediaComposer doesn't expose a remove-by-index
+  // API, so we click the preview's × button to remove the last item.
+  setTimeout(() => {
+    const after = (CHAT_STATE._mediaComposer?.getFiles() || []).length;
+    if (after > before) {
+      const previews = document.querySelectorAll('#chat-media-mount .mc-previews > div');
+      const last = previews[previews.length - 1];
+      const rmBtn = last && last.querySelector('button');
+      if (rmBtn) rmBtn.click();
+    }
+  }, 200);
+};
+
+// ── Swipe-to-reply (mobile, WhatsApp-style) ───────────────────────────────
+// Touch-drag right on a message bubble → reveals a circular reply icon on
+// the left; release past the threshold (~60px) sets composer reply mode
+// for that message. Released early snaps back. Ignored on desktop and on
+// vertical-leaning gestures.
+(function attachChatSwipeReply() {
+  let active = null; // { msgEl, startX, startY, currentX, locked }
+  const TRIGGER = 60;
+  document.addEventListener('touchstart', (ev) => {
+    if (!ev.target.closest) return;
+    const msgEl = ev.target.closest('.chat-msg');
+    if (!msgEl) return;
+    // Ignore taps on interactive children (reactions, attachments, etc.).
+    if (ev.target.closest('button, a, input, textarea, select, .msg-quote, .msg-att')) return;
+    const t = ev.touches[0];
+    active = { msgEl, startX: t.clientX, startY: t.clientY, currentX: t.clientX, locked: null };
+  }, { passive: true });
+  document.addEventListener('touchmove', (ev) => {
+    if (!active) return;
+    const t = ev.touches[0];
+    const dx = t.clientX - active.startX;
+    const dy = t.clientY - active.startY;
+    // Lock the gesture direction on first ~6px of movement so vertical
+    // scrolling never accidentally triggers a swipe.
+    if (active.locked === null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+      active.locked = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+    }
+    if (active.locked !== 'h') return;
+    if (dx <= 0) {
+      // Swiped back past the start — clear visuals but keep tracking.
+      active.msgEl.classList.remove('swiping','will-reply');
+      active.msgEl.style.transform = '';
+      return;
+    }
+    active.currentX = t.clientX;
+    active.msgEl.classList.add('swiping');
+    const damped = Math.min(dx, 100) * 0.7;
+    active.msgEl.style.transform = `translateX(${damped}px)`;
+    active.msgEl.classList.toggle('will-reply', dx >= TRIGGER);
+  }, { passive: true });
+  document.addEventListener('touchend', () => {
+    if (!active) return;
+    const dx = active.currentX - active.startX;
+    const msgEl = active.msgEl;
+    msgEl.classList.remove('swiping','will-reply');
+    msgEl.style.transform = '';
+    if (active.locked === 'h' && dx >= TRIGGER) {
+      const id = Number(msgEl.dataset.msgId);
+      if (id && typeof setChatReplyTo === 'function') setChatReplyTo(id);
+    }
+    active = null;
+  });
+  document.addEventListener('touchcancel', () => {
+    if (!active) return;
+    active.msgEl.classList.remove('swiping','will-reply');
+    active.msgEl.style.transform = '';
+    active = null;
+  });
+})();
 
 function onChatComposerKey(ev) {
   // Mention popup keyboard nav.
