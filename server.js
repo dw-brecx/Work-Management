@@ -4673,32 +4673,9 @@ async function runOverdueDigestJob() {
   }
 }
 
-// ── Catch-all ─────────────────────────────────────────────────────────────────
-app.get('*', (req, res) => {
-  if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
-  // Don't fall through to the SPA HTML for missing /uploads paths — that
-  // turns a 404 into "downloaded a copy of index.html" when a user clicks
-  // a Download link for a file that's no longer on disk.
-  if (req.path.startsWith('/uploads/')) return res.status(404).send('File not found');
-  // Same for static-asset extensions that should resolve to a real file or
-  // fail. Without this, /favicon.svg or /sw.js would silently become the
-  // app HTML, and the service worker would refuse to register.
-  if (/\.(svg|png|jpg|jpeg|gif|webp|ico|js|css|map|json|webmanifest|webm|mp4|mov|m4a|mp3|wav|ogg|pdf)$/i.test(req.path)) {
-    return res.status(404).send('Not found');
-  }
-  // Inject cross-app config so the frontend can call Syruvia's bridge API
-  // without hard-coding the URL in the HTML. We send a tiny inline script
-  // that sets window globals before the app JS loads.
-  const indexPath = path.join(__dirname, 'public', 'index.html');
-  let html = fs.readFileSync(indexPath, 'utf8');
-  const inject = `<script>
-    window.__SYRUVIA_URL__       = ${JSON.stringify(process.env.SYRUVIA_URL      || '')};
-    window.__CROSS_APP_SECRET__  = ${JSON.stringify(process.env.CROSS_APP_SECRET || '')};
-  </script>`;
-  html = html.replace('<head>', '<head>' + inject);
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(html);
-});
+// (Catch-all SPA handler is registered at the very end of route setup so it
+//  doesn't swallow GET requests for /api/bridge/*, /api/chat/*, etc. — see
+//  the block right before "── Start ──".)
 
 // ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
 // Cross-app API for syncing tickets ↔ Syruvia Lab flavors.
@@ -5675,6 +5652,36 @@ async function chatAutoJoinGeneral(userId) {
 // Expose so the registration / invite-accept routes can call it. Existing
 // routes don't call us; we patch them below by wrapping the response.
 app.locals.chatAutoJoinGeneral = chatAutoJoinGeneral;
+
+// ── Catch-all ─────────────────────────────────────────────────────────────────
+// Registered last, after every API route, so it doesn't intercept genuine
+// /api/* GETs (which previously returned a fake 404 because this handler ran
+// before the bridge + chat routes had a chance to match).
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
+  // Don't fall through to the SPA HTML for missing /uploads paths — that
+  // turns a 404 into "downloaded a copy of index.html" when a user clicks
+  // a Download link for a file that's no longer on disk.
+  if (req.path.startsWith('/uploads/')) return res.status(404).send('File not found');
+  // Same for static-asset extensions that should resolve to a real file or
+  // fail. Without this, /favicon.svg or /sw.js would silently become the
+  // app HTML, and the service worker would refuse to register.
+  if (/\.(svg|png|jpg|jpeg|gif|webp|ico|js|css|map|json|webmanifest|webm|mp4|mov|m4a|mp3|wav|ogg|pdf)$/i.test(req.path)) {
+    return res.status(404).send('Not found');
+  }
+  // Inject cross-app config so the frontend can call Syruvia's bridge API
+  // without hard-coding the URL in the HTML. We send a tiny inline script
+  // that sets window globals before the app JS loads.
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  let html = fs.readFileSync(indexPath, 'utf8');
+  const inject = `<script>
+    window.__SYRUVIA_URL__       = ${JSON.stringify(process.env.SYRUVIA_URL      || '')};
+    window.__CROSS_APP_SECRET__  = ${JSON.stringify(process.env.CROSS_APP_SECRET || '')};
+  </script>`;
+  html = html.replace('<head>', '<head>' + inject);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 (async () => {
