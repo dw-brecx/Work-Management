@@ -1463,7 +1463,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     /* Composer: tighter media bar, single-line textarea, hide the
        "paste with Ctrl+V" hint (no Ctrl key on a phone). */
     #chat-composer-wrap { padding: 6px 8px !important; }
-    #chat-composer-wrap textarea#chat-input { font-size: 16px !important; min-height: 36px !important; } /* ≥16px stops iOS zoom */
+    #chat-composer-wrap textarea#chat-input {
+      font-size: 16px !important; /* ≥16px stops iOS Safari's input-focus zoom */
+      min-height: 44px !important;
+      padding: 11px 14px !important;
+      line-height: 1.35 !important;
+    }
+    #chat-composer-wrap textarea#chat-input::placeholder { color: #94a3b8; opacity: 1; }
     #chat-composer-wrap #chat-media-mount { margin-bottom: 4px !important; }
     #chat-composer-wrap .media-composer { padding: 4px 6px !important; }
     /* Drop the "paste with Ctrl+V" desktop hint inside the media composer. */
@@ -3793,7 +3799,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div id="chat-media-mount" style="margin-bottom:8px"></div>
             <div style="display:flex;align-items:flex-end;gap:8px">
               <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
-                <textarea id="chat-input" placeholder="Type a message — @ to mention a person, # to link a ticket, Enter to send, Shift+Enter for newline" rows="1" style="resize:none;border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;max-height:160px;min-height:38px" oninput="autoSizeChatInput(this);onChatInputChange()" onkeydown="onChatComposerKey(event)"></textarea>
+                <textarea id="chat-input" placeholder="Message" rows="1" style="resize:none;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13px;font-family:inherit;outline:none;max-height:160px;min-height:42px;line-height:1.4" oninput="autoSizeChatInput(this);onChatInputChange()" onkeydown="onChatComposerKey(event)"></textarea>
                 <div id="chat-polish-mount"></div>
               </div>
               <button class="btn-primary" style="padding:8px 14px;font-size:12px" onclick="sendChatMessage()" id="chat-send-btn">Send</button>
