@@ -4164,6 +4164,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div id="push-help" style="font-size:11px;color:var(--text3);margin-top:8px;display:none;line-height:1.5"></div>
           </div>
 
+          <!-- Chat notifications -->
+          <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:18px;background:#fafbff">
+            <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+              <div style="flex:1;min-width:200px">
+                <div style="font-size:13px;font-weight:600;margin-bottom:4px">💬 Chat notifications</div>
+                <div style="font-size:11.5px;color:var(--text3);line-height:1.5">
+                  In-app notifications fire for every direct message and any <code>@mention</code> in a channel.
+                  Desktop / push alerts use the toggle above. Per-channel preferences below.
+                </div>
+              </div>
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+                <input type="checkbox" id="chat-mute-all"/>
+                <span>Mute all sounds</span>
+              </label>
+            </div>
+            <div style="font-size:11.5px;font-weight:600;color:var(--text2);margin:10px 0 6px">Notification sound</div>
+            <div id="chat-sound-picker" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+            <div style="font-size:11.5px;font-weight:600;color:var(--text2);margin:14px 0 6px">Per-channel preferences</div>
+            <div id="chat-channel-prefs" style="border:1px solid var(--border);border-radius:8px;background:#fff;max-height:280px;overflow-y:auto">
+              <div style="padding:14px;color:var(--text3);font-size:11.5px;text-align:center">Loading channels…</div>
+            </div>
+          </div>
+
           <table class="notif-table">
             <thead>
               <tr>
@@ -9940,6 +9963,8 @@ function switchSettingsTab(tab) {
   if (tab === 'notifications') {
     renderNotifPrefs();
     if (typeof refreshPushStatusUI === 'function') refreshPushStatusUI();
+    if (typeof renderChatSoundPicker === 'function') renderChatSoundPicker();
+    if (typeof renderChatChannelPrefs === 'function') renderChatChannelPrefs();
   }
   if (tab === 'security')      renderSessions();
   if (tab === 'users')         { renderUsersTab(); renderPendingInvites(); }
@@ -19488,26 +19513,51 @@ function updateChatTabTitle() {
   } catch {}
 }
 
-// Soft, single-shot ping via Web Audio API. Browsers gate audio behind a
-// user gesture, so the AudioContext is created lazily on the first user
-// interaction (the click handler at the bottom of this block primes it).
+// ── Chat sound library ────────────────────────────────────────────────────
+// Each preset is a tiny Web Audio "song" — a sequence of notes with a
+// simple envelope. Generated programmatically so we don't ship audio
+// files. Picked via Settings → Notifications, persisted in localStorage,
+// honoured by chatPlayPing on every incoming message.
+const CHAT_SOUND_PRESETS = {
+  ping:    { label: 'Ping (default)', wave: 'sine',     gain: 0.06, notes: [{ f: 880, d: 0.18, slide: 660 }] },
+  pop:     { label: 'Pop',            wave: 'triangle', gain: 0.07, notes: [{ f: 520, d: 0.06 }, { f: 780, d: 0.10 }] },
+  chime:   { label: 'Chime',          wave: 'sine',     gain: 0.05, notes: [{ f: 660, d: 0.18 }, { f: 880, d: 0.18, delay: 0.08 }, { f: 1320, d: 0.32, delay: 0.16 }] },
+  whistle: { label: 'Whistle',        wave: 'sine',     gain: 0.05, notes: [{ f: 1320, d: 0.20, slide: 1760 }] },
+  knock:   { label: 'Knock',          wave: 'square',   gain: 0.05, notes: [{ f: 220, d: 0.08 }, { f: 220, d: 0.08, delay: 0.12 }] },
+  bubble:  { label: 'Bubble',         wave: 'sine',     gain: 0.06, notes: [{ f: 400, d: 0.18, slide: 880 }] },
+  none:    { label: 'Silent (no sound)', silent: true },
+};
+
 let _chatAudioCtx = null;
-function chatPlayPing() {
+function chatGetSoundKey() {
+  try { return localStorage.getItem('chatSound') || 'ping'; } catch { return 'ping'; }
+}
+function chatGetMute() {
+  try { return localStorage.getItem('chatMute') === '1'; } catch { return false; }
+}
+function chatPlayPing(presetKey) {
+  if (chatGetMute()) return;
+  const key = presetKey || chatGetSoundKey();
+  const preset = CHAT_SOUND_PRESETS[key] || CHAT_SOUND_PRESETS.ping;
+  if (preset.silent) return;
   try {
     if (!_chatAudioCtx) _chatAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const ctx = _chatAudioCtx;
     if (ctx.state === 'suspended') { ctx.resume().catch(()=>{}); }
-    const t = ctx.currentTime;
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(880, t);
-    o.frequency.exponentialRampToValueAtTime(660, t + 0.18);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.06, t + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
-    o.connect(g); g.connect(ctx.destination);
-    o.start(t); o.stop(t + 0.25);
+    const baseT = ctx.currentTime;
+    for (const n of preset.notes) {
+      const t = baseT + (n.delay || 0);
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = preset.wave || 'sine';
+      o.frequency.setValueAtTime(n.f, t);
+      if (n.slide) o.frequency.exponentialRampToValueAtTime(n.slide, t + n.d);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(preset.gain || 0.05, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + n.d + 0.04);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(t); o.stop(t + n.d + 0.05);
+    }
   } catch {}
 }
 // Prime audio on the first user click anywhere — needed because every modern
@@ -19519,6 +19569,90 @@ document.addEventListener('click', function _primeChatAudio() {
   } catch {}
   document.removeEventListener('click', _primeChatAudio);
 }, { once: true });
+
+// Sound picker rendered in Settings → Notifications. Each preset is a chip
+// with a Preview button so the user can audition before saving.
+window.renderChatSoundPicker = function() {
+  const root = document.getElementById('chat-sound-picker');
+  if (!root) return;
+  const current = chatGetSoundKey();
+  root.innerHTML = Object.entries(CHAT_SOUND_PRESETS).map(([key, p]) => {
+    const isSelected = key === current;
+    return `<button type="button" onclick="chatSetSound('${key}')"
+              style="font-size:11.5px;padding:6px 12px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+                     ${isSelected ? 'background:var(--accent);color:#fff;border:1px solid var(--accent);font-weight:600' : 'background:#fff;color:var(--text2);border:1px solid var(--border)'}">
+      <span>${escapeHtml(p.label)}</span>
+      ${!p.silent ? `<span onclick="event.stopPropagation();chatPreviewSound('${key}')" style="opacity:.85;font-size:11px;text-decoration:underline;cursor:pointer">▶ preview</span>` : ''}
+    </button>`;
+  }).join('');
+  // Mute checkbox
+  const mute = document.getElementById('chat-mute-all');
+  if (mute) {
+    mute.checked = chatGetMute();
+    mute.onchange = (e) => {
+      try { localStorage.setItem('chatMute', e.target.checked ? '1' : '0'); } catch {}
+    };
+  }
+};
+
+window.chatSetSound = function(key) {
+  if (!CHAT_SOUND_PRESETS[key]) return;
+  try { localStorage.setItem('chatSound', key); } catch {}
+  // Always preview the chosen sound on selection so the user gets immediate
+  // confirmation of what they picked.
+  chatPlayPing(key);
+  renderChatSoundPicker();
+};
+window.chatPreviewSound = function(key) { chatPlayPing(key); };
+
+// Per-channel notify-preference list rendered in Settings → Notifications.
+// Reads from CHAT_STATE.channels (already populated when the user has
+// visited the Chat page) and falls back to fetching if not.
+window.renderChatChannelPrefs = async function() {
+  const root = document.getElementById('chat-channel-prefs');
+  if (!root) return;
+  if (!CHAT_STATE.channels.length) await chatLoadChannels();
+  if (!CHAT_STATE.channels.length) {
+    root.innerHTML = `<div style="padding:14px;color:var(--text3);font-size:11.5px;text-align:center">You haven't joined any chat conversations yet. Open <a onclick="navigate('chat')" style="color:var(--accent);cursor:pointer;text-decoration:underline">Chat</a> to start one.</div>`;
+    return;
+  }
+  // Group: channels first (alphabetical), then DMs / groups (recent first).
+  const channels = CHAT_STATE.channels.filter(c => c.type === 'channel').sort((a, b) => a.name.localeCompare(b.name));
+  const dmsAndGroups = CHAT_STATE.channels.filter(c => c.type !== 'channel').sort((a, b) =>
+    (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
+  const rows = [...channels, ...dmsAndGroups];
+  root.innerHTML = rows.map(c => {
+    const pref = (c.me && c.me.notify) || 'all';
+    const display = chatChannelDisplayName(c);
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
+        <span style="font-size:13px;width:18px;text-align:center;flex-shrink:0;color:var(--text3)">${chatChannelIcon(c)}</span>
+        <span style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(display)}</span>
+      </div>
+      <select onchange="chatSetChannelNotifyFromPrefs(${c.id}, this.value)"
+              style="font-size:11.5px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer">
+        <option value="all"      ${pref === 'all'      ? 'selected' : ''}>All messages</option>
+        <option value="mentions" ${pref === 'mentions' ? 'selected' : ''}>Only @mentions</option>
+        <option value="none"     ${pref === 'none'     ? 'selected' : ''}>Nothing</option>
+      </select>
+    </div>`;
+  }).join('');
+};
+
+window.chatSetChannelNotifyFromPrefs = async function(channelId, pref) {
+  try {
+    const r = await fetch(`/api/chat/channels/${channelId}/notify`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notify: pref }),
+    });
+    if (!r.ok) throw new Error('save failed');
+    const c = CHAT_STATE.channelsById.get(channelId);
+    if (c) { c.me = c.me || {}; c.me.notify = pref; }
+    if (typeof settingsToast === 'function') settingsToast('Saved');
+  } catch (e) {
+    alert('Could not save preference: ' + (e.message || e));
+  }
+};
 
 // ── Rendering ─────────────────────────────────────────────────────────────
 function chatChannelDisplayName(c) {
