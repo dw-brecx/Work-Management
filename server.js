@@ -5557,9 +5557,102 @@ app.post('/api/chat/channels/:id/messages', requireAuth, async (req, res) => {
         }
       } catch (e) { console.warn('[chat:notify]', e.message); }
     })();
-    res.status(201).json(hydrated);
+    // Side-effect: when someone @mentions a third party inside a 1:1 DM,
+    // spawn (or re-open) a group chat with all three so the conversation
+    // can keep going there. The original DM message stays untouched —
+    // this just creates a separate room "to discuss further". The same
+    // message body is reposted as the first message in the new group so
+    // the newly-added person has context.
+    let spawnedGroup = null;
+    try {
+      const chan = await get('SELECT * FROM chat_channels WHERE id=?', id);
+      if (chan && chan.type === 'dm' && mentions.length) {
+        const channelMemberRows = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', id);
+        const channelMemberIds = new Set(channelMemberRows.map(r => r.user_id));
+        const newPeople = mentions.filter(m => !channelMemberIds.has(m.id) && m.id !== req.session.userId);
+        if (newPeople.length) {
+          const allMemberIds = [...new Set([
+            req.session.userId,
+            ...channelMemberRows.map(r => r.user_id),
+            ...newPeople.map(m => m.id),
+          ])];
+          spawnedGroup = await chatSpawnOrOpenGroup(req.session.userId, allMemberIds, body);
+        }
+      }
+    } catch (e) { console.warn('[chat:spawn-group]', e.message); }
+    res.status(201).json(spawnedGroup ? { ...hydrated, spawnedGroup } : hydrated);
   } catch (e) { console.error('[chat:send]', e); res.status(500).json({ error: e.message }); }
 });
+
+// Find an existing group chat with EXACTLY the given member set, or create a
+// new one and seed it with `initialBody` posted by `creatorId`. Returns the
+// fully-serialised channel for the creator. Broadcasts channel:new to every
+// other member so it appears in their sidebars without a refresh.
+async function chatSpawnOrOpenGroup(creatorId, memberIds, initialBody) {
+  const wantedSet = new Set(memberIds);
+  // Look for an existing 'group' channel whose member set matches exactly.
+  // Cheap: groups are typically few; we only check those the creator is in.
+  const candidates = await all(
+    `SELECT c.id FROM chat_channels c
+       JOIN chat_channel_members m ON m.channel_id = c.id
+      WHERE c.type = 'group' AND m.user_id = ?`,
+    creatorId
+  );
+  let existingId = null;
+  for (const cand of candidates) {
+    const rows = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', cand.id);
+    const set = new Set(rows.map(r => r.user_id));
+    if (set.size === wantedSet.size && [...wantedSet].every(uid => set.has(uid))) {
+      existingId = cand.id; break;
+    }
+  }
+  let channelId = existingId;
+  if (!channelId) {
+    const ins = await run(
+      `INSERT INTO chat_channels (name, type, created_by) VALUES (?,?,?) RETURNING id`,
+      '', 'group', creatorId
+    );
+    channelId = ins.lastInsertRowid;
+    for (const uid of memberIds) {
+      await run('INSERT INTO chat_channel_members (channel_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+        channelId, uid);
+    }
+  } else {
+    // Re-open for anyone who'd previously hidden it.
+    await run('UPDATE chat_channel_members SET hidden=0 WHERE channel_id=?', channelId);
+  }
+  // Post the seed message — only on creation OR when the body is non-empty.
+  if (initialBody) {
+    const msgIns = await run(
+      `INSERT INTO chat_messages (channel_id, user_id, body) VALUES (?,?,?) RETURNING id`,
+      channelId, creatorId, initialBody
+    );
+    await run("UPDATE chat_channels SET last_message_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", channelId);
+    await run(
+      "UPDATE chat_channel_members SET last_read_message_id=?, last_read_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE channel_id=? AND user_id=?",
+      msgIns.lastInsertRowid, channelId, creatorId
+    );
+    // Re-parse mentions inside the seed body so unread-mention counters
+    // and notifications fire for everyone in the new group too.
+    const seedMentions = await chatParseMentions(initialBody);
+    for (const m of seedMentions) {
+      await run('INSERT INTO chat_mentions (message_id, user_id) VALUES (?,?) ON CONFLICT DO NOTHING',
+        msgIns.lastInsertRowid, m.id);
+    }
+    const [hydratedSeed] = await chatHydrateMessages([
+      await get('SELECT * FROM chat_messages WHERE id=?', msgIns.lastInsertRowid),
+    ]);
+    wsBroadcastToChannel(channelId, { type: 'message:new', message: hydratedSeed });
+  }
+  const row = await get('SELECT * FROM chat_channels WHERE id=?', channelId);
+  // Push channel:new to every member so the group appears in their sidebar.
+  // Each gets a per-user serialisation (their unread count differs).
+  const memberRowsForBroadcast = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', channelId);
+  for (const mr of memberRowsForBroadcast) {
+    wsSendToUser(mr.user_id, { type: 'channel:new', channel: await chatSerializeChannel(row, mr.user_id) });
+  }
+  return chatSerializeChannel(row, creatorId);
+}
 
 // PATCH /api/chat/messages/:id — edit your own message body. Re-parses
 // mentions and replaces the chat_mentions rows so newly-added @names get

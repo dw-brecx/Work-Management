@@ -20599,6 +20599,20 @@ async function sendChatMessage() {
       const node = document.querySelector(`[data-msg-id="${tempId}"]`);
       if (node) node.outerHTML = renderChatMessageHtml(real);
     }
+    // Server-side side-effect: if you @mentioned someone outside this 1:1
+    // DM, a fresh group chat with all parties has been spawned (or the
+    // existing one re-opened). Surface it so the user can keep going there.
+    if (real.spawnedGroup) {
+      chatOnNewChannel(real.spawnedGroup);
+      const others = (real.spawnedGroup.members || [])
+        .filter(m => m.id !== (window.CURRENT_USER && window.CURRENT_USER.id))
+        .map(m => m.name).join(', ');
+      try {
+        if (typeof settingsToast === 'function') settingsToast(`Started group with ${others}`);
+      } catch {}
+      // Auto-jump to the new group so "discuss further" is one tap away.
+      selectChatChannel(real.spawnedGroup.id);
+    }
   } catch (e) {
     console.warn('[chat] send failed', e);
     const i = list.findIndex(m => m.id === tempId);
