@@ -1392,12 +1392,21 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg .msg-edited{font-size:10px;color:var(--text3);margin-left:4px;font-style:italic}
   .chat-msg.is-mention-me:not(.is-mine) .msg-bubble{background:#fff7e6;box-shadow:inset 3px 0 0 #f59e0b}
   .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px;padding:6px 12px;background:#f1f5f9;border-radius:14px}
-  .chat-msg .msg-actions{position:absolute;top:-14px;display:none;gap:1px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 4px 12px rgba(15,23,42,.1);padding:2px;z-index:5}
-  .chat-msg:not(.is-mine) .msg-actions{left:48px}
-  .chat-msg.is-mine .msg-actions{right:48px}
-  .chat-msg:hover .msg-actions{display:flex}
-  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:13px;padding:4px 7px;border-radius:5px;color:var(--text2)}
+  /* Hover actions sit BESIDE the bubble in the empty pane gutter — never
+     above it where they'd cover the previous message's text. Vertically
+     centered on the bubble. */
+  .chat-msg .msg-actions{position:absolute;top:50%;transform:translateY(-50%);display:none;gap:1px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 4px 12px rgba(15,23,42,.1);padding:2px;z-index:5;opacity:0;transition:opacity .12s ease}
+  .chat-msg:not(.is-mine) .msg-actions{right:8px}
+  .chat-msg.is-mine .msg-actions{left:8px}
+  .chat-msg:hover .msg-actions{display:flex;opacity:1}
+  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:12px;padding:3px 6px;border-radius:5px;color:var(--text2);line-height:1}
   .chat-msg .msg-action-btn:hover{background:var(--bg2);color:var(--text)}
+  /* On touch screens hover is unreliable — keep actions hidden so they
+     don't block content. The reaction picker is reachable via the existing
+     ✓ confirm + emoji affordances on the bubble itself. */
+  @media (hover: none) {
+    .chat-msg .msg-actions { display: none !important; }
+  }
   .chat-msg .msg-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;justify-content:flex-start}
   .chat-msg.is-mine .msg-attachments{justify-content:flex-end}
   .chat-msg .msg-att{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#fff;border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text);text-decoration:none;max-width:300px}
@@ -2594,6 +2603,15 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
 <!-- APP -->
 <div id="app">
+  <!-- One-shot install-app banner. Slides in from the top once the browser
+       fires beforeinstallprompt (Chrome/Edge on Windows/Android). Auto-hides
+       when dismissed or after install. Hidden by default. -->
+  <div id="install-banner" style="display:none;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;padding:10px 16px;display:none;align-items:center;gap:10px;font-size:13px;position:sticky;top:0;z-index:1000">
+    <span style="font-size:18px">📱</span>
+    <span style="flex:1;min-width:0">Install Syruvia for faster access — works like a real app with push notifications.</span>
+    <button id="install-banner-btn" type="button" style="background:#fff;color:#6d28d9;border:0;border-radius:8px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer">Install</button>
+    <button type="button" onclick="dismissInstallBanner()" aria-label="Dismiss" style="background:transparent;color:rgba(255,255,255,.85);border:0;font-size:18px;cursor:pointer;padding:0 4px;line-height:1">×</button>
+  </div>
   <!-- TOPBAR -->
   <div id="topbar">
     <button class="mob-menu-btn" onclick="openMobileSidebar()" aria-label="Open menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
@@ -4118,6 +4136,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             </select>
           </div>
           <button class="btn-primary" onclick="saveProfileSettings()">Save Changes</button>
+
+          <!-- Install as desktop / home-screen app. Wired to the browser's
+               beforeinstallprompt event when supported. The card body is
+               populated by refreshInstallAppCard() on page load + when the
+               event fires; entirely hidden if the app is already installed. -->
+          <div id="install-app-card" style="display:none;margin-top:24px;padding:16px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(135deg,#faf5ff,#ede9fe)">
+            <h3 style="font-size:13px;font-weight:600;margin:0 0 6px 0">📱 Install as desktop app</h3>
+            <p id="install-app-help" style="font-size:11.5px;color:var(--text3);margin:0 0 12px 0;line-height:1.55"></p>
+            <div id="install-app-actions" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+          </div>
 
           <!-- Microphone test (helps debug silent voice notes) -->
           <div style="margin-top:24px;padding:16px;border:1px solid var(--border);border-radius:8px;background:#fafbff">
@@ -10052,6 +10080,7 @@ function switchSettingsTab(tab) {
   if (tab === 'security')      renderSessions();
   if (tab === 'users')         { renderUsersTab(); renderPendingInvites(); }
   if (tab === 'permissions')   renderPermissionsMatrix();
+  if (tab === 'profile' && typeof refreshInstallAppCard === 'function') refreshInstallAppCard();
 }
 
 // ============ SETTINGS — common ============
@@ -19166,6 +19195,121 @@ window.scheduleEventForCurrentTicket = function() {
   // a textarea is re-created inside a modal between boot and first use.
   window.addEventListener('_wnReady', () => setTimeout(wirePolishButtons, 200));
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PWA INSTALL — capture beforeinstallprompt, surface as banner + Settings card
+// ═══════════════════════════════════════════════════════════════════════════
+// Chrome/Edge on Windows + Android fire 'beforeinstallprompt' when the page
+// becomes installable. We stash the event so a button can replay it later
+// (the API rule: prompt() must be called from a user gesture). Safari/iOS
+// doesn't fire it — installs are manual via Share → Add to Home Screen,
+// so we surface manual instructions instead.
+
+let _installPromptEvt = null;
+const _INSTALL_DISMISS_KEY = 'installBannerDismissed';
+
+function _isAppInstalled() {
+  return window.matchMedia('(display-mode: standalone)').matches
+      || window.navigator.standalone === true;
+}
+
+window.addEventListener('beforeinstallprompt', (ev) => {
+  ev.preventDefault();              // suppress the browser's mini-infobar
+  _installPromptEvt = ev;
+  if (!_isAppInstalled() && !localStorage.getItem(_INSTALL_DISMISS_KEY)) {
+    showInstallBanner();
+  }
+  refreshInstallAppCard();
+});
+
+window.addEventListener('appinstalled', () => {
+  _installPromptEvt = null;
+  hideInstallBanner();
+  refreshInstallAppCard();
+});
+
+function showInstallBanner() {
+  const b = document.getElementById('install-banner');
+  if (!b) return;
+  b.style.display = 'flex';
+  const btn = document.getElementById('install-banner-btn');
+  if (btn) btn.onclick = triggerInstallPrompt;
+}
+
+function hideInstallBanner() {
+  const b = document.getElementById('install-banner');
+  if (b) b.style.display = 'none';
+}
+
+window.dismissInstallBanner = function() {
+  try { localStorage.setItem(_INSTALL_DISMISS_KEY, '1'); } catch {}
+  hideInstallBanner();
+};
+
+async function triggerInstallPrompt() {
+  if (!_installPromptEvt) {
+    alert("Install isn't available yet. Try refreshing the page; if it still doesn't appear, your browser may not support it (Safari requires Add to Dock from the File menu).");
+    return;
+  }
+  try {
+    _installPromptEvt.prompt();
+    const result = await _installPromptEvt.userChoice;
+    _installPromptEvt = null;
+    if (result.outcome === 'accepted') hideInstallBanner();
+    refreshInstallAppCard();
+  } catch (e) { console.warn('[install] prompt failed', e); }
+}
+window.triggerInstallPrompt = triggerInstallPrompt;
+
+// Renders the "Install as desktop app" card in Settings → Profile. Three
+// states: already installed (green confirmation), prompt available
+// (one-click Install button), or manual instructions per browser/OS.
+window.refreshInstallAppCard = function() {
+  const card  = document.getElementById('install-app-card');
+  const help  = document.getElementById('install-app-help');
+  const acts  = document.getElementById('install-app-actions');
+  if (!card || !help || !acts) return;
+  if (_isAppInstalled()) {
+    card.style.display = 'block';
+    card.style.background = 'linear-gradient(135deg,#f0fdf4,#dcfce7)';
+    help.innerHTML = '✅ Syruvia is installed on this device — you can launch it from your Start menu / Dock / home screen.';
+    acts.innerHTML = '';
+    return;
+  }
+  card.style.display = 'block';
+  card.style.background = 'linear-gradient(135deg,#faf5ff,#ede9fe)';
+  if (_installPromptEvt) {
+    help.innerHTML = 'Install Syruvia as a real desktop app — runs in its own window, gets a taskbar icon, and notifications fire even when the browser is closed. Updates automatically.';
+    acts.innerHTML = `<button class="btn-primary" style="font-size:12.5px;padding:8px 16px" onclick="triggerInstallPrompt()">Install Syruvia</button>`;
+  } else {
+    // Browser doesn't expose the prompt — fall back to copyable instructions
+    // tailored to the user's UA so the steps actually match what they see.
+    const ua = navigator.userAgent;
+    let steps;
+    if (/iPhone|iPad|iPod/i.test(ua)) {
+      steps = 'In Safari: tap the <strong>Share</strong> icon → <strong>Add to Home Screen</strong> → <strong>Add</strong>.';
+    } else if (/Android/i.test(ua)) {
+      steps = 'In Chrome: tap the <strong>⋮ menu</strong> → <strong>Install app</strong>.';
+    } else if (/Macintosh/i.test(ua) && /Safari/i.test(ua) && !/Chrome|CriOS/i.test(ua)) {
+      steps = 'In Safari: <strong>File → Add to Dock</strong> → confirm name → <strong>Add</strong>.';
+    } else if (/Firefox/i.test(ua)) {
+      steps = 'Firefox doesn\'t support installing PWAs. Use Chrome or Edge instead.';
+    } else {
+      steps = 'In Chrome / Edge: click the <strong>install icon</strong> in the right side of the address bar (a small monitor with an arrow), then <strong>Install</strong>.';
+    }
+    help.innerHTML = steps;
+    acts.innerHTML = '';
+  }
+};
+
+// First paint when the user lands on Settings (in case beforeinstallprompt
+// already fired before this code ran).
+window.addEventListener('_wnReady', () => {
+  refreshInstallAppCard();
+  // If we missed the event (already cached) but app is installable, the
+  // banner won't appear automatically — that's fine, the Settings card
+  // still shows manual instructions.
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WORKSPACE CHAT — ClickUp / Slack-style messaging
