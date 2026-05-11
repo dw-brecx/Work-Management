@@ -100,6 +100,7 @@
     // Whiteboard (freeform pen-drawing layer on top of the canvas).
     strokes: [],           // [{id, color, width, points: [[x,y],...]}, ...]
     penMode: false,
+    tool: 'pen',           // 'pen' | 'erase'
     penColor: '#111111',
     penWidth: 3,
     activeStrokePoints: null, // in-progress stroke during mousedown→up
@@ -457,7 +458,7 @@
       `;
     } else {
       host.innerHTML = `
-        <div class="sp-canvas-shell${state.penMode ? ' is-pen-mode' : ''}" id="sp-canvas-shell">
+        <div class="sp-canvas-shell${state.penMode ? ' is-pen-mode tool-' + (state.tool || 'pen') : ''}" id="sp-canvas-shell">
           <div class="sp-canvas-toolbar" style="position:relative">
             <button class="sp-back" id="sp-back-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -549,13 +550,18 @@
 
   function renderPenToolbar() {
     if (!state.penMode) return '';
+    const isPen = state.tool !== 'erase';
     return `
       <div class="sp-pen-toolbar" id="sp-pen-toolbar">
-        <div class="sp-pen-swatches">
-          ${PEN_COLORS.map(c => `<button class="sp-pen-swatch${c === state.penColor ? ' is-active' : ''}" data-pen-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join('')}
+        <div class="sp-pen-tools">
+          <button class="sp-pen-tool${isPen ? ' is-active' : ''}" data-pen-tool="pen" title="Pen">✏️ Pen</button>
+          <button class="sp-pen-tool${!isPen ? ' is-active' : ''}" data-pen-tool="erase" title="Eraser — drag over a stroke to remove it">🧽 Erase</button>
         </div>
-        <div class="sp-pen-widths">
-          ${PEN_WIDTHS.map(w => `<button class="sp-pen-width${w.value === state.penWidth ? ' is-active' : ''}" data-pen-width="${w.value}">${w.label}</button>`).join('')}
+        <div class="sp-pen-swatches${!isPen ? ' is-disabled' : ''}">
+          ${PEN_COLORS.map(c => `<button class="sp-pen-swatch${c === state.penColor ? ' is-active' : ''}" data-pen-color="${c}" style="background:${c}" aria-label="${c}" ${!isPen ? 'disabled' : ''}></button>`).join('')}
+        </div>
+        <div class="sp-pen-widths${!isPen ? ' is-disabled' : ''}">
+          ${PEN_WIDTHS.map(w => `<button class="sp-pen-width${w.value === state.penWidth ? ' is-active' : ''}" data-pen-width="${w.value}" ${!isPen ? 'disabled' : ''}>${w.label}</button>`).join('')}
         </div>
         <button class="sp-pen-action" data-pen-action="undo" title="Undo last stroke">↶ Undo</button>
         <button class="sp-pen-action" data-pen-action="clear" title="Erase the whole board">Clear</button>
@@ -576,7 +582,9 @@
     if (!svg) return;
     let html = '';
     for (const s of (state.strokes || [])) {
-      html += `<path d="${attr(strokesToSvgPath(s.points))}" stroke="${attr(s.color || '#111')}" stroke-width="${Number(s.width) || 3}" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+      // data-stroke-id lets the eraser identify which stroke the cursor
+      // is over via document.elementFromPoint.
+      html += `<path data-stroke-id="${attr(s.id || '')}" d="${attr(strokesToSvgPath(s.points))}" stroke="${attr(s.color || '#111')}" stroke-width="${Number(s.width) || 3}" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
     }
     // Append the in-progress stroke (not yet saved) so it shows as the user drags.
     if (state.activeStrokePoints && state.activeStrokePoints.length) {
@@ -588,14 +596,24 @@
   function wirePenToolbar() {
     const tb = document.getElementById('sp-pen-toolbar');
     if (!tb) return;
+    tb.querySelectorAll('[data-pen-tool]').forEach(b => {
+      b.onclick = () => {
+        state.tool = b.dataset.penTool === 'erase' ? 'erase' : 'pen';
+        // Swap the cursor + button-active styling. Cheapest re-render: just
+        // reshape the shell class — toolbar already shows active state.
+        renderCanvasShell();
+      };
+    });
     tb.querySelectorAll('[data-pen-color]').forEach(b => {
       b.onclick = () => {
+        if (state.tool === 'erase') return;
         state.penColor = b.dataset.penColor;
         tb.querySelectorAll('[data-pen-color]').forEach(x => x.classList.toggle('is-active', x.dataset.penColor === state.penColor));
       };
     });
     tb.querySelectorAll('[data-pen-width]').forEach(b => {
       b.onclick = () => {
+        if (state.tool === 'erase') return;
         state.penWidth = Number(b.dataset.penWidth) || 4;
         tb.querySelectorAll('[data-pen-width]').forEach(x => x.classList.toggle('is-active', Number(x.dataset.penWidth) === state.penWidth));
       };
@@ -619,6 +637,9 @@
   function togglePenMode(force) {
     const next = (typeof force === 'boolean') ? force : !state.penMode;
     state.penMode = next;
+    // Always land in Pen mode (not Eraser) when entering — saves a click
+    // for the common case of "I just opened the pen, I want to draw".
+    if (next) state.tool = 'pen';
     // Re-render the canvas shell so the toolbar + the is-pen-mode class
     // flip together. Cheaper than fiddling individual classes.
     renderCanvasShell();
@@ -641,8 +662,10 @@
     if (!svg) return;
     if (!state.penMode || !canEdit()) return;
     svg.addEventListener('mousedown', onPenDown);
+
     function onPenDown(ev) {
       ev.preventDefault();
+      if (state.tool === 'erase') return startErasing(ev);
       const rect = svg.getBoundingClientRect();
       const startX = ev.clientX - rect.left;
       const startY = ev.clientY - rect.top;
@@ -654,7 +677,6 @@
         const y = e2.clientY - r2.top;
         const pts = state.activeStrokePoints;
         const last = pts[pts.length - 1];
-        // Skip near-duplicate points so the path stays small.
         if (Math.abs(last[0] - x) < 1 && Math.abs(last[1] - y) < 1) return;
         pts.push([x, y]);
         renderStrokes();
@@ -664,7 +686,7 @@
         document.removeEventListener('mouseup', onUp);
         const pts = state.activeStrokePoints || [];
         state.activeStrokePoints = null;
-        if (pts.length < 2) { renderStrokes(); return; } // ignore taps
+        if (pts.length < 2) { renderStrokes(); return; }
         state.strokes.push({
           id: 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
           color: state.penColor,
@@ -673,6 +695,32 @@
         });
         renderStrokes();
         saveWhiteboard();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    // Drag-erase: while the mouse is down, any path the cursor passes over
+    // gets removed. Uses document.elementFromPoint to hit-test against the
+    // rendered <path>s (which have pointer-events:stroke via SVG default).
+    function startErasing(ev) {
+      let dirty = false;
+      eraseAt(ev);
+      function eraseAt(e) {
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        if (!el) return;
+        const path = el.closest && el.closest('path[data-stroke-id]');
+        if (!path) return;
+        const id = path.getAttribute('data-stroke-id');
+        const before = state.strokes.length;
+        state.strokes = state.strokes.filter(s => s.id !== id);
+        if (state.strokes.length !== before) { dirty = true; renderStrokes(); }
+      }
+      function onMove(e2) { eraseAt(e2); }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        if (dirty) saveWhiteboard();
       }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
