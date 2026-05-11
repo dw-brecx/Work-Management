@@ -8,6 +8,10 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
 <!-- PWA: lets users "Add to Home Screen" and launch fullscreen, no browser chrome -->
 <link rel="manifest" href="/manifest.json"/>
+<!-- Spaces feature — kept in its own files so this HTML stays manageable.
+     New features going forward follow the same pattern (one .js + one .css
+     per feature, loaded here, used from a tiny shell in #page-spaces). -->
+<link rel="stylesheet" href="/spaces.css"/>
 <link rel="apple-touch-icon" href="/app-icon.svg"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
@@ -2652,6 +2656,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" data-page="spaces">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      Spaces
+    </div>
     <div class="nav-item" data-page="planning">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M9 2h6l4 4v14a2 2 0 01-2 2H7a2 2 0 01-2-2V4a2 2 0 012-2z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
       Planning
@@ -4105,6 +4113,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
+    <!-- ========== SPACES (canvas workspaces) ========== -->
+    <!-- All UI is rendered into this shell from /spaces.js (Spaces.openListView
+         on entry; Spaces.openSpace(id) when a card is clicked). Markup lives
+         in the module so this file stays small. -->
+    <div id="page-spaces" class="page"></div>
+
     <!-- ========== WHAT'S NEW (announcement feed) ========== -->
     <div id="page-whats-new" class="page">
       <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">What's New</h1>
@@ -5463,6 +5477,7 @@ window.PAGE_PATHS = {
   'teams':       '/teams',
   'reports':     '/reports',
   'projects':    '/projects',
+  'spaces':      '/spaces',
   'whats-new':   '/whats-new',
   'feedback':    '/feedback',
   'trash':       '/trash',
@@ -5518,7 +5533,7 @@ function navigate(page) {
       'chat': 'Chat',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
       'teams': 'Teams', 'reports': 'Reports', 'settings': 'Settings',
-      'projects': 'Projects',
+      'projects': 'Projects', 'spaces': 'Spaces',
       'whats-new': "What's New", 'feedback': 'Feedback',
       'trash': 'Trash',
       'ticket-detail': 'Ticket', 'plan-detail': 'Plan'
@@ -5547,6 +5562,13 @@ function navigate(page) {
   }
   if (page === 'chat' && typeof openChatPage === 'function') {
     openChatPage();
+  }
+  if (page === 'spaces' && window.Spaces) {
+    // Honour ?space=N deep link so push notifications / share links can
+    // open a specific space directly.
+    const m = (location.search || '').match(/[?&]space=(\d+)/);
+    if (m) window.Spaces.openSpace(Number(m[1]));
+    else window.Spaces.openListView();
   }
 }
 
@@ -18032,6 +18054,7 @@ window.refreshPageData = refreshPageData;
     'teams':       '/teams',
     'reports':     '/reports',
     'projects':    '/projects',
+  'spaces':      '/spaces',
     'whats-new':   '/whats-new',
     'feedback':    '/feedback',
     'trash':       '/trash',
@@ -22049,5 +22072,8 @@ document.addEventListener('visibilitychange', () => {
 });
 
 </script>
+<!-- Spaces feature module — see public/spaces.js. Deferred so it runs after
+     the main inline scripts have set window.CURRENT_USER etc. -->
+<script src="/spaces.js" defer></script>
 </body>
 </html>

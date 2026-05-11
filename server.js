@@ -292,8 +292,12 @@ function rateLimit({ windowMs, max, key = 'ip' }) {
 const authLimiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 10, key: 'route' });
 const resetLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, key: 'route' });
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Body limits bumped to 50 MB so Spaces can ship base64-encoded media
+// (voice notes, screen recordings, images) inside a single JSON POST.
+// Per-item soft cap of 25 MB is enforced client-side; 50 MB here gives
+// headroom for the base64 expansion (~33 % overhead).
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Session store — uses PostgreSQL so sessions persist across deploys.
 const PgSession = require('connect-pg-simple')(session);
@@ -6025,6 +6029,23 @@ async function chatAutoJoinGeneral(userId) {
 // Expose so the registration / invite-accept routes can call it. Existing
 // routes don't call us; we patch them below by wrapping the response.
 app.locals.chatAutoJoinGeneral = chatAutoJoinGeneral;
+
+// ── Spaces ────────────────────────────────────────────────────────────────────
+// Self-contained feature module (routes/spaces.js). Registers all
+// /api/spaces/* routes on the app, including the unauthenticated
+// /api/spaces/public/:token endpoint used by the public share viewer.
+require('./routes/spaces')(app, { get, all, run, requireAuth });
+
+// Unauthenticated standalone HTML for the public share viewer (rendered at
+// /p/:token). Lives outside the SPA shell so it works without a session.
+const publicSpacePath = path.join(__dirname, 'public', 'public-space.html');
+app.get(/^\/p\/[A-Za-z0-9_-]+\/?$/, (req, res) => {
+  try {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.send(fs.readFileSync(publicSpacePath, 'utf8'));
+  } catch (e) { res.status(404).send('Not found'); }
+});
 
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 // Registered last, after every API route, so it doesn't intercept genuine

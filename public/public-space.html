@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Syruvia · Shared space</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<style>
+  /* Minimal base styles so the shared viewer can render even though it
+     doesn't load the main app's index.html. Spaces.css below adds the
+     canvas + item-card visuals. */
+  :root {
+    --text: #0f172a;
+    --text2: #475569;
+    --text3: #94a3b8;
+    --border: #e2e8f0;
+    --accent: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--text);
+    background: #f8fafc;
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+  }
+  .btn-sec, .btn-primary {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    font-size: 12.5px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-sec:hover { background: #f1f5f9; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .modal-overlay { display: flex; }
+  .modal-overlay.open { display: flex; }
+</style>
+<link rel="stylesheet" href="/spaces.css"/>
+</head>
+<body>
+<!-- Spaces public viewer. Bootstrapped by /spaces.js — the script extracts
+     the token from the URL (/p/:token) and calls Spaces.mountPublic(token),
+     which renders the canvas with public-edit gating honoured. -->
+<div id="public-space-root"></div>
+<script src="/spaces.js" defer></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var m = location.pathname.match(/^\/p\/([A-Za-z0-9_-]+)/);
+    if (!m) {
+      document.getElementById('public-space-root').innerHTML =
+        '<div class="sp-public-fullpage">This page link is malformed.</div>';
+      return;
+    }
+    var token = m[1];
+    // /spaces.js loads with `defer` — it might still be parsing when
+    // DOMContentLoaded fires. Poll briefly for window.Spaces, then mount.
+    function tryMount(retries) {
+      if (window.Spaces && typeof window.Spaces.mountPublic === 'function') {
+        window.Spaces.mountPublic(token);
+      } else if (retries > 0) {
+        setTimeout(function () { tryMount(retries - 1); }, 50);
+      } else {
+        document.getElementById('public-space-root').innerHTML =
+          '<div class="sp-public-fullpage">Failed to load viewer.</div>';
+      }
+    }
+    tryMount(20);
+  });
+</script>
+</body>
+</html>

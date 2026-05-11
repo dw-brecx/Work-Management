@@ -553,6 +553,69 @@ async function init() {
       PRIMARY KEY (message_id, user_id)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_chat_mentions_user ON chat_mentions (user_id, seen_at)`,
+    // ── Spaces ───────────────────────────────────────────────────────────
+    // Freeform "canvas" workspaces for collecting project artefacts as
+    // draggable cards (tickets, notes, files, links, recordings).
+    // Sharing: per-user invites in space_members, plus an optional public
+    // share token served by an unauthenticated /api/spaces/public/:token.
+    // 30-day soft-delete via deleted_at — matches the tickets-trash pattern.
+    `CREATE TABLE IF NOT EXISTS spaces (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      cover_color TEXT NOT NULL DEFAULT '#bf7325',
+      owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      owner_name TEXT NOT NULL DEFAULT '',
+      is_public INTEGER NOT NULL DEFAULT 0,
+      public_token TEXT,
+      public_can_edit INTEGER NOT NULL DEFAULT 0,
+      deleted_at TEXT,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_spaces_public_token ON spaces (public_token) WHERE public_token IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_spaces_owner ON spaces (owner_id)`,
+    // Member access list — same shape as chat_channel_members but for
+    // Spaces. role = 'viewer' | 'editor'. Composite PK prevents duplicates.
+    `CREATE TABLE IF NOT EXISTS space_members (
+      space_id INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_name TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT 'viewer',
+      added_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      PRIMARY KEY (space_id, user_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_space_members_user ON space_members (user_id)`,
+    // Individual cards on the canvas. type drives the renderer: 'ticket' |
+    // 'sticky' | 'note' | 'document' | 'file' | 'image' | 'voice' | 'video' |
+    // 'link'. Media (file/image/voice/video) stores the binary as base64 in
+    // `data` — mirrors the chat-attachment pattern. ticket_meta is a cached
+    // snapshot for ticket-type cards so the canvas can show status/assignee
+    // without a follow-up fetch.
+    `CREATE TABLE IF NOT EXISTS space_items (
+      id SERIAL PRIMARY KEY,
+      space_id INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      title TEXT,
+      text TEXT,
+      url TEXT,
+      data TEXT,
+      mime_type TEXT,
+      size INTEGER,
+      duration INTEGER,
+      color TEXT,
+      ticket_ref TEXT,
+      ticket_meta TEXT,
+      position_x REAL NOT NULL DEFAULT 0,
+      position_y REAL NOT NULL DEFAULT 0,
+      width REAL NOT NULL DEFAULT 280,
+      height REAL NOT NULL DEFAULT 200,
+      z_index INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_space_items_space ON space_items (space_id)`,
   ];
 
   for (const sql of tables) {
