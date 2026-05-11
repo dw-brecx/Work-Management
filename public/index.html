@@ -1415,12 +1415,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg:hover .msg-actions{opacity:1;visibility:visible}
   .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;border-radius:6px;color:var(--text2);line-height:1;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;transition:background .12s ease, color .12s ease}
   .chat-msg .msg-action-btn:hover{background:#f1f5f9;color:var(--text)}
-  /* Quote card inside a bubble when a message is an inline reply. Clicking
-     scrolls back to the original message. */
-  .msg-quote{display:block;border-left:3px solid currentColor;padding:4px 8px;margin-bottom:6px;border-radius:4px;cursor:pointer;font-size:11.5px;opacity:.85;background:rgba(0,0,0,.04)}
-  .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.15);border-left-color:rgba(255,255,255,.55)}
-  .msg-quote-author{font-weight:600;display:block;margin-bottom:1px;font-size:11px}
-  .msg-quote-body{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+  /* Quote card inside a bubble when a message is an inline reply. More
+     visible than the prior subtle styling — the user couldn't tell which
+     messages were replies. Clicking scrolls back to the original. */
+  .msg-quote{display:block;border-left:4px solid #3b82f6;padding:6px 10px;margin-bottom:8px;border-radius:0 8px 8px 0;cursor:pointer;font-size:12px;background:rgba(59,130,246,.08);color:var(--text)}
+  .msg-quote:hover{background:rgba(59,130,246,.13)}
+  .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.20);border-left-color:#fff;color:#fff}
+  .chat-msg.is-mine .msg-quote:hover{background:rgba(255,255,255,.28)}
+  .msg-quote-author{font-weight:700;display:block;margin-bottom:2px;font-size:11.5px;color:var(--accent)}
+  .chat-msg.is-mine .msg-quote-author{color:#fff}
+  .msg-quote-body{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;opacity:.85}
   /* Composer pill — unified rounded container with attach icons on the
      left, textarea in the middle, send arrow on the right. Replaces the
      old "big bordered media box + separate textarea" stack. */
@@ -1455,11 +1459,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   #chat-reply-bar .rb-author{font-weight:600;color:var(--text)}
   #chat-reply-bar .rb-cancel{background:none;border:0;cursor:pointer;color:var(--text3);font-size:18px;padding:0 4px;line-height:1}
   #chat-reply-bar .rb-cancel:hover{color:#ef4444}
-  /* On touch screens hover is unreliable — keep actions hidden so they
-     don't block content. The reaction picker is reachable via the existing
-     ✓ confirm + emoji affordances on the bubble itself. */
+  /* On touch screens hover is a misfire — show the toolbar by tapping a
+     message instead (renderer toggles .show-actions on click). Visible
+     state replicates the desktop hover treatment. */
   @media (hover: none) {
-    .chat-msg .msg-actions { display: none !important; }
+    .chat-msg .msg-actions { opacity: 0; visibility: hidden; }
+    .chat-msg.show-actions .msg-actions { opacity: 1; visibility: visible; }
   }
   .chat-msg .msg-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;justify-content:flex-start}
   .chat-msg.is-mine .msg-attachments{justify-content:flex-end}
@@ -1523,20 +1528,27 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     }
     /* Wider bubbles on mobile — 60% leaves too much wasted gutter. */
     .chat-msg .msg-body { max-width: 84% !important; }
-    /* Composer: tighter media bar, single-line textarea, hide the
-       "paste with Ctrl+V" hint (no Ctrl key on a phone). */
-    #chat-composer-wrap { padding: 6px 8px !important; }
-    #chat-composer-wrap textarea#chat-input {
+    /* Composer pill — tighter sizing so 📎/🎤/textarea/Send fit on a 360px
+       viewport without overflow. Hide the screen-record icon (phones can't
+       reliably screen-record from a browser anyway). */
+    #chat-composer-wrap { padding: 8px 10px !important; }
+    .chat-pill { padding: 4px !important; gap: 2px !important; border-radius: 22px !important; }
+    .chat-pill .comp-icon { width: 32px !important; height: 32px !important; }
+    .chat-pill .comp-icon svg { width: 16px !important; height: 16px !important; }
+    .chat-pill .comp-icon[title="Screen record"] { display: none !important; }
+    .chat-pill #chat-input {
       font-size: 16px !important; /* ≥16px stops iOS Safari's input-focus zoom */
-      min-height: 44px !important;
-      padding: 11px 14px !important;
+      min-height: 32px !important;
+      padding: 7px 6px !important;
       line-height: 1.35 !important;
     }
-    #chat-composer-wrap textarea#chat-input::placeholder { color: #94a3b8; opacity: 1; }
-    #chat-composer-wrap #chat-media-mount { margin-bottom: 4px !important; }
-    #chat-composer-wrap .media-composer { padding: 4px 6px !important; }
-    /* Drop the "paste with Ctrl+V" desktop hint inside the media composer. */
-    #chat-composer-wrap .media-composer > div:first-child > span:last-child { display: none !important; }
+    .chat-pill #chat-input::placeholder { color: #94a3b8; opacity: 1; }
+    .chat-pill .comp-send { width: 36px !important; height: 36px !important; }
+    .chat-pill .comp-send svg { width: 16px !important; height: 16px !important; }
+    /* Polish / Rewrite shrink on mobile so they don't push the send pill or
+       overflow the conversation pane. */
+    #chat-polish-mount { margin-top: 4px !important; flex-wrap: wrap; }
+    #chat-polish-mount button { font-size: 11px !important; padding: 4px 9px !important; }
     /* Hide the desktop keyboard-shortcut hint on phones — no keyboard. */
     #chat-composer-hint { display: none !important; }
     #chat-header { padding: 10px 12px !important; }
@@ -19577,9 +19589,13 @@ function chatOnNewMessage(msg) {
   const me = window.CURRENT_USER || {};
   // If this is OUR own message arriving via WS, look for an optimistic
   // placeholder we already inserted on send and swap it in place — so the
-  // user doesn't see "their message twice."
-  if (msg.userId === me.id && !msg.parentMessageId) {
-    const i = list.findIndex(m => m._optimistic && m.body === msg.body && m.userId === msg.userId);
+  // user doesn't see "their message twice." Applies to top-level messages
+  // AND to inline replies (parentMessageId must match too so we don't
+  // mis-dedupe a fresh reply against an unrelated earlier optimistic).
+  if (msg.userId === me.id) {
+    const i = list.findIndex(m =>
+      m._optimistic && m.body === msg.body && m.userId === msg.userId &&
+      (m.parentMessageId || null) === (msg.parentMessageId || null));
     if (i >= 0) {
       const oldId = list[i].id;
       list[i] = msg;
@@ -20485,7 +20501,10 @@ function renderChatMessageHtml(m, prev) {
   const avatar = author.avatarUrl
     ? `<img src="${escapeHtml(author.avatarUrl)}" alt="">`
     : initial;
-  const isThreadParent = !!m.replyCount;
+  // Inline replies now render in the main stream with a quote card on the
+  // reply itself, so the parent's "💬 N replies" link is redundant noise.
+  // Force-disabled (keep variable for downstream code that reads it).
+  const isThreadParent = false;
   // Show the author name above the FIRST of a grouped run from a non-self
   // user — applies in DMs, group chats, and channels alike, so the user
   // can always see who said what.
@@ -20512,10 +20531,9 @@ function renderChatMessageHtml(m, prev) {
   const threadHtml = isThreadParent
     ? `<button class="msg-thread-link" onclick="openChatThread(${m.id})">💬 ${m.replyCount} ${m.replyCount === 1 ? 'reply' : 'replies'}</button>`
     : '';
-  const actions = `<div class="msg-actions">
-      <button class="msg-action-btn" title="Reply (WhatsApp-style quote)" onclick="setChatReplyTo(${m.id})">↩</button>
+  const actions = `<div class="msg-actions" onclick="event.stopPropagation()">
+      <button class="msg-action-btn" title="Reply" onclick="setChatReplyTo(${m.id})">↩</button>
       <button class="msg-action-btn" title="Add reaction" onclick="openChatReactionPicker(event, ${m.id})">😀</button>
-      <button class="msg-action-btn" title="Reply in thread" onclick="openChatThread(${m.id})">💬</button>
       ${!isMine ? `<button class="msg-action-btn" title="Mark as confirmed" onclick="toggleChatConfirm(${m.id})">✓</button>` : ''}
       ${isMine ? `<button class="msg-action-btn" title="Edit" onclick="startChatEdit(${m.id})">✏️</button>
                   <button class="msg-action-btn" title="Delete" onclick="deleteChatMessage(${m.id})">🗑</button>` : ''}
@@ -20782,6 +20800,29 @@ function autoSizeChatInput(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 }
+
+// Mobile reply access: tapping a message bubble toggles a .show-actions
+// class on the row, which reveals the toolbar via the @media (hover:none)
+// CSS rule. Tapping anywhere else dismisses. Desktop hover stays unchanged.
+(function attachChatTapActions() {
+  document.addEventListener('click', function(ev) {
+    if (!('ontouchstart' in window) && window.matchMedia('(hover: hover)').matches) return;
+    const msgEl = ev.target.closest && ev.target.closest('.chat-msg');
+    const wasInsideActions = ev.target.closest && ev.target.closest('.msg-actions');
+    // Always clear any previous show-actions first.
+    document.querySelectorAll('.chat-msg.show-actions').forEach(el => {
+      if (el !== msgEl) el.classList.remove('show-actions');
+    });
+    if (msgEl && !wasInsideActions) {
+      // Only toggle if the tap was on the bubble or its body area, not on
+      // an interactive child (reaction chip, attachment link, quote card).
+      const interactive = ev.target.closest('button, a, input, select, textarea, .chat-reaction, .msg-quote, .msg-att');
+      if (!interactive) {
+        msgEl.classList.toggle('show-actions');
+      }
+    }
+  });
+})();
 
 // Composer pill: triggers the hidden mediaComposer's File / Voice / Screen
 // actions when the user clicks one of the inline icons. Kept as a thin
