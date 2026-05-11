@@ -1431,19 +1431,22 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
      Switches to a single-pane swap: by default the channel list takes the
      full screen; selecting a conversation flips to the message pane via
      the .view-conversation class on #chat-shell. The thread pane becomes
-     a full-screen sheet. */
+     a full-screen sheet. NOTE: every override needs !important because the
+     #chat-shell / #chat-left / #chat-main containers carry inline style=""
+     attributes that win over plain ID selectors. */
   @media (max-width: 760px) {
     #page-chat { padding: 0 !important; height: calc(100vh - 56px - env(safe-area-inset-bottom)) !important; }
-    #chat-shell { border-radius: 0; border: 0; height: 100%; }
-    #chat-left { width: 100%; flex: 1 1 auto; border-right: 0; }
-    #chat-main { display: none; }
-    #chat-shell.view-conversation #chat-left { display: none; }
-    #chat-shell.view-conversation #chat-main { display: flex; flex: 1 1 auto; }
-    .chat-back-btn { display: inline-flex; align-items: center; justify-content: center; }
+    #chat-shell { border-radius: 0 !important; border: 0 !important; height: 100% !important; }
+    #chat-left { width: 100% !important; flex: 1 1 auto !important; border-right: 0 !important; }
+    #chat-main { display: none !important; }
+    #chat-shell.view-conversation #chat-left { display: none !important; }
+    #chat-shell.view-conversation #chat-main { display: flex !important; flex: 1 1 auto !important; }
+    .chat-back-btn { display: inline-flex !important; align-items: center; justify-content: center; }
     /* Thread pane → full-screen overlay sheet so it's reachable. */
     #chat-thread-pane {
-      position: fixed; inset: 0; z-index: 4000; width: 100% !important; flex: 1 1 auto !important;
-      border-left: 0; background: #fff;
+      position: fixed !important; inset: 0 !important; z-index: 4000 !important;
+      width: 100% !important; flex: 1 1 auto !important;
+      border-left: 0 !important; background: #fff !important;
     }
     /* Wider bubbles on mobile — 60% leaves too much wasted gutter. */
     .chat-msg .msg-body { max-width: 84% !important; }
