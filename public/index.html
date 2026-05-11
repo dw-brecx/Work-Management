@@ -1417,9 +1417,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;border-radius:6px;color:var(--text2);line-height:1;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;transition:background .12s ease, color .12s ease}
   .chat-msg .msg-action-btn:hover{background:#f1f5f9;color:var(--text)}
   /* Quote card inside a bubble when a message is an inline reply. More
-     visible than the prior subtle styling — the user couldn't tell which
-     messages were replies. Clicking scrolls back to the original. */
-  .msg-quote{display:block;border-left:4px solid #3b82f6;padding:6px 10px;margin-bottom:8px;border-radius:0 8px 8px 0;cursor:pointer;font-size:12px;background:rgba(59,130,246,.08);color:var(--text)}
+     visible than the prior subtle styling. min-width forces the parent
+     bubble wider so reply bubbles don't collapse into tall narrow strips
+     when both the quoted text and the reply body are short.
+     Clicking scrolls back to the original. */
+  .msg-quote{display:block;border-left:4px solid #3b82f6;padding:6px 10px;margin-bottom:8px;border-radius:0 8px 8px 0;cursor:pointer;font-size:12px;background:rgba(59,130,246,.08);color:var(--text);min-width:200px;max-width:100%;box-sizing:border-box}
   .msg-quote:hover{background:rgba(59,130,246,.13)}
   .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.20);border-left-color:#fff;color:#fff}
   .chat-msg.is-mine .msg-quote:hover{background:rgba(255,255,255,.28)}
@@ -19832,19 +19834,20 @@ async function openChatPage() {
   // Always re-load the workspace user directory on page entry — it's cheap
   // and guarantees the DM rail isn't stuck empty if a prior load failed.
   await chatLoadUsers(true);
-  // Honour ?channel=N in the URL when arriving via deep link.
+  // Tapping the "Chat" nav item always lands on the conversation list
+  // (mobile + desktop) — no auto-jump into #general or whichever channel
+  // was open last. Deep links to a specific channel (?channel=N) still
+  // open that conversation directly so notification clicks keep working.
   const params = new URLSearchParams(location.search || '');
   const wantedId = Number(params.get('channel')) || null;
   if (wantedId && CHAT_STATE.channelsById.has(wantedId)) {
     selectChatChannel(wantedId);
-  } else if (CHAT_STATE.activeChannelId && CHAT_STATE.channelsById.has(CHAT_STATE.activeChannelId)) {
-    selectChatChannel(CHAT_STATE.activeChannelId);
-  } else if (CHAT_STATE.channels.length) {
-    // Default to #general if present, else most-recent.
-    const general = CHAT_STATE.channels.find(c => c.type === 'channel' && c.name === 'general');
-    selectChatChannel((general || CHAT_STATE.channels[0]).id);
   } else {
-    renderChatChannelList();
+    CHAT_STATE.activeChannelId = null;
+    const shell = document.getElementById('chat-shell');
+    if (shell) shell.classList.remove('view-conversation');
+    closeChatThread();
+    renderChatActiveChannel();
   }
   renderChatChannelList();
 }
@@ -20707,8 +20710,8 @@ function renderChatAttachments(atts) {
     }
     const isAudio = (a.mimeType || '').startsWith('audio/');
     const isVideo = (a.mimeType || '').startsWith('video/');
-    if (isAudio) return `<audio controls src="${escapeHtml(a.url)}" style="max-width:280px"></audio>`;
-    if (isVideo) return `<video controls src="${escapeHtml(a.url)}" style="max-width:320px;border-radius:8px"></video>`;
+    if (isAudio) return `<audio controls src="${escapeHtml(a.url)}" style="width:100%;max-width:260px;display:block"></audio>`;
+    if (isVideo) return `<video controls src="${escapeHtml(a.url)}" style="width:100%;max-width:280px;border-radius:8px;display:block"></video>`;
     return `<a href="${escapeHtml(a.url)}" target="_blank" class="msg-att" download="${escapeHtml(a.originalName)}">
       <span>📎</span><span class="att-name">${escapeHtml(a.originalName)}</span><span style="color:var(--text3);font-size:11px">${formatBytes(a.size)}</span>
     </a>`;
