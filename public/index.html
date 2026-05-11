@@ -1405,21 +1405,48 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg .msg-edited{font-size:10px;color:var(--text3);margin-left:4px;font-style:italic}
   .chat-msg.is-mention-me:not(.is-mine) .msg-bubble{background:#fff7e6;box-shadow:inset 3px 0 0 #f59e0b}
   .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px;padding:6px 12px;background:#f1f5f9;border-radius:14px}
-  /* Hover toolbar — vertical icon stack beside the bubble (Syruvia Lab
-     style). Fades in on hover; hidden on touch screens where hover is
-     unreliable. */
-  .chat-msg .msg-actions{position:absolute;top:50%;transform:translateY(-50%);display:none;flex-direction:column;gap:1px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 18px rgba(15,23,42,.12);padding:3px;z-index:5;opacity:0;transition:opacity .12s ease}
-  .chat-msg:not(.is-mine) .msg-actions{right:6px}
-  .chat-msg.is-mine .msg-actions{left:6px}
-  .chat-msg:hover .msg-actions{display:flex;opacity:1}
-  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;border-radius:6px;color:var(--text2);line-height:1;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center}
-  .chat-msg .msg-action-btn:hover{background:var(--bg2);color:var(--text)}
+  /* Hover toolbar — sits IMMEDIATELY beside the bubble (right of incoming,
+     left of own). Anchored to .msg-body so it lands on the bubble edge
+     instead of the far edge of the message row. */
+  .chat-msg .msg-body{position:relative}
+  .chat-msg .msg-actions{position:absolute;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:1px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px rgba(15,23,42,.10);padding:3px;z-index:5;opacity:0;visibility:hidden;transition:opacity .12s ease, visibility .12s ease}
+  .chat-msg:not(.is-mine) .msg-actions{left:100%;margin-left:6px}
+  .chat-msg.is-mine .msg-actions{right:100%;margin-right:6px}
+  .chat-msg:hover .msg-actions{opacity:1;visibility:visible}
+  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;border-radius:6px;color:var(--text2);line-height:1;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;transition:background .12s ease, color .12s ease}
+  .chat-msg .msg-action-btn:hover{background:#f1f5f9;color:var(--text)}
   /* Quote card inside a bubble when a message is an inline reply. Clicking
      scrolls back to the original message. */
   .msg-quote{display:block;border-left:3px solid currentColor;padding:4px 8px;margin-bottom:6px;border-radius:4px;cursor:pointer;font-size:11.5px;opacity:.85;background:rgba(0,0,0,.04)}
   .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.15);border-left-color:rgba(255,255,255,.55)}
   .msg-quote-author{font-weight:600;display:block;margin-bottom:1px;font-size:11px}
   .msg-quote-body{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+  /* Composer pill — unified rounded container with attach icons on the
+     left, textarea in the middle, send arrow on the right. Replaces the
+     old "big bordered media box + separate textarea" stack. */
+  .chat-pill{display:flex;align-items:flex-end;gap:4px;background:#f8fafc;border:1px solid var(--border);border-radius:14px;padding:6px;transition:border-color .15s ease, box-shadow .15s ease}
+  .chat-pill:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.08);background:#fff}
+  .chat-pill .comp-icon{background:transparent;border:0;cursor:pointer;width:34px;height:34px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:var(--text2);flex-shrink:0;transition:background .12s ease, color .12s ease}
+  .chat-pill .comp-icon svg{width:18px;height:18px}
+  .chat-pill .comp-icon:hover{background:#fff;color:var(--accent);box-shadow:0 1px 3px rgba(15,23,42,.06)}
+  .chat-pill .comp-icon.recording{background:#fee2e2;color:#dc2626}
+  .chat-pill #chat-input{flex:1;min-width:0;background:transparent;border:0;outline:none;resize:none;font-size:14px;font-family:inherit;line-height:1.4;padding:8px 6px;max-height:160px;min-height:34px;color:var(--text)}
+  .chat-pill #chat-input::placeholder{color:#94a3b8}
+  .chat-pill .comp-send{background:var(--accent);color:#fff;border:0;cursor:pointer;width:38px;height:38px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s ease, transform .12s ease;box-shadow:0 2px 6px rgba(59,130,246,.25)}
+  .chat-pill .comp-send svg{width:18px;height:18px}
+  .chat-pill .comp-send:hover{background:#1d4ed8;transform:translateY(-1px)}
+  .chat-pill .comp-send:active{transform:translateY(0)}
+  /* Collapse the hidden mediaComposer's bordered button row; keep the
+     pending-attachment previews + the recording timer visible inline. */
+  #chat-media-mount .media-composer{background:transparent !important;border:0 !important;padding:0 !important;margin:0 !important}
+  /* Hide the entire "File / Voice / Screen / paste hint" row — we trigger
+     those programmatically from the pill icons now. */
+  #chat-media-mount .media-composer > div:first-child{display:none !important}
+  #chat-media-mount .media-composer .mc-previews{margin:0 0 8px 4px !important}
+  #chat-media-mount .media-composer .mc-previews:empty{margin:0 !important}
+  /* Live recording timer — render it next to the voice icon on the pill,
+     not inside the hidden composer. Populated by chatSyncRecordingState. */
+  .chat-pill .comp-icon.recording::after{content:attr(data-rec-time);position:absolute;font-size:9px;font-weight:700;background:#dc2626;color:#fff;padding:1px 5px;border-radius:8px;transform:translate(8px,-14px)}
   /* Reply-mode preview bar above the composer (when you tap reply). */
   #chat-reply-bar{display:none;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:#f1f5f9;border-radius:0;font-size:11.5px;color:var(--text2)}
   #chat-reply-bar.active{display:flex}
@@ -3866,7 +3893,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
           <div id="chat-messages-scroll" style="display:none;flex:1;overflow-y:auto;padding:14px 18px;background:#fff" onscroll="onChatScroll()"></div>
           <div id="chat-typing" style="display:none;font-size:11px;color:var(--text3);padding:2px 18px"></div>
-          <div id="chat-composer-wrap" data-paste-host style="display:none;border-top:1px solid var(--border);background:#fff;padding:10px 14px">
+          <div id="chat-composer-wrap" data-paste-host style="display:none;border-top:1px solid var(--border);background:#fff;padding:12px 16px 10px">
             <!-- WhatsApp-style reply bar (appears when you tap reply on a message). -->
             <div id="chat-reply-bar">
               <span class="rb-icon">↩</span>
@@ -3876,16 +3903,30 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               </div>
               <button type="button" class="rb-cancel" onclick="clearChatReplyTo()" aria-label="Cancel reply">×</button>
             </div>
-            <div id="chat-media-mount" style="margin-bottom:8px"></div>
-            <div style="display:flex;align-items:flex-end;gap:8px">
-              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
-                <textarea id="chat-input" placeholder="Message" rows="1" style="resize:none;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13px;font-family:inherit;outline:none;max-height:160px;min-height:42px;line-height:1.4" oninput="autoSizeChatInput(this);onChatInputChange()" onkeydown="onChatComposerKey(event)"></textarea>
-                <div id="chat-polish-mount"></div>
-              </div>
-              <button class="btn-primary" style="padding:8px 14px;font-size:12px" onclick="sendChatMessage()" id="chat-send-btn">Send</button>
+            <!-- Hidden mediaComposer host — the real File / Voice / Screen / paste
+                 logic still runs here, but its buttons + bordered box are visually
+                 collapsed via CSS. We trigger them programmatically from the pill
+                 icons below. Pending-attachment previews + voice-recording timer
+                 still show inline. -->
+            <div id="chat-media-mount"></div>
+            <div class="chat-pill">
+              <button type="button" class="comp-icon" title="Attach file" onclick="chatComposerAttach('file')" aria-label="Attach file">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <button type="button" class="comp-icon" title="Voice note" id="chat-comp-voice" onclick="chatComposerAttach('voice')" aria-label="Voice note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+              </button>
+              <button type="button" class="comp-icon" title="Screen record" onclick="chatComposerAttach('screen')" aria-label="Screen record">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              </button>
+              <textarea id="chat-input" placeholder="Message" rows="1" oninput="autoSizeChatInput(this);onChatInputChange()" onkeydown="onChatComposerKey(event)"></textarea>
+              <button type="button" class="comp-send" onclick="sendChatMessage()" id="chat-send-btn" aria-label="Send">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              </button>
             </div>
-            <div id="chat-composer-hint" style="font-size:10.5px;color:var(--text3);margin-top:6px;padding:0 2px">
-              Enter to send · Shift+Enter for new line · <code style="font-family:ui-monospace,monospace;background:#f1f5f9;padding:0 4px;border-radius:3px">@</code> mention person · <code style="font-family:ui-monospace,monospace;background:#f1f5f9;padding:0 4px;border-radius:3px">#</code> link ticket
+            <div id="chat-polish-mount" style="margin-top:6px"></div>
+            <div id="chat-composer-hint" style="font-size:10.5px;color:var(--text3);margin-top:6px;padding:0 4px">
+              Enter to send · Shift+Enter for new line · <code style="font-family:ui-monospace,monospace;background:#f1f5f9;padding:0 4px;border-radius:3px">@</code> mention · <code style="font-family:ui-monospace,monospace;background:#f1f5f9;padding:0 4px;border-radius:3px">#</code> ticket
             </div>
             <div id="chat-mention-popup" style="display:none;position:absolute;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.12);max-height:220px;overflow-y:auto;z-index:200;min-width:180px"></div>
           </div>
@@ -20741,6 +20782,45 @@ function autoSizeChatInput(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 }
+
+// Composer pill: triggers the hidden mediaComposer's File / Voice / Screen
+// actions when the user clicks one of the inline icons. Kept as a thin
+// pass-through so we don't duplicate the mediaComposer's logic.
+window.chatComposerAttach = function(kind) {
+  const mount = document.getElementById('chat-media-mount');
+  if (!mount) return;
+  if (kind === 'file') {
+    mount.querySelector('.mc-file-input')?.click();
+  } else if (kind === 'voice') {
+    mount.querySelector('.mc-voice-btn')?.click();
+  } else if (kind === 'screen') {
+    mount.querySelector('.mc-screen-btn')?.click();
+  }
+};
+
+// Mirror the hidden voice button's recording state on the visible pill icon
+// (so the user gets the red "recording" affordance + the live timer that
+// would otherwise be hidden inside the collapsed mediaComposer).
+function chatSyncRecordingState() {
+  const hiddenVoice = document.querySelector('#chat-media-mount .mc-voice-btn');
+  const hiddenTimer = document.querySelector('#chat-media-mount .mc-rec-timer');
+  const pillVoice = document.getElementById('chat-comp-voice');
+  if (!hiddenVoice || !pillVoice) return;
+  // The mediaComposer toggles inline background:#fee2e2 on the voice button
+  // while recording. Use that as the signal.
+  const isRecording = (hiddenVoice.style.background || '').includes('fee2e2');
+  pillVoice.classList.toggle('recording', isRecording);
+  if (isRecording && hiddenTimer) {
+    pillVoice.dataset.recTime = (hiddenTimer.textContent || '').trim();
+  } else {
+    delete pillVoice.dataset.recTime;
+  }
+}
+// Poll on a 500ms cadence whenever the chat page is mounted. Cheap enough
+// for an idle composer and gives accurate state without invasive hooks.
+setInterval(() => {
+  if (currentPage === 'chat') chatSyncRecordingState();
+}, 500);
 
 function onChatComposerKey(ev) {
   // Mention popup keyboard nav.
