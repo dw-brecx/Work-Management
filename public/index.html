@@ -18,6 +18,58 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <meta name="apple-mobile-web-app-title" content="Syruvia"/>
 <meta name="mobile-web-app-capable" content="yes"/>
+<script>
+  // ── Suppress browser password-manager autofill on search / filter inputs ──
+  // Edge and Chrome treat any prominent text input near the top of a page
+  // as a potential username field and pop their credential picker over it.
+  // autocomplete="off" alone is no longer respected for that flow, so we
+  // also set data-form-type="other" (Edge), data-1p-ignore + data-lpignore
+  // (1Password / LastPass), and force a non-credential `name` if missing.
+  //
+  // Inputs can opt back in to autofill with data-allow-autofill="true",
+  // which is what the auth pages (login.html, etc — separate documents,
+  // not affected by this script) get implicitly anyway.
+  (function suppressPasswordManagerAutofill() {
+    var SKIP = { email: 1, password: 1, hidden: 1, submit: 1, button: 1, reset: 1, file: 1, image: 1, checkbox: 1, radio: 1 };
+    function disable(inp) {
+      if (!inp || inp.nodeType !== 1 || inp.tagName !== 'INPUT') return;
+      if (inp.dataset && inp.dataset.allowAutofill === 'true') return;
+      var type = (inp.getAttribute('type') || 'text').toLowerCase();
+      if (SKIP[type]) return;
+      inp.setAttribute('autocomplete', 'off');
+      inp.setAttribute('data-form-type', 'other');
+      inp.setAttribute('data-1p-ignore', 'true');
+      inp.setAttribute('data-lpignore', 'true');
+      // Most autofill heuristics look for keywords in name/id. If the input
+      // doesn't have a name, give it a non-credential one so the heuristic
+      // can't fall back to id-only matching.
+      if (!inp.getAttribute('name')) {
+        inp.setAttribute('name', 'sx-' + Math.random().toString(36).slice(2, 10));
+      }
+    }
+    function scan(root) {
+      if (!root) return;
+      if (root.tagName === 'INPUT') disable(root);
+      if (root.querySelectorAll) {
+        var list = root.querySelectorAll('input');
+        for (var i = 0; i < list.length; i++) disable(list[i]);
+      }
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { scan(document.body); });
+    } else {
+      scan(document.body || document.documentElement);
+    }
+    if (typeof MutationObserver !== 'undefined') {
+      new MutationObserver(function (records) {
+        for (var i = 0; i < records.length; i++) {
+          var added = records[i].addedNodes;
+          for (var j = 0; j < added.length; j++) scan(added[j]);
+        }
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    }
+  })();
+</script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
