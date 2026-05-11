@@ -1361,30 +1361,46 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-ch-row .mention-pill{background:#ef4444;color:#fff;font-size:10px;font-weight:600;padding:1px 6px;border-radius:9px;min-width:16px;text-align:center}
   .chat-ch-row.has-unread{color:var(--text);font-weight:600}
 
-  .chat-msg{display:flex;gap:10px;padding:6px 4px;border-radius:6px;position:relative}
-  .chat-msg:hover{background:#fafbff}
-  .chat-msg .msg-avatar{width:32px;height:32px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;overflow:hidden;background:#3b82f6}
+  /* Chat message rows. Layout swaps to row-reverse for own messages
+     (.is-mine) so the bubble sits on the right WhatsApp-style. */
+  .chat-msg{display:flex;gap:10px;padding:2px 6px;position:relative;align-items:flex-end}
+  .chat-msg.is-mine{flex-direction:row-reverse}
+  .chat-msg .msg-avatar{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;overflow:hidden;background:#3b82f6;align-self:flex-end;margin-bottom:2px}
   .chat-msg .msg-avatar img{width:100%;height:100%;object-fit:cover}
-  .chat-msg .msg-body{flex:1;min-width:0}
-  .chat-msg .msg-meta{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
-  .chat-msg .msg-author{font-size:13px;font-weight:600;color:var(--text)}
-  .chat-msg .msg-time{font-size:10.5px;color:var(--text3)}
-  .chat-msg .msg-text{font-size:13px;line-height:1.45;color:var(--text);white-space:pre-wrap;word-wrap:break-word}
-  .chat-msg .msg-text .mention{background:rgba(59,130,246,.13);color:var(--accent);padding:1px 4px;border-radius:4px;font-weight:500}
-  .chat-msg.is-mention-me{background:rgba(255,193,7,.07);border-left:3px solid #f59e0b;padding-left:7px}
-  .chat-msg .msg-edited{font-size:10px;color:var(--text3);margin-left:6px}
-  .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px}
-  .chat-msg .msg-actions{position:absolute;top:-12px;right:8px;display:none;gap:2px;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 12px rgba(15,23,42,.08);padding:2px;z-index:5}
+  /* When grouped with the previous message from the same author, hide the
+     avatar (keep its width as a spacer) and the author name on top. */
+  .chat-msg.same-author{margin-top:1px}
+  .chat-msg.same-author .msg-avatar{visibility:hidden}
+  .chat-msg.same-author .msg-author{display:none}
+  .chat-msg .msg-body{display:flex;flex-direction:column;max-width:68%;min-width:0}
+  .chat-msg.is-mine .msg-body{align-items:flex-end}
+  .chat-msg .msg-author{font-size:11.5px;font-weight:600;color:var(--text2);margin:0 8px 2px}
+  .chat-msg.is-mine .msg-author{display:none}
+  .chat-msg .msg-bubble{padding:8px 12px;border-radius:16px;font-size:13.5px;line-height:1.45;background:#f1f5f9;color:var(--text);white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;position:relative}
+  .chat-msg:not(.is-mine) .msg-bubble{border-bottom-left-radius:4px}
+  .chat-msg.is-mine .msg-bubble{background:linear-gradient(135deg,var(--accent),#1d4ed8);color:#fff;border-bottom-right-radius:4px}
+  .chat-msg.is-mine .msg-bubble a{color:#fff;text-decoration:underline}
+  .chat-msg.is-mine .msg-bubble .mention{background:rgba(255,255,255,.22);color:#fff;padding:1px 5px;border-radius:5px;font-weight:600}
+  .chat-msg:not(.is-mine) .msg-bubble .mention{background:rgba(59,130,246,.14);color:var(--accent);padding:1px 5px;border-radius:5px;font-weight:600}
+  .chat-msg .msg-time{font-size:10.5px;color:var(--text3);margin:3px 8px 0}
+  .chat-msg .msg-edited{font-size:10px;color:var(--text3);margin-left:4px;font-style:italic}
+  .chat-msg.is-mention-me:not(.is-mine) .msg-bubble{background:#fff7e6;box-shadow:inset 3px 0 0 #f59e0b}
+  .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px;padding:6px 12px;background:#f1f5f9;border-radius:14px}
+  .chat-msg .msg-actions{position:absolute;top:-14px;display:none;gap:1px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 4px 12px rgba(15,23,42,.1);padding:2px;z-index:5}
+  .chat-msg:not(.is-mine) .msg-actions{left:48px}
+  .chat-msg.is-mine .msg-actions{right:48px}
   .chat-msg:hover .msg-actions{display:flex}
   .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:13px;padding:4px 7px;border-radius:5px;color:var(--text2)}
   .chat-msg .msg-action-btn:hover{background:var(--bg2);color:var(--text)}
-  .chat-msg .msg-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-  .chat-msg .msg-att{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text);text-decoration:none;max-width:300px}
+  .chat-msg .msg-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;justify-content:flex-start}
+  .chat-msg.is-mine .msg-attachments{justify-content:flex-end}
+  .chat-msg .msg-att{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#fff;border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text);text-decoration:none;max-width:300px}
   .chat-msg .msg-att .att-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .chat-msg .msg-att img{max-width:280px;max-height:200px;border-radius:6px}
-  .chat-msg .msg-att-img{padding:0;border:none;background:none;display:block}
-  .chat-msg .msg-reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
-  .chat-reaction{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;background:#fff;border:1px solid var(--border);border-radius:11px;font-size:11.5px;cursor:pointer;color:var(--text2)}
+  .chat-msg .msg-att img{max-width:280px;max-height:240px;border-radius:10px;display:block}
+  .chat-msg .msg-att-img{padding:0;border:none;background:none}
+  .chat-msg .msg-reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;padding:0 4px}
+  .chat-msg.is-mine .msg-reactions{justify-content:flex-end}
+  .chat-reaction{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;background:#fff;border:1px solid var(--border);border-radius:11px;font-size:11.5px;cursor:pointer;color:var(--text2);box-shadow:0 1px 2px rgba(0,0,0,.04)}
   .chat-reaction.mine{background:rgba(59,130,246,.12);border-color:var(--accent);color:var(--accent)}
   .chat-reaction:hover{background:#f1f5f9}
   .chat-reaction-add{display:inline-flex;align-items:center;justify-content:center;width:24px;height:22px;border-radius:11px;border:1px dashed var(--border);background:transparent;cursor:pointer;color:var(--text3);font-size:11px}
@@ -13412,11 +13428,20 @@ async function loadRealNotifications() {
   };
 })();
 
-// Wrap openNotif to also mark as read on the server
+// Wrap openNotif to also mark as read on the server, and to route chat
+// notifications to the chat page (the original handler only knows about
+// ticket-id deep links).
 (function() {
   var _origOpen = window.openNotif;
   window.openNotif = function(id) {
     fetch('/api/notifications/' + id + '/read', { method:'PUT' }).catch(function(){});
+    var n = (typeof NOTIFICATIONS !== 'undefined') ? NOTIFICATIONS.find(function(x){ return x.id === id; }) : null;
+    if (n && (n.type === 'chat' || n.type === 'chat-mention')) {
+      // Server-side notifications for chat events have no ticket_id, so the
+      // legacy handler would just fall through. Send the user to /chat.
+      try { if (typeof navigate === 'function') navigate('chat'); } catch (e) {}
+      return;
+    }
     if (_origOpen) _origOpen(id);
   };
 })();
@@ -19203,10 +19228,21 @@ function chatOnNewMessage(msg) {
     chatScrollToBottom();
   }
   chatRecomputeUnreadTotals();
-  // Sound / vibrate cue for incoming non-self messages.
-  if (msg.userId !== (window.CURRENT_USER && window.CURRENT_USER.id)) {
-    try { navigator.vibrate && navigator.vibrate(20); } catch {}
+  // Audio + vibrate cue for incoming non-self messages. Only ping when we
+  // didn't auto-mark-read above (i.e. the user isn't actively staring at
+  // this exact channel) — otherwise every visible message would chime.
+  const me2 = window.CURRENT_USER || {};
+  if (msg.userId !== me2.id) {
+    const watching = currentPage === 'chat' && CHAT_STATE.activeChannelId === msg.channelId
+                     && document.visibilityState === 'visible';
+    if (!watching) {
+      chatPlayPing();
+      try { navigator.vibrate && navigator.vibrate(20); } catch {}
+    }
   }
+  // Refresh the bell badge so chat notifications appear without waiting for
+  // its own polling cycle. Best-effort.
+  if (typeof loadRealNotifications === 'function') loadRealNotifications();
 }
 
 function chatOnUpdateMessage(msg) {
@@ -19409,7 +19445,54 @@ function updateChatNavBadge() {
   } else {
     b.style.display = 'none';
   }
+  updateChatTabTitle();
 }
+
+// Prepend "(N) " to the document title when there are unread messages so
+// background tabs surface incoming chats. Strips the prefix when zero.
+function updateChatTabTitle() {
+  try {
+    const base = (document.title || 'Syruvia').replace(/^\(\d+\)\s*/, '').replace(/^\(\d+\+\)\s*/, '');
+    if (CHAT_STATE.unreadTotal > 0) {
+      const tag = CHAT_STATE.unreadTotal > 99 ? '99+' : String(CHAT_STATE.unreadTotal);
+      document.title = `(${tag}) ${base}`;
+    } else {
+      document.title = base;
+    }
+  } catch {}
+}
+
+// Soft, single-shot ping via Web Audio API. Browsers gate audio behind a
+// user gesture, so the AudioContext is created lazily on the first user
+// interaction (the click handler at the bottom of this block primes it).
+let _chatAudioCtx = null;
+function chatPlayPing() {
+  try {
+    if (!_chatAudioCtx) _chatAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _chatAudioCtx;
+    if (ctx.state === 'suspended') { ctx.resume().catch(()=>{}); }
+    const t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, t);
+    o.frequency.exponentialRampToValueAtTime(660, t + 0.18);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.06, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t); o.stop(t + 0.25);
+  } catch {}
+}
+// Prime audio on the first user click anywhere — needed because every modern
+// browser blocks AudioContext.start() until there's been a user gesture.
+document.addEventListener('click', function _primeChatAudio() {
+  try {
+    if (!_chatAudioCtx) _chatAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_chatAudioCtx.state === 'suspended') _chatAudioCtx.resume();
+  } catch {}
+  document.removeEventListener('click', _primeChatAudio);
+}, { once: true });
 
 // ── Rendering ─────────────────────────────────────────────────────────────
 function chatChannelDisplayName(c) {
@@ -19620,13 +19703,16 @@ function renderChatMessages() {
     html += `<div style="text-align:center;padding:6px"><button class="btn-sec" style="font-size:11px;padding:5px 12px" onclick="loadMoreChatMessages()">Load older messages</button></div>`;
   }
   let lastDay = '';
+  let prev = null;
   for (const m of list) {
     const day = (m.createdAt || '').slice(0, 10);
     if (day && day !== lastDay) {
       html += `<div class="chat-day-divider">${formatChatDay(day)}</div>`;
       lastDay = day;
+      prev = null; // a new day always restarts the grouping
     }
-    html += renderChatMessageHtml(m);
+    html += renderChatMessageHtml(m, prev);
+    prev = m;
   }
   scroll.innerHTML = html;
   chatScrollToBottom();
@@ -19641,33 +19727,58 @@ function appendChatMessageNode(msg) {
   const scroll = document.getElementById('chat-messages-scroll');
   if (!scroll) return;
   const list = CHAT_STATE.messagesByChannel.get(msg.channelId) || [];
-  const prev = list[list.length - 2];
+  // Find the message just before the one we're appending so grouping carries
+  // over from the existing DOM.
+  const idx = list.findIndex(m => m.id === msg.id);
+  const prev = idx > 0 ? list[idx - 1] : (list.length >= 2 ? list[list.length - 2] : null);
   const day = (msg.createdAt || '').slice(0, 10);
   const prevDay = prev ? (prev.createdAt || '').slice(0, 10) : '';
   let html = '';
   if (day && day !== prevDay) html += `<div class="chat-day-divider">${formatChatDay(day)}</div>`;
-  html += renderChatMessageHtml(msg);
+  html += renderChatMessageHtml(msg, day === prevDay ? prev : null);
   scroll.insertAdjacentHTML('beforeend', html);
 }
 
-function renderChatMessageHtml(m) {
+// Group consecutive messages from the same author posted within 5 minutes:
+// later messages skip the avatar + author name for a tighter conversation.
+function chatIsSameAuthorGroup(prev, m) {
+  if (!prev || !m) return false;
+  if (prev.userId !== m.userId) return false;
+  if (prev.parentMessageId || m.parentMessageId) return false;
+  try {
+    const t1 = new Date((prev.createdAt || '').replace(' ', 'T') + 'Z').getTime();
+    const t2 = new Date((m.createdAt || '').replace(' ', 'T') + 'Z').getTime();
+    if (!isFinite(t1) || !isFinite(t2)) return false;
+    return Math.abs(t2 - t1) < 5 * 60 * 1000;
+  } catch { return false; }
+}
+
+function renderChatMessageHtml(m, prev) {
   const me = window.CURRENT_USER || {};
   const isMine = m.userId === me.id;
-  const isMentionMe = (m.mentions || []).some(x => x.id === me.id);
+  const isMentionMe = !isMine && (m.mentions || []).some(x => x.id === me.id);
+  const sameAuthor = chatIsSameAuthorGroup(prev, m);
   const author = m.author || { name: 'Unknown', avatarUrl: '', color: '#94a3b8' };
   const initial = (author.name || '?').slice(0, 1).toUpperCase();
   const avatar = author.avatarUrl
     ? `<img src="${escapeHtml(author.avatarUrl)}" alt="">`
     : initial;
   const isThreadParent = !!m.replyCount;
+  // For an active conversation, only show author name on the FIRST of a
+  // grouped run from a non-self user. DMs hide the author entirely (you know
+  // who you're talking to). Channels and groups show the author label above
+  // the bubble for incoming messages.
+  const c = CHAT_STATE.channelsById.get(m.channelId);
+  const showAuthor = !isMine && !sameAuthor && c && c.type !== 'dm';
+  const cls = ['chat-msg'];
+  if (isMine) cls.push('is-mine');
+  if (sameAuthor) cls.push('same-author');
+  if (isMentionMe) cls.push('is-mention-me');
   if (m.deletedAt) {
-    return `<div class="chat-msg" data-msg-id="${m.id}">
+    return `<div class="${cls.join(' ')}" data-msg-id="${m.id}">
       <div class="msg-avatar" style="background:${escapeHtml(author.color)}">${avatar}</div>
       <div class="msg-body">
-        <div class="msg-meta">
-          <span class="msg-author">${escapeHtml(author.name)}</span>
-          <span class="msg-time">${formatChatTime(m.createdAt)}</span>
-        </div>
+        ${showAuthor ? `<span class="msg-author">${escapeHtml(author.name)}</span>` : ''}
         <div class="msg-deleted">[message deleted]</div>
       </div>
     </div>`;
@@ -19685,18 +19796,17 @@ function renderChatMessageHtml(m) {
       ${isMine ? `<button class="msg-action-btn" title="Edit" onclick="startChatEdit(${m.id})">✏️</button>
                   <button class="msg-action-btn" title="Delete" onclick="deleteChatMessage(${m.id})">🗑</button>` : ''}
     </div>`;
-  return `<div class="chat-msg ${isMentionMe ? 'is-mention-me' : ''}" data-msg-id="${m.id}">
+  // Bubble holds the body + (if present) attachments. The footer line below
+  // shows the time + (edited) tag, plus reactions + thread-link beside it.
+  const bubbleInner = `${bodyHtml}${attsHtml}`;
+  return `<div class="${cls.join(' ')}" data-msg-id="${m.id}">
     ${actions}
     <div class="msg-avatar" style="background:${escapeHtml(author.color)}">${avatar}</div>
     <div class="msg-body">
-      <div class="msg-meta">
-        <span class="msg-author">${escapeHtml(author.name)}</span>
-        <span class="msg-time">${formatChatTime(m.createdAt)}</span>
-        ${editedTag}
-      </div>
-      <div class="msg-text">${bodyHtml}</div>
-      ${attsHtml}
+      ${showAuthor ? `<span class="msg-author">${escapeHtml(author.name)}</span>` : ''}
+      <div class="msg-bubble">${bubbleInner}</div>
       ${reactionsHtml}
+      <div class="msg-time">${formatChatTime(m.createdAt)}${editedTag}${threadHtml ? ' · ' : ''}</div>
       ${threadHtml}
     </div>
   </div>`;
