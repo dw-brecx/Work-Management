@@ -876,7 +876,7 @@ async function runTrashAutoPurgeJob() {
     const old = await all(
       `SELECT id FROM tickets
         WHERE deleted_at IS NOT NULL
-          AND deleted_at < TO_CHAR(NOW() - INTERVAL '30 days' AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`
+          AND deleted_at < TO_CHAR((NOW() - INTERVAL '30 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`
     );
     if (!old.length) return;
     const ids = old.map(r => r.id);
@@ -920,11 +920,11 @@ async function runTicketAttachmentRetentionJob() {
           AND t.deleted_at IS NULL
           AND (
                 (t.status <> 'Closed'
-                 AND a.created_at < TO_CHAR(NOW() - INTERVAL '3 years' AT TIME ZONE 'UTC',
+                 AND a.created_at < TO_CHAR((NOW() - INTERVAL '3 years') AT TIME ZONE 'UTC',
                                             'YYYY-MM-DD HH24:MI:SS'))
              OR (t.status = 'Closed'
                  AND t.closed_at IS NOT NULL
-                 AND t.closed_at < TO_CHAR(NOW() - INTERVAL '1 year' AT TIME ZONE 'UTC',
+                 AND t.closed_at < TO_CHAR((NOW() - INTERVAL '1 year') AT TIME ZONE 'UTC',
                                            'YYYY-MM-DD HH24:MI:SS'))
               )`
     );
