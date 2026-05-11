@@ -4960,6 +4960,27 @@ async function chatHydrateMessages(rows) {
   });
 }
 
+// Hard-purge cron: any chat group whose closed_at is older than 30 days
+// gets fully deleted (rows + messages + reactions + mentions cascade via FK).
+// Active and DM channels are never touched. Runs daily alongside the
+// existing trash auto-purge job.
+async function chatPurgeOldClosedGroups() {
+  try {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      .toISOString().replace('T', ' ').slice(0, 19);
+    const old = await all(
+      `SELECT id FROM chat_channels
+        WHERE type = 'group' AND closed_at IS NOT NULL AND closed_at < ?`,
+      cutoff
+    );
+    if (!old.length) return;
+    for (const row of old) {
+      await run('DELETE FROM chat_channels WHERE id=?', row.id);
+    }
+    console.log(`[chat] auto-purged ${old.length} closed group(s) past 30-day window`);
+  } catch (e) { console.error('[chat:purge]', e.message); }
+}
+
 // Serialise one channel for the channel list — adds member-list (id+name),
 // the current user's unread count, and the latest message preview.
 async function chatSerializeChannel(channel, currentUserId) {
@@ -5013,6 +5034,8 @@ async function chatSerializeChannel(channel, currentUserId) {
     createdBy: channel.created_by,
     createdAt: channel.created_at,
     lastMessageAt: channel.last_message_at,
+    closedAt: channel.closed_at || null,
+    closedBy: channel.closed_by || null,
     members: members.map(m => ({
       id: m.id, name: m.name, avatarUrl: m.avatar_url || '',
       color: m.color || '#2563eb', role: m.role,
@@ -5349,6 +5372,62 @@ app.delete('/api/chat/channels/:id/members/:userId', requireAuth, async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/chat/channels/:id/close — soft-close a group chat. Anyone in
+// the group can close it for everyone. The channel disappears from the
+// main sidebar list and is surfaced under the "Closed" section instead.
+// A nightly cron hard-deletes after 30 days. Channels (#general etc.) and
+// 1:1 DMs can't be closed via this route — only ad-hoc groups.
+app.post('/api/chat/channels/:id/close', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    if (row.type !== 'group') {
+      return res.status(400).json({ error: 'Only group chats can be closed. Use Leave for DMs and channels.' });
+    }
+    const member = await chatGetMembership(req, id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    if (row.closed_at) {
+      // Idempotent — already closed.
+      const existing = await chatSerializeChannel(row, req.session.userId);
+      return res.json(existing);
+    }
+    await run(
+      "UPDATE chat_channels SET closed_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), closed_by = ? WHERE id = ?",
+      req.session.userId, id
+    );
+    const fresh = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    const memberRows = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', id);
+    for (const mr of memberRows) {
+      wsSendToUser(mr.user_id, { type: 'channel:update', channel: await chatSerializeChannel(fresh, mr.user_id) });
+    }
+    res.json(await chatSerializeChannel(fresh, req.session.userId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/chat/channels/:id/reopen — bring a closed group back. Any
+// member can do it; clears closed_at and the group reappears in the
+// active list.
+app.post('/api/chat/channels/:id/reopen', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    const member = await chatGetMembership(req, id);
+    if (!member) return res.status(404).json({ error: 'Not found' });
+    if (!row.closed_at) {
+      return res.json(await chatSerializeChannel(row, req.session.userId));
+    }
+    await run('UPDATE chat_channels SET closed_at = NULL, closed_by = NULL WHERE id = ?', id);
+    const fresh = await get('SELECT * FROM chat_channels WHERE id=?', id);
+    const memberRows = await all('SELECT user_id FROM chat_channel_members WHERE channel_id=?', id);
+    for (const mr of memberRows) {
+      wsSendToUser(mr.user_id, { type: 'channel:update', channel: await chatSerializeChannel(fresh, mr.user_id) });
+    }
+    res.json(await chatSerializeChannel(fresh, req.session.userId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // POST /api/chat/dm/:userId — get-or-create a 1:1 DM channel with another
 // user. Idempotent: the dm_key unique index guarantees one row per pair.
 app.post('/api/chat/dm/:userId', requireAuth, async (req, res) => {
@@ -5459,6 +5538,11 @@ app.post('/api/chat/channels/:id/messages', requireAuth, async (req, res) => {
     const id = Number(req.params.id);
     const member = await chatGetMembership(req, id);
     if (!member) return res.status(404).json({ error: 'Not found' });
+    // Block writes to closed groups — they're read-only until reopened.
+    const channelRow = await get('SELECT closed_at FROM chat_channels WHERE id=?', id);
+    if (channelRow && channelRow.closed_at) {
+      return res.status(400).json({ error: 'This group is closed. Reopen it to send messages.' });
+    }
     const body = String(req.body?.body || '').trim();
     const parentId = req.body?.parentMessageId ? Number(req.body.parentMessageId) : null;
     const attachmentIds = Array.isArray(req.body?.attachmentIds)
@@ -5973,8 +6057,10 @@ app.get('*', (req, res) => {
     // Every hour: deadline-approaching warnings + overdue-digest dispatch.
     setInterval(runDeadlineWarningJob, 60 * 60 * 1000);
     setInterval(runOverdueDigestJob,   60 * 60 * 1000);
-    // Once a day: hard-delete tickets that have sat in trash for 30+ days.
+    // Once a day: hard-delete tickets that have sat in trash for 30+ days,
+    // and same window for chat groups that have been closed for 30+ days.
     setInterval(runTrashAutoPurgeJob, 24 * 60 * 60 * 1000);
+    setInterval(chatPurgeOldClosedGroups, 24 * 60 * 60 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
@@ -5984,6 +6070,7 @@ app.get('*', (req, res) => {
       runDeadlineWarningJob();
       runOverdueDigestJob();
       runTrashAutoPurgeJob();
+      chatPurgeOldClosedGroups();
     }, 30 * 1000);
     console.log('✅  Email cron loops scheduled (meeting/ticket/personal reminders, deadline, overdue-digest).');
   } catch(e) {

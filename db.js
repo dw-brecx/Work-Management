@@ -583,6 +583,12 @@ async function init() {
   // the chat composer are uploaded via /api/upload with chatMessageId set
   // and surface inline under the message that pinned them.
   await safeAlter('ALTER TABLE attachments ADD COLUMN chat_message_id INTEGER');
+  // Soft-close for chat group / DM channels. When set, the conversation
+  // is hidden from the main sidebar list (surfaced under "Closed" instead),
+  // and the composer is disabled. A nightly cron hard-deletes any group
+  // that's been closed for 30+ days. NULL = active.
+  await safeAlter("ALTER TABLE chat_channels ADD COLUMN closed_at TEXT");
+  await safeAlter("ALTER TABLE chat_channels ADD COLUMN closed_by INTEGER");
   // Per-doc visibility. public = anyone in the workspace can see it
   // (default); private = only the creator + admins + users explicitly
   // added via doc_shares. The file URL itself (/uploads/*) is still
