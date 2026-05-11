@@ -12725,6 +12725,14 @@ async function initApp() {
 
   // Signal that the app is ready — triggers URL routing from initial path
   window.dispatchEvent(new Event('_wnReady'));
+
+  // Auto-open Create Ticket modal when arriving from Syruvia Lab deep-link
+  const _dp = new URLSearchParams(window.location.search);
+  if (_dp.get('flavor') && _dp.get('flavor_name')) {
+    setTimeout(() => {
+      if (typeof openModal === 'function') openModal('create-ticket');
+    }, 300);
+  }
 }
 
 // ── Real notifications ────────────────────────────────────────────────────────
