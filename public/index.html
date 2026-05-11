@@ -1421,7 +1421,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
      bubble wider so reply bubbles don't collapse into tall narrow strips
      when both the quoted text and the reply body are short.
      Clicking scrolls back to the original. */
-  .msg-quote{display:block;border-left:4px solid #3b82f6;padding:6px 10px;margin-bottom:8px;border-radius:0 8px 8px 0;cursor:pointer;font-size:12px;background:rgba(59,130,246,.08);color:var(--text);min-width:200px;max-width:100%;box-sizing:border-box}
+  .msg-quote{display:block;border-left:4px solid #3b82f6;padding:5px 10px;margin-bottom:6px;border-radius:0 8px 8px 0;cursor:pointer;font-size:12px;background:rgba(59,130,246,.08);color:var(--text);min-width:160px;max-width:100%;box-sizing:border-box}
   .msg-quote:hover{background:rgba(59,130,246,.13)}
   .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.20);border-left-color:#fff;color:#fff}
   .chat-msg.is-mine .msg-quote:hover{background:rgba(255,255,255,.28)}
@@ -1500,6 +1500,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg .msg-att{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#fff;border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text);text-decoration:none;max-width:300px}
   .chat-msg .msg-att .att-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .chat-msg .msg-att img{max-width:280px;max-height:240px;border-radius:10px;display:block}
+  /* Audio / video attachments need an absolute minimum width or browsers
+     collapse the controls to a tiny "⋮" icon. The parent bubble grows to
+     accommodate. On narrow phones the @media block below tightens these. */
+  .chat-msg .msg-attachments audio{min-width:220px;width:240px;max-width:100%;display:block}
+  .chat-msg .msg-attachments video{min-width:240px;width:100%;max-width:280px;border-radius:8px;display:block}
   .chat-msg .msg-att-img{padding:0;border:none;background:none}
   .chat-msg .msg-reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;padding:0 4px}
   .chat-msg.is-mine .msg-reactions{justify-content:flex-end}
@@ -1557,6 +1562,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     }
     /* Wider bubbles on mobile — 60% leaves too much wasted gutter. */
     .chat-msg .msg-body { max-width: 84% !important; }
+    /* Phones are narrow — let audio/video shrink to ~200px so the bubble
+       doesn't push past the viewport edge. */
+    .chat-msg .msg-attachments audio { min-width: 180px !important; width: 200px !important; }
+    .chat-msg .msg-attachments video { min-width: 200px !important; width: 100% !important; max-width: 240px !important; }
+    /* Quote card shorter min-width on mobile too. */
+    .msg-quote { min-width: 140px !important; }
     /* Composer pill — tighter sizing so 📎/🎤/textarea/Send fit on a 360px
        viewport without overflow. Hide the screen-record icon (phones can't
        reliably screen-record from a browser anyway). */
