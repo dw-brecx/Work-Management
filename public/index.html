@@ -1423,6 +1423,39 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   /* Sender-side: list of who has confirmed below own bubbles. */
   .chat-confirm-by{font-size:10.5px;color:#15803d;margin:3px 8px 0;display:inline-flex;align-items:center;gap:4px}
   .chat-msg.is-mine .chat-confirm-by{justify-content:flex-end}
+
+  /* Show the mobile-only "back" button only on small screens. */
+  .chat-back-btn{display:none;background:none;border:none;cursor:pointer;font-size:22px;color:var(--text2);padding:0 8px 0 0;flex-shrink:0;line-height:1}
+
+  /* ── CHAT — MOBILE (≤760px) ────────────────────────────────────────────
+     Switches to a single-pane swap: by default the channel list takes the
+     full screen; selecting a conversation flips to the message pane via
+     the .view-conversation class on #chat-shell. The thread pane becomes
+     a full-screen sheet. */
+  @media (max-width: 760px) {
+    #page-chat { padding: 0 !important; height: calc(100vh - 56px - env(safe-area-inset-bottom)) !important; }
+    #chat-shell { border-radius: 0; border: 0; height: 100%; }
+    #chat-left { width: 100%; flex: 1 1 auto; border-right: 0; }
+    #chat-main { display: none; }
+    #chat-shell.view-conversation #chat-left { display: none; }
+    #chat-shell.view-conversation #chat-main { display: flex; flex: 1 1 auto; }
+    .chat-back-btn { display: inline-flex; align-items: center; justify-content: center; }
+    /* Thread pane → full-screen overlay sheet so it's reachable. */
+    #chat-thread-pane {
+      position: fixed; inset: 0; z-index: 4000; width: 100% !important; flex: 1 1 auto !important;
+      border-left: 0; background: #fff;
+    }
+    /* Wider bubbles on mobile — 60% leaves too much wasted gutter. */
+    .chat-msg .msg-body { max-width: 84% !important; }
+    /* Composer: textarea grows, smaller Send pill, Polish row wraps. */
+    #chat-composer-wrap { padding: 8px 10px !important; }
+    #chat-composer-wrap textarea#chat-input { font-size: 16px !important; } /* ≥16px stops iOS zoom */
+    #chat-header { padding: 10px 12px !important; }
+    #chat-header-name { font-size: 15px !important; }
+    /* Mention / ticket popup: anchor to viewport bottom over the keyboard
+       instead of floating mid-screen. */
+    #chat-mention-popup { left: 8px !important; right: 8px !important; max-width: none !important; min-width: 0 !important; }
+  }
   .chat-day-divider{display:flex;align-items:center;gap:10px;margin:18px 0 6px;font-size:11px;color:var(--text3)}
   .chat-day-divider:before,.chat-day-divider:after{content:'';flex:1;height:1px;background:var(--border)}
   .chat-att-preview{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:11.5px}
@@ -3716,6 +3749,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <main id="chat-main" style="flex:1;display:flex;flex-direction:column;min-width:0">
           <header id="chat-header" style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff">
             <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              <button class="chat-back-btn" onclick="exitChatConversation()" title="Back to chats" aria-label="Back to chats">←</button>
               <div id="chat-header-icon" style="font-size:18px">#</div>
               <div style="min-width:0">
                 <div id="chat-header-name" style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pick a conversation</div>
@@ -19795,6 +19829,24 @@ function renderChatUserDmRow(user, channel) {
   </div>`;
 }
 
+// Mobile single-pane swap: leave the conversation view and re-show the
+// channel list. No-op on desktop (the .view-conversation class only does
+// anything inside the ≤760px media query).
+function exitChatConversation() {
+  const shell = document.getElementById('chat-shell');
+  if (shell) shell.classList.remove('view-conversation');
+  // Drop the active channel so the renderer paints the empty-state on
+  // larger screens too if the user resizes the window.
+  CHAT_STATE.activeChannelId = null;
+  closeChatThread();
+  renderChatChannelList();
+  renderChatActiveChannel();
+  // Strip the ?channel=N query so a refresh doesn't auto-jump back in.
+  try {
+    if (location.search.includes('channel=')) history.replaceState({ page: 'chat' }, '', '/chat');
+  } catch {}
+}
+
 // Click handler for the workspace-user rows in the DM list. If we already
 // have a DM channel with this user, just open it; otherwise create it on
 // the fly via the existing /api/chat/dm endpoint.
@@ -20207,6 +20259,10 @@ async function selectChatChannel(channelId) {
   CHAT_STATE.activeChannelId = channelId;
   if (CHAT_STATE._mediaComposer) CHAT_STATE._mediaComposer.reset();
   renderChatChannelList();
+  // Mobile: flip the shell into the conversation view (the .view-conversation
+  // class swaps which pane is visible on small screens). Desktop ignores it.
+  const shell = document.getElementById('chat-shell');
+  if (shell) shell.classList.add('view-conversation');
   renderChatActiveChannel();
   // Update URL so reload / share keeps the channel open.
   try {
