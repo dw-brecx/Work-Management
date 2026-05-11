@@ -1435,7 +1435,17 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
      #chat-shell / #chat-left / #chat-main containers carry inline style=""
      attributes that win over plain ID selectors. */
   @media (max-width: 760px) {
-    #page-chat { padding: 0 !important; height: calc(100vh - 56px - env(safe-area-inset-bottom)) !important; }
+    /* Subtract topbar (~56px) AND the fixed mobile bottom nav (~64px on
+       devices without a home indicator, plus safe-area-inset-bottom on
+       iPhones with one). Without the second subtraction the composer
+       disappears behind the nav. */
+    #page-chat {
+      padding: 0 !important;
+      height: calc(100vh - 56px - 64px - env(safe-area-inset-bottom)) !important;
+      /* Use dvh on browsers that support it — accounts for the dynamic
+         iOS Safari URL bar and gives a more accurate viewport height. */
+      height: calc(100dvh - 56px - 64px - env(safe-area-inset-bottom)) !important;
+    }
     #chat-shell { border-radius: 0 !important; border: 0 !important; height: 100% !important; }
     #chat-left { width: 100% !important; flex: 1 1 auto !important; border-right: 0 !important; }
     #chat-main { display: none !important; }
