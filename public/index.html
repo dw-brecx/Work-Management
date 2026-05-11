@@ -9952,13 +9952,15 @@ function populateCreateTicketModal() {
   const syrSection = document.getElementById('m-syruvia-section');
   if (syrSection) syrSection.style.display = SYRUVIA_URL ? 'block' : 'none';
 
-  // Pre-fill flavor if the page was opened with ?flavor=ID&flavor_name=NAME
+  // Pre-fill flavor if the page was opened with ?flavor=ID&flavor_name=NAME.
+  // Fall back to window._syruviaDeepLink because the router may have already
+  // stripped the query string from the URL by the time this runs.
   const urlParams = new URLSearchParams(window.location.search);
-  const preFlavorId   = urlParams.get('flavor');
-  const preFlavorName = urlParams.get('flavor_name');
+  const preFlavorId   = urlParams.get('flavor')      || (window._syruviaDeepLink && window._syruviaDeepLink.flavor);
+  const preFlavorName = urlParams.get('flavor_name') || (window._syruviaDeepLink && window._syruviaDeepLink.flavor_name);
   if (preFlavorId && preFlavorName) {
     selectFlavorLink(preFlavorId, preFlavorName);
-    // Clean the URL so refreshing doesn't re-trigger the pre-fill
+    window._syruviaDeepLink = null;
     history.replaceState({}, '', window.location.pathname);
   }
 }
@@ -13619,12 +13621,16 @@ async function initApp() {
   // Signal that the app is ready — triggers URL routing from initial path
   window.dispatchEvent(new Event('_wnReady'));
 
-  // Auto-open Create Ticket modal when arriving from Syruvia Lab deep-link
+  // Auto-open Create Ticket modal when arriving from Syruvia Lab deep-link.
+  // Capture params NOW before the router strips the query string from the URL.
   const _dp = new URLSearchParams(window.location.search);
-  if (_dp.get('flavor') && _dp.get('flavor_name')) {
+  const _dlFlavor = _dp.get('flavor');
+  const _dlFlavorName = _dp.get('flavor_name');
+  if (_dlFlavor && _dlFlavorName) {
+    window._syruviaDeepLink = { flavor: _dlFlavor, flavor_name: _dlFlavorName };
     setTimeout(() => {
       if (typeof openModal === 'function') openModal('create-ticket');
-    }, 300);
+    }, 600);
   }
 }
 
