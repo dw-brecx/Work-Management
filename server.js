@@ -5766,6 +5766,14 @@ app.get('*', (req, res) => {
   </script>`;
   html = html.replace('<head>', '<head>' + inject);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  // Critical: never cache the SPA shell. Without this header browsers
+  // (especially mobile Safari + installed PWAs) hold onto an old copy
+  // and users don't see new code after a deploy until they manually
+  // clear site data. Static assets under /public are already no-cache
+  // via the express.static middleware.
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.send(html);
 });
 
