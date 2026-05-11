@@ -6963,16 +6963,33 @@ function toggleCreateAssignee(name) {
 }
 
 // ===== Description (view + edit) =====
+// Tri-state load tracker keyed by ticket id: 'loading' while the details
+// fetch is in flight, 'error' on a failed fetch, 'loaded' once we've heard
+// back at least once. Without this, a single network blip left the
+// description silently empty ("No description yet…") even on tickets that
+// actually had one, until the user refreshed a few times.
+window.TICKET_DETAILS_STATE = window.TICKET_DETAILS_STATE || {};
+
 function renderDescription() {
   const t = getCurrentTicket();
   if (!t) return;
   const d = getTicketDetails(t.id);
   const view = document.getElementById('det-desc-view');
+  const state = window.TICKET_DETAILS_STATE[t.id];
   if (view) {
     if (d.description && d.description.trim()) {
       // Render markdown so AI Rewrite output (headings, bold, bullets,
       // links) shows formatted instead of raw "**Foo**" / "## Bar" text.
       view.innerHTML = _mdRender(d.description);
+      view.style.color = '';
+      view.style.fontStyle = '';
+    } else if (state === 'loading') {
+      view.textContent = 'Loading description…';
+      view.style.color = 'var(--text3)';
+      view.style.fontStyle = 'italic';
+    } else if (state === 'error') {
+      // Inline retry — the global click handler picks up the data-action.
+      view.innerHTML = '<span style="color:#dc2626">Couldn’t load description.</span> <a href="#" onclick="event.preventDefault();loadTicketDescription(getCurrentTicket()?.id, 2)" style="color:var(--accent);text-decoration:underline">Retry</a>';
       view.style.color = '';
       view.style.fontStyle = '';
     } else {
@@ -6988,6 +7005,41 @@ function renderDescription() {
   const btn = document.getElementById('desc-edit-btn');
   if (btn) btn.style.display = '';
 }
+
+// Load (or reload) a ticket's description + checklist with automatic retry
+// on transient failure. retries=2 means up to two extra attempts with
+// linearly increasing backoff. State is published via TICKET_DETAILS_STATE
+// so renderDescription can show Loading… / empty / Retry-on-error.
+window.loadTicketDescription = async function(id, retries) {
+  if (!id) return;
+  retries = (typeof retries === 'number') ? retries : 2;
+  window.TICKET_DETAILS_STATE[id] = 'loading';
+  // Repaint so the user sees "Loading…" instead of the prior state.
+  if (window.currentDetailTicketId === id && typeof renderDescription === 'function') renderDescription();
+  let attempt = 0;
+  while (true) {
+    try {
+      const det = await apiGet('/api/tickets/' + id + '/details');
+      if (det) {
+        if (!TICKET_DETAILS[id]) TICKET_DETAILS[id] = { description: '', checklist: [] };
+        TICKET_DETAILS[id].description = det.description || '';
+        if (Array.isArray(det.checklist)) TICKET_DETAILS[id].checklist = det.checklist;
+      }
+      window.TICKET_DETAILS_STATE[id] = 'loaded';
+      if (window.currentDetailTicketId === id && typeof renderDescription === 'function') renderDescription();
+      return;
+    } catch (e) {
+      if (attempt >= retries) {
+        window.TICKET_DETAILS_STATE[id] = 'error';
+        if (window.currentDetailTicketId === id && typeof renderDescription === 'function') renderDescription();
+        console.warn('[ticket-details] load failed for', id, e?.message || e);
+        return;
+      }
+      attempt++;
+      await new Promise(r => setTimeout(r, 250 * attempt));
+    }
+  }
+};
 
 function startEditDescription() {
   const t = getCurrentTicket();
@@ -14110,20 +14162,10 @@ function watchTicketDetailPanel() {
       // div lives in the static HTML so it's always in the DOM by the time
       // openTicketDetail runs.
       if (typeof loadTicketAttachments === 'function') loadTicketAttachments(id);
-      // Pull the saved description + checklist from the server so reopening a
-      // ticket shows what was actually persisted (not just whatever's in the
-      // in-memory TICKET_DETAILS cache from the optimistic create).
-      apiGet('/api/tickets/' + id + '/details').then(function(det) {
-        if (!det) return;
-        if (!TICKET_DETAILS[id]) TICKET_DETAILS[id] = { description: '', checklist: [] };
-        TICKET_DETAILS[id].description = det.description || '';
-        if (Array.isArray(det.checklist)) TICKET_DETAILS[id].checklist = det.checklist;
-        // Re-paint the description card with the freshly-loaded value if the
-        // panel is still showing this ticket.
-        if (window.currentDetailTicketId === id && typeof renderDescription === 'function') {
-          renderDescription();
-        }
-      }).catch(function(){});
+      // Pull the saved description + checklist from the server. Uses the
+      // self-healing loader so a single network blip doesn't leave the user
+      // staring at "No description yet" on a ticket that actually has one.
+      if (typeof loadTicketDescription === 'function') loadTicketDescription(id, 2);
       // Load real comments from API (replaces empty localComments from template)
       // Self-healing: retry once on failure, then show a "Couldn't load —
       // Retry" link so an empty render isn't silently a lie. Without this,
