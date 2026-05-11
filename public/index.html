@@ -1405,15 +1405,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg .msg-edited{font-size:10px;color:var(--text3);margin-left:4px;font-style:italic}
   .chat-msg.is-mention-me:not(.is-mine) .msg-bubble{background:#fff7e6;box-shadow:inset 3px 0 0 #f59e0b}
   .chat-msg .msg-deleted{font-style:italic;color:var(--text3);font-size:12.5px;padding:6px 12px;background:#f1f5f9;border-radius:14px}
-  /* Hover actions sit BESIDE the bubble in the empty pane gutter — never
-     above it where they'd cover the previous message's text. Vertically
-     centered on the bubble. */
-  .chat-msg .msg-actions{position:absolute;top:50%;transform:translateY(-50%);display:none;gap:1px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 4px 12px rgba(15,23,42,.1);padding:2px;z-index:5;opacity:0;transition:opacity .12s ease}
-  .chat-msg:not(.is-mine) .msg-actions{right:8px}
-  .chat-msg.is-mine .msg-actions{left:8px}
+  /* Hover toolbar — vertical icon stack beside the bubble (Syruvia Lab
+     style). Fades in on hover; hidden on touch screens where hover is
+     unreliable. */
+  .chat-msg .msg-actions{position:absolute;top:50%;transform:translateY(-50%);display:none;flex-direction:column;gap:1px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 18px rgba(15,23,42,.12);padding:3px;z-index:5;opacity:0;transition:opacity .12s ease}
+  .chat-msg:not(.is-mine) .msg-actions{right:6px}
+  .chat-msg.is-mine .msg-actions{left:6px}
   .chat-msg:hover .msg-actions{display:flex;opacity:1}
-  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:12px;padding:3px 6px;border-radius:5px;color:var(--text2);line-height:1}
+  .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;border-radius:6px;color:var(--text2);line-height:1;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center}
   .chat-msg .msg-action-btn:hover{background:var(--bg2);color:var(--text)}
+  /* Quote card inside a bubble when a message is an inline reply. Clicking
+     scrolls back to the original message. */
+  .msg-quote{display:block;border-left:3px solid currentColor;padding:4px 8px;margin-bottom:6px;border-radius:4px;cursor:pointer;font-size:11.5px;opacity:.85;background:rgba(0,0,0,.04)}
+  .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.15);border-left-color:rgba(255,255,255,.55)}
+  .msg-quote-author{font-weight:600;display:block;margin-bottom:1px;font-size:11px}
+  .msg-quote-body{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px}
+  /* Reply-mode preview bar above the composer (when you tap reply). */
+  #chat-reply-bar{display:none;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:#f1f5f9;border-radius:0;font-size:11.5px;color:var(--text2)}
+  #chat-reply-bar.active{display:flex}
+  #chat-reply-bar .rb-icon{color:var(--accent);font-size:14px}
+  #chat-reply-bar .rb-body{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #chat-reply-bar .rb-author{font-weight:600;color:var(--text)}
+  #chat-reply-bar .rb-cancel{background:none;border:0;cursor:pointer;color:var(--text3);font-size:18px;padding:0 4px;line-height:1}
+  #chat-reply-bar .rb-cancel:hover{color:#ef4444}
   /* On touch screens hover is unreliable — keep actions hidden so they
      don't block content. The reaction picker is reachable via the existing
      ✓ confirm + emoji affordances on the bubble itself. */
@@ -3853,6 +3867,15 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           <div id="chat-messages-scroll" style="display:none;flex:1;overflow-y:auto;padding:14px 18px;background:#fff" onscroll="onChatScroll()"></div>
           <div id="chat-typing" style="display:none;font-size:11px;color:var(--text3);padding:2px 18px"></div>
           <div id="chat-composer-wrap" data-paste-host style="display:none;border-top:1px solid var(--border);background:#fff;padding:10px 14px">
+            <!-- WhatsApp-style reply bar (appears when you tap reply on a message). -->
+            <div id="chat-reply-bar">
+              <span class="rb-icon">↩</span>
+              <div class="rb-body">
+                <span class="rb-author" id="chat-reply-author"></span>
+                <span id="chat-reply-text"></span>
+              </div>
+              <button type="button" class="rb-cancel" onclick="clearChatReplyTo()" aria-label="Cancel reply">×</button>
+            </div>
             <div id="chat-media-mount" style="margin-bottom:8px"></div>
             <div style="display:flex;align-items:flex-end;gap:8px">
               <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
@@ -19525,22 +19548,22 @@ function chatOnNewMessage(msg) {
       return;
     }
   }
+  // Inline reply: still push to the main stream (replies render inline with
+  // a quote card). Also bump the parent's replyCount for the "N replies"
+  // thread link, and append to the open thread pane if one is showing.
   if (msg.parentMessageId) {
-    // Thread reply — bump parent's replyCount when we have it cached.
     const parent = list.find(m => m.id === msg.parentMessageId);
     if (parent) {
       parent.replyCount = (parent.replyCount || 0) + 1;
       parent.lastReplyAt = msg.createdAt;
     }
-    // If the thread pane is open on this parent, append.
     if (CHAT_STATE.activeThreadParentId === msg.parentMessageId) {
       CHAT_STATE.threadReplies.push(msg);
       renderChatThread();
     }
-  } else {
-    list.push(msg);
-    CHAT_STATE.messagesByChannel.set(msg.channelId, list);
   }
+  list.push(msg);
+  CHAT_STATE.messagesByChannel.set(msg.channelId, list);
   const channel = CHAT_STATE.channelsById.get(msg.channelId);
   if (channel) {
     channel.lastMessage = {
@@ -20449,15 +20472,23 @@ function renderChatMessageHtml(m, prev) {
     ? `<button class="msg-thread-link" onclick="openChatThread(${m.id})">💬 ${m.replyCount} ${m.replyCount === 1 ? 'reply' : 'replies'}</button>`
     : '';
   const actions = `<div class="msg-actions">
+      <button class="msg-action-btn" title="Reply (WhatsApp-style quote)" onclick="setChatReplyTo(${m.id})">↩</button>
       <button class="msg-action-btn" title="Add reaction" onclick="openChatReactionPicker(event, ${m.id})">😀</button>
       <button class="msg-action-btn" title="Reply in thread" onclick="openChatThread(${m.id})">💬</button>
       ${!isMine ? `<button class="msg-action-btn" title="Mark as confirmed" onclick="toggleChatConfirm(${m.id})">✓</button>` : ''}
       ${isMine ? `<button class="msg-action-btn" title="Edit" onclick="startChatEdit(${m.id})">✏️</button>
                   <button class="msg-action-btn" title="Delete" onclick="deleteChatMessage(${m.id})">🗑</button>` : ''}
     </div>`;
-  // Bubble holds the body + (if present) attachments. The footer line below
-  // shows the time + (edited) tag, plus reactions + thread-link beside it.
-  const bubbleInner = `${bodyHtml}${attsHtml}`;
+  // Inline reply quote card — when this message is a WhatsApp-style reply,
+  // show the original it's replying to at the top of the bubble. Clicking
+  // scrolls back to the original.
+  const quoteHtml = m.replyTo ? `<div class="msg-quote" onclick="scrollToChatMessage(${m.replyTo.id})" role="button" tabindex="0">
+    <span class="msg-quote-author">${escapeHtml(m.replyTo.authorName || 'Unknown')}</span>
+    <span class="msg-quote-body">${escapeHtml((m.replyTo.body || '').slice(0, 140))}</span>
+  </div>` : '';
+  // Bubble holds the (optional) quote card + body + (if present) attachments.
+  // Footer below the bubble: time + (edited) tag + reactions + thread link.
+  const bubbleInner = `${quoteHtml}${bodyHtml}${attsHtml}`;
   return `<div class="${cls.join(' ')}" data-msg-id="${m.id}">
     ${actions}
     <div class="msg-avatar" style="background:${escapeHtml(author.color)}">${avatar}</div>
@@ -20899,6 +20930,54 @@ function pickChatMention(idx) {
   try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
 }
 
+// ── Inline reply ("WhatsApp" style) ────────────────────────────────────────
+// Clicking ↩ on a message sets the composer into reply mode. The next send
+// includes parentMessageId so the server links the reply, and the renderer
+// shows a quote card above the body. Replies appear inline in the main
+// stream (NOT in the side thread pane — that's a separate flow accessible
+// via the 💬 button + the existing "N replies" link).
+function setChatReplyTo(messageId) {
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  const m = list.find(x => x.id === messageId);
+  if (!m) return;
+  CHAT_STATE.replyingTo = {
+    messageId,
+    authorName: (m.author && m.author.name) || 'Unknown',
+    body: (m.body || '').slice(0, 200),
+  };
+  const bar = document.getElementById('chat-reply-bar');
+  if (bar) {
+    document.getElementById('chat-reply-author').textContent = CHAT_STATE.replyingTo.authorName + ' · ';
+    document.getElementById('chat-reply-text').textContent = CHAT_STATE.replyingTo.body || '[attachment]';
+    bar.classList.add('active');
+  }
+  // Focus the composer so the user can type immediately.
+  setTimeout(() => { document.getElementById('chat-input')?.focus(); }, 30);
+}
+window.setChatReplyTo = setChatReplyTo;
+
+function clearChatReplyTo() {
+  CHAT_STATE.replyingTo = null;
+  const bar = document.getElementById('chat-reply-bar');
+  if (bar) bar.classList.remove('active');
+}
+window.clearChatReplyTo = clearChatReplyTo;
+
+// Click handler on a quote card → scroll back to the original message and
+// briefly flash it so the user can see where it lives in the history.
+function scrollToChatMessage(messageId) {
+  const node = document.querySelector(`[data-msg-id="${messageId}"]`);
+  if (!node) return;
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  node.style.transition = 'background-color .25s ease';
+  const prevBg = node.style.backgroundColor;
+  node.style.backgroundColor = 'rgba(59,130,246,.12)';
+  setTimeout(() => { node.style.backgroundColor = prevBg || ''; }, 1200);
+}
+window.scrollToChatMessage = scrollToChatMessage;
+
 async function sendChatMessage() {
   const el = document.getElementById('chat-input');
   const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
@@ -20907,6 +20986,10 @@ async function sendChatMessage() {
   const composer = CHAT_STATE._mediaComposer;
   const pendingFiles = composer ? composer.getFiles() : [];
   if (!body && !pendingFiles.length) return;
+  // Capture reply target BEFORE we clear it — used in both the optimistic
+  // insert (so the quote shows immediately) and the POST payload.
+  const replyTarget = CHAT_STATE.replyingTo;
+  if (replyTarget) clearChatReplyTo();
   el.value = '';
   autoSizeChatInput(el);
   closeChatMentionPopup();
@@ -20921,9 +21004,12 @@ async function sendChatMessage() {
   const me = window.CURRENT_USER || {};
   const tempId = -Date.now();
   const optimistic = {
-    id: tempId, channelId: c.id, parentMessageId: null, userId: me.id,
+    id: tempId, channelId: c.id,
+    parentMessageId: replyTarget ? replyTarget.messageId : null,
+    userId: me.id,
     author: { id: me.id, name: me.name, avatarUrl: me.avatarUrl || '', color: me.color || '#2563eb' },
     body, attachments: previewAtts, reactions: [], mentions: [],
+    replyTo: replyTarget ? { id: replyTarget.messageId, authorName: replyTarget.authorName, body: replyTarget.body } : null,
     replyCount: 0, lastReplyAt: null, editedAt: null, deletedAt: null,
     createdAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
     _optimistic: true,
@@ -20949,7 +21035,10 @@ async function sendChatMessage() {
     }
     const r = await fetch(`/api/chat/channels/${c.id}/messages`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body, attachmentIds }),
+      body: JSON.stringify({
+        body, attachmentIds,
+        parentMessageId: replyTarget ? replyTarget.messageId : undefined,
+      }),
     });
     if (!r.ok) throw new Error('send failed');
     const real = await r.json();

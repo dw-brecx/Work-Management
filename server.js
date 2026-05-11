@@ -4992,6 +4992,21 @@ async function chatHydrateMessages(rows) {
     if (!mentionsByMsg.has(m.message_id)) mentionsByMsg.set(m.message_id, []);
     mentionsByMsg.get(m.message_id).push({ id: m.user_id, name: m.name || '' });
   }
+  // Inline reply enrichment — for any row that's a reply, fetch the parent's
+  // author + body preview so the renderer can draw a WhatsApp-style quote
+  // card above the bubble without a second round-trip per message.
+  const parentIds = [...new Set(rows.map(r => r.parent_message_id).filter(Boolean))];
+  let parentsById = new Map();
+  if (parentIds.length) {
+    const pph = parentIds.map(() => '?').join(',');
+    const parentRows = await all(
+      `SELECT m.id, m.body, m.user_id, m.deleted_at, u.name AS author_name
+         FROM chat_messages m LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.id IN (${pph})`,
+      ...parentIds
+    );
+    parentsById = new Map(parentRows.map(p => [p.id, p]));
+  }
   return rows.map(r => {
     const author = authorById.get(r.user_id) || null;
     const reactionMap = reactionsByMsg.get(r.id);
@@ -4999,6 +5014,7 @@ async function chatHydrateMessages(rows) {
       ? [...reactionMap.entries()].map(([emoji, userIds]) => ({ emoji, userIds, count: userIds.length }))
       : [];
     const reply = repliesByMsg.get(r.id);
+    const parent = r.parent_message_id ? parentsById.get(r.parent_message_id) : null;
     return {
       id: r.id,
       channelId: r.channel_id,
@@ -5012,6 +5028,11 @@ async function chatHydrateMessages(rows) {
       attachments: r.deleted_at ? [] : (attsByMsg.get(r.id) || []),
       reactions: r.deleted_at ? [] : reactions,
       mentions: mentionsByMsg.get(r.id) || [],
+      replyTo: parent ? {
+        id: parent.id,
+        authorName: parent.author_name || '',
+        body: parent.deleted_at ? '[deleted message]' : (parent.body || '[attachment]').slice(0, 200),
+      } : null,
       replyCount: reply ? Number(reply.n) : 0,
       lastReplyAt: reply ? reply.last_reply_at : null,
       editedAt: r.edited_at || null,
@@ -5568,9 +5589,12 @@ app.get('/api/chat/channels/:id/messages', requireAuth, async (req, res) => {
         id, parent, limit
       );
     } else if (before) {
+      // Inline replies render in the main stream now (WhatsApp-style quote
+      // card above the body), so don't filter parent_message_id out — the
+      // client handles the quote rendering via the replyTo enrichment.
       rows = await all(
         `SELECT * FROM chat_messages
-          WHERE channel_id = ? AND parent_message_id IS NULL AND id < ?
+          WHERE channel_id = ? AND id < ?
           ORDER BY id DESC LIMIT ?`,
         id, before, limit
       );
@@ -5578,7 +5602,7 @@ app.get('/api/chat/channels/:id/messages', requireAuth, async (req, res) => {
     } else {
       rows = await all(
         `SELECT * FROM chat_messages
-          WHERE channel_id = ? AND parent_message_id IS NULL
+          WHERE channel_id = ?
           ORDER BY id DESC LIMIT ?`,
         id, limit
       );
