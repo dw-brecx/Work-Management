@@ -1734,11 +1734,36 @@ app.get('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (re
         LEFT JOIN users u ON u.id = tc.author_user_id
        WHERE tc.ticket_id=?
        ORDER BY tc.created_at ASC`, req.params.id);
+    // Pull every attachment that's linked to a comment in this ticket, so
+    // the client can render them inline under their parent comment.
+    const commentIds = rows.map(r => r.id);
+    const attsByComment = new Map();
+    if (commentIds.length) {
+      const ph = commentIds.map(() => '?').join(',');
+      const atts = await all(
+        `SELECT id, comment_id, filename, original_name, mime_type, size, uploader, created_at
+           FROM attachments WHERE comment_id IN (${ph})
+           ORDER BY id ASC`,
+        ...commentIds
+      );
+      for (const a of atts) {
+        if (!attsByComment.has(a.comment_id)) attsByComment.set(a.comment_id, []);
+        attsByComment.get(a.comment_id).push({
+          id: a.id,
+          originalName: a.original_name || a.filename,
+          mimeType: a.mime_type || '',
+          size: a.size || 0,
+          uploader: a.uploader || '',
+          url: '/uploads/' + a.filename,
+        });
+      }
+    }
     res.json(rows.map(r => ({
       id:r.id, parentId: r.parent_id || null,
       author: r.author_name_now || r.author,
       init: r.author_init, bg: r.author_bg, col: r.author_col,
       text: r.text,
+      attachments: attsByComment.get(r.id) || [],
       // Raw UTC stamp — client formats this in the user's local time.
       // `time` retained as a server-formatted fallback for any legacy
       // caller, but the client prefers createdAt when present.

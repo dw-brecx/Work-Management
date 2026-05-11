@@ -907,6 +907,17 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   /* Right-panel checklist (moved from main area) */
   .td-side-block{margin-bottom:4px}
   .td-side-block{margin-bottom:4px}
+  /* Drag handle for resizing the ticket-detail comments pane on desktop.
+     Hidden on small screens (the right panel stacks below the main pane). */
+  #page-ticket-detail .right-panel{position:relative}
+  #page-ticket-detail .td-right-resizer{position:absolute;top:0;bottom:0;left:-3px;width:6px;cursor:col-resize;z-index:30;background:transparent;transition:background .12s ease}
+  #page-ticket-detail .td-right-resizer:hover,
+  #page-ticket-detail .td-right-resizer.dragging{background:rgba(59,130,246,.20)}
+  @media(max-width:1180px){
+    #page-ticket-detail .td-right-resizer{display:none}
+  }
+  body.td-resizing{cursor:col-resize;user-select:none}
+  body.td-resizing *{user-select:none !important}
   .td-side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
   .td-side-title{font-size:12px;font-weight:600;color:var(--text);text-transform:uppercase;letter-spacing:.04em}
   .td-side-progress{font-size:10px;font-weight:600;color:var(--text3);background:var(--bg2);padding:2px 8px;border-radius:999px}
@@ -936,6 +947,20 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .td-comment-time{font-size:10px;color:var(--text3)}
   .td-comment-body{font-size:11.5px;color:var(--text);line-height:1.5;white-space:pre-wrap;word-break:break-word}
   .td-comment-body .mention{color:var(--accent);font-weight:600;background:transparent;padding:0;border-radius:0}
+  /* Inline comment attachments — small pills/cards directly under the
+     comment body so readers see what was attached in context. */
+  .cmt-atts{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+  .cmt-att{display:flex;align-items:center;gap:8px;padding:5px 9px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;text-decoration:none;color:var(--text);font-size:11.5px;max-width:100%;cursor:pointer;transition:background .12s ease, border-color .12s ease}
+  .cmt-att:hover{background:#f1f5f9;border-color:#cbd5e1}
+  .cmt-att-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cmt-att-open{color:var(--text3);font-size:11px;flex-shrink:0}
+  .cmt-att-ext{display:inline-flex;align-items:center;justify-content:center;width:34px;height:24px;border-radius:5px;font-size:9.5px;font-weight:700;flex-shrink:0;letter-spacing:.02em}
+  .cmt-att-img{padding:4px;flex-direction:column;align-items:stretch;gap:4px;width:fit-content;max-width:240px}
+  .cmt-att-img img{display:block;max-width:220px;max-height:160px;border-radius:5px;object-fit:cover}
+  .cmt-att-img .cmt-att-name{padding:0 4px}
+  .cmt-att-audio,.cmt-att-video{display:block;padding:8px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:11.5px;cursor:default}
+  .cmt-att-audio:hover,.cmt-att-video:hover{background:var(--bg2)}
+  .cmt-att-row{display:flex;align-items:center;gap:6px;font-weight:500}
   /* Comment row actions (Reply / Delete) — small ghost buttons that hover
      to a soft tinted background. Clear hierarchy with primary tint for
      Reply and red tint for Delete. */
@@ -3203,6 +3228,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
       <!-- Ticket detail right panel -->
       <div class="right-panel td-right">
+        <!-- Drag handle to widen / narrow the comments pane (desktop only). -->
+        <div class="td-right-resizer" title="Drag to resize" aria-hidden="true"></div>
         <!-- Comments (always visible) -->
         <div class="td-side-block">
           <div class="td-side-head">
@@ -8689,6 +8716,41 @@ function formatCommentText(raw) {
   return html.replace(re, (_full, name) => `<span class="mention-chip">@${name}</span>`);
 }
 
+// Render one attachment as an inline pill inside a comment bubble. Images
+// get a small thumbnail + click-to-zoom; audio plays inline; everything
+// else is a clickable file chip with the type colored. All routes through
+// the existing openAttachmentInLightbox helper.
+function renderCommentAttachment(a) {
+  const safeUrl = (a.url || '').replace(/[<>"']/g, '');
+  const safeName = (a.originalName || 'file').replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+  const mime = a.mimeType || '';
+  if (mime.startsWith('image/')) {
+    return `<a class="cmt-att cmt-att-img" href="${safeUrl}" target="_blank" rel="noopener" onclick="event.preventDefault();openAttachmentInLightbox('${safeUrl}','${safeName.replace(/'/g, '&#39;')}','${mime}')">
+      <img src="${safeUrl}" alt="${safeName}"/>
+      <span class="cmt-att-name">${safeName}</span>
+    </a>`;
+  }
+  if (mime.startsWith('audio/')) {
+    return `<div class="cmt-att cmt-att-audio">
+      <div class="cmt-att-row"><span>🎤</span><span class="cmt-att-name">${safeName}</span></div>
+      <audio controls src="${safeUrl}" style="width:100%;max-width:240px;height:30px;display:block;margin-top:4px"></audio>
+    </div>`;
+  }
+  if (mime.startsWith('video/')) {
+    return `<div class="cmt-att cmt-att-video">
+      <div class="cmt-att-row"><span>📹</span><span class="cmt-att-name">${safeName}</span></div>
+      <video controls src="${safeUrl}" style="width:100%;max-width:280px;border-radius:6px;display:block;margin-top:4px"></video>
+    </div>`;
+  }
+  const ext = (a.originalName || '').split('.').pop().toUpperCase().slice(0, 4);
+  const isPdf = ext === 'PDF';
+  return `<a class="cmt-att cmt-att-file" href="${safeUrl}" target="_blank" rel="noopener" onclick="event.preventDefault();openAttachmentInLightbox('${safeUrl}','${safeName.replace(/'/g, '&#39;')}','${mime}')">
+    <span class="cmt-att-ext" style="background:${isPdf ? '#fef2f2' : '#eff6ff'};color:${isPdf ? '#dc2626' : '#2563eb'}">${ext || 'FILE'}</span>
+    <span class="cmt-att-name">${safeName}</span>
+    <span class="cmt-att-open">↗</span>
+  </a>`;
+}
+
 function renderComments() {
   const el = document.getElementById('cmt-drawer-list');
   if (!el) return;
@@ -8759,6 +8821,12 @@ function renderComments() {
              <span>No reply needed</span>
            </button>`
         : '';
+      // Render attachments inline inside the comment bubble — gives readers
+      // immediate context on what was attached without scrolling down to
+      // the Attachments tab. Click → opens in the existing lightbox.
+      const attsHtml = (c.attachments && c.attachments.length)
+        ? `<div class="cmt-atts">${c.attachments.map(a => renderCommentAttachment(a)).join('')}</div>`
+        : '';
       // Replies are rendered as siblings of the parent bubble (not inside
       // it) so the parent's padding doesn't compound on every nesting
       // level. The wrapper carries the depth-based left margin.
@@ -8772,6 +8840,7 @@ function renderComments() {
                 <span class="td-comment-time">${escapeHtml(c.createdAt ? _fmtUtcLocal(c.createdAt) : (c.time || ''))}</span>
               </div>
               <div class="td-comment-body">${formatCommentText(c.text)}</div>
+              ${attsHtml}
               ${(replyBtn || delBtn || noReplyBtn) ? `<div class="cmt-actions">${replyBtn}${noReplyBtn}${delBtn}</div>` : ''}
               ${replyForm}
             </div>
@@ -14280,31 +14349,13 @@ async function loadTicketAttachments(ticketId) {
       attTabBtn.innerHTML = `Attachments${atts.length > 0 ? ` <span class="tab-count">${atts.length}</span>` : ''}`;
     }
 
-    // ── 3. Right panel thumbnail strip (images + audio only) ─────────────────
+    // (Removed) Right-panel attachment thumbnail strip — attachments now
+    // live inline under their parent comment when posted from the comment
+    // composer, and the Attachments tab is the canonical complete list.
+    // Belt-and-braces: clean up any strip leftover from a previous render.
     const rp = document.querySelector('.right-panel.td-right, .right-panel');
     if (rp) {
       rp.querySelectorAll('.ticket-attachments-section').forEach(el => el.remove());
-      const media = atts.filter(a => a.mimeType.startsWith('image/') || a.mimeType.startsWith('audio/'));
-      if (media.length > 0) {
-        const sec = document.createElement('div');
-        sec.className = 'ticket-attachments-section';
-        sec.style.cssText = 'padding:12px 14px;border-top:1px solid var(--border);margin-top:8px';
-        sec.innerHTML = `<div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Attachments (${atts.length})</div>`;
-        media.forEach(att => {
-          const el = document.createElement('div');
-          el.style.cssText = 'margin-bottom:8px';
-          const safeUrl = escapeAttr(att.url || '');
-          if (att.mimeType.startsWith('audio/')) {
-            el.innerHTML = `<div style="font-size:11px;color:var(--text2);margin-bottom:3px">🎤 ${escapeHtml(att.uploader || '')}</div><audio controls src="${safeUrl}" style="width:100%;height:30px"></audio>`;
-          } else {
-            const safeOrig = escapeAttr(att.originalName || att.filename || 'image');
-            const safeMime = escapeAttr(att.mimeType || '');
-            el.innerHTML = `<img src="${safeUrl}" alt="${safeOrig}" onclick="openAttachmentInLightbox('${safeUrl}','${safeOrig.replace(/'/g, '&#39;')}','${safeMime}')" style="width:100%;border-radius:8px;cursor:pointer;max-height:120px;object-fit:cover">`;
-          }
-          sec.appendChild(el);
-        });
-        rp.appendChild(sec);
-      }
     }
   } catch(e) {}
 }
@@ -14678,8 +14729,10 @@ function setupCommentAttachBar() {
     list.appendChild(item);
   }
 
-  // Patch addComment: text → API, audio → VOICENOTE:: comment,
-  // video → SCREENRECORD:: comment, anything else → attachment.
+  // Patch addComment: text → API (capture the new comment id), then any
+  // attached files get uploaded with commentId set so they render inline
+  // under their parent comment. Audio/video still post as VOICENOTE:: /
+  // SCREENRECORD:: bodies so they appear as native players in the bubble.
   const _origAddComment = window.addComment;
   if (typeof _origAddComment === 'function') {
     window.addComment = async function(...args) {
@@ -14690,61 +14743,71 @@ function setupCommentAttachBar() {
       document.getElementById('cmt-previews').innerHTML = '';
       const r = await _origAddComment.apply(this, args);
       const ticketId = window.currentDetailTicketId;
-      if (ticketId) {
-        // Save text comment to API
-        if (commentText) {
-          apiPost('/api/tickets/' + ticketId + '/comments', { text: commentText }).catch(()=>{});
-        }
-        // Handle attached files
-        if (filesToUpload.length > 0) {
-          let needsAttachRefresh = false;
-          let needsCommentReload = false;
-          for (const file of filesToUpload) {
-            try {
-              const fallbackName = file.type?.startsWith('video/') ? 'screen.webm'
-                                : file.type?.startsWith('audio/') ? 'voice.webm'
-                                : 'attachment';
-              const form = new FormData();
-              form.append('file', file, file.name || fallbackName);
-              form.append('ticketId', ticketId);
-              const resp = await fetch('/api/upload', { method: 'POST', body: form });
-              if (!resp.ok) {
-                if (resp.status === 413) {
-                  alert('Upload rejected: file is larger than the 100MB limit.');
-                } else {
-                  alert('Upload failed (' + resp.status + '). Please try again.');
-                }
-                continue;
-              }
-              const data = await resp.json();
-              if (file.type && file.type.startsWith('audio/')) {
-                if (data && data.url) {
-                  await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'VOICENOTE::' + data.url });
-                  needsCommentReload = true;
-                }
-              } else if (file.type && file.type.startsWith('video/')) {
-                if (data && data.url) {
-                  await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'SCREENRECORD::' + data.url });
-                  needsCommentReload = true;
-                }
-              } else {
-                needsAttachRefresh = true;
-              }
-            } catch(e) {}
-          }
-          if (needsCommentReload) {
-            try {
-              const cmts = await apiGet('/api/tickets/' + ticketId + '/comments');
-              if (Array.isArray(cmts)) {
-                localComments.length = 0;
-                cmts.forEach(c => localComments.push(c));
-                renderComments();
-              }
-            } catch {}
-          }
-          if (needsAttachRefresh) setTimeout(() => injectAttachmentsWhenReady(ticketId), 300);
-        }
+      if (!ticketId) return r;
+      // Save the text portion FIRST and await its id so file attachments
+      // can be linked back to it.
+      let newCommentId = null;
+      if (commentText) {
+        try {
+          const resp = await apiPost('/api/tickets/' + ticketId + '/comments', { text: commentText });
+          newCommentId = (resp && resp.id) || null;
+        } catch {}
       }
+      // Handle attached files
+      let needsCommentReload = false;
+      let needsAttachRefresh = false;
+      for (const file of filesToUpload) {
+        try {
+          const fallbackName = file.type?.startsWith('video/') ? 'screen.webm'
+                            : file.type?.startsWith('audio/') ? 'voice.webm'
+                            : 'attachment';
+          const form = new FormData();
+          form.append('file', file, file.name || fallbackName);
+          form.append('ticketId', ticketId);
+          // Link the upload to the parent comment so the renderer can show
+          // it inline. Audio/video still get a VOICENOTE/SCREENRECORD
+          // shadow-comment posted below for the inline player rendering.
+          if (newCommentId) form.append('commentId', String(newCommentId));
+          const resp = await fetch('/api/upload', { method: 'POST', body: form });
+          if (!resp.ok) {
+            if (resp.status === 413) {
+              alert('Upload rejected: file is larger than the 100MB limit.');
+            } else {
+              alert('Upload failed (' + resp.status + '). Please try again.');
+            }
+            continue;
+          }
+          const data = await resp.json();
+          if (file.type && file.type.startsWith('audio/')) {
+            if (data && data.url) {
+              await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'VOICENOTE::' + data.url });
+              needsCommentReload = true;
+            }
+          } else if (file.type && file.type.startsWith('video/')) {
+            if (data && data.url) {
+              await apiPost('/api/tickets/' + ticketId + '/comments', { text: 'SCREENRECORD::' + data.url });
+              needsCommentReload = true;
+            }
+          } else {
+            // Linked file attachment — reload comments so the inline
+            // attachment card appears immediately under its parent.
+            needsCommentReload = true;
+            needsAttachRefresh = true;
+          }
+        } catch(e) {}
+      }
+      // Refresh comments so inline attachments + voice/screen entries show.
+      if (newCommentId || needsCommentReload) {
+        try {
+          const cmts = await apiGet('/api/tickets/' + ticketId + '/comments');
+          if (Array.isArray(cmts)) {
+            localComments.length = 0;
+            cmts.forEach(c => localComments.push(c));
+            renderComments();
+          }
+        } catch {}
+      }
+      if (needsAttachRefresh) setTimeout(() => injectAttachmentsWhenReady(ticketId), 300);
       return r;
     };
   }
@@ -19408,6 +19471,67 @@ window.scheduleEventForCurrentTicket = function() {
   // Also re-run after the auth bootstrap finishes — covers the case where
   // a textarea is re-created inside a modal between boot and first use.
   window.addEventListener('_wnReady', () => setTimeout(wirePolishButtons, 200));
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TICKET-DETAIL right-panel resizer
+// ═══════════════════════════════════════════════════════════════════════════
+// Drag the left edge of the Comments pane to make it wider (or narrower).
+// Persisted in localStorage per browser so each user's preference sticks.
+// Skipped on mobile — the panel stacks below the main pane there.
+(function attachTicketRightPanelResizer() {
+  const STORAGE_KEY = 'ticketCommentsPaneWidth';
+  // Apply any persisted width as soon as the page is ready.
+  function applyPersistedWidth() {
+    let saved = null;
+    try { saved = Number(localStorage.getItem(STORAGE_KEY)); } catch {}
+    if (!saved || !isFinite(saved) || saved < 280 || saved > 900) return;
+    const panel = document.querySelector('#page-ticket-detail .right-panel.td-right');
+    if (!panel) return;
+    panel.style.width = saved + 'px';
+    panel.style.minWidth = saved + 'px';
+    panel.style.flex = '0 0 ' + saved + 'px';
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', applyPersistedWidth);
+  } else {
+    applyPersistedWidth();
+  }
+  // Drag-to-resize. Listen on document so the cursor doesn't have to be
+  // perfectly on the handle during the drag.
+  let drag = null;
+  document.addEventListener('mousedown', (ev) => {
+    const handle = ev.target.closest && ev.target.closest('#page-ticket-detail .td-right-resizer');
+    if (!handle) return;
+    ev.preventDefault();
+    const panel = document.querySelector('#page-ticket-detail .right-panel.td-right');
+    if (!panel) return;
+    drag = {
+      panel,
+      startX: ev.clientX,
+      startW: panel.getBoundingClientRect().width,
+    };
+    handle.classList.add('dragging');
+    document.body.classList.add('td-resizing');
+  });
+  document.addEventListener('mousemove', (ev) => {
+    if (!drag) return;
+    const dx = drag.startX - ev.clientX; // dragging LEFT widens the panel
+    const next = Math.min(Math.max(drag.startW + dx, 320), Math.min(window.innerWidth - 380, 900));
+    drag.panel.style.width = next + 'px';
+    drag.panel.style.minWidth = next + 'px';
+    drag.panel.style.flex = '0 0 ' + next + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!drag) return;
+    document.querySelectorAll('.td-right-resizer.dragging').forEach(el => el.classList.remove('dragging'));
+    document.body.classList.remove('td-resizing');
+    try {
+      const w = Math.round(drag.panel.getBoundingClientRect().width);
+      localStorage.setItem(STORAGE_KEY, String(w));
+    } catch {}
+    drag = null;
+  });
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
