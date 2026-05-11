@@ -304,9 +304,9 @@ module.exports = function attach(app, deps) {
   app.post('/api/spaces/:id/items', requireAuth, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid space id' });
+      if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid space id' });
       const userId = Number(req.session.userId);
-      if (!Number.isFinite(userId)) return res.status(401).json({ error: 'Not signed in' });
+      if (!Number.isFinite(userId) || userId < 1) return res.status(401).json({ error: 'Not signed in' });
       const result = await loadSpaceForUser(id, userId, true);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
       const { type } = req.body || {};

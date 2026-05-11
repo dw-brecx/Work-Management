@@ -398,13 +398,22 @@
 
   // ── Canvas view ─────────────────────────────────────────────────────────
   async function openSpace(id) {
-    state.activeSpaceId = id;
-    pushSpaceUrl(id);
+    // Validate up front so we never set activeSpaceId to 0/NaN/null. /spaces/0
+    // (or a stale URL with a deleted id) used to trip an unrecoverable state
+    // where + Add would 404 forever.
+    const numId = Number(id);
+    if (!Number.isFinite(numId) || numId < 1) {
+      toast('That space link is invalid.');
+      openListView();
+      return;
+    }
+    state.activeSpaceId = numId;
+    pushSpaceUrl(numId);
     const host = document.getElementById('page-spaces');
     if (!host) return;
     host.innerHTML = '<div style="color:var(--text3);padding:24px">Loading…</div>';
     try {
-      const data = await db.getSpace(id);
+      const data = await db.getSpace(numId);
       state.space = data;
       state.items = data.items || [];
       state.members = data.members || [];
@@ -412,6 +421,10 @@
       state.strokes = Array.isArray(data.whiteboard_strokes) ? data.whiteboard_strokes : [];
       state.penMode = false;
     } catch (e) {
+      // Failed to load — wipe activeSpaceId so subsequent + Add / paste
+      // can't fire blind requests against a dead id.
+      state.activeSpaceId = null;
+      state.space = null;
       host.innerHTML = `<div style="color:#dc2626;padding:24px">${esc(e.message || 'Failed to load space')}</div>`;
       return;
     }
@@ -1108,7 +1121,9 @@
         ev.stopPropagation();
         const t = btn.dataset.addType;
         menu.remove();
-        handleAdd(t);
+        // doAdd rejects on validation failure (toast already shown) — swallow
+        // here so the rejection doesn't surface as "Uncaught (in promise)".
+        Promise.resolve(handleAdd(t)).catch(() => {});
       };
     });
     setTimeout(() => {
@@ -1135,9 +1150,13 @@
 
   async function doAdd(input) {
     if (!canEdit()) return;
-    const spaceId = Number(state.activeSpaceId);
-    if (!Number.isFinite(spaceId)) {
-      const msg = 'No active space — try reopening the space first.';
+    // Number(null) === 0, which is finite. Reject 0/negative explicitly so we
+    // don't end up POSTing /api/spaces/0/items when the user somehow lands
+    // here without a real active space.
+    const rawId = state.activeSpaceId;
+    const spaceId = Number(rawId);
+    if (rawId == null || !Number.isFinite(spaceId) || spaceId < 1) {
+      const msg = 'No active space — open a space from the list first.';
       toast(msg);
       throw new Error(msg);
     }
