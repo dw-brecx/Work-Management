@@ -1416,18 +1416,19 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-msg:hover .msg-actions{opacity:1;visibility:visible}
   .chat-msg .msg-action-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;border-radius:6px;color:var(--text2);line-height:1;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;transition:background .12s ease, color .12s ease}
   .chat-msg .msg-action-btn:hover{background:#f1f5f9;color:var(--text)}
-  /* Quote card inside a bubble when a message is an inline reply. More
-     visible than the prior subtle styling. min-width forces the parent
-     bubble wider so reply bubbles don't collapse into tall narrow strips
-     when both the quoted text and the reply body are short.
-     Clicking scrolls back to the original. */
-  .msg-quote{display:block;border-left:4px solid #3b82f6;padding:5px 10px;margin-bottom:6px;border-radius:0 8px 8px 0;cursor:pointer;font-size:12px;background:rgba(59,130,246,.08);color:var(--text);min-width:160px;max-width:100%;box-sizing:border-box}
-  .msg-quote:hover{background:rgba(59,130,246,.13)}
-  .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.20);border-left-color:#fff;color:#fff}
-  .chat-msg.is-mine .msg-quote:hover{background:rgba(255,255,255,.28)}
-  .msg-quote-author{font-weight:700;display:block;margin-bottom:2px;font-size:11.5px;color:var(--accent)}
-  .chat-msg.is-mine .msg-quote-author{color:#fff}
-  .msg-quote-body{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;opacity:.85}
+  /* Quote card inside a bubble when a message is an inline reply. Every
+     property uses !important to avoid being overridden by surprise rules
+     elsewhere — the user kept reporting big vertical gaps between the
+     quoted text and the reply body that shouldn't have existed. Locks
+     the author + body lines tight together (tiny gap, zero margins). */
+  .chat-msg .msg-bubble{display:block !important;height:auto !important}
+  .chat-msg .msg-quote{display:flex !important;flex-direction:column !important;gap:1px !important;border-left:3px solid #3b82f6 !important;padding:5px 9px !important;margin:0 0 4px 0 !important;border-radius:6px !important;cursor:pointer;font-size:11.5px;background:rgba(59,130,246,.10);color:var(--text);min-width:140px;max-width:100%;box-sizing:border-box;line-height:1.25}
+  .chat-msg .msg-quote:hover{background:rgba(59,130,246,.16)}
+  .chat-msg.is-mine .msg-quote{background:rgba(255,255,255,.22) !important;border-left-color:#fff !important;color:#fff !important}
+  .chat-msg.is-mine .msg-quote:hover{background:rgba(255,255,255,.30) !important}
+  .chat-msg .msg-quote-author{font-weight:700 !important;font-size:11px !important;color:var(--accent);margin:0 !important;padding:0 !important;line-height:1.2 !important;display:block !important}
+  .chat-msg.is-mine .msg-quote-author{color:#fff !important}
+  .chat-msg .msg-quote-body{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px !important;opacity:.85;margin:0 !important;padding:0 !important;line-height:1.25 !important;display:block !important}
   /* Composer pill — unified rounded container with attach icons on the
      left, textarea in the middle, send arrow on the right. Replaces the
      old "big bordered media box + separate textarea" stack. */
