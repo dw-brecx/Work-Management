@@ -19303,12 +19303,17 @@ function chatOnTyping(channelId, userId) {
 async function openChatPage() {
   // Hide the create-ticket FAB on chat — same way docs / settings do it.
   document.body.classList.remove('fab-create-ticket');
+  // Always paint a loading state immediately so the user sees something
+  // while the fetches resolve, even on a cold page entry.
+  renderChatChannelList();
   if (!CHAT_STATE.loaded) {
     chatWsConnect();
     await chatLoadChannels();
-    await chatLoadUsers();
     CHAT_STATE.loaded = true;
   }
+  // Always re-load the workspace user directory on page entry — it's cheap
+  // and guarantees the DM rail isn't stuck empty if a prior load failed.
+  await chatLoadUsers(true);
   // Honour ?channel=N in the URL when arriving via deep link.
   const params = new URLSearchParams(location.search || '');
   const wantedId = Number(params.get('channel')) || null;
@@ -19341,14 +19346,24 @@ async function chatLoadChannels() {
 
 async function chatLoadUsers(force) {
   // Cached for 60s by default; pass force=true (e.g. when a picker is opening)
-  // to bypass the cache and guarantee a non-empty list.
+  // to bypass the cache and guarantee a fresh list.
   if (!force && Date.now() - CHAT_STATE.userDirectoryLoadedAt < 60000 && CHAT_STATE.userDirectory.length) return;
+  CHAT_STATE.userDirectoryLoading = true;
+  CHAT_STATE.userDirectoryError = null;
+  renderChatChannelList();
   try {
     const r = await fetch('/api/chat/users');
-    if (!r.ok) throw new Error('load failed');
-    CHAT_STATE.userDirectory = await r.json();
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    CHAT_STATE.userDirectory = Array.isArray(data) ? data : [];
     CHAT_STATE.userDirectoryLoadedAt = Date.now();
-  } catch (e) { console.warn('[chat] load users', e); }
+  } catch (e) {
+    console.warn('[chat] load users failed', e);
+    CHAT_STATE.userDirectoryError = e.message || 'Could not load users';
+  } finally {
+    CHAT_STATE.userDirectoryLoading = false;
+    renderChatChannelList();
+  }
 }
 
 async function chatRefreshUnread() {
@@ -19471,11 +19486,12 @@ function renderChatChannelList() {
     return a.name.localeCompare(b.name);
   });
   if (!users.length) {
-    dmsRoot.innerHTML = `<div style="padding:10px;color:var(--text3);font-size:11.5px">${
-      CHAT_STATE.userDirectory.length === 0
-        ? "You're the only person here yet."
-        : 'No people match that search.'
-    }</div>`;
+    let msg;
+    if (CHAT_STATE.userDirectoryLoading) msg = 'Loading people…';
+    else if (CHAT_STATE.userDirectoryError) msg = `Could not load users: ${CHAT_STATE.userDirectoryError}. <a onclick="chatLoadUsers(true)" style="color:var(--accent);cursor:pointer;text-decoration:underline">Retry</a>`;
+    else if (CHAT_STATE.userDirectory.length === 0) msg = "You're the only person here yet — invite teammates from Settings → Team.";
+    else msg = 'No people match that search.';
+    dmsRoot.innerHTML = `<div style="padding:10px;color:var(--text3);font-size:11.5px">${msg}</div>`;
     return;
   }
   dmsRoot.innerHTML = users.map(u => renderChatUserDmRow(u, dmByOtherUserId.get(u.id))).join('');
@@ -20218,6 +20234,7 @@ function closeChatModals() {
     if (e) e.classList.remove('open');
   });
   CHAT_STATE._newGroupSelected = null;
+  CHAT_STATE._addMembersChannelId = null;
 }
 
 async function openChatNewChannelModal() {
@@ -20340,16 +20357,28 @@ async function openChatNewGroupModal() {
 
 function renderChatNewDmList() {
   const filter = document.getElementById('chat-new-dm-search').value.toLowerCase().trim();
-  const list = (CHAT_STATE.userDirectory || []).filter(u =>
+  // When the modal is being used in "add members to channel X" mode, exclude
+  // users who are already members of that channel.
+  let source = CHAT_STATE.userDirectory || [];
+  if (CHAT_STATE._addMembersChannelId) {
+    const c = CHAT_STATE.channelsById.get(CHAT_STATE._addMembersChannelId);
+    if (c) {
+      const inChannel = new Set(c.members.map(m => m.id));
+      source = source.filter(u => !inChannel.has(u.id));
+    }
+  }
+  const list = source.filter(u =>
     !filter || u.name.toLowerCase().includes(filter) || (u.email || '').toLowerCase().includes(filter));
   const root = document.getElementById('chat-new-dm-list');
   const isGroup = !!CHAT_STATE._newGroupSelected;
   if (!list.length) {
-    root.innerHTML = `<div style="color:var(--text3);font-size:12.5px;padding:18px;text-align:center">${
-      CHAT_STATE.userDirectory.length === 0
-        ? "You're the only person in this workspace yet — invite teammates from Settings → Team."
-        : 'No one matches that search.'
-    }</div>`;
+    let emptyMsg;
+    if (CHAT_STATE.userDirectoryLoading) emptyMsg = 'Loading people…';
+    else if (CHAT_STATE.userDirectoryError) emptyMsg = `Could not load: ${CHAT_STATE.userDirectoryError}.`;
+    else if (CHAT_STATE._addMembersChannelId && !source.length) emptyMsg = 'Everyone is already in this channel.';
+    else if (CHAT_STATE.userDirectory.length === 0) emptyMsg = "You're the only person in this workspace yet — invite teammates from Settings → Team.";
+    else emptyMsg = 'No one matches that search.';
+    root.innerHTML = `<div style="color:var(--text3);font-size:12.5px;padding:18px;text-align:center">${emptyMsg}</div>`;
     return;
   }
   root.innerHTML = list.map(u => {
@@ -20488,25 +20517,25 @@ async function removeChatMember(channelId, userId) {
 async function openChatAddMembersModal(channelId) {
   const c = CHAT_STATE.channelsById.get(channelId);
   if (!c) return;
-  await chatLoadUsers(true);
-  const inChannel = new Set(c.members.map(m => m.id));
-  const candidates = (CHAT_STATE.userDirectory || []).filter(u => !inChannel.has(u.id));
-  if (!candidates.length) { alert('Everyone is already in this channel.'); return; }
-  // Reuse the "new DM" modal as a multi-picker.
+  // Close the channel-info modal so the picker opens cleanly on top.
+  document.getElementById('chat-info-modal').classList.remove('open');
+  // Set the "add members" flag *before* the load so the renderer's empty
+  // state and search filtering both pick up the candidate-only mode.
+  CHAT_STATE._addMembersChannelId = channelId;
+  CHAT_STATE._newGroupSelected = new Set();
   document.getElementById('chat-new-dm-title').textContent = `Add members to #${c.name}`;
   document.getElementById('chat-new-dm-search').value = '';
-  CHAT_STATE._newGroupSelected = new Set();
   document.getElementById('chat-new-dm-modal').classList.add('open');
-  // Hijack the actions bar to a single confirm button.
+  // Confirm-bar with a single "Add" button.
   const actions = document.getElementById('chat-new-group-actions');
   actions.style.display = 'flex';
   actions.innerHTML = `<button class="btn-sec" style="font-size:12px;padding:7px 14px" onclick="closeChatModals()">Cancel</button>
                        <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitChatAddMembers(${channelId})">Add</button>`;
-  // Render with only candidates.
-  const orig = CHAT_STATE.userDirectory;
-  CHAT_STATE.userDirectory = candidates;
+  // Paint immediately (will show "Loading people…" if the directory is
+  // still fetching), then let chatLoadUsers re-paint when it resolves.
   renderChatNewDmList();
-  CHAT_STATE.userDirectory = orig;
+  await chatLoadUsers(true);
+  renderChatNewDmList();
 }
 
 async function submitChatAddMembers(channelId) {
@@ -20523,6 +20552,7 @@ async function submitChatAddMembers(channelId) {
     const actions = document.getElementById('chat-new-group-actions');
     actions.innerHTML = `<button class="btn-sec" style="font-size:12px;padding:7px 14px" onclick="closeChatModals()">Cancel</button>
                          <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitChatNewGroup()">Create group</button>`;
+    CHAT_STATE._addMembersChannelId = null;
   } catch (e) { alert('Failed: ' + e.message); }
 }
 
