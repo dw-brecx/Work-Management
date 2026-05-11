@@ -8,6 +8,9 @@
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#7c3aed",
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
   "icons": [
     {
       "src": "/app-icon.svg",
