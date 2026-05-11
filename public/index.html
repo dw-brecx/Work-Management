@@ -3668,10 +3668,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           <div style="padding:8px 10px">
             <input id="chat-search" type="text" placeholder="Filter channels…" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;outline:none" oninput="renderChatChannelList()"/>
           </div>
-          <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-top:6px">Channels</div>
+          <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-top:6px;display:flex;align-items:center;justify-content:space-between">
+            <span>Direct messages</span>
+          </div>
+          <div id="chat-dms-list" style="overflow-y:auto;padding:4px 6px;flex:1"></div>
+          <div id="chat-groups-section" style="display:none">
+            <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">Group chats</div>
+            <div id="chat-groups-list" style="overflow-y:auto;padding:4px 6px"></div>
+          </div>
+          <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">Channels</div>
           <div id="chat-channels-list" style="overflow-y:auto;flex:1;padding:4px 6px"></div>
-          <div style="padding:0 10px;font-size:10px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em">Direct messages</div>
-          <div id="chat-dms-list" style="overflow-y:auto;padding:4px 6px;max-height:40%"></div>
         </aside>
 
         <!-- MAIN PANE: active conversation -->
@@ -3725,8 +3731,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
 
       <!-- New channel modal -->
-      <div id="chat-new-channel-modal" class="modal-bg" style="display:none">
-        <div class="modal-content" style="max-width:440px;padding:22px">
+      <div id="chat-new-channel-modal" class="modal-overlay">
+        <div class="modal" style="max-width:440px;padding:22px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h2 style="font-size:15px;font-weight:600;margin:0">New channel</h2>
             <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
@@ -3751,8 +3757,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
 
       <!-- Browse channels modal -->
-      <div id="chat-browse-modal" class="modal-bg" style="display:none">
-        <div class="modal-content" style="max-width:520px;padding:22px;max-height:80vh;overflow:auto">
+      <div id="chat-browse-modal" class="modal-overlay">
+        <div class="modal" style="max-width:520px;padding:22px;max-height:80vh;overflow:auto">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h2 style="font-size:15px;font-weight:600;margin:0">Browse channels</h2>
             <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
@@ -3763,8 +3769,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
 
       <!-- New DM / group modals reuse one container -->
-      <div id="chat-new-dm-modal" class="modal-bg" style="display:none">
-        <div class="modal-content" style="max-width:440px;padding:22px;max-height:80vh;overflow:auto">
+      <div id="chat-new-dm-modal" class="modal-overlay">
+        <div class="modal" style="max-width:440px;padding:22px;max-height:80vh;overflow:auto">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h2 id="chat-new-dm-title" style="font-size:15px;font-weight:600;margin:0">New direct message</h2>
             <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
@@ -3779,8 +3785,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
 
       <!-- Channel info / settings modal (rename, members, leave) -->
-      <div id="chat-info-modal" class="modal-bg" style="display:none">
-        <div class="modal-content" style="max-width:480px;padding:22px;max-height:80vh;overflow:auto">
+      <div id="chat-info-modal" class="modal-overlay">
+        <div class="modal" style="max-width:480px;padding:22px;max-height:80vh;overflow:auto">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h2 style="font-size:15px;font-weight:600;margin:0">Channel info</h2>
             <button onclick="closeChatModals()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3)">×</button>
@@ -19333,9 +19339,10 @@ async function chatLoadChannels() {
   }
 }
 
-async function chatLoadUsers() {
-  // Refresh at most once a minute — the picker doesn't change often.
-  if (Date.now() - CHAT_STATE.userDirectoryLoadedAt < 60000 && CHAT_STATE.userDirectory.length) return;
+async function chatLoadUsers(force) {
+  // Cached for 60s by default; pass force=true (e.g. when a picker is opening)
+  // to bypass the cache and guarantee a non-empty list.
+  if (!force && Date.now() - CHAT_STATE.userDirectoryLoadedAt < 60000 && CHAT_STATE.userDirectory.length) return;
   try {
     const r = await fetch('/api/chat/users');
     if (!r.ok) throw new Error('load failed');
@@ -19415,21 +19422,93 @@ function chatChannelIcon(c) {
 function renderChatChannelList() {
   const filter = (document.getElementById('chat-search')?.value || '').toLowerCase().trim();
   const channelsRoot = document.getElementById('chat-channels-list');
+  const groupsRoot = document.getElementById('chat-groups-list');
+  const groupsSection = document.getElementById('chat-groups-section');
   const dmsRoot = document.getElementById('chat-dms-list');
   if (!channelsRoot || !dmsRoot) return;
-  const channels = [], dms = [];
+  const me = window.CURRENT_USER || {};
+  const channels = [], groups = [];
+  // Map every existing 1:1 DM channel by the *other* user's id, so the
+  // workspace-user list can show "select existing" vs "start new" inline.
+  const dmByOtherUserId = new Map();
   for (const c of CHAT_STATE.channels) {
-    const display = chatChannelDisplayName(c).toLowerCase();
-    if (filter && !display.includes(filter)) continue;
-    (c.type === 'channel' ? channels : dms).push(c);
+    if (c.type === 'channel') {
+      const display = chatChannelDisplayName(c).toLowerCase();
+      if (!filter || display.includes(filter)) channels.push(c);
+    } else if (c.type === 'group') {
+      const display = chatChannelDisplayName(c).toLowerCase();
+      if (!filter || display.includes(filter)) groups.push(c);
+    } else if (c.type === 'dm') {
+      const other = (c.members || []).find(m => m.id !== me.id);
+      if (other) dmByOtherUserId.set(other.id, c);
+    }
   }
-  // Sort channels alphabetically; DMs by recency.
   channels.sort((a, b) => a.name.localeCompare(b.name));
-  dms.sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
+  groups.sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
   channelsRoot.innerHTML = channels.map(c => renderChatChannelRow(c)).join('') ||
     '<div style="padding:10px;color:var(--text3);font-size:11.5px">No channels yet.</div>';
-  dmsRoot.innerHTML = dms.map(c => renderChatChannelRow(c)).join('') ||
-    '<div style="padding:10px;color:var(--text3);font-size:11.5px">No DMs yet.</div>';
+  if (groups.length) {
+    groupsSection.style.display = '';
+    groupsRoot.innerHTML = groups.map(c => renderChatChannelRow(c)).join('');
+  } else {
+    groupsSection.style.display = 'none';
+    groupsRoot.innerHTML = '';
+  }
+  // DM section = every workspace user. Click → open existing DM channel or
+  // start a new one. Sort: DMs with unread first, then DMs by recent activity,
+  // then everyone else alphabetically.
+  const users = (CHAT_STATE.userDirectory || []).slice().filter(u =>
+    !filter || u.name.toLowerCase().includes(filter) || (u.email || '').toLowerCase().includes(filter));
+  users.sort((a, b) => {
+    const ca = dmByOtherUserId.get(a.id);
+    const cb = dmByOtherUserId.get(b.id);
+    const ua = ca ? (ca.unread || 0) : 0;
+    const ub = cb ? (cb.unread || 0) : 0;
+    if (ua !== ub) return ub - ua;
+    const ta = ca ? (ca.lastMessageAt || '') : '';
+    const tb = cb ? (cb.lastMessageAt || '') : '';
+    if (ta !== tb) return tb.localeCompare(ta);
+    return a.name.localeCompare(b.name);
+  });
+  if (!users.length) {
+    dmsRoot.innerHTML = `<div style="padding:10px;color:var(--text3);font-size:11.5px">${
+      CHAT_STATE.userDirectory.length === 0
+        ? "You're the only person here yet."
+        : 'No people match that search.'
+    }</div>`;
+    return;
+  }
+  dmsRoot.innerHTML = users.map(u => renderChatUserDmRow(u, dmByOtherUserId.get(u.id))).join('');
+}
+
+function renderChatUserDmRow(user, channel) {
+  const isActive = channel && CHAT_STATE.activeChannelId === channel.id;
+  const unread = channel ? (channel.unread || 0) : 0;
+  const mentions = channel ? (channel.mentionUnread || 0) : 0;
+  const cls = ['chat-ch-row'];
+  if (isActive) cls.push('active');
+  if (unread > 0) cls.push('has-unread');
+  const initial = (user.name || '?').slice(0, 1).toUpperCase();
+  const avatar = user.avatarUrl
+    ? `<img src="${escapeHtml(user.avatarUrl)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover"/>`
+    : initial;
+  return `<div class="${cls.join(' ')}" onclick="openChatDmFromUser(${user.id})" title="${escapeHtml(user.email || '')}">
+    <div style="width:22px;height:22px;border-radius:50%;background:${escapeHtml(user.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;flex-shrink:0;overflow:hidden">${avatar}</div>
+    <div class="ch-name">${escapeHtml(user.name)}</div>
+    ${mentions > 0 ? `<span class="mention-pill">@${mentions}</span>` :
+      unread > 0 ? `<span class="unread-pill">${unread > 99 ? '99+' : unread}</span>` : ''}
+  </div>`;
+}
+
+// Click handler for the workspace-user rows in the DM list. If we already
+// have a DM channel with this user, just open it; otherwise create it on
+// the fly via the existing /api/chat/dm endpoint.
+async function openChatDmFromUser(userId) {
+  const me = window.CURRENT_USER || {};
+  const existing = CHAT_STATE.channels.find(c =>
+    c.type === 'dm' && (c.members || []).some(m => m.id === userId) && (c.members || []).some(m => m.id === me.id));
+  if (existing) { selectChatChannel(existing.id); return; }
+  await startChatDm(userId);
 }
 
 function renderChatChannelRow(c) {
@@ -20136,18 +20215,21 @@ function closeChatNewMenuOnce(ev) {
 function closeChatModals() {
   ['chat-new-channel-modal','chat-browse-modal','chat-new-dm-modal','chat-info-modal'].forEach(id => {
     const e = document.getElementById(id);
-    if (e) e.style.display = 'none';
+    if (e) e.classList.remove('open');
   });
   CHAT_STATE._newGroupSelected = null;
 }
 
-function openChatNewChannelModal() {
+async function openChatNewChannelModal() {
   closeChatNewMenuOnce();
+  // Make sure the workspace user list is loaded so the private-channel
+  // member picker is populated as soon as it's revealed.
+  await chatLoadUsers();
   document.getElementById('chat-new-name').value = '';
   document.getElementById('chat-new-desc').value = '';
   document.getElementById('chat-new-private').checked = false;
   document.getElementById('chat-new-members-wrap').style.display = 'none';
-  document.getElementById('chat-new-channel-modal').style.display = 'flex';
+  document.getElementById('chat-new-channel-modal').classList.add('open');
   document.getElementById('chat-new-private').onchange = (e) => {
     document.getElementById('chat-new-members-wrap').style.display = e.target.checked ? 'block' : 'none';
     if (e.target.checked) renderChatNewMembersList();
@@ -20196,7 +20278,7 @@ async function submitChatNewChannel() {
 async function openChatBrowseModal() {
   closeChatNewMenuOnce();
   const modal = document.getElementById('chat-browse-modal');
-  modal.style.display = 'flex';
+  modal.classList.add('open');
   const root = document.getElementById('chat-browse-list');
   const empty = document.getElementById('chat-browse-empty');
   root.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
@@ -20232,23 +20314,27 @@ async function joinChatChannel(channelId) {
   } catch (e) { alert('Join failed: ' + e.message); }
 }
 
-function openChatNewDmModal() {
+async function openChatNewDmModal() {
   closeChatNewMenuOnce();
+  // Always refresh the workspace user list — the picker is empty without it,
+  // and the modal can be opened before the page-load fetch resolves.
+  await chatLoadUsers(true);
   document.getElementById('chat-new-dm-title').textContent = 'New direct message';
   document.getElementById('chat-new-group-actions').style.display = 'none';
   CHAT_STATE._newGroupSelected = null;
   document.getElementById('chat-new-dm-search').value = '';
-  document.getElementById('chat-new-dm-modal').style.display = 'flex';
+  document.getElementById('chat-new-dm-modal').classList.add('open');
   renderChatNewDmList();
 }
 
-function openChatNewGroupModal() {
+async function openChatNewGroupModal() {
   closeChatNewMenuOnce();
+  await chatLoadUsers(true);
   document.getElementById('chat-new-dm-title').textContent = 'New group chat';
   document.getElementById('chat-new-group-actions').style.display = 'flex';
   CHAT_STATE._newGroupSelected = new Set();
   document.getElementById('chat-new-dm-search').value = '';
-  document.getElementById('chat-new-dm-modal').style.display = 'flex';
+  document.getElementById('chat-new-dm-modal').classList.add('open');
   renderChatNewDmList();
 }
 
@@ -20258,6 +20344,14 @@ function renderChatNewDmList() {
     !filter || u.name.toLowerCase().includes(filter) || (u.email || '').toLowerCase().includes(filter));
   const root = document.getElementById('chat-new-dm-list');
   const isGroup = !!CHAT_STATE._newGroupSelected;
+  if (!list.length) {
+    root.innerHTML = `<div style="color:var(--text3);font-size:12.5px;padding:18px;text-align:center">${
+      CHAT_STATE.userDirectory.length === 0
+        ? "You're the only person in this workspace yet — invite teammates from Settings → Team."
+        : 'No one matches that search.'
+    }</div>`;
+    return;
+  }
   root.innerHTML = list.map(u => {
     if (isGroup) {
       const checked = CHAT_STATE._newGroupSelected.has(u.id) ? 'checked' : '';
@@ -20346,7 +20440,7 @@ function openChatInfoModal(channelId) {
     </div>
   </div>`;
   body.innerHTML = html;
-  document.getElementById('chat-info-modal').style.display = 'flex';
+  document.getElementById('chat-info-modal').classList.add('open');
 }
 
 async function setChatNotify(channelId, pref) {
@@ -20391,9 +20485,10 @@ async function removeChatMember(channelId, userId) {
   } catch (e) { alert('Failed: ' + e.message); }
 }
 
-function openChatAddMembersModal(channelId) {
+async function openChatAddMembersModal(channelId) {
   const c = CHAT_STATE.channelsById.get(channelId);
   if (!c) return;
+  await chatLoadUsers(true);
   const inChannel = new Set(c.members.map(m => m.id));
   const candidates = (CHAT_STATE.userDirectory || []).filter(u => !inChannel.has(u.id));
   if (!candidates.length) { alert('Everyone is already in this channel.'); return; }
@@ -20401,7 +20496,7 @@ function openChatAddMembersModal(channelId) {
   document.getElementById('chat-new-dm-title').textContent = `Add members to #${c.name}`;
   document.getElementById('chat-new-dm-search').value = '';
   CHAT_STATE._newGroupSelected = new Set();
-  document.getElementById('chat-new-dm-modal').style.display = 'flex';
+  document.getElementById('chat-new-dm-modal').classList.add('open');
   // Hijack the actions bar to a single confirm button.
   const actions = document.getElementById('chat-new-group-actions');
   actions.style.display = 'flex';
@@ -20440,6 +20535,27 @@ window.addEventListener('_wnReady', () => {
     chatRefreshUnread();
     setInterval(chatRefreshUnread, 60 * 1000);
   }
+});
+
+// Close the chat modals on backdrop click — clicking the dark area outside
+// the inner card. We attach to each overlay rather than the document so we
+// don't accidentally swallow clicks on other modals' overlays.
+document.addEventListener('DOMContentLoaded', () => {
+  ['chat-new-channel-modal','chat-browse-modal','chat-new-dm-modal','chat-info-modal'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', (ev) => {
+      // Only close when the click hit the overlay itself, not its inner card.
+      if (ev.target === el) closeChatModals();
+    });
+  });
+});
+// ESC closes any open chat modal — global keydown but cheap.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Escape') return;
+  const anyOpen = ['chat-new-channel-modal','chat-browse-modal','chat-new-dm-modal','chat-info-modal']
+    .some(id => document.getElementById(id)?.classList.contains('open'));
+  if (anyOpen) closeChatModals();
 });
 // Visibility handler: when the tab regains focus, refresh unread + auto-mark
 // the active channel read.
