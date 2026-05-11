@@ -634,6 +634,11 @@ async function init() {
     await pool.query(sql);
   }
 
+  // Freeform pen-drawing layer on top of a space — JSON array of stroke
+  // objects ({color,width,points:[[x,y],…]}). Added via safeAlter so it
+  // lands cleanly on existing installs without re-creating the spaces table.
+  await safeAlter("ALTER TABLE spaces ADD COLUMN whiteboard_strokes TEXT DEFAULT '[]'");
+
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
   // Same for the new feedback / announcement parents — voice notes, screen

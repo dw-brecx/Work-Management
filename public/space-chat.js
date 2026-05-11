@@ -18,7 +18,6 @@
   let pollTimer = null;
   let lastId = 0;
   let spaceId = null;
-  let canPost = false;
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -61,7 +60,7 @@
       <header class="sc-head">
         <div style="flex:1;min-width:0">
           <div class="sc-head-title">💬 Space chat</div>
-          <div class="sc-head-sub">Anyone with access can read · editors can post</div>
+          <div class="sc-head-sub">Everyone with access can read and reply</div>
         </div>
         <button class="sc-close" aria-label="Close">×</button>
       </header>
@@ -84,16 +83,12 @@
     bodyEl.innerHTML = `
       <div class="sc-empty">
         <div class="sc-empty-emoji">💭</div>
-        <div>${canPost ? 'Start the conversation — say hi!' : 'No messages yet.'}</div>
+        <div>Start the conversation — say hi!</div>
       </div>
     `;
   }
 
   function renderComposer() {
-    if (!canPost) {
-      composerHost.innerHTML = `<div class="sc-readonly">You're in view-only mode. Editors can post here.</div>`;
-      return;
-    }
     composerHost.innerHTML = `
       <form class="sc-composer" data-sc-form>
         <textarea data-sc-input rows="1" placeholder="Write a message…" maxlength="2000"></textarea>
@@ -140,8 +135,11 @@
     if (placeholder) bodyEl.innerHTML = '';
     const div = document.createElement('div');
     div.className = 'sc-msg' + (isMe ? ' is-me' : '');
+    // Always show the sender's actual name — never anonymise. Easier to
+    // follow a thread when every line is signed.
+    const name = m.user_name || (isMe ? (me.name || 'You') : 'Someone');
     div.innerHTML = `
-      <div class="sc-msg-meta">${esc(isMe ? 'You' : (m.user_name || 'Someone'))} · ${esc(fmtTime(m.created_at))}</div>
+      <div class="sc-msg-meta">${esc(name)} · ${esc(fmtTime(m.created_at))}</div>
       <div class="sc-msg-bubble">${esc(m.body || '')}</div>
     `;
     bodyEl.appendChild(div);
@@ -166,10 +164,9 @@
     }
   }
 
-  async function open(id, opts) {
+  async function open(id /*, opts */) {
     ensureMount();
     spaceId = Number(id);
-    canPost = !!(opts && opts.canEdit);
     lastId = 0;
     bodyEl.innerHTML = '<div class="sc-empty"><div class="sc-empty-emoji">⏳</div><div>Loading messages…</div></div>';
     renderComposer();

@@ -97,6 +97,12 @@
     publicCanEdit: false,
     profiles: [],
     ticketsCache: null,    // [{id,title,status,priority,assignee}] — loaded on first ticket-picker open
+    // Whiteboard (freeform pen-drawing layer on top of the canvas).
+    strokes: [],           // [{id, color, width, points: [[x,y],...]}, ...]
+    penMode: false,
+    penColor: '#111111',
+    penWidth: 3,
+    activeStrokePoints: null, // in-progress stroke during mousedown→up
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -190,6 +196,7 @@
     getPublicSpace:   (tok)    => api('GET',  '/api/spaces/public/' + tok),
     updatePublicItem: (tok, it, p) => api('PATCH','/api/spaces/public/' + tok + '/items/' + it, p),
     getTicketPicker:  ()       => api('GET',  '/api/spaces-ticket-picker'),
+    saveWhiteboard:   (id, strokes) => api('PATCH', '/api/spaces/' + id + '/whiteboard', { strokes }),
   };
 
   function patchItem(itemId, updates) {
@@ -401,6 +408,8 @@
       state.items = data.items || [];
       state.members = data.members || [];
       state.role = data.role || 'viewer';
+      state.strokes = Array.isArray(data.whiteboard_strokes) ? data.whiteboard_strokes : [];
+      state.penMode = false;
     } catch (e) {
       host.innerHTML = `<div style="color:#dc2626;padding:24px">${esc(e.message || 'Failed to load space')}</div>`;
       return;
@@ -439,12 +448,16 @@
               <div style="font-size:11.5px;color:var(--text2)">Shared by ${esc(space.owner_name || 'a Syruvia user')} • ${canEdit() ? 'Editable link' : 'View-only'}</div>
             </div>
           </div>
-          <div id="sp-canvas-host" class="sp-canvas"><div class="sp-canvas-inner" id="sp-canvas-inner"></div></div>
+          <div id="sp-canvas-host" class="sp-canvas">
+            <div class="sp-canvas-inner" id="sp-canvas-inner">
+              <svg id="sp-whiteboard" class="sp-whiteboard" width="3200" height="2400" viewBox="0 0 3200 2400" xmlns="http://www.w3.org/2000/svg"></svg>
+            </div>
+          </div>
         </div>
       `;
     } else {
       host.innerHTML = `
-        <div class="sp-canvas-shell">
+        <div class="sp-canvas-shell${state.penMode ? ' is-pen-mode' : ''}" id="sp-canvas-shell">
           <div class="sp-canvas-toolbar" style="position:relative">
             <button class="sp-back" id="sp-back-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -457,14 +470,20 @@
             </div>
             ${!canEdit() ? `<span class="sp-view-only">View-only</span>` : ''}
             <button class="btn-sec" id="sp-chat-btn" style="font-size:12px;padding:6px 12px">💬 Chat</button>
+            ${canEdit() ? `<button class="btn-sec${state.penMode ? ' is-active' : ''}" id="sp-pen-btn" style="font-size:12px;padding:6px 12px">✏️ Pen</button>` : ''}
             <button class="btn-sec" id="sp-copy-link-btn" title="Copy a link to this space" style="font-size:12px;padding:6px 12px">🔗 Copy link</button>
             ${isOwner() ? `<button class="btn-sec" id="sp-edit-btn" style="font-size:12px;padding:6px 12px">Edit</button>` : ''}
-            ${isOwner() ? `<button class="btn-sec" id="sp-share-btn" style="font-size:12px;padding:6px 12px">Share${space.is_public ? ' • Link on' : ''}</button>` : ''}
+            ${isOwner() ? `<button class="btn-sec" id="sp-share-btn" style="font-size:12px;padding:6px 12px">Share</button>` : ''}
             ${canEdit() ? `<div style="position:relative">
               <button class="btn-primary" id="sp-add-btn" style="font-size:12px;padding:6px 14px">+ Add</button>
             </div>` : ''}
           </div>
-          <div id="sp-canvas-host" class="sp-canvas"><div class="sp-canvas-inner" id="sp-canvas-inner"></div></div>
+          <div id="sp-canvas-host" class="sp-canvas">
+            <div class="sp-canvas-inner" id="sp-canvas-inner">
+              <svg id="sp-whiteboard" class="sp-whiteboard" width="3200" height="2400" viewBox="0 0 3200 2400" xmlns="http://www.w3.org/2000/svg"></svg>
+            </div>
+          </div>
+          ${canEdit() ? renderPenToolbar() : ''}
         </div>
       `;
       const back = host.querySelector('#sp-back-btn');
@@ -477,7 +496,7 @@
       if (add) add.onclick = (ev) => { ev.stopPropagation(); toggleAddMenu(add); };
       const chatBtn = host.querySelector('#sp-chat-btn');
       if (chatBtn) chatBtn.onclick = () => {
-        if (window.SpaceChat) window.SpaceChat.open(state.activeSpaceId, { canEdit: canEdit() });
+        if (window.SpaceChat) window.SpaceChat.open(state.activeSpaceId);
         else toast('Chat module not loaded yet — try refreshing.');
       };
       const copyBtn = host.querySelector('#sp-copy-link-btn');
@@ -486,26 +505,178 @@
         try { navigator.clipboard.writeText(url); toast('Space link copied'); }
         catch { toast(url); }
       };
+      const penBtn = host.querySelector('#sp-pen-btn');
+      if (penBtn) penBtn.onclick = () => togglePenMode();
     }
     renderItems();
+    wirePenToolbar();
+    wireWhiteboardDrawing();
   }
 
   function renderItems() {
     const canvas = document.getElementById('sp-canvas-inner');
     if (!canvas) return;
+    // Preserve the whiteboard SVG across re-renders — innerHTML would
+    // otherwise blow away strokes mid-session.
+    const svg = canvas.querySelector('#sp-whiteboard');
     let html = '';
     if (state.items.length === 0 && !state.publicToken) {
       html += `
         <div class="sp-empty-canvas">
           <div class="ec-emoji">🪄</div>
           <div class="ec-title">A blank canvas — let's fill it.</div>
-          <div class="ec-body">${canEdit() ? 'Click <strong>+ Add</strong> to drop in tickets, sticky notes, files, voice notes, screen recordings, and more.' : 'No items have been added yet.'}</div>
+          <div class="ec-body">${canEdit() ? 'Click <strong>+ Add</strong> to drop in tickets, sticky notes, files, voice notes, screen recordings, and more. Press <strong>✏️ Pen</strong> to scribble freehand on top, and paste images straight from the clipboard.' : 'No items have been added yet.'}</div>
         </div>
       `;
     }
     for (const item of state.items) html += renderItemCard(item);
     canvas.innerHTML = html;
+    if (svg) canvas.appendChild(svg);
     for (const item of state.items) wireItem(item);
+    renderStrokes();
+  }
+
+  // ── Whiteboard ─────────────────────────────────────────────────────────
+  // Drawings live in an SVG layer that sits inside the same 3200×2400 canvas
+  // as item cards. Each stroke is one <path>. We re-render all strokes on
+  // every change — cheap, and avoids juggling references.
+  const PEN_COLORS = ['#111111', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
+  const PEN_WIDTHS = [
+    { label: 'Thin', value: 2 },
+    { label: 'Med',  value: 4 },
+    { label: 'Thick', value: 8 },
+  ];
+
+  function renderPenToolbar() {
+    if (!state.penMode) return '';
+    return `
+      <div class="sp-pen-toolbar" id="sp-pen-toolbar">
+        <div class="sp-pen-swatches">
+          ${PEN_COLORS.map(c => `<button class="sp-pen-swatch${c === state.penColor ? ' is-active' : ''}" data-pen-color="${c}" style="background:${c}" aria-label="${c}"></button>`).join('')}
+        </div>
+        <div class="sp-pen-widths">
+          ${PEN_WIDTHS.map(w => `<button class="sp-pen-width${w.value === state.penWidth ? ' is-active' : ''}" data-pen-width="${w.value}">${w.label}</button>`).join('')}
+        </div>
+        <button class="sp-pen-action" data-pen-action="undo" title="Undo last stroke">↶ Undo</button>
+        <button class="sp-pen-action" data-pen-action="clear" title="Erase the whole board">Clear</button>
+        <button class="sp-pen-action sp-pen-exit" data-pen-action="exit" title="Leave pen mode">Done</button>
+      </div>
+    `;
+  }
+
+  function strokesToSvgPath(points) {
+    if (!points || points.length === 0) return '';
+    let d = 'M ' + points[0][0] + ' ' + points[0][1];
+    for (let i = 1; i < points.length; i++) d += ' L ' + points[i][0] + ' ' + points[i][1];
+    return d;
+  }
+
+  function renderStrokes() {
+    const svg = document.getElementById('sp-whiteboard');
+    if (!svg) return;
+    let html = '';
+    for (const s of (state.strokes || [])) {
+      html += `<path d="${attr(strokesToSvgPath(s.points))}" stroke="${attr(s.color || '#111')}" stroke-width="${Number(s.width) || 3}" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+    }
+    // Append the in-progress stroke (not yet saved) so it shows as the user drags.
+    if (state.activeStrokePoints && state.activeStrokePoints.length) {
+      html += `<path d="${attr(strokesToSvgPath(state.activeStrokePoints))}" stroke="${attr(state.penColor)}" stroke-width="${state.penWidth}" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+    }
+    svg.innerHTML = html;
+  }
+
+  function wirePenToolbar() {
+    const tb = document.getElementById('sp-pen-toolbar');
+    if (!tb) return;
+    tb.querySelectorAll('[data-pen-color]').forEach(b => {
+      b.onclick = () => {
+        state.penColor = b.dataset.penColor;
+        tb.querySelectorAll('[data-pen-color]').forEach(x => x.classList.toggle('is-active', x.dataset.penColor === state.penColor));
+      };
+    });
+    tb.querySelectorAll('[data-pen-width]').forEach(b => {
+      b.onclick = () => {
+        state.penWidth = Number(b.dataset.penWidth) || 4;
+        tb.querySelectorAll('[data-pen-width]').forEach(x => x.classList.toggle('is-active', Number(x.dataset.penWidth) === state.penWidth));
+      };
+    });
+    tb.querySelector('[data-pen-action=undo]').onclick = async () => {
+      if (!state.strokes.length) return;
+      state.strokes.pop();
+      renderStrokes();
+      saveWhiteboard();
+    };
+    tb.querySelector('[data-pen-action=clear]').onclick = async () => {
+      if (!state.strokes.length) return;
+      if (!confirm('Erase the whole whiteboard?')) return;
+      state.strokes = [];
+      renderStrokes();
+      saveWhiteboard();
+    };
+    tb.querySelector('[data-pen-action=exit]').onclick = () => togglePenMode(false);
+  }
+
+  function togglePenMode(force) {
+    const next = (typeof force === 'boolean') ? force : !state.penMode;
+    state.penMode = next;
+    // Re-render the canvas shell so the toolbar + the is-pen-mode class
+    // flip together. Cheaper than fiddling individual classes.
+    renderCanvasShell();
+  }
+
+  // Save the current stroke list to the server. Debounced so rapid undos
+  // don't fire a request per click.
+  let _whiteboardSaveTimer = null;
+  function saveWhiteboard() {
+    if (state.publicToken) return; // public viewer can't save (no auth)
+    clearTimeout(_whiteboardSaveTimer);
+    _whiteboardSaveTimer = setTimeout(async () => {
+      try { await db.saveWhiteboard(state.activeSpaceId, state.strokes); }
+      catch (e) { toast('Whiteboard save failed: ' + (e.message || 'unknown')); }
+    }, 300);
+  }
+
+  function wireWhiteboardDrawing() {
+    const svg = document.getElementById('sp-whiteboard');
+    if (!svg) return;
+    if (!state.penMode || !canEdit()) return;
+    svg.addEventListener('mousedown', onPenDown);
+    function onPenDown(ev) {
+      ev.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const startX = ev.clientX - rect.left;
+      const startY = ev.clientY - rect.top;
+      state.activeStrokePoints = [[startX, startY]];
+      renderStrokes();
+      function onMove(e2) {
+        const r2 = svg.getBoundingClientRect();
+        const x = e2.clientX - r2.left;
+        const y = e2.clientY - r2.top;
+        const pts = state.activeStrokePoints;
+        const last = pts[pts.length - 1];
+        // Skip near-duplicate points so the path stays small.
+        if (Math.abs(last[0] - x) < 1 && Math.abs(last[1] - y) < 1) return;
+        pts.push([x, y]);
+        renderStrokes();
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        const pts = state.activeStrokePoints || [];
+        state.activeStrokePoints = null;
+        if (pts.length < 2) { renderStrokes(); return; } // ignore taps
+        state.strokes.push({
+          id: 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          color: state.penColor,
+          width: state.penWidth,
+          points: pts,
+        });
+        renderStrokes();
+        saveWhiteboard();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
   }
 
   // ── Item card rendering ────────────────────────────────────────────────
@@ -1323,7 +1494,6 @@
       const members = state.members || [];
       const memberIds = new Set(members.map(x => x.user_id));
       const candidates = (state.profiles || []).filter(p => p.id !== me.id && !memberIds.has(p.id));
-      const linkUrl = sp.public_token ? (location.origin + '/p/' + sp.public_token) : null;
       const spaceUrl = location.origin + '/spaces/' + sp.id;
       m.bodyEl.querySelector('#sp-share-body').innerHTML = `
         <div style="display:flex;flex-direction:column;gap:18px">
@@ -1357,24 +1527,6 @@
               <button id="sp-invite-btn" class="btn-primary" style="font-size:12px;padding:6px 12px">Invite</button>
             </div>
           </section>
-          <section class="sp-share-section">
-            <h3>Public link</h3>
-            <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
-              <input type="checkbox" id="sp-pub-enable" ${sp.is_public ? 'checked' : ''}/>
-              Anyone with the link can view this space (no sign-in)
-            </label>
-            ${sp.is_public ? `
-              <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--text)">
-                <input type="checkbox" id="sp-pub-edit" ${sp.public_can_edit ? 'checked' : ''}/>
-                Allow link viewers to edit
-              </label>
-              ${linkUrl ? `<div class="sp-share-link">
-                <input id="sp-pub-link" readonly value="${attr(linkUrl)}"/>
-                <button id="sp-pub-copy" class="btn-sec" style="font-size:11.5px;padding:5px 12px">Copy</button>
-                <button id="sp-pub-regen" class="btn-sec" style="font-size:11.5px;padding:5px 12px">Regenerate</button>
-              </div>` : ''}
-            ` : ''}
-          </section>
         </div>
       `;
       m.bodyEl.querySelector('#sp-self-copy').onclick = () => {
@@ -1402,43 +1554,6 @@
           repaint();
         } catch (e) { toast(e.message || 'Failed to invite'); }
       };
-      const enable = m.bodyEl.querySelector('#sp-pub-enable');
-      if (enable) {
-        enable.onchange = async () => {
-          try {
-            const updated = await db.updateShareLink(state.space.id, { enabled: enable.checked });
-            Object.assign(state.space, updated);
-            repaint();
-            renderCanvasShell();
-          } catch (e) { toast(e.message || 'Failed to update link'); }
-        };
-      }
-      const pubEdit = m.bodyEl.querySelector('#sp-pub-edit');
-      if (pubEdit) {
-        pubEdit.onchange = async () => {
-          try {
-            const updated = await db.updateShareLink(state.space.id, { can_edit: pubEdit.checked });
-            Object.assign(state.space, updated);
-            repaint();
-          } catch (e) { toast(e.message || 'Failed to update link'); }
-        };
-      }
-      const copyBtn = m.bodyEl.querySelector('#sp-pub-copy');
-      if (copyBtn) copyBtn.onclick = () => {
-        const link = m.bodyEl.querySelector('#sp-pub-link');
-        link.select();
-        try { navigator.clipboard.writeText(link.value); toast('Public link copied'); } catch { document.execCommand('copy'); toast('Public link copied'); }
-      };
-      const regen = m.bodyEl.querySelector('#sp-pub-regen');
-      if (regen) regen.onclick = async () => {
-        if (!confirm('Regenerate link? The current link will stop working.')) return;
-        try {
-          const updated = await db.updateShareLink(state.space.id, { enabled: true, regenerate: true });
-          Object.assign(state.space, updated);
-          repaint();
-          renderCanvasShell();
-        } catch (e) { toast(e.message || 'Failed to regenerate'); }
-      };
     }
     repaint();
   }
@@ -1454,11 +1569,42 @@
       state.space = data;
       state.items = data.items || [];
       state.publicCanEdit = !!data.public_can_edit;
+      state.strokes = Array.isArray(data.whiteboard_strokes) ? data.whiteboard_strokes : [];
+      state.penMode = false;
       renderCanvasShell();
     } catch (e) {
       root.innerHTML = '<div class="sp-public-fullpage">This space is not available.</div>';
     }
   }
+
+  // ── Paste-image support ───────────────────────────────────────────────
+  // Listen for paste events while a space is open and the user has edit
+  // rights. If the clipboard contains an image, drop it as an image card.
+  // Skips when the paste target is a text input (so pasting inside a note
+  // textarea still works normally).
+  document.addEventListener('paste', async (ev) => {
+    if (!state.activeSpaceId && !state.publicToken) return;
+    if (!canEdit()) return;
+    const t = ev.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || (t.isContentEditable))) return;
+    const items = ev.clipboardData && ev.clipboardData.items;
+    if (!items || !items.length) return;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+        ev.preventDefault();
+        const file = it.getAsFile();
+        if (!file) return;
+        if (file.size > 25 * 1024 * 1024) { toast('Pasted image is over 25 MB.'); return; }
+        try {
+          const data = await readFileAsDataURL(file);
+          await doAdd({ type: 'image', title: file.name || 'Pasted image', data, mime_type: file.type, size: file.size });
+          toast('Image pasted');
+        } catch (e) { toast('Paste failed: ' + (e.message || 'unknown')); }
+        return;
+      }
+    }
+  });
 
   // ── Public API ─────────────────────────────────────────────────────────
   window.Spaces = {

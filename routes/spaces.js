@@ -112,6 +112,11 @@ module.exports = function attach(app, deps) {
   }
 
   function shapeSpace(s, extras) {
+    let strokes = [];
+    if (s.whiteboard_strokes) {
+      try { strokes = JSON.parse(s.whiteboard_strokes); if (!Array.isArray(strokes)) strokes = []; }
+      catch { strokes = []; }
+    }
     return Object.assign({
       id: s.id,
       name: s.name,
@@ -122,6 +127,7 @@ module.exports = function attach(app, deps) {
       is_public: !!s.is_public,
       public_token: s.public_token,
       public_can_edit: !!s.public_can_edit,
+      whiteboard_strokes: strokes,
       created_at: s.created_at,
       updated_at: s.updated_at,
     }, extras || {});
@@ -383,6 +389,38 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Whiteboard ─────────────────────────────────────────────────────────
+  // Replace the freeform-drawing stroke list. Strokes are stored as JSON
+  // text on the spaces row — small enough that "replace the whole thing"
+  // beats a per-stroke table. Edit access required.
+  app.patch('/api/spaces/:id/whiteboard', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid space id' });
+      const result = await loadSpaceForUser(id, req.session.userId, true);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const strokes = Array.isArray(req.body && req.body.strokes) ? req.body.strokes : null;
+      if (!strokes) return res.status(400).json({ error: 'strokes array required' });
+      // Cap individual stroke point counts and total stroke count so a
+      // pathological client can't pin the DB. Real drawings sit well under
+      // these caps; oversize submissions are silently truncated.
+      const safe = strokes.slice(0, 2000).map(s => ({
+        id: typeof s.id === 'string' ? s.id.slice(0, 64) : null,
+        color: typeof s.color === 'string' ? s.color.slice(0, 32) : '#111',
+        width: Number.isFinite(Number(s.width)) ? Math.max(1, Math.min(64, Number(s.width))) : 3,
+        points: (Array.isArray(s.points) ? s.points : []).slice(0, 4000).map(p => {
+          const x = Number(p && p[0]); const y = Number(p && p[1]);
+          return [Number.isFinite(x) ? x : 0, Number.isFinite(y) ? y : 0];
+        }),
+      }));
+      await run(
+        `UPDATE spaces SET whiteboard_strokes=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
+        JSON.stringify(safe), id
+      );
+      res.json({ ok: true, count: safe.length });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Per-space chat ─────────────────────────────────────────────────────
   // Lightweight thread attached to a space — read by anyone with view access,
   // post by anyone with edit access. No realtime yet; clients poll.
@@ -407,7 +445,9 @@ module.exports = function attach(app, deps) {
   app.post('/api/spaces/:id/chat', requireAuth, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const result = await loadSpaceForUser(id, req.session.userId, true);
+      // Anyone with view access can post in the chat — chat is a conversation
+      // layer, not the canvas. Edit-permission only gates editing items.
+      const result = await loadSpaceForUser(id, req.session.userId, false);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
       const body = String((req.body && req.body.body) || '').trim();
       if (!body) return res.status(400).json({ error: 'Message required' });
