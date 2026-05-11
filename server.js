@@ -5011,6 +5011,55 @@ app.get('/api/chat/me', requireAuth, async (req, res) => {
   } catch (e) { console.error('[chat:me]', e); res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/chat/tickets — picker source for #-mentions inside the chat
+// composer. Returns the caller's accessible tickets (Admin/Manager → all,
+// Member → only ones they're involved in). Defaults to non-closed; pass
+// includeClosed=1 to also return Closed rows. Free-text q= matches against
+// ticket id and title (case-insensitive substring).
+app.get('/api/chat/tickets', requireAuth, async (req, res) => {
+  try {
+    const u = await getUser(req.session.userId);
+    if (!u) return res.status(401).json({ error: 'Not signed in' });
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const includeClosed = String(req.query.includeClosed || '') === '1';
+    const isAdmin = ['Admin', 'Manager'].includes(u.perm_role);
+    const where = ['t.deleted_at IS NULL'];
+    const args = [];
+    if (!includeClosed) where.push("t.status <> 'Closed'");
+    if (q) {
+      where.push("(LOWER(t.id) LIKE ? OR LOWER(t.title) LIKE ?)");
+      args.push('%' + q + '%', '%' + q + '%');
+    }
+    if (!isAdmin) {
+      where.push(`(
+        t.assignee_user_id = ?
+        OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+        OR EXISTS (
+          SELECT 1 FROM ticket_assignees ta
+            WHERE ta.ticket_id = t.id
+              AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+        )
+        OR t.reporter_user_id = ?
+        OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+        OR t.req_user_id = ?
+        OR (t.req_user_id IS NULL AND t.req = ?)
+        OR t.created_by = ?
+      )`);
+      args.push(u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id);
+    }
+    // Quick search → return whatever matches; no-query → most recent open.
+    const rows = await all(
+      `SELECT t.id, t.title, t.status, t.priority, t.assignee, t.dept
+         FROM tickets t
+        WHERE ${where.join(' AND ')}
+        ORDER BY t.id DESC
+        LIMIT 30`,
+      ...args
+    );
+    res.json(rows || []);
+  } catch (e) { console.error('[chat:tickets]', e); res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/chat/users — workspace directory used by "new chat" + add-member
 // pickers. Excludes the caller (you can't DM yourself).
 app.get('/api/chat/users', requireAuth, async (req, res) => {
