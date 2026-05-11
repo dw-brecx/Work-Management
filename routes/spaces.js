@@ -30,10 +30,32 @@ module.exports = function attach(app, deps) {
     'color', 'ticket_ref', 'ticket_meta',
     'position_x', 'position_y', 'width', 'height', 'z_index',
   ];
+  // Numeric columns — must end up as finite numbers or be dropped so the
+  // column DEFAULT applies. A JS NaN reaching the pg driver gets serialised
+  // as the literal string "NaN", which Postgres can't cast to integer and
+  // rejects with "invalid input syntax for type integer: NaN".
+  const ITEM_INT_FIELDS  = ['size', 'duration', 'z_index'];
+  const ITEM_REAL_FIELDS = ['position_x', 'position_y', 'width', 'height'];
 
   function pickItemUpdate(body) {
     const out = {};
     for (const k of ITEM_FIELDS) if (k in (body || {})) out[k] = body[k];
+    // Coerce numeric fields; drop anything non-finite so the column's DEFAULT
+    // applies instead of pg choking on a "NaN" string.
+    for (const k of ITEM_INT_FIELDS) {
+      if (k in out) {
+        const n = Number(out[k]);
+        if (!Number.isFinite(n)) delete out[k];
+        else out[k] = Math.trunc(n);
+      }
+    }
+    for (const k of ITEM_REAL_FIELDS) {
+      if (k in out) {
+        const n = Number(out[k]);
+        if (!Number.isFinite(n)) delete out[k];
+        else out[k] = n;
+      }
+    }
     // ticket_meta is stored as JSON-serialised text; accept either a string
     // or an object on the wire and normalise here.
     if (out.ticket_meta && typeof out.ticket_meta !== 'string') {
@@ -266,14 +288,17 @@ module.exports = function attach(app, deps) {
   app.post('/api/spaces/:id/items', requireAuth, async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const result = await loadSpaceForUser(id, req.session.userId, true);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid space id' });
+      const userId = Number(req.session.userId);
+      if (!Number.isFinite(userId)) return res.status(401).json({ error: 'Not signed in' });
+      const result = await loadSpaceForUser(id, userId, true);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
       const { type } = req.body || {};
       if (!type) return res.status(400).json({ error: 'Item type required' });
       const picked = pickItemUpdate(req.body);
       const cols = ['space_id', 'type', 'created_by'];
       const placeholders = ['?', '?', '?'];
-      const args = [id, type, req.session.userId];
+      const args = [id, type, userId];
       for (const [k, v] of Object.entries(picked)) {
         cols.push(k); placeholders.push('?'); args.push(v);
       }

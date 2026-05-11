@@ -870,11 +870,27 @@
 
   async function doAdd(input) {
     if (!canEdit()) return;
+    const spaceId = Number(state.activeSpaceId);
+    if (!Number.isFinite(spaceId)) {
+      const msg = 'No active space — try reopening the space first.';
+      toast(msg);
+      throw new Error(msg);
+    }
     const pos = nextPosition();
     const size = sizeFor(input.type);
+    // Strip non-finite numerics from the payload so pg never sees a JS NaN
+    // (which it stringifies as "NaN" and then can't cast to integer).
+    const cleaned = { ...input };
+    for (const k of ['size', 'duration', 'position_x', 'position_y', 'width', 'height', 'z_index']) {
+      if (k in cleaned) {
+        const n = Number(cleaned[k]);
+        if (!Number.isFinite(n)) delete cleaned[k];
+        else cleaned[k] = n;
+      }
+    }
     try {
-      const created = await db.createSpaceItem(state.activeSpaceId, {
-        position_x: pos.x, position_y: pos.y, width: size.width, height: size.height, ...input,
+      const created = await db.createSpaceItem(spaceId, {
+        position_x: pos.x, position_y: pos.y, width: size.width, height: size.height, ...cleaned,
       });
       state.items.push(created);
       renderItems();
