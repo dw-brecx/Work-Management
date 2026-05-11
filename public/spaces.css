@@ -590,6 +590,44 @@
 }
 .sp-item.sp-item-sticky .sp-resize-handle { display: none; }
 
+/* "Added by Sam" badge — small subtle pill at the bottom-left of every
+   card. Fades in on hover so it doesn't compete with content otherwise. */
+.sp-item-author {
+  position: absolute;
+  left: 6px;
+  bottom: 5px;
+  z-index: 3;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, .82);
+  color: var(--text2);
+  border: 1px solid rgba(0, 0, 0, .06);
+  pointer-events: none;
+  max-width: calc(100% - 30px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .65;
+  transition: opacity .15s ease;
+  backdrop-filter: blur(2px);
+}
+.sp-item:hover .sp-item-author { opacity: 1; }
+.sp-item-sticky .sp-item-author {
+  background: rgba(0, 0, 0, .10);
+  color: rgba(0, 0, 0, .68);
+  border-color: rgba(0, 0, 0, .08);
+}
+.sp-item .sp-media-img + .sp-item-author,
+.sp-item .sp-media-video + .sp-item-author {
+  /* Over a dark media background — switch to inverted styling. */
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  border-color: rgba(255, 255, 255, .15);
+}
+
 /* ── Add menu / dropdowns ──────────────────────────────────────────────── */
 .sp-add-menu {
   position: absolute;

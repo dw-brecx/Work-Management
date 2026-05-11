@@ -106,10 +106,20 @@ module.exports = function attach(app, deps) {
       height: r.height,
       z_index: r.z_index,
       created_by: r.created_by,
+      // Joined from users.name in the items query so the UI can render an
+      // "added by Sam" tag even for cards created before this column existed.
+      created_by_name: r.created_by_name || null,
       created_at: r.created_at,
       updated_at: r.updated_at,
     };
   }
+
+  // SQL fragment that pulls the creator's name alongside each item. Used in
+  // every endpoint that returns items so the UI can show authorship tags.
+  const ITEMS_SELECT_WITH_AUTHOR =
+    "SELECT i.*, u.name AS created_by_name FROM space_items i " +
+    "LEFT JOIN users u ON u.id = i.created_by " +
+    "WHERE i.space_id=? ORDER BY i.created_at ASC";
 
   function shapeSpace(s, extras) {
     let strokes = [];
@@ -160,10 +170,7 @@ module.exports = function attach(app, deps) {
         req.params.token
       );
       if (!space || !space.is_public) return res.status(404).json({ error: 'Space not found' });
-      const items = await all(
-        'SELECT * FROM space_items WHERE space_id=? ORDER BY created_at ASC',
-        space.id
-      );
+      const items = await all(ITEMS_SELECT_WITH_AUTHOR, space.id);
       res.json({
         ...shapeSpace(space),
         items: items.map(shapeItem),
@@ -188,7 +195,10 @@ module.exports = function attach(app, deps) {
       if (sql) {
         await run(`UPDATE space_items SET ${sql} WHERE id=?`, ...args, req.params.itemId);
       }
-      const updated = await get('SELECT * FROM space_items WHERE id=?', req.params.itemId);
+      const updated = await get(
+        'SELECT i.*, u.name AS created_by_name FROM space_items i LEFT JOIN users u ON u.id = i.created_by WHERE i.id=?',
+        req.params.itemId
+      );
       res.json(shapeItem(updated));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -243,7 +253,7 @@ module.exports = function attach(app, deps) {
       const id = Number(req.params.id);
       const result = await loadSpaceForUser(id, req.session.userId, false);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
-      const items = await all('SELECT * FROM space_items WHERE space_id=? ORDER BY created_at ASC', id);
+      const items = await all(ITEMS_SELECT_WITH_AUTHOR, id);
       const members = await all('SELECT user_id, user_name, role, added_at FROM space_members WHERE space_id=?', id);
       res.json({
         ...shapeSpace(result.space),
@@ -317,7 +327,10 @@ module.exports = function attach(app, deps) {
         "UPDATE spaces SET updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
         id
       );
-      const item = await get('SELECT * FROM space_items WHERE id=?', ins.lastInsertRowid);
+      const item = await get(
+        'SELECT i.*, u.name AS created_by_name FROM space_items i LEFT JOIN users u ON u.id = i.created_by WHERE i.id=?',
+        ins.lastInsertRowid
+      );
       res.status(201).json(shapeItem(item));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -333,7 +346,10 @@ module.exports = function attach(app, deps) {
       if (sql) {
         await run(`UPDATE space_items SET ${sql} WHERE id=? AND space_id=?`, ...args, req.params.itemId, id);
       }
-      const item = await get('SELECT * FROM space_items WHERE id=?', req.params.itemId);
+      const item = await get(
+        'SELECT i.*, u.name AS created_by_name FROM space_items i LEFT JOIN users u ON u.id = i.created_by WHERE i.id=?',
+        req.params.itemId
+      );
       if (!item || item.space_id !== id) return res.status(404).json({ error: 'Item not found' });
       res.json(shapeItem(item));
     } catch (e) { res.status(500).json({ error: e.message }); }

@@ -418,6 +418,42 @@
     renderCanvasShell();
   }
 
+  // Silent re-fetch of the active space. Used by the manual Refresh button
+  // and the visibilitychange handler (long-lived tabs sometimes drift out
+  // of sync with the server — picking the tab back up should get fresh
+  // data without losing the user's pen-mode / scroll position).
+  async function refreshActiveSpace() {
+    if (!state.activeSpaceId || state.publicToken) return;
+    try {
+      const data = await db.getSpace(state.activeSpaceId);
+      state.space = data;
+      state.items = data.items || [];
+      state.members = data.members || [];
+      state.role = data.role || 'viewer';
+      state.strokes = Array.isArray(data.whiteboard_strokes) ? data.whiteboard_strokes : [];
+      renderItems();
+    } catch (e) {
+      // If the session is gone, nudge the user to reload rather than silently
+      // accumulating poll failures.
+      if (/401|not signed in/i.test(e.message || '')) {
+        toast('Signed out — please refresh the page.');
+      }
+    }
+  }
+
+  // Whenever the tab regains focus, refresh once. Browsers throttle timers
+  // for hidden tabs, and the page often feels "stuck" coming back from a
+  // long background — a single fresh fetch resyncs everything.
+  let _lastFocusFetch = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!state.activeSpaceId || state.publicToken) return;
+    const now = Date.now();
+    if (now - _lastFocusFetch < 5000) return; // throttle to once per 5 s
+    _lastFocusFetch = now;
+    refreshActiveSpace();
+  });
+
   function canEdit() {
     if (state.publicToken) return state.publicCanEdit;
     if (!state.space) return false;
@@ -472,6 +508,7 @@
             ${!canEdit() ? `<span class="sp-view-only">View-only</span>` : ''}
             <button class="btn-sec" id="sp-chat-btn" style="font-size:12px;padding:6px 12px">💬 Chat</button>
             ${canEdit() ? `<button class="btn-sec${state.penMode ? ' is-active' : ''}" id="sp-pen-btn" style="font-size:12px;padding:6px 12px">✏️ Pen</button>` : ''}
+            <button class="btn-sec" id="sp-refresh-btn" title="Reload this space" style="font-size:12px;padding:6px 10px">↻</button>
             <button class="btn-sec" id="sp-copy-link-btn" title="Copy a link to this space" style="font-size:12px;padding:6px 12px">🔗 Copy link</button>
             ${isOwner() ? `<button class="btn-sec" id="sp-edit-btn" style="font-size:12px;padding:6px 12px">Edit</button>` : ''}
             ${isOwner() ? `<button class="btn-sec" id="sp-share-btn" style="font-size:12px;padding:6px 12px">Share</button>` : ''}
@@ -508,6 +545,14 @@
       };
       const penBtn = host.querySelector('#sp-pen-btn');
       if (penBtn) penBtn.onclick = () => togglePenMode();
+      const refreshBtn = host.querySelector('#sp-refresh-btn');
+      if (refreshBtn) refreshBtn.onclick = async () => {
+        refreshBtn.disabled = true;
+        const original = refreshBtn.textContent;
+        refreshBtn.textContent = '…';
+        try { await refreshActiveSpace(); toast('Refreshed'); }
+        finally { refreshBtn.disabled = false; refreshBtn.textContent = original; }
+      };
     }
     renderItems();
     wirePenToolbar();
@@ -779,6 +824,7 @@
           </div>` : ''}
         </div>
         <div class="sp-item-body">${renderItemBody(item)}</div>
+        ${item.created_by_name ? `<div class="sp-item-author" title="Added by ${attr(item.created_by_name)}">by ${esc(item.created_by_name)}</div>` : ''}
         ${canEdit() ? `<div class="sp-resize-handle" data-resize-handle="1" title="Resize"></div>` : ''}
       </div>
     `;
