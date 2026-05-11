@@ -1192,6 +1192,16 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
           ticketId: req.params.id, title: updated.title || '',
           fromStatus: oldStatus, toStatus: status,
         }));
+        // Push the same status change to the user's installed PWA / browser.
+        const targetUser = await get('SELECT id FROM users WHERE name=?', name);
+        if (targetUser) {
+          sendPushToUser(targetUser.id, {
+            title: `${updated.title || req.params.id}`,
+            body: `${changer?.name || 'Someone'} changed status: ${oldStatus} → ${status}`,
+            tag: 'ticket-' + req.params.id,
+            url: '/tickets/' + req.params.id,
+          }).catch(()=>{});
+        }
       }
       // If newly closed, also fire the ticket-closed email (idempotent flag).
       if (String(status).toLowerCase() === 'closed' && !exists.closed_email_sent) {
@@ -4434,6 +4444,19 @@ async function runMeetingReminderJob() {
           attendeesCount: targetNames.size,
           eventId: ev.id,
         }));
+        // Push to the attendee's installed PWA so it pops up an OS-level
+        // alert ~1 hour before the meeting starts.
+        const targetUser = await get('SELECT id FROM users WHERE name=?', name);
+        if (targetUser) {
+          sendPushToUser(targetUser.id, {
+            title: 'Meeting in ~1 hour',
+            body: `${ev.title || ev.label || 'Meeting'}` +
+                  (ev.start_time ? ` at ${ev.start_time}` : '') +
+                  (ev.location ? ` · ${ev.location}` : ''),
+            tag: 'meeting-' + ev.id,
+            url: '/calendar',
+          }).catch(()=>{});
+        }
       }
       await run('UPDATE cal_events SET reminder_sent=1 WHERE id=?', ev.id);
     }
@@ -4524,6 +4547,13 @@ async function runTicketReminderJob() {
         slackDmUser(r.user_id, {
           text: `🔔 Reminder you set: check on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${r.ticket_id}|${r.ticket_id}>${r.ticket_title ? ' — ' + r.ticket_title : ''}${r.note ? `\n> ${r.note}` : ''}`,
         }).catch(() => {});
+        // Push to the user's installed PWA / desktop browser.
+        sendPushToUser(r.user_id, {
+          title: 'Reminder: ' + (r.ticket_title || r.ticket_id),
+          body: r.note ? r.note.slice(0, 140) : 'Reminder you set on this ticket',
+          tag: 'ticket-reminder-' + r.id,
+          url: '/tickets/' + r.ticket_id,
+        }).catch(() => {});
         await run(
           `UPDATE ticket_reminders SET sent = 1, sent_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id = ?`,
           r.id
@@ -4585,6 +4615,13 @@ async function runPersonalReminderJob() {
           : ` (<${(process.env.APP_URL || `http://localhost:${PORT}`)}/my-reminders|My Reminders>)`;
         slackDmUser(r.user_id, {
           text: `${r.repeat_daily ? '🔁 Daily reminder' : '🔔 Reminder'}: *${r.title || 'Personal reminder'}*${_ticketLink}${r.description ? `\n> ${r.description.slice(0, 280)}` : ''}`,
+        }).catch(() => {});
+        // Push to the user's installed PWA / desktop browser.
+        sendPushToUser(r.user_id, {
+          title: (r.repeat_daily ? '🔁 ' : '🔔 ') + (r.title || 'Reminder'),
+          body: (r.description || '').slice(0, 140) || (r.ticket_title ? 'Linked to ' + r.ticket_id : ''),
+          tag: 'personal-reminder-' + r.id,
+          url: r.ticket_id ? '/tickets/' + r.ticket_id : '/my-reminders',
         }).catch(() => {});
         await run(
           `UPDATE personal_reminders
