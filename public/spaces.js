@@ -6,21 +6,69 @@
 //   Spaces.openSpace(id)        — show the canvas for one space
 //   Spaces.mountPublic(token)   — bootstrap the unauthenticated viewer
 //
-// All state lives inside the module (closure-private). The list view and
-// canvas view share a single #page-spaces container — we re-render its
-// inner HTML each time. Cheap and matches the way the rest of the app
-// works (renderTickets / renderKanban / etc.).
+// Per-space URLs: openSpace pushes /spaces/<id>; openListView pushes /spaces.
+// The router IIFE in index.html resolves /spaces/<id> back to openSpace(id).
 //
-// Why one file: this is one feature. Keep the seams aligned with the
-// feature boundary, not arbitrary file splits. ~1,500 lines is the cost
-// of porting all the canvas + drag-resize + recording + share + public
-// viewer logic from a React codebase to vanilla DOM.
+// Companion modules:
+//   /space-chat.js — per-space chat drawer (window.SpaceChat). Opened from
+//   the "💬 Chat" button in the canvas toolbar.
 // ─────────────────────────────────────────────────────────────────────────────
 (function () {
   'use strict';
 
-  const STICKY_COLORS = ['#FFE082', '#FFAB91', '#A5D6A7', '#90CAF9', '#CE93D8', '#FFCC80'];
-  const COVER_COLORS  = ['#bf7325', '#1a559a', '#1e6e4a', '#8f4500', '#6b1e1e', '#4e4200', '#5a5a5a', '#7a3030'];
+  // Sticky-note paper colours.
+  const STICKY_COLORS = [
+    '#FFE082', '#FFAB91', '#A5D6A7', '#90CAF9', '#CE93D8', '#FFCC80',
+    '#F8BBD0', '#B2EBF2', '#DCE775',
+  ];
+  // Vivid cover gradients for list-view cards. JS picks one per space (by id).
+  const COVER_COLORS = [
+    '#bf7325', '#1a559a', '#1e6e4a', '#8f4500', '#6b1e1e', '#4e4200',
+    '#5a5a5a', '#7a3030', '#7c3aed', '#0891b2', '#db2777',
+  ];
+
+  // Cover gradient pair lookups — keys are the eight legacy COVER_COLORS so
+  // older spaces keep visual continuity.
+  const COVER_GRADIENT = {
+    '#bf7325': ['#f59e0b', '#dc2626'],
+    '#1a559a': ['#0ea5e9', '#6366f1'],
+    '#1e6e4a': ['#10b981', '#0891b2'],
+    '#8f4500': ['#fb923c', '#b45309'],
+    '#6b1e1e': ['#f43f5e', '#7c2d12'],
+    '#4e4200': ['#eab308', '#65a30d'],
+    '#5a5a5a': ['#64748b', '#1e293b'],
+    '#7a3030': ['#ef4444', '#831843'],
+    '#7c3aed': ['#a855f7', '#ec4899'],
+    '#0891b2': ['#22d3ee', '#1d4ed8'],
+    '#db2777': ['#f472b6', '#a21caf'],
+  };
+
+  // Per-type colour + emoji + nice label. Drives:
+  //   - the left-edge accent ribbon on each card
+  //   - the rounded type-label chip in the card head
+  //   - the icon shown in the "+ Add" menu
+  const ITEM_PALETTE = {
+    sticky:   { emoji: '🟡', label: 'Sticky',   accent: '#f59e0b', accentSoft: '#fef3c7', accentDark: '#92400e' },
+    note:     { emoji: '📝', label: 'Note',     accent: '#fb923c', accentSoft: '#ffedd5', accentDark: '#9a3412' },
+    document: { emoji: '📄', label: 'Document', accent: '#10b981', accentSoft: '#d1fae5', accentDark: '#065f46' },
+    image:    { emoji: '🖼️', label: 'Image',    accent: '#0ea5e9', accentSoft: '#e0f2fe', accentDark: '#075985' },
+    video:    { emoji: '🎬', label: 'Video',    accent: '#8b5cf6', accentSoft: '#ede9fe', accentDark: '#5b21b6' },
+    voice:    { emoji: '🎙️', label: 'Voice',    accent: '#ef4444', accentSoft: '#fee2e2', accentDark: '#991b1b' },
+    file:     { emoji: '📎', label: 'File',     accent: '#eab308', accentSoft: '#fef9c3', accentDark: '#854d0e' },
+    link:     { emoji: '🔗', label: 'Link',     accent: '#14b8a6', accentSoft: '#ccfbf1', accentDark: '#0f766e' },
+    ticket:   { emoji: '🎟️', label: 'Ticket',   accent: '#ec4899', accentSoft: '#fce7f3', accentDark: '#9d174d' },
+  };
+
+  function paletteFor(type) {
+    return ITEM_PALETTE[type] || ITEM_PALETTE.note;
+  }
+
+  // Deterministic tilt for sticky notes — same id always gets the same tilt
+  // so they don't jump on refresh. ±2.5 degrees feels playful but not chaotic.
+  function tiltForId(id) {
+    const n = Number(id) || 0;
+    return (((n * 37) % 11) - 5) * 0.5;  // -2.5° … +2.5° in 0.5° steps
+  }
 
   // Size defaults per item type — keeps newly-added cards reasonable.
   function sizeFor(type) {
@@ -39,15 +87,16 @@
 
   // ── State (module-local) ───────────────────────────────────────────────
   const state = {
-    spaces: [],          // list view rows
-    space:  null,        // active space (canvas view)
-    items:  [],          // active space items
-    members: [],         // active space members
+    spaces: [],
+    space:  null,
+    items:  [],
+    members: [],
     role:   'viewer',
     activeSpaceId: null,
-    publicToken: null,   // set when mounted via mountPublic()
+    publicToken: null,
     publicCanEdit: false,
-    profiles: [],        // cached user directory for invites
+    profiles: [],
+    ticketsCache: null,    // [{id,title,status,priority,assignee}] — loaded on first ticket-picker open
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -58,7 +107,6 @@
 
   function toast(msg) {
     if (typeof settingsToast === 'function') { settingsToast(msg); return; }
-    // Lightweight fallback when settingsToast isn't loaded (public viewer).
     let host = document.getElementById('sp-toast-host');
     if (!host) {
       host = document.createElement('div');
@@ -100,10 +148,16 @@
     });
   }
 
+  // Push the per-space URL so each space gets a shareable address.
+  function pushSpaceUrl(id) {
+    try {
+      const path = id ? ('/spaces/' + id) : '/spaces';
+      if (location.pathname === path) return;
+      history.pushState({ page: 'spaces', spaceId: id || null }, '', path);
+    } catch {}
+  }
+
   // ── API client ─────────────────────────────────────────────────────────
-  // In normal "authenticated" mode every call routes through /api/spaces/...
-  // In public mode (mounted via /p/:token) item-edit requests go through
-  // /api/spaces/public/:token/items/:itemId — set via state.publicToken.
   async function api(method, path, body) {
     const opts = { method, credentials: 'same-origin' };
     if (body !== undefined) {
@@ -121,7 +175,6 @@
     return r.text();
   }
 
-  // ── CRUD wrappers — match the lib/db.ts surface of the original ──────
   const db = {
     getSpaces:        ()       => api('GET',  '/api/spaces'),
     createSpace:      (input)  => api('POST', '/api/spaces', input),
@@ -136,18 +189,15 @@
     updateShareLink:  (id, p)  => api('PATCH','/api/spaces/' + id + '/share-link', p),
     getPublicSpace:   (tok)    => api('GET',  '/api/spaces/public/' + tok),
     updatePublicItem: (tok, it, p) => api('PATCH','/api/spaces/public/' + tok + '/items/' + it, p),
+    getTicketPicker:  ()       => api('GET',  '/api/spaces-ticket-picker'),
   };
 
-  // Patch an item — uses the authenticated route normally, falls back to
-  // the public route when the page is mounted via /p/:token.
   function patchItem(itemId, updates) {
     if (state.publicToken) return db.updatePublicItem(state.publicToken, itemId, updates);
     return db.updateSpaceItem(state.activeSpaceId, itemId, updates);
   }
 
-  // ── Modal helper (vanilla, no React's Modal) ─────────────────────────
-  // Reuses the existing .modal-overlay pattern from the main app so styles
-  // and ESC-to-close keep working without extra wiring.
+  // ── Modal helper ──────────────────────────────────────────────────────
   function openModal({ title, body, footer, maxWidth }) {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open';
@@ -185,6 +235,7 @@
     state.space = null;
     state.items = [];
     state.members = [];
+    pushSpaceUrl(null);
     const host = document.getElementById('page-spaces');
     if (!host) return;
     host.innerHTML = `
@@ -192,7 +243,7 @@
         <div class="sp-header">
           <div>
             <h1>Spaces</h1>
-            <p class="sp-sub">Workspaces for projects — gather tickets, notes, files, recordings on a freeform canvas.</p>
+            <p class="sp-sub">Drop tickets, notes, files, recordings — anything — onto a freeform canvas.</p>
           </div>
           <button class="btn-primary" id="sp-new-btn" style="font-size:13px;padding:8px 14px;font-weight:600">+ New space</button>
         </div>
@@ -211,7 +262,8 @@
     if (!state.spaces.length) {
       list.innerHTML = `
         <div class="sp-empty">
-          <div class="sp-empty-msg">You don't have any spaces yet.</div>
+          <div class="sp-empty-emoji">✨</div>
+          <div class="sp-empty-msg">No spaces yet. Make your first one!</div>
           <button class="btn-primary" id="sp-empty-create" style="font-size:13px;padding:8px 14px;font-weight:600">Create your first space</button>
         </div>
       `;
@@ -219,7 +271,6 @@
       return;
     }
     list.innerHTML = `<div class="sp-grid">${state.spaces.map(renderSpaceCard).join('')}</div>`;
-    // Wire each card's click + delete button
     list.querySelectorAll('.sp-card').forEach(card => {
       const id = Number(card.dataset.spaceId);
       card.onclick = (ev) => {
@@ -238,14 +289,24 @@
     });
   }
 
+  function coverGradient(cover) {
+    const pair = COVER_GRADIENT[cover] || ['#7c3aed', '#ec4899'];
+    return `linear-gradient(135deg, ${pair[0]} 0%, ${pair[1]} 100%)`;
+  }
+  // Fun emoji for each space — picked from a small bag indexed by id so it's
+  // stable across refresh. Keeps the list view visually distinct.
+  const SPACE_EMOJIS = ['🚀', '✨', '🌟', '🎨', '🎯', '🌈', '🔥', '💎', '🌸', '🍀', '🌊', '⚡'];
+  function emojiForSpace(s) { return SPACE_EMOJIS[(Number(s.id) || 0) % SPACE_EMOJIS.length]; }
+
   function renderSpaceCard(s) {
     const me = window.CURRENT_USER || {};
     const isOwner = s.owner_id === me.id;
     return `
       <div class="sp-card" data-space-id="${s.id}">
-        <div class="sp-card-cover" style="background:${attr(s.cover_color || '#bf7325')}">
+        <div class="sp-card-cover" style="background:${coverGradient(s.cover_color || '#bf7325')}">
           <span class="sp-card-role">${esc(isOwner ? 'Owner' : (s.role || 'Shared'))}</span>
           ${s.is_public ? `<span class="sp-card-pill" title="Public link enabled">LINK</span>` : ''}
+          <span class="sp-card-cover-emoji" aria-hidden="true">${emojiForSpace(s)}</span>
         </div>
         <div class="sp-card-body">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
@@ -268,7 +329,7 @@
   }
 
   function openCreateModal() {
-    let name = ''; let description = ''; let color = COVER_COLORS[0]; let busy = false;
+    let name = ''; let description = ''; let color = COVER_COLORS[Math.floor(Math.random() * COVER_COLORS.length)]; let busy = false;
     const m = openModal({
       title: 'New space', maxWidth: 480,
       body: `
@@ -283,10 +344,10 @@
           </label>
           <div>
             <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">Cover colour</div>
-            <div id="sp-c-colors" style="display:flex;gap:6px;flex-wrap:wrap">
-              ${COVER_COLORS.map((c, i) => `
+            <div id="sp-c-colors" style="display:flex;gap:8px;flex-wrap:wrap">
+              ${COVER_COLORS.map(c => `
                 <button type="button" data-color="${attr(c)}"
-                  style="width:28px;height:28px;border-radius:50%;background:${attr(c)};border:${i === 0 ? '3px solid var(--text)' : '2px solid var(--border)'};cursor:pointer;padding:0"></button>
+                  style="width:30px;height:30px;border-radius:50%;background:${coverGradient(c)};border:${c === color ? '3px solid var(--text)' : '2px solid var(--border)'};cursor:pointer;padding:0"></button>
               `).join('')}
             </div>
           </div>
@@ -330,6 +391,7 @@
   // ── Canvas view ─────────────────────────────────────────────────────────
   async function openSpace(id) {
     state.activeSpaceId = id;
+    pushSpaceUrl(id);
     const host = document.getElementById('page-spaces');
     if (!host) return;
     host.innerHTML = '<div style="color:var(--text3);padding:24px">Loading…</div>';
@@ -371,9 +433,9 @@
         <div class="sp-public-shell">
           <div class="sp-public-header">
             <img src="/syruvia-logo.svg" alt="Syruvia" onerror="this.style.display='none'"/>
-            <div class="sp-color-strip" style="background:${attr(space.cover_color || '#bf7325')};width:8px;height:22px;border-radius:3px"></div>
+            <div class="sp-color-strip" style="background:${coverGradient(space.cover_color || '#bf7325')};width:10px;height:24px;border-radius:4px"></div>
             <div class="sp-title-block">
-              <div class="sp-title" style="font-size:14.5px;font-weight:600">${esc(space.name)}</div>
+              <div class="sp-title" style="font-size:15px;font-weight:700">${esc(space.name)}</div>
               <div style="font-size:11.5px;color:var(--text2)">Shared by ${esc(space.owner_name || 'a Syruvia user')} • ${canEdit() ? 'Editable link' : 'View-only'}</div>
             </div>
           </div>
@@ -388,12 +450,14 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
               Spaces
             </button>
-            <div class="sp-color-strip" style="background:${attr(space.cover_color || '#bf7325')}"></div>
+            <div class="sp-color-strip" style="background:${coverGradient(space.cover_color || '#bf7325')}"></div>
             <div class="sp-title-block">
               <div class="sp-title">${esc(space.name)}</div>
               ${space.description ? `<div class="sp-subtitle">${esc(space.description)}</div>` : ''}
             </div>
             ${!canEdit() ? `<span class="sp-view-only">View-only</span>` : ''}
+            <button class="btn-sec" id="sp-chat-btn" style="font-size:12px;padding:6px 12px">💬 Chat</button>
+            <button class="btn-sec" id="sp-copy-link-btn" title="Copy a link to this space" style="font-size:12px;padding:6px 12px">🔗 Copy link</button>
             ${isOwner() ? `<button class="btn-sec" id="sp-edit-btn" style="font-size:12px;padding:6px 12px">Edit</button>` : ''}
             ${isOwner() ? `<button class="btn-sec" id="sp-share-btn" style="font-size:12px;padding:6px 12px">Share${space.is_public ? ' • Link on' : ''}</button>` : ''}
             ${canEdit() ? `<div style="position:relative">
@@ -411,6 +475,17 @@
       if (share) share.onclick = openShareModal;
       const add = host.querySelector('#sp-add-btn');
       if (add) add.onclick = (ev) => { ev.stopPropagation(); toggleAddMenu(add); };
+      const chatBtn = host.querySelector('#sp-chat-btn');
+      if (chatBtn) chatBtn.onclick = () => {
+        if (window.SpaceChat) window.SpaceChat.open(state.activeSpaceId, { canEdit: canEdit() });
+        else toast('Chat module not loaded yet — try refreshing.');
+      };
+      const copyBtn = host.querySelector('#sp-copy-link-btn');
+      if (copyBtn) copyBtn.onclick = () => {
+        const url = location.origin + '/spaces/' + state.activeSpaceId;
+        try { navigator.clipboard.writeText(url); toast('Space link copied'); }
+        catch { toast(url); }
+      };
     }
     renderItems();
   }
@@ -422,24 +497,18 @@
     if (state.items.length === 0 && !state.publicToken) {
       html += `
         <div class="sp-empty-canvas">
-          <div class="ec-title">This space is empty.</div>
-          <div class="ec-body">${canEdit() ? 'Click "+ Add" to drop in tickets, notes, files, recordings, and more.' : 'No items have been added yet.'}</div>
+          <div class="ec-emoji">🪄</div>
+          <div class="ec-title">A blank canvas — let's fill it.</div>
+          <div class="ec-body">${canEdit() ? 'Click <strong>+ Add</strong> to drop in tickets, sticky notes, files, voice notes, screen recordings, and more.' : 'No items have been added yet.'}</div>
         </div>
       `;
     }
     for (const item of state.items) html += renderItemCard(item);
     canvas.innerHTML = html;
-    // Wire each item's events
     for (const item of state.items) wireItem(item);
   }
 
   // ── Item card rendering ────────────────────────────────────────────────
-  function labelFor(t) {
-    return ({
-      sticky: 'Sticky', note: 'Note', document: 'Document', image: 'Image',
-      video: 'Video', voice: 'Voice', file: 'File', link: 'Link', ticket: 'Ticket',
-    })[t] || 'Item';
-  }
   function typeIcon(t) {
     const s = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
     const path = ({
@@ -453,20 +522,37 @@
       link:     `<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" ${s}/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" ${s}/>`,
       ticket:   `<path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4z" ${s}/><line x1="13" y1="5" x2="13" y2="19" ${s}/>`,
     })[t] || '';
-    return `<svg width="12" height="12" viewBox="0 0 24 24">${path}</svg>`;
+    return `<svg width="11" height="11" viewBox="0 0 24 24">${path}</svg>`;
   }
 
   function renderItemCard(item) {
     const isSticky = item.type === 'sticky';
-    const bg = isSticky ? (item.color || STICKY_COLORS[0]) : '#fff';
-    const fg = isSticky ? '#222' : 'var(--text)';
+    const p = paletteFor(item.type);
     const cls = ['sp-item'];
     if (isSticky) cls.push('sp-item-sticky');
+    // Sticky background = user-chosen colour (or default). Other types keep
+    // white unless the user explicitly set a colour in the menu.
+    let bg, fg;
+    if (isSticky) {
+      bg = item.color || STICKY_COLORS[0];
+      fg = '#222';
+    } else if (item.color) {
+      bg = item.color; fg = 'var(--text)';
+    } else {
+      bg = '#fff'; fg = 'var(--text)';
+    }
+    const tilt = isSticky ? tiltForId(item.id) : 0;
+    const styleVars = [
+      `--sp-accent:${p.accent}`,
+      `--sp-accent-soft:${p.accentSoft}`,
+      `--sp-accent-dark:${p.accentDark}`,
+      isSticky ? `--sp-tilt:${tilt}deg` : '',
+    ].filter(Boolean).join(';');
     return `
       <div class="${cls.join(' ')}" data-item-id="${item.id}"
-           style="left:${item.position_x}px;top:${item.position_y}px;width:${item.width}px;height:${item.height}px;background:${attr(bg)};color:${fg};z-index:${item.z_index || 0}">
+           style="left:${item.position_x}px;top:${item.position_y}px;width:${item.width}px;height:${item.height}px;background:${attr(bg)};color:${fg};z-index:${item.z_index || 0};${styleVars}">
         <div class="sp-item-head" data-drag-handle="1">
-          <div class="sp-item-label">${typeIcon(item.type)} ${esc(labelFor(item.type))}</div>
+          <div class="sp-item-label">${typeIcon(item.type)} ${esc(p.label)}</div>
           ${canEdit() ? `<div style="position:relative">
             <button class="sp-item-more" data-more-btn="1" title="More">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
@@ -482,7 +568,7 @@
   function renderItemBody(item) {
     switch (item.type) {
       case 'sticky':
-        return `<textarea class="sp-textarea" data-field="text" ${canEdit() ? '' : 'readonly'} placeholder="Write a note…">${esc(item.text || '')}</textarea>`;
+        return `<textarea class="sp-textarea" data-field="text" ${canEdit() ? '' : 'readonly'} placeholder="Write something…">${esc(item.text || '')}</textarea>`;
       case 'note':
         return `
           <div class="sp-note-body">
@@ -563,16 +649,14 @@
     return '';
   }
 
-  // ── Wire per-item events (drag, resize, inline edit) ───────────────────
+  // ── Wire per-item events ───────────────────────────────────────────────
   function wireItem(item) {
     const el = document.querySelector(`.sp-item[data-item-id="${item.id}"]`);
     if (!el) return;
 
-    // Drag (from head)
     const head = el.querySelector('.sp-item-head');
     if (head && canEdit()) {
       head.addEventListener('mousedown', (ev) => {
-        // Ignore drags that originated on the "more" button.
         if (ev.target.closest('[data-more-btn]')) return;
         ev.preventDefault();
         const rect = el.getBoundingClientRect();
@@ -602,7 +686,6 @@
       });
     }
 
-    // Resize (bottom-right corner)
     const handle = el.querySelector('[data-resize-handle]');
     if (handle && canEdit()) {
       handle.addEventListener('mousedown', (ev) => {
@@ -630,7 +713,6 @@
       });
     }
 
-    // More-menu
     const moreBtn = el.querySelector('[data-more-btn]');
     if (moreBtn && canEdit()) {
       moreBtn.addEventListener('click', (ev) => {
@@ -639,7 +721,6 @@
       });
     }
 
-    // Inline field commits (debounced).
     el.querySelectorAll('[data-field]').forEach(inp => {
       const field = inp.dataset.field;
       let last = inp.value;
@@ -656,7 +737,6 @@
       });
     });
 
-    // Ticket status select
     const tStatus = el.querySelector('[data-ticket-status]');
     if (tStatus) {
       tStatus.addEventListener('change', () => {
@@ -666,7 +746,6 @@
         meta.status = tStatus.value;
         item.ticket_meta = meta;
         patchItem(item.id, { ticket_meta: meta }).then(() => {
-          // Repaint the status pill
           const el2 = document.querySelector(`.sp-item[data-item-id="${item.id}"] .sp-item-body`);
           if (el2) el2.innerHTML = renderItemBody(item);
           wireItem(item);
@@ -674,8 +753,6 @@
       });
     }
 
-    // External-ticket "Open ticket" button — deep links into the local
-    // ticket detail when the ref matches a TKT-#### pattern.
     const openTkt = el.querySelector('[data-open-ticket]');
     if (openTkt) {
       openTkt.addEventListener('click', () => {
@@ -689,14 +766,18 @@
 
   function showItemMenu(item, anchorBtn) {
     closeAllMenus();
+    const p = paletteFor(item.type);
+    // Colour picker shows: type accent + sticky palette + white reset.
+    const colours = item.type === 'sticky'
+      ? STICKY_COLORS
+      : [p.accentSoft, '#fef9c3', '#fee2e2', '#e0f2fe', '#d1fae5', '#ede9fe', '#fce7f3', '#ffffff'];
     const menu = document.createElement('div');
     menu.className = 'sp-item-menu';
     menu.innerHTML = `
-      ${item.type === 'sticky' ? `
-        <div class="sp-item-sticky-swatches">
-          ${STICKY_COLORS.map(c => `<button class="sp-item-swatch ${item.color === c ? 'active' : ''}" data-color="${attr(c)}" style="background:${attr(c)}" aria-label="${attr(c)}"></button>`).join('')}
-        </div>
-      ` : ''}
+      <div class="sp-item-menu-section">Colour</div>
+      <div class="sp-item-sticky-swatches">
+        ${colours.map(c => `<button class="sp-item-swatch ${item.color === c ? 'active' : ''}" data-color="${attr(c)}" style="background:${attr(c)}" aria-label="${attr(c)}"></button>`).join('')}
+      </div>
       <button class="sp-item-menu-btn danger" data-action="delete">Delete</button>
     `;
     anchorBtn.parentElement.appendChild(menu);
@@ -705,8 +786,8 @@
         const c = b.dataset.color;
         item.color = c;
         patchItem(item.id, { color: c }).then(() => {
-          const el = document.querySelector(`.sp-item[data-item-id="${item.id}"]`);
-          if (el) el.style.background = c;
+          const elc = document.querySelector(`.sp-item[data-item-id="${item.id}"]`);
+          if (elc) elc.style.background = c;
         }).catch(err => toast(err.message));
         menu.remove();
       };
@@ -720,7 +801,6 @@
         renderItems();
       } catch (e) { toast(e.message || 'Delete failed'); }
     };
-    // Click-outside to close
     setTimeout(() => {
       document.addEventListener('click', function onClickAway(ev) {
         if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', onClickAway); }
@@ -738,8 +818,8 @@
     const menu = document.createElement('div');
     menu.className = 'sp-add-menu';
     const items = [
-      { id: 'ticket',   label: 'Ticket',        desc: 'New or existing' },
-      { id: 'sticky',   label: 'Sticky note',   desc: 'Quick reminder' },
+      { id: 'ticket',   label: 'Ticket',        desc: 'New or pick existing' },
+      { id: 'sticky',   label: 'Sticky note',   desc: 'Hand-written reminder' },
       { id: 'note',     label: 'Text note',     desc: 'Plain note' },
       { id: 'document', label: 'Document',      desc: 'Long-form text' },
       { id: 'image',    label: 'Image',         desc: 'Upload picture' },
@@ -748,12 +828,15 @@
       { id: 'video',    label: 'Screen video',  desc: 'Record screen' },
       { id: 'link',     label: 'Link',          desc: 'URL with title' },
     ];
-    menu.innerHTML = items.map(it => `
-      <button class="sp-add-item" data-add-type="${it.id}">
-        <div class="ai-label">${esc(it.label)}</div>
-        <div class="ai-desc">${esc(it.desc)}</div>
-      </button>
-    `).join('');
+    menu.innerHTML = items.map(it => {
+      const p = paletteFor(it.id);
+      return `
+        <button class="sp-add-item" data-add-type="${it.id}" style="--sp-accent-soft:${p.accentSoft}">
+          <span class="ai-emoji">${p.emoji}</span>
+          <span class="ai-text"><span class="ai-label">${esc(it.label)}</span><span class="ai-desc">${esc(it.desc)}</span></span>
+        </button>
+      `;
+    }).join('');
     anchor.parentElement.appendChild(menu);
     menu.querySelectorAll('[data-add-type]').forEach(btn => {
       btn.onclick = (ev) => {
@@ -776,7 +859,7 @@
   }
 
   async function handleAdd(type) {
-    if (type === 'sticky') return doAdd({ type, text: '', color: STICKY_COLORS[0] });
+    if (type === 'sticky') return doAdd({ type, text: '', color: STICKY_COLORS[Math.floor(Math.random() * STICKY_COLORS.length)] });
     if (type === 'note') return doAdd({ type, title: 'Note', text: '' });
     if (type === 'document') return doAdd({ type, title: 'Untitled document', text: '' });
     if (type === 'link') return openLinkModal();
@@ -795,7 +878,8 @@
       });
       state.items.push(created);
       renderItems();
-    } catch (e) { toast(e.message || 'Failed to add item'); }
+      return created;
+    } catch (e) { toast(e.message || 'Failed to add item'); throw e; }
   }
 
   function openFilePicker(type) {
@@ -848,7 +932,7 @@
   function openTicketModal() {
     let tab = 'new';
     const m = openModal({
-      title: 'Add ticket', maxWidth: 520,
+      title: 'Add ticket', maxWidth: 560,
       body: `
         <div style="display:flex;gap:6px;margin-bottom:14px">
           <button class="btn-primary" data-tab="new" style="padding:6px 12px;font-size:12px">New ticket</button>
@@ -861,7 +945,8 @@
         <button id="sp-t-submit" class="btn-primary" style="padding:8px 14px;font-size:12.5px">Add ticket</button>
       `,
     });
-    function fieldHtml(name, body, type) {
+    let selectedTicket = null;
+    function fieldHtml(name, body) {
       return `<label style="display:block"><div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">${esc(name)}</div>${body}</label>`;
     }
     function renderTab() {
@@ -879,20 +964,81 @@
             ${fieldHtml('Assignee (optional)', `<input id="sp-t-assignee" placeholder="Name" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px"/>`)}
           </div>
         `;
+        const submitBtn = m.footEl.querySelector('#sp-t-submit');
+        if (submitBtn) submitBtn.textContent = 'Add ticket';
       } else {
         host.innerHTML = `
-          <div style="display:flex;flex-direction:column;gap:10px">
-            ${fieldHtml('Existing ticket ID or URL', `<input id="sp-t-extid" autofocus placeholder="TKT-1042 or https://…" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px"/>`)}
-            ${fieldHtml('Display title', `<input id="sp-t-exttitle" placeholder="Title shown on the card" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px"/>`)}
-            <div style="font-size:11.5px;color:var(--text2)">We'll store the reference; you can deep-link out from the card.</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <input id="sp-tp-search" class="sp-tp-search" type="search" autofocus placeholder="Search by title, ID, status, assignee…"/>
+            <div id="sp-tp-list" class="sp-tp-list"><div class="sp-tp-empty">Loading tickets…</div></div>
+            <div style="font-size:11px;color:var(--text3)">Pick one to add it as a ticket card.</div>
           </div>
         `;
+        const submitBtn = m.footEl.querySelector('#sp-t-submit');
+        if (submitBtn) submitBtn.textContent = 'Add selected';
+        loadAndRenderTickets();
       }
     }
-    m.bodyEl.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = b.dataset.tab; renderTab(); });
-    renderTab();
-    m.footEl.querySelector('#sp-t-cancel').onclick = m.close;
-    m.footEl.querySelector('#sp-t-submit').onclick = async () => {
+    async function loadAndRenderTickets() {
+      const listEl = m.bodyEl.querySelector('#sp-tp-list');
+      const searchEl = m.bodyEl.querySelector('#sp-tp-search');
+      if (!state.ticketsCache) {
+        try {
+          state.ticketsCache = await db.getTicketPicker();
+        } catch (e) {
+          listEl.innerHTML = `<div class="sp-tp-empty">Failed to load tickets: ${esc(e.message || 'unknown')}</div>`;
+          return;
+        }
+      }
+      function renderRows(filter) {
+        const q = (filter || '').toLowerCase().trim();
+        const rows = (state.ticketsCache || []).filter(t => {
+          if (!q) return true;
+          return (
+            String(t.id || '').toLowerCase().includes(q) ||
+            String(t.title || '').toLowerCase().includes(q) ||
+            String(t.status || '').toLowerCase().includes(q) ||
+            String(t.assignee || '').toLowerCase().includes(q)
+          );
+        }).slice(0, 200);
+        if (!rows.length) {
+          listEl.innerHTML = '<div class="sp-tp-empty">No tickets match.</div>';
+          return;
+        }
+        listEl.innerHTML = rows.map(t => `
+          <div class="sp-tp-row${selectedTicket && selectedTicket.id === t.id ? ' is-active' : ''}" data-tid="${attr(t.id)}">
+            <span class="sp-tp-id">${esc(t.id)}</span>
+            <span class="sp-tp-title">${esc(t.title || '(no title)')}</span>
+            <span class="sp-tp-meta">${esc(t.status || '')}${t.assignee ? ' • ' + esc(t.assignee) : ''}</span>
+          </div>
+        `).join('');
+        listEl.querySelectorAll('.sp-tp-row').forEach(row => {
+          row.onclick = () => {
+            const tid = row.dataset.tid;
+            selectedTicket = (state.ticketsCache || []).find(x => x.id === tid) || null;
+            listEl.querySelectorAll('.sp-tp-row').forEach(r => r.classList.toggle('is-active', r.dataset.tid === tid));
+          };
+          row.ondblclick = () => {
+            const tid = row.dataset.tid;
+            selectedTicket = (state.ticketsCache || []).find(x => x.id === tid) || null;
+            doSubmit();
+          };
+        });
+      }
+      renderRows('');
+      searchEl.oninput = () => renderRows(searchEl.value);
+      searchEl.onkeydown = (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); doSubmit(); }
+      };
+    }
+    function statusToInternal(s) {
+      const v = String(s || '').toLowerCase();
+      if (v.includes('progress')) return 'in_progress';
+      if (v.includes('block') || v.includes('hold')) return 'blocked';
+      if (v.includes('clos') || v.includes('done')) return 'done';
+      return 'todo';
+    }
+    async function doSubmit() {
       if (tab === 'new') {
         const title = m.bodyEl.querySelector('#sp-t-title').value.trim();
         if (!title) return;
@@ -901,16 +1047,44 @@
         m.close();
         doAdd({ type: 'ticket', title, ticket_meta: { status, assignee: assignee || null, source: 'inline' } });
       } else {
-        const extId = m.bodyEl.querySelector('#sp-t-extid').value.trim();
-        const extTitle = m.bodyEl.querySelector('#sp-t-exttitle').value.trim();
-        if (!extId && !extTitle) return;
+        if (!selectedTicket) { toast('Pick a ticket from the list first.'); return; }
+        const t = selectedTicket;
         m.close();
-        doAdd({ type: 'ticket', title: extTitle || extId, ticket_ref: extId || null, ticket_meta: { source: 'external' } });
+        doAdd({
+          type: 'ticket',
+          title: t.title || t.id,
+          ticket_ref: t.id,
+          ticket_meta: {
+            source: 'external',
+            status: statusToInternal(t.status),
+            assignee: t.assignee || null,
+            origStatus: t.status || null,
+          },
+        });
       }
-    };
+    }
+    m.bodyEl.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = b.dataset.tab; renderTab(); });
+    renderTab();
+    m.footEl.querySelector('#sp-t-cancel').onclick = m.close;
+    m.footEl.querySelector('#sp-t-submit').onclick = doSubmit;
   }
 
   // ── Recording modal (voice + screen) ───────────────────────────────────
+  // Picks a MIME type the browser actually supports (Safari and some Android
+  // builds reject `new MediaRecorder(stream)` with default opts), forces a
+  // 1-second timeslice so a fast click→stop still produces chunks, and shows
+  // an explicit saving state during the upload.
+  function pickRecorderMime(mode) {
+    if (typeof MediaRecorder === 'undefined') return null;
+    const candidates = mode === 'voice'
+      ? ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/ogg;codecs=opus']
+      : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+    for (const c of candidates) {
+      try { if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+    }
+    return null;
+  }
+
   function openRecorderModal(mode) {
     let recorder = null, stream = null;
     let chunks = [];
@@ -919,18 +1093,19 @@
     let timer = null;
     let previewBlob = null;
     let previewUrl = null;
-    let phase = 'idle';  // idle | recording | preview
+    let phase = 'idle';  // idle | recording | preview | saving | error
 
     const m = openModal({
       title: mode === 'voice' ? 'Voice note' : 'Screen recording',
       maxWidth: 520,
       body: `<div id="sp-rec-body"></div>`,
-      footer: `<div id="sp-rec-footer"></div>`,
+      footer: `<div id="sp-rec-footer" style="display:flex;gap:8px;justify-content:flex-end"></div>`,
     });
 
     function paint() {
       const body = m.bodyEl.querySelector('#sp-rec-body');
       const foot = m.footEl.querySelector('#sp-rec-footer');
+      if (!body || !foot) return;
       if (phase === 'recording') {
         body.innerHTML = `<div class="sp-rec-state"><div class="sp-rec-badge"><span class="sp-rec-dot"></span>Recording • ${fmtDuration(elapsed)}</div></div>`;
         foot.innerHTML = `<button id="sp-rec-cancel" class="btn-sec" style="padding:8px 14px;font-size:12.5px">Cancel</button>
@@ -946,8 +1121,15 @@
                          <button id="sp-rec-save" class="btn-primary" style="padding:8px 14px;font-size:12.5px">Save to space</button>`;
         foot.querySelector('#sp-rec-retake').onclick = () => { cleanupPreview(); phase = 'idle'; start(); };
         foot.querySelector('#sp-rec-save').onclick = save;
+      } else if (phase === 'saving') {
+        body.innerHTML = `<div class="sp-rec-busy">⏳ Saving to space…</div>`;
+        foot.innerHTML = '';
+      } else if (phase === 'error') {
+        // Body retains the error message set by start()/save() — don't overwrite.
+        foot.innerHTML = `<button id="sp-rec-cancel" class="btn-sec" style="padding:8px 14px;font-size:12.5px">Close</button>`;
+        foot.querySelector('#sp-rec-cancel').onclick = m.close;
       } else {
-        body.innerHTML = `<div style="color:var(--text2);font-size:13px;padding:6px">Requesting permission…</div>`;
+        body.innerHTML = `<div class="sp-rec-busy">⏳ Requesting permission…</div>`;
         foot.innerHTML = `<button id="sp-rec-cancel" class="btn-sec" style="padding:8px 14px;font-size:12.5px">Cancel</button>`;
         foot.querySelector('#sp-rec-cancel').onclick = m.close;
       }
@@ -960,25 +1142,46 @@
         stream = mode === 'voice'
           ? await navigator.mediaDevices.getUserMedia({ audio: true })
           : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        recorder = new MediaRecorder(stream);
+        const mime = pickRecorderMime(mode);
+        recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
         recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
-        recorder.onstop = () => {
-          previewBlob = new Blob(chunks, { type: recorder.mimeType || (mode === 'voice' ? 'audio/webm' : 'video/webm') });
-          previewUrl = URL.createObjectURL(previewBlob);
-          phase = 'preview';
-          if (stream) stream.getTracks().forEach(t => t.stop());
-          paint();
+        recorder.onerror = (ev) => {
+          try { console.error('[spaces] MediaRecorder error:', ev.error || ev); } catch {}
+          showError('Recording error: ' + ((ev.error && ev.error.message) || 'unknown'));
         };
-        // If screen-share is stopped by browser UI, end the recording.
+        recorder.onstop = () => {
+          try {
+            const type = recorder.mimeType || mime || (mode === 'voice' ? 'audio/webm' : 'video/webm');
+            previewBlob = new Blob(chunks, { type });
+            if (!previewBlob.size) {
+              showError('Recording came out empty. Try again — and hold Stop only after you’ve spoken.');
+              return;
+            }
+            previewUrl = URL.createObjectURL(previewBlob);
+            phase = 'preview';
+          } finally {
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            paint();
+          }
+        };
         stream.getVideoTracks().forEach(t => { t.onended = () => { if (recorder && recorder.state === 'recording') recorder.stop(); }; });
-        recorder.start();
+        // Timeslice forces dataavailable events every second. Without this,
+        // some browsers emit a single chunk only after stop — and if anything
+        // goes wrong in between, you lose the whole take.
+        recorder.start(1000);
         startedAt = Date.now();
         timer = setInterval(() => { elapsed = Math.floor((Date.now() - startedAt) / 1000); paint(); }, 500);
         phase = 'recording'; paint();
       } catch (e) {
-        body && (body.innerHTML = '');
-        m.bodyEl.querySelector('#sp-rec-body').innerHTML = `<div style="color:#dc2626;padding:6px;font-size:13px">Could not start recording: ${esc(e.message || 'permission denied')}</div>`;
+        showError('Could not start recording: ' + esc(e.message || 'permission denied'));
       }
+    }
+
+    function showError(msg) {
+      phase = 'error';
+      const body = m.bodyEl.querySelector('#sp-rec-body');
+      if (body) body.innerHTML = `<div style="color:#dc2626;padding:14px;font-size:13px;line-height:1.5">${msg}</div>`;
+      paint();
     }
 
     function stop() {
@@ -987,7 +1190,7 @@
     }
 
     function cancel() {
-      if (recorder && recorder.state === 'recording') { recorder.stop(); }
+      try { if (recorder && recorder.state === 'recording') recorder.stop(); } catch {}
       if (timer) clearInterval(timer);
       if (stream) stream.getTracks().forEach(t => t.stop());
       cleanupPreview();
@@ -998,24 +1201,34 @@
     }
 
     async function save() {
-      if (!previewBlob) return;
-      if (previewBlob.size > 25 * 1024 * 1024) { toast('Recording exceeds 25 MB — try a shorter capture.'); return; }
+      if (!previewBlob) { showError('Nothing recorded yet.'); return; }
+      if (previewBlob.size > 25 * 1024 * 1024) {
+        showError('Recording exceeds 25 MB — try a shorter capture.');
+        return;
+      }
+      phase = 'saving'; paint();
       let data;
       try {
         data = await new Promise((res, rej) => {
           const r = new FileReader();
           r.onload = () => res(String(r.result));
-          r.onerror = () => rej(new Error('Read failed'));
+          r.onerror = () => rej(new Error('Could not read recording'));
           r.readAsDataURL(previewBlob);
         });
-      } catch (e) { toast(e.message || 'Read failed'); return; }
+      } catch (e) { showError(e.message || 'Could not read recording'); return; }
+      try {
+        await doAdd({
+          type: mode,
+          title: mode === 'voice' ? 'Voice note' : 'Screen recording',
+          data, mime_type: previewBlob.type || (mode === 'voice' ? 'audio/webm' : 'video/webm'),
+          size: previewBlob.size, duration: elapsed,
+        });
+      } catch (e) {
+        showError('Could not save to space: ' + (e.message || 'server rejected the upload'));
+        return;
+      }
       m.close();
       cleanupPreview();
-      await doAdd({
-        type: mode,
-        title: mode === 'voice' ? 'Voice note' : 'Screen recording',
-        data, mime_type: previewBlob.type, size: previewBlob.size, duration: elapsed,
-      });
     }
 
     start();
@@ -1039,9 +1252,9 @@
           </label>
           <div>
             <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px">Cover colour</div>
-            <div id="sp-e-colors" style="display:flex;gap:6px;flex-wrap:wrap">
+            <div id="sp-e-colors" style="display:flex;gap:8px;flex-wrap:wrap">
               ${COVER_COLORS.map(c => `<button type="button" data-color="${attr(c)}"
-                style="width:28px;height:28px;border-radius:50%;background:${attr(c)};border:${color === c ? '3px solid var(--text)' : '2px solid var(--border)'};cursor:pointer;padding:0"></button>`).join('')}
+                style="width:30px;height:30px;border-radius:50%;background:${coverGradient(c)};border:${color === c ? '3px solid var(--text)' : '2px solid var(--border)'};cursor:pointer;padding:0"></button>`).join('')}
             </div>
           </div>
         </div>
@@ -1076,8 +1289,6 @@
   // ── Share modal (per-user invites + public link) ───────────────────────
   async function openShareModal() {
     if (!state.space) return;
-    // Make sure we have a fresh profiles list for the invite dropdown.
-    // Reuses the existing /api/team workspace directory.
     if (!state.profiles.length) {
       try {
         const rows = await api('GET', '/api/team');
@@ -1097,8 +1308,17 @@
       const memberIds = new Set(members.map(x => x.user_id));
       const candidates = (state.profiles || []).filter(p => p.id !== me.id && !memberIds.has(p.id));
       const linkUrl = sp.public_token ? (location.origin + '/p/' + sp.public_token) : null;
+      const spaceUrl = location.origin + '/spaces/' + sp.id;
       m.bodyEl.querySelector('#sp-share-body').innerHTML = `
         <div style="display:flex;flex-direction:column;gap:18px">
+          <section class="sp-share-section">
+            <h3>This space's URL</h3>
+            <div class="sp-share-link">
+              <input id="sp-self-link" readonly value="${attr(spaceUrl)}"/>
+              <button id="sp-self-copy" class="btn-sec" style="font-size:11.5px;padding:5px 12px">Copy</button>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:6px">Sign-in required — works for anyone you've invited below.</div>
+          </section>
           <section class="sp-share-section">
             <h3>People with access</h3>
             <div class="sp-share-roster">
@@ -1125,7 +1345,7 @@
             <h3>Public link</h3>
             <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text)">
               <input type="checkbox" id="sp-pub-enable" ${sp.is_public ? 'checked' : ''}/>
-              Anyone with the link can view this space
+              Anyone with the link can view this space (no sign-in)
             </label>
             ${sp.is_public ? `
               <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:var(--text)">
@@ -1141,6 +1361,11 @@
           </section>
         </div>
       `;
+      m.bodyEl.querySelector('#sp-self-copy').onclick = () => {
+        const link = m.bodyEl.querySelector('#sp-self-link');
+        link.select();
+        try { navigator.clipboard.writeText(link.value); toast('Space link copied'); } catch { document.execCommand('copy'); toast('Space link copied'); }
+      };
       m.bodyEl.querySelectorAll('.sp-remove').forEach(btn => {
         btn.onclick = async () => {
           const uid = Number(btn.closest('[data-uid]').dataset.uid);
@@ -1157,7 +1382,6 @@
         if (!userId) return;
         try {
           const member = await db.addSpaceMember(state.space.id, userId, role);
-          // Replace any existing member entry for this user
           state.members = state.members.filter(x => x.user_id !== userId).concat(member);
           repaint();
         } catch (e) { toast(e.message || 'Failed to invite'); }
@@ -1187,7 +1411,7 @@
       if (copyBtn) copyBtn.onclick = () => {
         const link = m.bodyEl.querySelector('#sp-pub-link');
         link.select();
-        try { navigator.clipboard.writeText(link.value); toast('Link copied'); } catch { document.execCommand('copy'); toast('Link copied'); }
+        try { navigator.clipboard.writeText(link.value); toast('Public link copied'); } catch { document.execCommand('copy'); toast('Public link copied'); }
       };
       const regen = m.bodyEl.querySelector('#sp-pub-regen');
       if (regen) regen.onclick = async () => {

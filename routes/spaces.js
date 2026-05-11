@@ -358,6 +358,62 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Per-space chat ─────────────────────────────────────────────────────
+  // Lightweight thread attached to a space — read by anyone with view access,
+  // post by anyone with edit access. No realtime yet; clients poll.
+  app.get('/api/spaces/:id/chat', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const result = await loadSpaceForUser(id, req.session.userId, false);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const sinceId = Number(req.query.since || 0);
+      const rows = await all(
+        `SELECT id, space_id, user_id, user_name, body, created_at
+           FROM space_chat_messages
+          WHERE space_id=? AND id > ?
+          ORDER BY id ASC
+          LIMIT 500`,
+        id, sinceId
+      );
+      res.json(rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/spaces/:id/chat', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const result = await loadSpaceForUser(id, req.session.userId, true);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const body = String((req.body && req.body.body) || '').trim();
+      if (!body) return res.status(400).json({ error: 'Message required' });
+      if (body.length > 2000) return res.status(400).json({ error: 'Message too long' });
+      const me = await get('SELECT name FROM users WHERE id=?', req.session.userId);
+      const ins = await run(
+        `INSERT INTO space_chat_messages (space_id, user_id, user_name, body) VALUES (?,?,?,?) RETURNING id`,
+        id, req.session.userId, (me && me.name) || '', body
+      );
+      const row = await get('SELECT id, space_id, user_id, user_name, body, created_at FROM space_chat_messages WHERE id=?', ins.lastInsertRowid);
+      res.status(201).json(row);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Tickets-for-picker ─────────────────────────────────────────────────
+  // Lightweight list used by the "Add existing ticket" picker. Returns just
+  // the fields the picker needs — keeps the payload small even on large
+  // workspaces.
+  app.get('/api/spaces-ticket-picker', requireAuth, async (req, res) => {
+    try {
+      const rows = await all(
+        `SELECT id, title, status, priority, assignee
+           FROM tickets
+          WHERE COALESCE(deleted_at, '') = ''
+          ORDER BY id DESC
+          LIMIT 1000`
+      );
+      res.json(rows || []);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Public share link ──────────────────────────────────────────────────
   // PATCH /api/spaces/:id/share-link — toggle, regenerate, set public-edit.
   // Body: { enabled?: boolean, can_edit?: boolean, regenerate?: boolean }

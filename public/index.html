@@ -12,6 +12,7 @@
      New features going forward follow the same pattern (one .js + one .css
      per feature, loaded here, used from a tiny shell in #page-spaces). -->
 <link rel="stylesheet" href="/spaces.css"/>
+<link rel="stylesheet" href="/space-chat.css"/>
 <link rel="apple-touch-icon" href="/app-icon.svg"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
@@ -5484,7 +5485,8 @@ window.PAGE_PATHS = {
   'settings':    '/settings',
 };
 
-function navigate(page) {
+function navigate(page, opts) {
+  opts = opts || {};
   document.querySelectorAll('.page, .page-with-right').forEach(el => {
     el.classList.remove('active');
   });
@@ -5518,12 +5520,16 @@ function navigate(page) {
   // Update the address bar — every page gets a unique URL so deep-links
   // and back/forward work. ticket-detail / plan-detail are pushed by their
   // open* handlers (which know the id); top-level pages push here.
-  try {
-    const path = window.PAGE_PATHS[page];
-    if (path && location.pathname !== path) {
-      history.pushState({ page }, '', path);
-    }
-  } catch (e) { console.warn('[router] pushState failed:', e); }
+  // opts.skipUrl lets the router call navigate() during a deep-link boot
+  // without clobbering a sub-path like /spaces/<id> with /spaces.
+  if (!opts.skipUrl) {
+    try {
+      const path = window.PAGE_PATHS[page];
+      if (path && location.pathname !== path) {
+        history.pushState({ page }, '', path);
+      }
+    } catch (e) { console.warn('[router] pushState failed:', e); }
+  }
   // Also update the document title so the browser tab reflects the page.
   try {
     const titles = {
@@ -5564,10 +5570,12 @@ function navigate(page) {
     openChatPage();
   }
   if (page === 'spaces' && window.Spaces) {
-    // Honour ?space=N deep link so push notifications / share links can
-    // open a specific space directly.
-    const m = (location.search || '').match(/[?&]space=(\d+)/);
-    if (m) window.Spaces.openSpace(Number(m[1]));
+    // Each space has its own URL: /spaces/<id>. The legacy ?space=N form
+    // (still used by some push-notification links) is honoured too.
+    const pm = (location.pathname || '').match(/^\/spaces\/(\d+)/);
+    const sm = (location.search || '').match(/[?&]space=(\d+)/);
+    const id = pm ? pm[1] : (sm ? sm[1] : null);
+    if (id) window.Spaces.openSpace(Number(id));
     else window.Spaces.openListView();
   }
 }
@@ -18040,6 +18048,7 @@ window.refreshPageData = refreshPageData;
 (function() {
   const TICKET_PATH = /^\/tickets\/(TKT-\d+)\/?$/i;
   const PLAN_PATH   = /^\/planning\/(PLN-[\w-]+)\/?$/i;
+  const SPACE_PATH  = /^\/spaces\/(\d+)\/?$/i;
   // Pages that have a top-level URL. Order matters only for the inverse lookup.
   const PAGE_PATHS = {
     'dashboard':   '/dashboard',
@@ -18067,6 +18076,7 @@ window.refreshPageData = refreshPageData;
   function pathToPage(path) {
     if (TICKET_PATH.test(path)) return { page: 'ticket-detail', ticketId: path.match(TICKET_PATH)[1].toUpperCase() };
     if (PLAN_PATH.test(path))   return { page: 'plan-detail',   planId:   path.match(PLAN_PATH)[1].toUpperCase() };
+    if (SPACE_PATH.test(path))  return { page: 'spaces',        spaceId:  Number(path.match(SPACE_PATH)[1]) };
     if (path === '/' || path === '/index.html' || path === '') return { page: 'dashboard' };
     for (const [page, p] of Object.entries(PAGE_PATHS)) {
       if (path === p || path === p + '/') return { page };
@@ -18077,6 +18087,7 @@ window.refreshPageData = refreshPageData;
   function pageToPath(page, opts) {
     if (page === 'ticket-detail' && opts?.ticketId) return '/tickets/' + opts.ticketId;
     if (page === 'plan-detail'   && opts?.planId)   return '/planning/' + opts.planId;
+    if (page === 'spaces'        && opts?.spaceId)  return '/spaces/' + opts.spaceId;
     return PAGE_PATHS[page] || '/';
   }
 
@@ -18130,14 +18141,18 @@ window.refreshPageData = refreshPageData;
       }
       return;
     }
-    // Plain page — call navigate (without re-pushing the URL we're already on)
+    // Plain page — call navigate (without re-pushing the URL we're already on).
+    // For /spaces/<id> we pass skipUrl so navigate doesn't clobber the path
+    // with /spaces; navigate's spaces hook reads the current URL and opens
+    // the right view (list vs canvas).
     if (typeof navigate === 'function') {
       const w = window.navigate;
+      const opts = (m.page === 'spaces' && m.spaceId) ? { skipUrl: true } : undefined;
       if (w && w._urlPatched && w._original) {
         window.navigate = w._original;
-        try { w._original(m.page); } finally { window.navigate = w; }
+        try { w._original(m.page, opts); } finally { window.navigate = w; }
       } else {
-        navigate(m.page);
+        navigate(m.page, opts);
       }
     }
   }
@@ -18186,8 +18201,8 @@ window.refreshPageData = refreshPageData;
   function wrapNavigate() {
     const orig = window.navigate;
     if (typeof orig !== 'function' || orig._urlPatched) return;
-    const patched = function(page, ...rest) {
-      const r = orig.apply(this, [page, ...rest]);
+    const patched = function(page, opts, ...rest) {
+      const r = orig.apply(this, [page, opts, ...rest]);
       // The original navigate() already pushes the URL directly (see the
       // top-level definition). This wrapper just kicks off the server data
       // refresh for the new page.
@@ -22075,5 +22090,6 @@ document.addEventListener('visibilitychange', () => {
 <!-- Spaces feature module — see public/spaces.js. Deferred so it runs after
      the main inline scripts have set window.CURRENT_USER etc. -->
 <script src="/spaces.js" defer></script>
+<script src="/space-chat.js" defer></script>
 </body>
 </html>

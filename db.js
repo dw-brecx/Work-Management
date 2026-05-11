@@ -616,6 +616,18 @@ async function init() {
       updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_space_items_space ON space_items (space_id)`,
+    // Per-space chat. Anyone who can view the space (owner / members / public
+    // editors) can read; anyone who can edit can post. Messages cascade-delete
+    // with the space.
+    `CREATE TABLE IF NOT EXISTS space_chat_messages (
+      id SERIAL PRIMARY KEY,
+      space_id INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      user_name TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_space_chat_messages_space ON space_chat_messages (space_id, id)`,
   ];
 
   for (const sql of tables) {
