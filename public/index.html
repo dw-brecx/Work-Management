@@ -1460,9 +1460,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     }
     /* Wider bubbles on mobile — 60% leaves too much wasted gutter. */
     .chat-msg .msg-body { max-width: 84% !important; }
-    /* Composer: textarea grows, smaller Send pill, Polish row wraps. */
-    #chat-composer-wrap { padding: 8px 10px !important; }
-    #chat-composer-wrap textarea#chat-input { font-size: 16px !important; } /* ≥16px stops iOS zoom */
+    /* Composer: tighter media bar, single-line textarea, hide the
+       "paste with Ctrl+V" hint (no Ctrl key on a phone). */
+    #chat-composer-wrap { padding: 6px 8px !important; }
+    #chat-composer-wrap textarea#chat-input { font-size: 16px !important; min-height: 36px !important; } /* ≥16px stops iOS zoom */
+    #chat-composer-wrap #chat-media-mount { margin-bottom: 4px !important; }
+    #chat-composer-wrap .media-composer { padding: 4px 6px !important; }
+    /* Drop the "paste with Ctrl+V" desktop hint inside the media composer. */
+    #chat-composer-wrap .media-composer > div:first-child > span:last-child { display: none !important; }
     #chat-header { padding: 10px 12px !important; }
     #chat-header-name { font-size: 15px !important; }
     /* Mention / ticket popup: anchor to viewport bottom over the keyboard
@@ -2566,9 +2571,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
       <span class="mb-label">Mine</span>
     </button>
-    <button type="button" class="mb-tab" data-page="calendar" onclick="navigate('calendar')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-      <span class="mb-label">Calendar</span>
+    <button type="button" class="mb-tab" data-page="chat" onclick="navigate('chat')" style="position:relative">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span class="mb-label">Chat</span>
+      <!-- Sits on the top-right of the icon (icon is centered, ~22px wide,
+           so right:calc(50% - 18px) puts the badge just past the icon's
+           right edge). -->
+      <span class="badge" id="mb-chat-badge" style="display:none;position:absolute;top:2px;right:calc(50% - 20px);background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;min-width:16px;height:16px;line-height:14px;text-align:center;box-shadow:0 0 0 2px rgba(255,255,255,.97)"></span>
     </button>
     <button type="button" class="mb-tab" data-page="__more" onclick="openMobileSidebar()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -19542,16 +19551,19 @@ function chatRecomputeUnreadTotals() {
 }
 
 function updateChatNavBadge() {
-  const b = document.getElementById('nav-chat-badge');
-  if (!b) return;
-  if (CHAT_STATE.unreadTotal > 0) {
-    b.textContent = CHAT_STATE.unreadMentions > 0
-      ? `@${CHAT_STATE.unreadMentions}`
-      : (CHAT_STATE.unreadTotal > 99 ? '99+' : String(CHAT_STATE.unreadTotal));
-    b.style.display = '';
-    b.style.background = CHAT_STATE.unreadMentions > 0 ? '#ef4444' : '';
-  } else {
-    b.style.display = 'none';
+  // Sidebar (desktop) and bottom-nav (mobile) badges share the same state.
+  const targets = [document.getElementById('nav-chat-badge'), document.getElementById('mb-chat-badge')];
+  for (const b of targets) {
+    if (!b) continue;
+    if (CHAT_STATE.unreadTotal > 0) {
+      b.textContent = CHAT_STATE.unreadMentions > 0
+        ? `@${CHAT_STATE.unreadMentions}`
+        : (CHAT_STATE.unreadTotal > 99 ? '99+' : String(CHAT_STATE.unreadTotal));
+      b.style.display = '';
+      b.style.background = CHAT_STATE.unreadMentions > 0 ? '#ef4444' : 'var(--accent)';
+    } else {
+      b.style.display = 'none';
+    }
   }
   updateChatTabTitle();
 }
