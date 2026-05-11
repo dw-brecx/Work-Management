@@ -889,6 +889,67 @@ async function runTrashAutoPurgeJob() {
   } catch (e) { console.error('[cron:trash-auto-purge]', e.message); }
 }
 
+// Daily retention sweep for ticket attachments.
+//
+//   • Open tickets  → keep attachments for up to 3 years from upload time.
+//                     Anything older is purged even though the ticket stays.
+//   • Closed tickets → keep attachments for 1 year from closed_at, then purge.
+//
+// Only attachments anchored to a ticket are eligible — rows linked to
+// comments / subtasks / docs / chat / etc. without a ticket_id are left
+// alone, as are attachments on undeleted tickets where neither window has
+// elapsed. The ticket row itself is never touched here; only attachment
+// files + their attachments-table rows go away. Idempotent.
+async function runTicketAttachmentRetentionJob() {
+  try {
+    // Pull every candidate in one query. We compare attachment.created_at
+    // against now-3y for still-open tickets, and tickets.closed_at against
+    // now-1y for closed tickets. Soft-deleted tickets are skipped — the
+    // 30-day trash cron above will hard-delete them (and their files) on
+    // its own schedule, so double-handling them here would just race.
+    const rows = await all(
+      `SELECT a.id   AS att_id,
+              a.filename,
+              t.id   AS ticket_id,
+              t.status,
+              t.closed_at,
+              a.created_at
+         FROM attachments a
+         JOIN tickets t ON t.id = a.ticket_id
+        WHERE a.ticket_id IS NOT NULL
+          AND t.deleted_at IS NULL
+          AND (
+                (t.status <> 'Closed'
+                 AND a.created_at < TO_CHAR(NOW() - INTERVAL '3 years' AT TIME ZONE 'UTC',
+                                            'YYYY-MM-DD HH24:MI:SS'))
+             OR (t.status = 'Closed'
+                 AND t.closed_at IS NOT NULL
+                 AND t.closed_at < TO_CHAR(NOW() - INTERVAL '1 year' AT TIME ZONE 'UTC',
+                                           'YYYY-MM-DD HH24:MI:SS'))
+              )`
+    );
+    if (!rows.length) return;
+
+    // Unlink files first; ignore ENOENT / already-gone errors — the row
+    // delete below still needs to run so we don't keep re-selecting the
+    // same orphaned attachment row every day.
+    for (const r of rows) {
+      try { fs.unlinkSync(path.join(UPLOADS_DIR, r.filename)); } catch {}
+    }
+
+    const ids = rows.map(r => r.att_id);
+    const placeholders = ids.map((_, i) => '$' + (i + 1)).join(',');
+    await run(`DELETE FROM attachments WHERE id IN (${placeholders})`, ...ids);
+
+    const openCount   = rows.filter(r => r.status !== 'Closed').length;
+    const closedCount = rows.length - openCount;
+    console.log(
+      `[attachments] retention purge: ${rows.length} file(s) removed ` +
+      `(open>3y: ${openCount}, closed>1y: ${closedCount})`
+    );
+  } catch (e) { console.error('[cron:attachment-retention]', e.message); }
+}
+
 // ── Projects (admin-promoted parent tickets) ────────────────────────────────
 // Promote / demote are admin-only. The list and children endpoints are open to
 // any authenticated user (filtered by ticket access where needed).
@@ -6058,9 +6119,12 @@ app.get('*', (req, res) => {
     setInterval(runDeadlineWarningJob, 60 * 60 * 1000);
     setInterval(runOverdueDigestJob,   60 * 60 * 1000);
     // Once a day: hard-delete tickets that have sat in trash for 30+ days,
-    // and same window for chat groups that have been closed for 30+ days.
+    // same window for chat groups that have been closed for 30+ days, and
+    // sweep ticket attachments past their retention window (3y while open,
+    // 1y after the ticket is closed).
     setInterval(runTrashAutoPurgeJob, 24 * 60 * 60 * 1000);
     setInterval(chatPurgeOldClosedGroups, 24 * 60 * 60 * 1000);
+    setInterval(runTicketAttachmentRetentionJob, 24 * 60 * 60 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
@@ -6071,6 +6135,7 @@ app.get('*', (req, res) => {
       runOverdueDigestJob();
       runTrashAutoPurgeJob();
       chatPurgeOldClosedGroups();
+      runTicketAttachmentRetentionJob();
     }, 30 * 1000);
     console.log('✅  Email cron loops scheduled (meeting/ticket/personal reminders, deadline, overdue-digest).');
   } catch(e) {
