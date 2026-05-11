@@ -1413,6 +1413,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chat-reaction-add:hover{background:var(--bg2);color:var(--text2)}
   .chat-msg .msg-thread-link{display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:11.5px;color:var(--accent);cursor:pointer;background:none;border:none;padding:2px 6px;border-radius:6px}
   .chat-msg .msg-thread-link:hover{background:rgba(59,130,246,.08)}
+  /* "Mark as confirmed" inline ack control below incoming messages. */
+  .chat-confirm-row{display:inline-flex;align-items:center;gap:6px;margin:4px 0 0 4px;font-size:11.5px;color:var(--text2);cursor:pointer;user-select:none;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:#fff}
+  .chat-confirm-row:hover{background:var(--bg2)}
+  .chat-confirm-row.confirmed{background:#dcfce7;border-color:#86efac;color:#15803d;font-weight:600;cursor:default}
+  .chat-confirm-row.confirmed:hover{background:#dcfce7}
+  .chat-confirm-row input{accent-color:#10b981;cursor:pointer}
+  .chat-confirm-row.confirmed input{pointer-events:none}
+  /* Sender-side: list of who has confirmed below own bubbles. */
+  .chat-confirm-by{font-size:10.5px;color:#15803d;margin:3px 8px 0;display:inline-flex;align-items:center;gap:4px}
+  .chat-msg.is-mine .chat-confirm-by{justify-content:flex-end}
   .chat-day-divider{display:flex;align-items:center;gap:10px;margin:18px 0 6px;font-size:11px;color:var(--text3)}
   .chat-day-divider:before,.chat-day-divider:after{content:'';flex:1;height:1px;background:var(--border)}
   .chat-att-preview{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:11.5px}
@@ -19616,21 +19626,47 @@ window.renderChatChannelPrefs = async function() {
     root.innerHTML = `<div style="padding:14px;color:var(--text3);font-size:11.5px;text-align:center">You haven't joined any chat conversations yet. Open <a onclick="navigate('chat')" style="color:var(--accent);cursor:pointer;text-decoration:underline">Chat</a> to start one.</div>`;
     return;
   }
+  const me = window.CURRENT_USER || {};
   // Group: channels first (alphabetical), then DMs / groups (recent first).
   const channels = CHAT_STATE.channels.filter(c => c.type === 'channel').sort((a, b) => a.name.localeCompare(b.name));
   const dmsAndGroups = CHAT_STATE.channels.filter(c => c.type !== 'channel').sort((a, b) =>
     (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
   const rows = [...channels, ...dmsAndGroups];
+  function rowVisual(c) {
+    if (c.type === 'channel') {
+      return `<div style="width:30px;height:30px;border-radius:50%;background:#eef2ff;color:#4338ca;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0">${c.isPrivate ? '🔒' : '#'}</div>`;
+    }
+    if (c.type === 'group') {
+      return `<div style="width:30px;height:30px;border-radius:50%;background:#fef3c7;color:#92400e;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">👥</div>`;
+    }
+    // DM — show the other user's avatar circle.
+    const other = (c.members || []).find(m => m.id !== me.id) || (c.members || [])[0];
+    if (!other) return `<div style="width:30px;height:30px;border-radius:50%;background:#e2e8f0;flex-shrink:0"></div>`;
+    const initial = (other.name || '?').slice(0, 1).toUpperCase();
+    const inner = other.avatarUrl
+      ? `<img src="${escapeHtml(other.avatarUrl)}" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`
+      : initial;
+    return `<div style="width:30px;height:30px;border-radius:50%;background:${escapeHtml(other.color || '#3b82f6')};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;overflow:hidden">${inner}</div>`;
+  }
+  function rowSubtitle(c) {
+    if (c.type === 'channel') return `Channel · ${c.members.length} member${c.members.length === 1 ? '' : 's'}`;
+    if (c.type === 'group') return `Group chat · ${c.members.length} member${c.members.length === 1 ? '' : 's'}`;
+    const other = (c.members || []).find(m => m.id !== me.id) || (c.members || [])[0];
+    return other && other.email ? other.email : 'Direct message';
+  }
   root.innerHTML = rows.map(c => {
     const pref = (c.me && c.me.notify) || 'all';
-    const display = chatChannelDisplayName(c);
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
-        <span style="font-size:13px;width:18px;text-align:center;flex-shrink:0;color:var(--text3)">${chatChannelIcon(c)}</span>
-        <span style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(display)}</span>
+    const display = chatChannelDisplayName(c) || c.name || 'Conversation';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
+        ${rowVisual(c)}
+        <div style="min-width:0;flex:1">
+          <div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(display)}</div>
+          <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(rowSubtitle(c))}</div>
+        </div>
       </div>
       <select onchange="chatSetChannelNotifyFromPrefs(${c.id}, this.value)"
-              style="font-size:11.5px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer">
+              style="font-size:11.5px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;cursor:pointer;flex-shrink:0">
         <option value="all"      ${pref === 'all'      ? 'selected' : ''}>All messages</option>
         <option value="mentions" ${pref === 'mentions' ? 'selected' : ''}>Only @mentions</option>
         <option value="none"     ${pref === 'none'     ? 'selected' : ''}>Nothing</option>
@@ -19963,6 +19999,7 @@ function renderChatMessageHtml(m, prev) {
   const bodyHtml = renderChatBodyMarkup(m.body || '', m.mentions || []);
   const reactionsHtml = renderChatReactions(m);
   const attsHtml = renderChatAttachments(m.attachments || []);
+  const confirmHtml = renderChatConfirmRow(m);
   const editedTag = m.editedAt ? `<span class="msg-edited">(edited)</span>` : '';
   const threadHtml = isThreadParent
     ? `<button class="msg-thread-link" onclick="openChatThread(${m.id})">💬 ${m.replyCount} ${m.replyCount === 1 ? 'reply' : 'replies'}</button>`
@@ -19970,6 +20007,7 @@ function renderChatMessageHtml(m, prev) {
   const actions = `<div class="msg-actions">
       <button class="msg-action-btn" title="Add reaction" onclick="openChatReactionPicker(event, ${m.id})">😀</button>
       <button class="msg-action-btn" title="Reply in thread" onclick="openChatThread(${m.id})">💬</button>
+      ${!isMine ? `<button class="msg-action-btn" title="Mark as confirmed" onclick="toggleChatConfirm(${m.id})">✓</button>` : ''}
       ${isMine ? `<button class="msg-action-btn" title="Edit" onclick="startChatEdit(${m.id})">✏️</button>
                   <button class="msg-action-btn" title="Delete" onclick="deleteChatMessage(${m.id})">🗑</button>` : ''}
     </div>`;
@@ -19983,10 +20021,70 @@ function renderChatMessageHtml(m, prev) {
       ${showAuthor ? `<span class="msg-author">${escapeHtml(author.name)}</span>` : ''}
       <div class="msg-bubble">${bubbleInner}</div>
       ${reactionsHtml}
+      ${confirmHtml}
       <div class="msg-time">${formatChatTime(m.createdAt)}${editedTag}${threadHtml ? ' · ' : ''}</div>
       ${threadHtml}
     </div>
   </div>`;
+}
+
+// "Mark as confirmed" UI. Backed by the existing reactions table — clicking
+// the checkbox toggles a ✅ reaction by the current user. We call it out
+// specifically (instead of just rendering it as a generic reaction chip)
+// so messages that ask "did you see this?" have a clear, low-friction ack.
+//   * Incoming messages → checkbox the recipient can tick.
+//   * Own messages → list of who has confirmed (so the sender knows it
+//                    landed without scrolling through reactions).
+function renderChatConfirmRow(m) {
+  if (m.deletedAt) return '';
+  const me = window.CURRENT_USER || {};
+  const isMine = m.userId === me.id;
+  const confirmReaction = (m.reactions || []).find(r => r.emoji === '✅');
+  const confirmIds = confirmReaction ? (confirmReaction.userIds || []) : [];
+  const youConfirmed = confirmIds.includes(me.id);
+  if (isMine) {
+    if (!confirmIds.length) return '';
+    // Map ids → names from the channel member list (we only need the names).
+    const c = CHAT_STATE.channelsById.get(m.channelId);
+    const memberNames = new Map((c?.members || []).map(mm => [mm.id, mm.name]));
+    const names = confirmIds.map(id => memberNames.get(id) || 'Someone').slice(0, 3);
+    const more = confirmIds.length > 3 ? ` +${confirmIds.length - 3}` : '';
+    return `<div class="chat-confirm-by">✓ Confirmed by ${escapeHtml(names.join(', ') + more)}</div>`;
+  }
+  // Incoming: render the checkbox. Tick state mirrors `youConfirmed`.
+  return `<label class="chat-confirm-row ${youConfirmed ? 'confirmed' : ''}" onclick="toggleChatConfirm(${m.id})">
+    <input type="checkbox" ${youConfirmed ? 'checked' : ''} ${youConfirmed ? 'disabled' : ''}/>
+    <span>${youConfirmed ? '✓ You confirmed' : 'Mark as confirmed'}</span>
+  </label>`;
+}
+
+// Toggle the ✅ reaction by the current user on this message. Re-uses the
+// existing reaction endpoints. The WS message:update broadcast then
+// re-renders the row with the updated state.
+async function toggleChatConfirm(messageId) {
+  const c = CHAT_STATE.channelsById.get(CHAT_STATE.activeChannelId);
+  if (!c) return;
+  const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
+  const m = list.find(x => x.id === messageId);
+  if (!m) return;
+  const me = window.CURRENT_USER || {};
+  const confirmReaction = (m.reactions || []).find(r => r.emoji === '✅');
+  const youConfirmed = confirmReaction && (confirmReaction.userIds || []).includes(me.id);
+  if (youConfirmed) {
+    // Idempotent — the un-confirm path is intentionally not exposed via the
+    // checkbox itself (it goes disabled once ticked) but we leave the
+    // function symmetric in case it's wired elsewhere later.
+    try {
+      await fetch(`/api/chat/messages/${messageId}/reactions/${encodeURIComponent('✅')}`, { method: 'DELETE' });
+    } catch (e) { console.warn('[chat] un-confirm failed', e); }
+  } else {
+    try {
+      await fetch(`/api/chat/messages/${messageId}/reactions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emoji: '✅' }),
+      });
+    } catch (e) { console.warn('[chat] confirm failed', e); }
+  }
 }
 
 function renderChatBodyMarkup(body, mentions) {
@@ -20047,11 +20145,15 @@ function renderChatAttachments(atts) {
 function renderChatReactions(m) {
   const list = m.reactions || [];
   const me = window.CURRENT_USER || {};
-  const hasAny = list.length > 0;
-  if (!hasAny) return '';
+  if (!list.length) return '';
+  // Use single quotes for the onclick attribute and an HTML-escaped emoji so
+  // the inner JSON.stringify (which always emits double quotes) doesn't
+  // break the attribute parser. Without this, clicking an existing reaction
+  // chip silently no-ops.
   return `<div class="msg-reactions">${list.map(r => {
     const mine = (r.userIds || []).includes(me.id);
-    return `<button class="chat-reaction ${mine ? 'mine' : ''}" onclick="toggleChatReaction(${m.id}, ${JSON.stringify(r.emoji)}, ${mine})">${escapeHtml(r.emoji)} ${r.count}</button>`;
+    const safeEmoji = escapeAttr(JSON.stringify(r.emoji));
+    return `<button class="chat-reaction ${mine ? 'mine' : ''}" onclick='toggleChatReaction(${m.id}, ${safeEmoji}, ${mine})'>${escapeHtml(r.emoji)} ${r.count}</button>`;
   }).join('')}<button class="chat-reaction-add" onclick="openChatReactionPicker(event, ${m.id})">+</button></div>`;
 }
 
@@ -20474,11 +20576,26 @@ function openChatReactionPicker(ev, messageId) {
   const popup = document.createElement('div');
   popup.className = 'chat-emoji-popup';
   popup.id = 'chat-reaction-popup';
-  popup.innerHTML = CHAT_EMOJIS.map(e => `<button onclick="addChatReaction(${messageId}, ${JSON.stringify(e)})">${e}</button>`).join('');
+  popup.style.position = 'fixed';
+  // Build buttons with addEventListener instead of inline onclick — emoji
+  // strings + JSON.stringify produce nested double-quotes that break the
+  // attribute parser, leaving the buttons rendered but unclickable.
+  for (const e of CHAT_EMOJIS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = e;
+    btn.addEventListener('click', (clickEv) => {
+      clickEv.stopPropagation();
+      addChatReaction(messageId, e);
+    });
+    popup.appendChild(btn);
+  }
   document.body.appendChild(popup);
+  // Position relative to viewport — getBoundingClientRect is viewport-relative
+  // and we set position:fixed above so the coords map directly.
   const rect = ev.target.getBoundingClientRect();
-  popup.style.top = (rect.bottom + 4) + 'px';
-  popup.style.left = Math.max(8, rect.left - 100) + 'px';
+  popup.style.top = Math.min(window.innerHeight - 60, rect.bottom + 4) + 'px';
+  popup.style.left = Math.max(8, Math.min(window.innerWidth - 260, rect.left - 100)) + 'px';
   setTimeout(() => {
     document.addEventListener('click', closeChatReactionPickerOnce, { once: true });
   }, 50);
