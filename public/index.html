@@ -2460,29 +2460,42 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       .topbar-right { gap: 10px !important; }
 
       /* Right-panel — on mobile, stack below the main content instead of
-         floating to the right. The base .page-with-right uses display:flex
-         (not grid!), so we MUST flip flex-direction to column or the two
-         children flow side-by-side and overflow the viewport (showing as a
-         shifted-left page with content clipped off the edges). */
-      .page-with-right {
+         floating to the right.
+         Two critical details:
+         1. Target .page-with-right.active, NOT .page-with-right.  The
+            unqualified selector with display:block !important would beat
+            the base .page-with-right { display:none } and reveal every
+            inactive page (ticket-detail, plan-detail, calendar, etc.)
+            on screen simultaneously.
+         2. The desktop CSS at line 443 sets
+              .right-panel { width:440px; min-width:440px; ... }
+            width:100% alone isn't enough — min-width still forces the
+            panel to ≥440px, pushing the page wider than a 375px iPhone
+            and scrolling the body horizontally. min-width:0 is the fix. */
+      .page-with-right.active {
+        display: block !important;       /* stack children as blocks */
         flex-direction: column !important;
         overflow-x: hidden !important;
         overflow-y: auto !important;
       }
-      .page-with-right > .page-content {
+      .page-with-right.active > .page-content {
         width: 100% !important;
         max-width: 100% !important;
+        min-width: 0 !important;
         flex: 0 0 auto !important;
+        overflow: visible !important;
       }
-      .right-panel {
+      .page-with-right.active > .right-panel {
         display: block !important;
         position: static !important;
         width: 100% !important;
         max-width: 100% !important;
+        min-width: 0 !important;     /* ← kill the 440px min-width */
         flex: 0 0 auto !important;
         border-left: 0 !important;
         border-top: 1px solid var(--border) !important;
         margin-top: 14px !important;
+        overflow: visible !important;
       }
 
       /* Bigger touch targets on row-action buttons + filter chips */
