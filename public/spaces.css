@@ -549,6 +549,146 @@
 }
 .sp-item .sp-download-btn:hover { filter: brightness(.95); }
 
+/* ── Task list card ──────────────────────────────────────────────────── */
+.sp-tasklist-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 8px;
+  gap: 8px;
+  min-height: 0;
+}
+.sp-tasklist-progress {
+  position: relative;
+  height: 6px;
+  background: rgba(0, 0, 0, .07);
+  border-radius: 99px;
+  overflow: visible;
+  margin: 2px 0 4px;
+}
+.sp-tasklist-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+  border-radius: 99px;
+  transition: width .25s ease;
+}
+.sp-tasklist-progress-label {
+  position: absolute;
+  right: 0;
+  top: -16px;
+  font-size: 10.5px;
+  color: var(--text3);
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.sp-tasklist-items {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 2px;
+}
+.sp-task {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 8px;
+  background: rgba(34, 197, 94, .04);
+  border: 1px solid rgba(34, 197, 94, .14);
+  border-radius: 10px;
+  transition: opacity .15s ease, background .15s ease;
+}
+.sp-task.is-done {
+  opacity: .65;
+  background: rgba(0, 0, 0, .04);
+  border-color: rgba(0, 0, 0, .08);
+}
+.sp-task.is-done .sp-task-title,
+.sp-task.is-done .sp-task-desc {
+  text-decoration: line-through;
+  color: var(--text3);
+}
+.sp-task-check {
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  accent-color: #22c55e;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sp-task-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sp-task-title {
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  outline: none;
+  font-family: inherit;
+  width: 100%;
+}
+.sp-task-title:focus { border-bottom: 1px solid var(--sp-accent, #22c55e); }
+.sp-task-desc {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  resize: none;
+  font-size: 11.5px;
+  color: var(--text2);
+  outline: none;
+  font-family: inherit;
+  line-height: 1.4;
+  min-height: 16px;
+  overflow: hidden;
+}
+.sp-task-desc:focus { border-bottom: 1px solid var(--sp-accent, #22c55e); }
+.sp-task-del {
+  background: transparent;
+  border: 0;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .12s ease, background .12s ease;
+}
+.sp-task:hover .sp-task-del,
+.sp-task:focus-within .sp-task-del { opacity: 1; }
+.sp-task-del:hover { background: #fef2f2; color: #dc2626; }
+.sp-task-add {
+  background: transparent;
+  border: 1px dashed rgba(34, 197, 94, .35);
+  color: #166534;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  align-self: flex-start;
+  font-family: inherit;
+  transition: background .12s ease, border-color .12s ease;
+}
+.sp-task-add:hover {
+  background: rgba(34, 197, 94, .08);
+  border-color: rgba(34, 197, 94, .6);
+  border-style: solid;
+}
+
 .sp-ticket-statusrow {
   display: flex;
   align-items: center;

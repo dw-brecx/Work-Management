@@ -57,6 +57,7 @@
     file:     { emoji: '📎', label: 'File',     accent: '#eab308', accentSoft: '#fef9c3', accentDark: '#854d0e' },
     link:     { emoji: '🔗', label: 'Link',     accent: '#14b8a6', accentSoft: '#ccfbf1', accentDark: '#0f766e' },
     ticket:   { emoji: '🎟️', label: 'Ticket',   accent: '#ec4899', accentSoft: '#fce7f3', accentDark: '#9d174d' },
+    tasklist: { emoji: '✅', label: 'Tasks',    accent: '#22c55e', accentSoft: '#dcfce7', accentDark: '#166534' },
   };
 
   function paletteFor(type) {
@@ -82,6 +83,7 @@
       file:     { width: 260, height: 140 },
       link:     { width: 280, height: 140 },
       ticket:   { width: 280, height: 200 },
+      tasklist: { width: 320, height: 280 },
     })[type] || { width: 280, height: 200 };
   }
 
@@ -890,6 +892,45 @@
           </div>
         `;
       }
+      case 'tasklist': {
+        // Tasks are stored as a JSON array in item.text:
+        //   [{id, title, description, done}, ...]
+        // Parsed defensively so a stale/bad payload doesn't break the card.
+        let tasks = [];
+        if (item.text) {
+          try {
+            const parsed = JSON.parse(item.text);
+            if (Array.isArray(parsed)) tasks = parsed;
+          } catch {}
+        }
+        const ro = canEdit() ? '' : 'readonly';
+        const disabled = canEdit() ? '' : 'disabled';
+        const done = tasks.filter(t => t && t.done).length;
+        const total = tasks.length;
+        const progress = total ? Math.round((done / total) * 100) : 0;
+        return `
+          <div class="sp-tasklist-body">
+            <input class="sp-input sp-title-input" data-field="title" value="${attr(item.title || '')}" placeholder="List name" ${ro}/>
+            <div class="sp-tasklist-progress" title="${done} of ${total} done">
+              <div class="sp-tasklist-progress-bar" style="width:${progress}%"></div>
+              <span class="sp-tasklist-progress-label">${done}/${total}</span>
+            </div>
+            <div class="sp-tasklist-items" data-tasklist>
+              ${tasks.map((t, i) => `
+                <div class="sp-task ${t.done ? 'is-done' : ''}" data-task-idx="${i}">
+                  <input type="checkbox" class="sp-task-check" data-task-check ${t.done ? 'checked' : ''} ${disabled}/>
+                  <div class="sp-task-body">
+                    <input class="sp-task-title" data-task-title value="${attr(t.title || '')}" placeholder="Task title" ${ro}/>
+                    <textarea class="sp-task-desc" data-task-desc rows="1" placeholder="Description (optional)" ${ro}>${esc(t.description || '')}</textarea>
+                  </div>
+                  ${canEdit() ? `<button class="sp-task-del" data-task-del title="Remove task" aria-label="Remove task">×</button>` : ''}
+                </div>
+              `).join('')}
+            </div>
+            ${canEdit() ? `<button class="sp-task-add" data-task-add>+ Add task</button>` : ''}
+          </div>
+        `;
+      }
       case 'ticket': {
         let meta = {};
         if (item.ticket_meta) {
@@ -1040,6 +1081,121 @@
         else toast('Unknown ticket reference');
       });
     }
+
+    // ── Task list interactions: checkbox toggle, title/desc edit, delete,
+    //    + Add task. Tasks live as a JSON array in item.text; we re-render
+    //    the card body on add/delete so indices stay correct. Title and
+    //    description edits debounce-save without re-rendering so the
+    //    caret position is preserved. ─────────────────────────────────
+    if (item.type === 'tasklist') {
+      const getTasks = () => {
+        try { const arr = JSON.parse(item.text || '[]'); return Array.isArray(arr) ? arr : []; }
+        catch { return []; }
+      };
+      const saveTasks = (tasks, opts) => {
+        const next = tasks.map(t => ({
+          id: t.id || ('t_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+          title: t.title || '',
+          description: t.description || '',
+          done: !!t.done,
+        }));
+        item.text = JSON.stringify(next);
+        return patchItem(item.id, { text: item.text })
+          .then(() => {
+            if (opts && opts.repaint) {
+              const body = document.querySelector(`.sp-item[data-item-id="${item.id}"] .sp-item-body`);
+              if (body) { body.innerHTML = renderItemBody(item); wireItem(item); }
+            } else {
+              // Only update the progress bar so we don't blow away input focus.
+              const total = next.length;
+              const done = next.filter(t => t.done).length;
+              const pct = total ? Math.round((done / total) * 100) : 0;
+              const bar = el.querySelector('.sp-tasklist-progress-bar');
+              const lbl = el.querySelector('.sp-tasklist-progress-label');
+              if (bar) bar.style.width = pct + '%';
+              if (lbl) lbl.textContent = `${done}/${total}`;
+            }
+          })
+          .catch(err => toast(err.message || 'Update failed'));
+      };
+
+      // Checkbox toggle
+      el.querySelectorAll('[data-task-check]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const row = cb.closest('[data-task-idx]');
+          if (!row) return;
+          const idx = Number(row.dataset.taskIdx);
+          const tasks = getTasks();
+          if (!tasks[idx]) return;
+          tasks[idx].done = cb.checked;
+          row.classList.toggle('is-done', cb.checked);
+          saveTasks(tasks);
+        });
+      });
+
+      // Title input (debounced, no repaint so caret stays put)
+      el.querySelectorAll('[data-task-title]').forEach(inp => {
+        let timer = null;
+        inp.addEventListener('input', () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            const row = inp.closest('[data-task-idx]');
+            if (!row) return;
+            const idx = Number(row.dataset.taskIdx);
+            const tasks = getTasks();
+            if (!tasks[idx]) return;
+            tasks[idx].title = inp.value;
+            saveTasks(tasks);
+          }, 400);
+        });
+      });
+
+      // Description textarea (debounced)
+      el.querySelectorAll('[data-task-desc]').forEach(ta => {
+        let timer = null;
+        // Auto-grow the textarea as the user types.
+        const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+        ta.addEventListener('input', () => {
+          grow();
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            const row = ta.closest('[data-task-idx]');
+            if (!row) return;
+            const idx = Number(row.dataset.taskIdx);
+            const tasks = getTasks();
+            if (!tasks[idx]) return;
+            tasks[idx].description = ta.value;
+            saveTasks(tasks);
+          }, 400);
+        });
+        // Initial grow so existing descriptions render at full height.
+        requestAnimationFrame(grow);
+      });
+
+      // Delete task
+      el.querySelectorAll('[data-task-del]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const row = btn.closest('[data-task-idx]');
+          if (!row) return;
+          const idx = Number(row.dataset.taskIdx);
+          const tasks = getTasks();
+          tasks.splice(idx, 1);
+          saveTasks(tasks, { repaint: true });
+        });
+      });
+
+      // Add task
+      const addBtn = el.querySelector('[data-task-add]');
+      if (addBtn) addBtn.addEventListener('click', () => {
+        const tasks = getTasks();
+        tasks.push({ title: '', description: '', done: false });
+        saveTasks(tasks, { repaint: true }).then(() => {
+          // Focus the new task's title input for immediate typing.
+          const newRow = document.querySelector(`.sp-item[data-item-id="${item.id}"] [data-task-idx="${tasks.length - 1}"] [data-task-title]`);
+          if (newRow) newRow.focus();
+        });
+      });
+    }
   }
 
   function showItemMenu(item, anchorBtn) {
@@ -1096,6 +1252,7 @@
     const menu = document.createElement('div');
     menu.className = 'sp-add-menu';
     const items = [
+      { id: 'tasklist', label: 'Task list',     desc: 'Checklist of tasks' },
       { id: 'ticket',   label: 'Ticket',        desc: 'New or pick existing' },
       { id: 'sticky',   label: 'Sticky note',   desc: 'Hand-written reminder' },
       { id: 'note',     label: 'Text note',     desc: 'Plain note' },
@@ -1142,6 +1299,15 @@
     if (type === 'sticky') return doAdd({ type, text: '', color: STICKY_COLORS[Math.floor(Math.random() * STICKY_COLORS.length)] });
     if (type === 'note') return doAdd({ type, title: 'Note', text: '' });
     if (type === 'document') return doAdd({ type, title: 'Untitled document', text: '' });
+    if (type === 'tasklist') {
+      // Seed with a single empty task so the new card isn't completely
+      // empty when it lands; the user can start typing right away.
+      const seedTasks = [{
+        id: 't_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        title: '', description: '', done: false,
+      }];
+      return doAdd({ type, title: 'Tasks', text: JSON.stringify(seedTasks) });
+    }
     if (type === 'link') return openLinkModal();
     if (type === 'ticket') return openTicketModal();
     if (type === 'image' || type === 'file') return openFilePicker(type);
