@@ -2354,24 +2354,44 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         padding-bottom: calc(20px + env(safe-area-inset-bottom)) !important;
       }
 
-      /* Compact topbar search on mobile — icon-only pill that expands to
-         a full input when focused. Sits at the right edge next to the
-         theme toggle and notification bell, not stretched across the
-         topbar. */
+      /* Mobile topbar — pack search + theme + bell + profile against the
+         right edge as a single cluster.
+         Critical: an older rule at @media(max-width:760px) sets
+           .topbar-right { width:100%; justify-content:space-between }
+         which forcibly spread the moon to the left and the bell to the
+         right. We have to undo width:100%, the space-between, and the
+         flex-wrap or the cluster splits no matter what we do here. */
+      #topbar {
+        justify-content: flex-end !important;
+        flex-wrap: nowrap !important;
+        gap: 6px !important;
+        padding: 0 12px !important;
+        height: 56px !important;
+      }
+      #topbar > .topbar-right {
+        width: auto !important;
+        flex-wrap: nowrap !important;
+        justify-content: flex-end !important;
+      }
+      /* Search becomes an icon-only pill that expands to a full input
+         on focus. flex: 0 0 38px (no grow, no shrink, fixed basis) keeps
+         it next to the buttons in the cluster. */
       #topbar > .search-wrap {
         display: block !important;
-        flex: 0 0 auto !important;
-        margin-left: auto !important;   /* push to the right, next to topbar-right */
+        position: relative !important;
+        flex: 0 0 38px !important;
         max-width: 38px !important;
         width: 38px !important;
         min-width: 38px !important;
+        margin: 0 !important;
         overflow: hidden;
-        transition: max-width .22s ease, width .22s ease;
+        transition: flex-basis .22s ease, max-width .22s ease, width .22s ease, min-width .22s ease;
       }
       #topbar > .search-wrap:focus-within {
-        max-width: 220px !important;
-        width: 220px !important;
-        min-width: 0 !important;
+        flex: 0 0 200px !important;
+        max-width: 200px !important;
+        width: 200px !important;
+        min-width: 200px !important;
       }
       #topbar > .search-wrap input {
         width: 100% !important;
@@ -2379,14 +2399,19 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         padding: 6px 10px 6px 30px !important;
         font-size: 13px !important;
         border-radius: 10px !important;
+        background: var(--bg2) !important;
       }
       #topbar > .search-wrap svg { left: 11px !important; width: 14px !important; height: 14px !important; }
-      /* Hide the placeholder until the search expands — otherwise it gets
-         awkwardly clipped behind the icon in the collapsed state. */
+      /* Hide the placeholder when collapsed — only show it after expansion. */
       #topbar > .search-wrap input::placeholder { color: transparent !important; }
       #topbar > .search-wrap:focus-within input::placeholder { color: #9ca3af !important; }
-      /* Sit theme/bell/profile right against the search input — no auto-margin. */
-      #topbar .topbar-right { margin-left: 6px !important; gap: 6px !important; }
+      /* No auto-margin on .topbar-right anymore — justify-content handles
+         alignment, and a small gap separates it from .search-wrap. */
+      #topbar .topbar-right {
+        margin-left: 0 !important;
+        gap: 6px !important;
+        flex-shrink: 0 !important;
+      }
       .topbar-right .theme-toggle,
       .topbar-right .notif-btn { width: 36px !important; height: 36px !important; border-radius: 10px !important; }
       .notif-btn .notif-dot { font-size: 9px !important; }
@@ -2710,6 +2735,117 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     ::-webkit-scrollbar-thumb { background: #c7d2fe; border-radius: 99px; }
     ::-webkit-scrollbar-thumb:hover { background: #818cf8; }
 
+    /* ── Ticket Quick-View bottom sheet (mobile pattern) ──────────────── */
+    .tqv-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, .45);
+      backdrop-filter: blur(4px);
+      z-index: 20500;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity .22s ease;
+    }
+    .tqv-overlay.is-open { opacity: 1; }
+    .tqv-overlay[hidden] { display: none !important; }
+    .tqv-sheet {
+      width: 100%;
+      max-width: 520px;
+      background: #fff;
+      border-radius: 22px 22px 0 0;
+      padding: 8px 18px calc(20px + env(safe-area-inset-bottom));
+      box-shadow: 0 -12px 32px rgba(15, 23, 42, .25);
+      transform: translateY(100%);
+      transition: transform .25s cubic-bezier(.34, 1.2, .64, 1);
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    .tqv-overlay.is-open .tqv-sheet { transform: translateY(0); }
+    .tqv-handle {
+      width: 40px; height: 4px;
+      background: #cbd5e1;
+      border-radius: 99px;
+      margin: 0 auto 12px;
+    }
+    .tqv-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+    .tqv-id {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: .02em;
+    }
+    .tqv-close {
+      background: #f1f5f9;
+      border: 0;
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      color: var(--text2);
+    }
+    .tqv-close:hover { background: #e2e8f0; color: var(--text); }
+    .tqv-title {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 0 0 14px;
+      color: var(--text);
+    }
+    .tqv-meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 16px;
+      margin-bottom: 18px;
+    }
+    .tqv-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .tqv-meta-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--text3);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .tqv-meta-val {
+      font-size: 13px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .tqv-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: stretch;
+    }
+    .tqv-actions .btn-sec,
+    .tqv-actions .btn-primary {
+      flex: 1;
+      padding: 11px 16px !important;
+      font-size: 13px !important;
+      min-height: 44px !important;
+    }
+    /* Dark theme support for the sheet. */
+    body.theme-dark .tqv-sheet { background: #131a2e !important; }
+    body.theme-dark .tqv-title { color: #f1f5f9 !important; }
+    body.theme-dark .tqv-close { background: #1c2540 !important; color: #94a3b8 !important; }
+    body.theme-dark .tqv-meta-val { color: #e2e8f0 !important; }
+
     /* ── Theme toggle button ────────────────────────────────────────────── */
     .theme-toggle {
       position: relative;
@@ -2875,34 +3011,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       }
       #page-dashboard .dash-now-chip .dash-now-icon { width: 12px !important; height: 12px !important; }
 
-      /* Period / Department filters — 2-col grid: label-narrow, select-wide,
-         one label/select pair per row. Cleaner than letting flex wrap. */
+      /* Period / Department filters — two compact dropdowns sharing one row.
+         Labels hidden on mobile since each select already shows its
+         currently-chosen value ("This Month", "All Departments"). */
       #dash-filter-bar {
         display: grid !important;
-        grid-template-columns: auto 1fr !important;
+        grid-template-columns: 1fr 1fr !important;
         align-items: center !important;
-        gap: 10px 12px !important;
-        margin-bottom: 18px !important;
-        padding: 12px 14px !important;
+        gap: 8px !important;
+        margin-bottom: 16px !important;
+        padding: 8px 10px !important;
         background: #ffffff !important;
         border: 1px solid rgba(0,0,0,.06) !important;
-        border-radius: 14px !important;
+        border-radius: 12px !important;
         box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
       }
-      #dash-filter-bar .pf-label {
-        font-size: 11px !important;
-        color: var(--text3) !important;
-        font-weight: 600 !important;
-        text-transform: uppercase !important;
-        letter-spacing: .04em !important;
-        margin: 0 !important;
-      }
+      #dash-filter-bar .pf-label { display: none !important; }
       #dash-filter-bar .pf-select {
         width: 100% !important;
         min-width: 0 !important;
-        padding: 8px 12px !important;
-        font-size: 13.5px !important;
-        border-radius: 10px !important;
+        padding: 6px 10px !important;
+        font-size: 12.5px !important;
+        border-radius: 8px !important;
+        height: 34px !important;
       }
 
       /* Section-title chips ("Your insights"). */
@@ -3021,27 +3152,28 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         font-weight: 600 !important;
       }
 
-      /* Recent Tickets — convert the table to a stack of tap-friendly cards.
-         Each <tr> becomes a flex container; flex-wrap + per-cell `order` puts
-         the id + avatar on row 1, the title full-width on row 2, and the
-         priority / status / due chips on row 3. The JS that builds the table
-         doesn't need to change. */
+      /* Recent Tickets on mobile — ultra-compact single-line rows.
+         Show only ID + Title + Status. Hide assignee, priority, due — they
+         live in the quick-view bottom sheet instead. Tap row → quick view
+         (wired in JS via showTicketQuickView). */
       #dash-ticket-table,
       #dash-ticket-table tbody { display: block !important; background: transparent !important; }
       #dash-ticket-table { border: 0 !important; box-shadow: none !important; }
       #dash-ticket-table thead { display: none !important; }
       #dash-ticket-table tr {
-        display: flex !important;
-        flex-wrap: wrap !important;
-        align-items: center !important;
-        gap: 4px 10px !important;
-        padding: 12px 14px !important;
-        margin-bottom: 8px !important;
+        display: grid !important;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px !important;
+        padding: 11px 14px !important;
+        margin-bottom: 6px !important;
         background: #fff !important;
-        border-radius: 14px !important;
+        border-radius: 12px !important;
         border: 1px solid rgba(0,0,0,.06) !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,.04) !important;
+        cursor: pointer;
       }
+      #dash-ticket-table tr:active { transform: scale(.99); transition: transform .08s; }
       #dash-ticket-table tr:hover td { background: transparent !important; }
       #dash-ticket-table td {
         padding: 0 !important;
@@ -3050,27 +3182,240 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         max-width: none !important;
         white-space: normal !important;
       }
+      /* Hide everything except ID (1), Title (2), Status (5). */
+      #dash-ticket-table td:nth-child(3),  /* assignee */
+      #dash-ticket-table td:nth-child(4),  /* priority */
+      #dash-ticket-table td:nth-child(6)   /* due */
+      { display: none !important; }
       #dash-ticket-table td:nth-child(1) { /* ID */
-        order: 1; font-size: 11px !important; color: var(--accent) !important; font-weight: 600;
-      }
-      #dash-ticket-table td:nth-child(3) { /* Assignee avatar */
-        order: 2; margin-left: auto;
+        font-size: 11px !important;
+        color: var(--accent) !important;
+        font-weight: 700;
       }
       #dash-ticket-table td:nth-child(2) { /* Title */
-        order: 3; flex: 1 100%;
-        font-size: 13.5px !important; font-weight: 500;
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap !important;
+        font-size: 13.5px !important;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap !important;
+        min-width: 0;
       }
-      #dash-ticket-table td:nth-child(4) { order: 4; } /* Priority */
-      #dash-ticket-table td:nth-child(5) { order: 5; } /* Status */
-      #dash-ticket-table td:nth-child(6) { /* Due date */
-        order: 6; margin-left: auto;
-        font-size: 11.5px !important;
+      #dash-ticket-table td:nth-child(5) { /* Status pill */
+        justify-self: end;
       }
 
       /* Admin row: Workload + Activity stacked vertical. */
       #page-dashboard .admin-only > div[style*="grid-template-columns:1fr 1fr"] {
         grid-template-columns: 1fr !important;
+      }
+    }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Mobile Tickets redesign (≤ 768px)
+       ────────────────────────────────────────────────────────────────────
+       Goals: 7-card stat row becomes a horizontal-scroll chip strip;
+       wide table flattens into a stack of tap-friendly cards; filter
+       dropdowns wrap cleanly; bulk-action bar fits the viewport.
+       ════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      /* Page chrome */
+      #page-tickets .page-content { padding: 18px 14px 96px !important; }
+
+      /* Hero H1 */
+      #page-tickets > .page-content > h1 {
+        font-size: 26px !important;
+        font-weight: 800 !important;
+        letter-spacing: -.03em !important;
+        margin: 4px 0 2px !important;
+        background: linear-gradient(120deg, #2563eb, #06b6d4) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        color: transparent !important;
+      }
+      #page-tickets > .page-content > p {
+        font-size: 13.5px !important;
+        margin: 0 0 16px !important;
+      }
+
+      /* 7-card status grid → horizontal-scroll snap chip strip.
+         Each card becomes a fixed-width pill that snaps when scrolling. */
+      #page-tickets > .page-content > .stat-grid {
+        display: flex !important;
+        grid-template-columns: none !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        scroll-snap-type: x mandatory;
+        gap: 10px !important;
+        margin: 0 -14px 18px !important;
+        padding: 0 14px 4px !important;
+        -webkit-overflow-scrolling: touch;
+      }
+      #page-tickets > .page-content > .stat-grid::-webkit-scrollbar { display: none; }
+      #page-tickets > .page-content > .stat-grid .stat-card {
+        flex: 0 0 auto !important;
+        min-width: 140px !important;
+        scroll-snap-align: start;
+        padding: 12px 14px !important;
+        border-radius: 16px !important;
+      }
+      #page-tickets > .page-content > .stat-grid .stat-card .stat-icon {
+        width: 30px !important; height: 30px !important;
+        border-radius: 10px !important;
+        margin-bottom: 0 !important;
+      }
+      #page-tickets > .page-content > .stat-grid .stat-card .stat-label {
+        font-size: 11px !important;
+        white-space: nowrap;
+      }
+      #page-tickets > .page-content > .stat-grid .stat-card .stat-value {
+        font-size: 22px !important;
+        line-height: 1.1 !important;
+      }
+      /* The active card (selected filter) gets a stronger ring. */
+      #page-tickets .stat-card.active {
+        box-shadow: 0 0 0 2px #2563eb, 0 6px 14px rgba(37,99,235,.18) !important;
+      }
+
+      /* Tabs: tighter, smaller text so more fit before scrolling. */
+      #page-tickets .tabs { padding: 3px !important; }
+      #page-tickets .tab {
+        padding: 6px 11px !important;
+        font-size: 11.5px !important;
+      }
+      #page-tickets .tab-count {
+        font-size: 9.5px !important;
+        padding: 1px 5px !important;
+      }
+
+      /* Filter dropdowns row — Status + Priority share a row, assignee full. */
+      #page-tickets #fil-status,
+      #page-tickets #fil-priority {
+        padding: 9px 10px !important;
+        font-size: 13px !important;
+        border-radius: 10px !important;
+        min-height: 42px !important;
+      }
+      #page-tickets .assignee-filter-trigger {
+        padding: 9px 12px !important;
+        font-size: 13px !important;
+        border-radius: 10px !important;
+        min-height: 42px !important;
+        justify-content: space-between !important;
+      }
+
+      /* Bulk-action bar: horizontal scroll on mobile so the buttons can't
+         overflow the page; gap kept tight. */
+      #page-tickets #bulk-bar {
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch;
+        padding: 10px 12px !important;
+      }
+      #page-tickets #bulk-bar::-webkit-scrollbar { display: none; }
+      #page-tickets #bulk-bar .bulk-actions { flex-shrink: 0 !important; }
+
+      /* Card-wrapping the table: drop the desktop min-width and outer
+         padding so the rows can re-shape into vertical cards. The wrapping
+         <div style="overflow-x:auto"> + the <table min-width:1100px> need
+         to ALL be neutralised — leaving any of them keeps a horizontal
+         scrollbar and lets the cards spill past the viewport. */
+      #page-tickets .card { padding: 12px 10px 14px !important; border-radius: 18px !important; }
+      #page-tickets .card > div[style*="overflow-x"] {
+        overflow-x: visible !important;
+        width: 100% !important;
+        min-width: 0 !important;
+      }
+      #page-tickets .tbl,
+      #page-tickets .card > div[style*="overflow-x"] > .tbl {
+        display: block !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        table-layout: auto !important;
+      }
+
+      /* Recent / All tickets table → stack of touch cards.
+         Hide thead. Each <tr> becomes a flexbox grid; per-cell `order`
+         + display:none on the columns that aren't useful on a phone
+         keeps the layout legible without changing renderTickets() JS. */
+      #tickets-tbody { display: block !important; width: 100% !important; }
+      #tickets-tbody tr {
+        display: grid !important;
+        grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+        grid-template-rows: auto auto auto;
+        gap: 4px 10px;
+        align-items: center;
+        padding: 12px 14px !important;
+        margin-bottom: 8px;
+        width: 100% !important;
+        max-width: 100% !important;
+        background: #fff !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(0,0,0,.06) !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
+        box-sizing: border-box;
+      }
+      #tickets-tbody tr:hover td,
+      #tickets-tbody tr.selected td { background: transparent !important; }
+      #tickets-tbody tr.unread {
+        background: #eef2ff !important;
+        box-shadow: inset 3px 0 0 #4f46e5, 0 1px 3px rgba(0,0,0,.05) !important;
+      }
+      /* Hide the table header AND the columns that aren't useful on mobile.
+         Order: checkbox(1) ID(2) Title(3) Status(4) Priority(5) Assignee(6)
+         Requester(7) Dept(8) Created(9) Due(10) Comments(11) Actions(12). */
+      #page-tickets .tbl thead { display: none !important; }
+      #tickets-tbody td:nth-child(1),  /* checkbox */
+      #tickets-tbody td:nth-child(7),  /* requester */
+      #tickets-tbody td:nth-child(8),  /* department */
+      #tickets-tbody td:nth-child(9),  /* created */
+      #tickets-tbody td:nth-child(11)  /* comments */
+      { display: none !important; }
+      #tickets-tbody td {
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        max-width: none !important;
+      }
+      #tickets-tbody td:nth-child(2) { /* ID */
+        grid-row: 1; grid-column: 1;
+        font-size: 11px !important; color: var(--accent) !important; font-weight: 700;
+      }
+      #tickets-tbody td:nth-child(4) { /* Status */
+        grid-row: 1; grid-column: 2;
+        justify-self: start;
+      }
+      #tickets-tbody td:nth-child(12) { /* Actions (⋯) */
+        grid-row: 1; grid-column: 3;
+      }
+      #tickets-tbody td:nth-child(3) { /* Title — wraps under id+status */
+        grid-row: 2; grid-column: 1 / span 3;
+        font-size: 14px !important; font-weight: 500;
+        line-height: 1.4 !important;
+        white-space: normal !important;
+        overflow: visible !important;
+      }
+      #tickets-tbody td:nth-child(5),  /* Priority */
+      #tickets-tbody td:nth-child(6),  /* Assignee */
+      #tickets-tbody td:nth-child(10)  /* Due */
+      {
+        grid-row: 3;
+        font-size: 11.5px !important;
+      }
+      #tickets-tbody td:nth-child(5) { grid-column: 1; }
+      #tickets-tbody td:nth-child(6) { grid-column: 2; }
+      #tickets-tbody td:nth-child(10) { grid-column: 3; justify-self: end; color: var(--text2) !important; }
+
+      /* Pagination row: center + larger taps. */
+      #page-tickets .card > div[style*="padding-top:12px"] {
+        flex-direction: column !important;
+        align-items: center !important;
+        gap: 8px !important;
+        padding-top: 16px !important;
+      }
+      #page-tickets .pg-btn {
+        min-width: 36px !important; min-height: 36px !important;
+        font-size: 13px !important;
       }
     }
   </style>
@@ -3169,6 +3514,32 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   <div class="sb-bottom"></div>
 </div>
 <div id="sb-overlay" onclick="closeMobileSidebar()"></div>
+
+<!-- Quick-view bottom sheet (mobile-only): a tap on a dashboard ticket
+     row slides this up with the full ticket meta and an "Open full
+     ticket →" CTA. Lazy-populated by showTicketQuickView(). -->
+<div id="ticket-quick-view" class="tqv-overlay" hidden>
+  <div class="tqv-sheet" role="dialog" aria-labelledby="tqv-title-el">
+    <div class="tqv-handle"></div>
+    <div class="tqv-head">
+      <span class="tqv-id" id="tqv-id">—</span>
+      <button class="tqv-close" id="tqv-close" type="button" aria-label="Close">×</button>
+    </div>
+    <h3 class="tqv-title" id="tqv-title-el">—</h3>
+    <div class="tqv-meta-grid">
+      <div class="tqv-meta"><span class="tqv-meta-label">Status</span><span class="tqv-meta-val" id="tqv-status">—</span></div>
+      <div class="tqv-meta"><span class="tqv-meta-label">Priority</span><span class="tqv-meta-val" id="tqv-priority">—</span></div>
+      <div class="tqv-meta"><span class="tqv-meta-label">Assignee</span><span class="tqv-meta-val" id="tqv-assignee">—</span></div>
+      <div class="tqv-meta"><span class="tqv-meta-label">Due</span><span class="tqv-meta-val" id="tqv-due">—</span></div>
+      <div class="tqv-meta"><span class="tqv-meta-label">Requester</span><span class="tqv-meta-val" id="tqv-requester">—</span></div>
+      <div class="tqv-meta"><span class="tqv-meta-label">Department</span><span class="tqv-meta-val" id="tqv-department">—</span></div>
+    </div>
+    <div class="tqv-actions">
+      <button class="btn-sec tqv-cancel" type="button" id="tqv-cancel">Close</button>
+      <button class="btn-primary tqv-open" type="button" id="tqv-open">Open full ticket →</button>
+    </div>
+  </div>
+</div>
 
 <!-- Floating + (mobile only): opens Create Ticket from anywhere -->
 <button id="mobile-fab" type="button" aria-label="Create ticket" onclick="openModal('create-ticket')">
@@ -6237,6 +6608,85 @@ function renderInsightDrawer(category) {
   `;
 }
 
+// ── Dashboard ticket quick-view (mobile pattern) ────────────────────────
+// Mobile rows on the dashboard are ultra-compact (ID + Title + Status).
+// Tapping a row opens a slide-up sheet with assignee / priority / due /
+// requester / dept and an "Open full ticket" CTA. We rebind row clicks
+// after each render so the inline onclick="openTicketDetail(...)" doesn't
+// fire when the bottom sheet should instead.
+function showTicketQuickView(id) {
+  const t = (typeof TICKETS_DATA !== 'undefined') ? TICKETS_DATA.find(x => x.id === id) : null;
+  if (!t) { if (typeof openTicketDetail === 'function') openTicketDetail(id); return; }
+  const overlay = document.getElementById('ticket-quick-view');
+  if (!overlay) { if (typeof openTicketDetail === 'function') openTicketDetail(id); return; }
+
+  const setText  = (el, val) => { const e = document.getElementById(el); if (e) e.textContent = val || '—'; };
+  const setHtml  = (el, val) => { const e = document.getElementById(el); if (e) e.innerHTML  = val || '—'; };
+
+  setText('tqv-id',          '#' + (t.id || ''));
+  setText('tqv-title-el',    t.title || '(untitled)');
+  setHtml('tqv-status',      typeof statusBadge   === 'function' ? statusBadge(t.status)     : (t.status   || '—'));
+  setHtml('tqv-priority',    typeof priorityBadge === 'function' ? priorityBadge(t.priority) : (t.priority || '—'));
+  const assigneeHtml = typeof stackedAvatars === 'function' && typeof getAssignees === 'function'
+    ? stackedAvatars(getAssignees(t))
+    : (t.assignee || '—');
+  setHtml('tqv-assignee',    assigneeHtml);
+  setText('tqv-due',         t.due || '—');
+  setText('tqv-requester',   t.req || '—');
+  setText('tqv-department',  t.dept || '—');
+
+  overlay.hidden = false;
+  // Force a reflow so the slide-up transition runs from translateY(100%).
+  void overlay.offsetWidth;
+  overlay.classList.add('is-open');
+
+  // Wire the "Open full ticket" CTA each time — captures the current id.
+  const openBtn = document.getElementById('tqv-open');
+  if (openBtn) openBtn.onclick = () => {
+    closeTicketQuickView();
+    setTimeout(() => { if (typeof openTicketDetail === 'function') openTicketDetail(id); }, 220);
+  };
+}
+
+function closeTicketQuickView() {
+  const overlay = document.getElementById('ticket-quick-view');
+  if (!overlay) return;
+  overlay.classList.remove('is-open');
+  setTimeout(() => { overlay.hidden = true; }, 260);
+}
+
+// Replace the dashboard table's inline row click (which opens the full
+// ticket detail) with the quick-view sheet — but only on a phone-sized
+// viewport. Desktop stays click-to-open. Re-runs after every dashboard
+// re-render via a wrapped initDashboard.
+function rebindDashRowsForMobile() {
+  if (window.innerWidth > 768) return;
+  document.querySelectorAll('#dash-ticket-table tr[onclick]').forEach(tr => {
+    const orig = tr.getAttribute('onclick') || '';
+    const m = orig.match(/openTicketDetail\(['"]([^'"]+)['"]\)/);
+    if (!m) return;
+    tr.removeAttribute('onclick');
+    tr.addEventListener('click', () => showTicketQuickView(m[1]));
+  });
+}
+
+// Wire close affordances once. Overlay click (background) + × + Close
+// button + Escape key all dismiss the sheet.
+document.addEventListener('DOMContentLoaded', () => {
+  const overlay = document.getElementById('ticket-quick-view');
+  if (!overlay) return;
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) closeTicketQuickView();
+  });
+  const close  = document.getElementById('tqv-close');
+  const cancel = document.getElementById('tqv-cancel');
+  if (close)  close.onclick  = closeTicketQuickView;
+  if (cancel) cancel.onclick = closeTicketQuickView;
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && !overlay.hidden) closeTicketQuickView();
+  });
+});
+
 // ── Day/Night theme toggle ───────────────────────────────────────────────
 // Reads / writes localStorage and flips a `theme-dark` class on <body>.
 // The CSS rules under that class re-skin sidebar / topbar / cards / mobile
@@ -6289,6 +6739,11 @@ function initDashboard() {
   // Refresh the date/time the moment the dashboard renders so a stale
   // value can't sit there if the user opened the tab hours ago.
   updateDashNow();
+  // After the dashboard re-renders its ticket table, swap the inline
+  // openTicketDetail() onclick on each row for the mobile quick-view
+  // sheet. Runs every time initDashboard fires (which happens after
+  // captureDashboardBaseline mutates the rows below).
+  setTimeout(rebindDashRowsForMobile, 0);
   captureDashboardBaseline();
 
   // ---- Stat cards: baseline + delta from initial snapshot ----
