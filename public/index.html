@@ -2460,17 +2460,26 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       .topbar-right { gap: 10px !important; }
 
       /* Right-panel — on mobile, stack below the main content instead of
-         floating to the right. The ticket-detail right-panel is the comment
-         thread + composer, so hiding it would break commenting on mobile. */
+         floating to the right. The base .page-with-right uses display:flex
+         (not grid!), so we MUST flip flex-direction to column or the two
+         children flow side-by-side and overflow the viewport (showing as a
+         shifted-left page with content clipped off the edges). */
       .page-with-right {
-        grid-template-columns: 1fr !important;
-        grid-template-rows: auto auto !important;
+        flex-direction: column !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+      }
+      .page-with-right > .page-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: 0 0 auto !important;
       }
       .right-panel {
         display: block !important;
         position: static !important;
         width: 100% !important;
         max-width: 100% !important;
+        flex: 0 0 auto !important;
         border-left: 0 !important;
         border-top: 1px solid var(--border) !important;
         margin-top: 14px !important;
