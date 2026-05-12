@@ -34,6 +34,7 @@
     function disable(inp) {
       if (!inp || inp.nodeType !== 1 || inp.tagName !== 'INPUT') return;
       if (inp.dataset && inp.dataset.allowAutofill === 'true') return;
+      if (inp.dataset && inp.dataset.sxNoAutofill === '1') return; // already done
       var type = (inp.getAttribute('type') || 'text').toLowerCase();
       if (SKIP[type]) return;
       inp.setAttribute('autocomplete', 'off');
@@ -46,6 +47,19 @@
       if (!inp.getAttribute('name')) {
         inp.setAttribute('name', 'sx-' + Math.random().toString(36).slice(2, 10));
       }
+      // Final-stage defense: Edge/Chrome with saved credentials will
+      // still pop their picker on a focused text input that smells like
+      // a username field. Marking the input readonly at load defeats
+      // that — autofill heuristics skip readonly inputs — and we strip
+      // the readonly the moment the user focuses or taps the input so
+      // typing isn't blocked. Cost is one cursor-style flash that most
+      // users never notice.
+      inp.setAttribute('readonly', 'readonly');
+      var clear = function () { inp.removeAttribute('readonly'); };
+      inp.addEventListener('focus',     clear, { once: true });
+      inp.addEventListener('mousedown', clear, { once: true });
+      inp.addEventListener('touchstart', clear, { once: true, passive: true });
+      inp.dataset.sxNoAutofill = '1';
     }
     function scan(root) {
       if (!root) return;
@@ -2949,6 +2963,34 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     body.theme-dark .btn-sec { background: #1c2540 !important; color: #cbd5e1 !important; border-color: #25304a !important; }
     body.theme-dark .btn-sec:hover { background: #243056 !important; color: #93c5fd !important; }
 
+    /* Dark mode — surfaces created by the mobile redesign. Each of these
+       has !important inline white in its mobile rule, so the only way to
+       flip them in dark mode is another !important override. */
+    body.theme-dark #dash-ticket-table tr,
+    body.theme-dark #tickets-tbody tr,
+    body.theme-dark #dash-insight-drawer-list tr {
+      background: #131a2e !important;
+      border-color: #25304a !important;
+      box-shadow: 0 1px 2px rgba(0,0,0,.18) !important;
+    }
+    body.theme-dark #tickets-tbody tr.unread {
+      background: rgba(99,102,241,.12) !important;
+      box-shadow: inset 3px 0 0 #818cf8, 0 1px 2px rgba(0,0,0,.18) !important;
+    }
+    body.theme-dark #dash-ticket-table td:nth-child(2),
+    body.theme-dark #tickets-tbody td,
+    body.theme-dark #dash-insight-drawer-list td:nth-child(2) { color: #e2e8f0 !important; }
+    body.theme-dark #dash-insight-drawer {
+      background: #131a2e !important;
+      border-color: #25304a !important;
+    }
+    body.theme-dark #dash-insight-drawer-title { color: #f1f5f9 !important; }
+    body.theme-dark .tqv-handle { background: #38456a !important; }
+    body.theme-dark .tqv-meta-label { color: #94a3b8 !important; }
+    /* Pen sticky note dropdown / sub-toolbars — keep dark surfaces too. */
+    body.theme-dark #dash-ticket-table td:nth-child(5),
+    body.theme-dark #tickets-tbody td:nth-child(4) { color: inherit; }
+
     /* ── Live date+time chip (desktop default) ─────────────────────────── */
     .dash-now-chip {
       display: inline-flex;
@@ -3202,6 +3244,62 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       }
       #dash-ticket-table td:nth-child(5) { /* Status pill */
         justify-self: end;
+      }
+
+      /* Insight drawer tables ("Unread tickets", "Stale", "Mentions
+         awaiting your reply", "Total / In Progress / Overdue / Completed
+         today") use the same compact one-line row + tap-for-quick-view
+         pattern as Recent Tickets. Drawer columns (id, title, status,
+         priority, assignee, due) so we hide priority/assignee/due and
+         only show id + title + status. */
+      #dash-insight-drawer-list table,
+      #dash-insight-drawer-list tbody { display: block !important; width: 100% !important; }
+      #dash-insight-drawer-list table { border: 0 !important; box-shadow: none !important; }
+      #dash-insight-drawer-list thead { display: none !important; }
+      #dash-insight-drawer-list tr {
+        display: grid !important;
+        grid-template-columns: auto minmax(0, 1fr) auto !important;
+        align-items: center;
+        gap: 10px !important;
+        padding: 10px 12px !important;
+        margin-bottom: 6px !important;
+        background: #fff !important;
+        border-radius: 10px !important;
+        border: 1px solid rgba(0,0,0,.06) !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,.04) !important;
+        cursor: pointer;
+      }
+      #dash-insight-drawer-list tr:hover td { background: transparent !important; }
+      #dash-insight-drawer-list td {
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        max-width: none !important;
+      }
+      #dash-insight-drawer-list td:nth-child(4),   /* priority */
+      #dash-insight-drawer-list td:nth-child(5),   /* assignee */
+      #dash-insight-drawer-list td:nth-child(6)    /* due */
+      { display: none !important; }
+      #dash-insight-drawer-list td:nth-child(1) {
+        font-size: 11px !important;
+        color: var(--accent) !important;
+        font-weight: 700;
+      }
+      #dash-insight-drawer-list td:nth-child(2) {
+        font-size: 13px !important;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap !important;
+        min-width: 0;
+      }
+      #dash-insight-drawer-list td:nth-child(3) {
+        justify-self: end;
+      }
+      /* Drawer shell — slimmer padding on mobile. */
+      #dash-insight-drawer {
+        padding: 12px 12px 14px !important;
+        border-radius: 14px !important;
       }
 
       /* Admin row: Workload + Activity stacked vertical. */
@@ -6606,6 +6704,9 @@ function renderInsightDrawer(category) {
       </tbody>
     </table>
   `;
+  // On mobile, swap the inline onclick="openTicketDetail(...)" for the
+  // quick-view sheet (same UX as the Recent Tickets list).
+  if (typeof rebindDashRowsForMobile === 'function') rebindDashRowsForMobile();
 }
 
 // ── Dashboard ticket quick-view (mobile pattern) ────────────────────────
@@ -6661,7 +6762,11 @@ function closeTicketQuickView() {
 // re-render via a wrapped initDashboard.
 function rebindDashRowsForMobile() {
   if (window.innerWidth > 768) return;
-  document.querySelectorAll('#dash-ticket-table tr[onclick]').forEach(tr => {
+  // Cover Recent Tickets + every insight drawer table ("Unread", "Stale",
+  // "Mentions", "Total / In Progress / Overdue / Completed today") — they
+  // all use the same inline onclick="openTicketDetail(...)" shape.
+  const sel = '#dash-ticket-table tr[onclick], #dash-insight-drawer-list tr[onclick]';
+  document.querySelectorAll(sel).forEach(tr => {
     const orig = tr.getAttribute('onclick') || '';
     const m = orig.match(/openTicketDetail\(['"]([^'"]+)['"]\)/);
     if (!m) return;
