@@ -48,9 +48,28 @@
       if (r.status === 401) { location.href = '/login.html'; return; }
       state.me = await r.json();
       await loadFlavors();
-      render();
+      // Deep-link support: /flavors.html#42 opens flavor 42 directly. Ticket
+      // descriptions link to this URL, so workers landing here from a UPC /
+      // SKU ticket arrive on the right detail page.
+      const m = /^#(\d+)$/.exec(location.hash || '');
+      if (m) await openDetail(Number(m[1]));
+      else render();
+      window.addEventListener('hashchange', onHashChange);
     } catch (e) {
       $('#fv-app').innerHTML = errorBlock('Could not load Flavors. ' + (e.message || ''));
+    }
+  }
+
+  function onHashChange() {
+    const m = /^#(\d+)$/.exec(location.hash || '');
+    if (m) {
+      const id = Number(m[1]);
+      if (state.detailId !== id) openDetail(id);
+    } else if (state.view === 'detail') {
+      state.view = 'list';
+      state.detail = null;
+      state.detailId = null;
+      render();
     }
   }
 
@@ -311,6 +330,36 @@
     return `<div class="fv-review-row"><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v || '—'))}</dd></div>`;
   }
 
+  // Editable identifier row used on the detail page. Shows the saved value
+  // as a read-only chip plus an input + Save button. Save fires the PATCH;
+  // server-side that auto-closes the matching pipeline ticket (UPC / SKU).
+  function idEditor(field, label, value, hint) {
+    const v = value || '';
+    return `
+      <div class="fv-id-row fv-id-row-edit">
+        <label>${escapeHtml(label)} <span class="fv-muted">(${escapeHtml(hint)})</span></label>
+        <div class="fv-id-edit">
+          <input type="text" class="fv-input fv-id-input" data-id-field="${field}" value="${escapeAttr(v)}" placeholder="—" maxlength="64"/>
+          <button class="fv-btn fv-btn-sec fv-id-save" data-act="save-id" data-field="${field}">Save</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function stepLabel(step) {
+    return {
+      upc: 'UPC',
+      sku: 'SKU',
+      nineyard: 'NineYard',
+      label_design: 'Label',
+      label_review: 'Label Review',
+    }[step] || step;
+  }
+
+  function slug(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  }
+
   // ── Detail view ───────────────────────────────────────────────────────────
   function renderDetail() {
     const f = state.detail;
@@ -351,26 +400,26 @@
 
             <div class="fv-detail-section">
               <div class="fv-section-label">Identifiers</div>
-              <div class="fv-id-row">
-                <label>UPC <span class="fv-muted">(filled by GS1 ticket)</span></label>
-                <div class="fv-id-value">${f.upc ? escapeHtml(f.upc) : '<span class="fv-muted">— pending</span>'}</div>
-              </div>
-              <div class="fv-id-row">
-                <label>SKU <span class="fv-muted">(filled by SKU ticket)</span></label>
-                <div class="fv-id-value">${f.sku ? escapeHtml(f.sku) : '<span class="fv-muted">— pending</span>'}</div>
-              </div>
+              ${idEditor('upc', 'UPC', f.upc, 'Filled here closes the GS1 UPC ticket')}
+              ${idEditor('sku', 'SKU', f.sku, 'Filled here closes the SKU ticket')}
             </div>
 
             <div class="fv-detail-section">
               <div class="fv-section-label">Tasks (${f.tickets_closed}/${total || 0} done)</div>
               ${total === 0
-                ? `<div class="fv-muted fv-task-empty">No tasks yet. The launch pipeline (UPC, SKU, NineYard, label, listings, images, channel listings) will be added in the next phase.</div>`
+                ? `<div class="fv-task-empty">
+                     <p class="fv-muted" style="margin:0 0 12px">No tasks yet. Launch the pipeline to create the UPC, SKU, NineYard, and label-design tickets.</p>
+                     <button class="fv-btn fv-btn-primary" data-act="launch-pipeline" data-id="${f.id}">🚀 Launch pipeline</button>
+                   </div>`
                 : `<ul class="fv-task-list">${(f.tickets || []).map(t => `
                     <li class="fv-task ${t.status === 'Closed' ? 'done' : ''}">
                       <span class="fv-task-check">${t.status === 'Closed' ? '✓' : '○'}</span>
-                      <span class="fv-task-title">${escapeHtml(t.title)}</span>
+                      <span class="fv-task-title">
+                        ${t.flavor_v2_step ? `<span class="fv-task-step">${escapeHtml(stepLabel(t.flavor_v2_step))}</span>` : ''}
+                        <a href="/tickets/${escapeAttr(t.id)}" class="fv-task-link" target="_blank" rel="noopener">${escapeHtml(t.title)}</a>
+                      </span>
                       <span class="fv-task-meta">${escapeHtml(t.assignee || '')}</span>
-                      <span class="fv-task-status">${escapeHtml(t.status)}</span>
+                      <span class="fv-task-status fv-status-${slug(t.status)}">${escapeHtml(t.status)}</span>
                     </li>
                   `).join('')}</ul>`
               }
@@ -499,6 +548,7 @@
         state.view = 'list';
         state.detail = null;
         state.detailId = null;
+        if (location.hash) history.replaceState(null, '', location.pathname);
         return render();
       }
       if (name === 'wizard-cancel') {
@@ -515,6 +565,14 @@
       }
       if (name === 'wizard-save') {
         return wizardSave();
+      }
+      if (name === 'launch-pipeline') {
+        const id = Number(act.getAttribute('data-id'));
+        return launchPipeline(id);
+      }
+      if (name === 'save-id') {
+        const field = act.getAttribute('data-field');
+        return saveIdentifier(field);
       }
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
@@ -668,6 +726,7 @@
       state.view = 'detail';
       state.detailId = data.id;
       state.detail = { ...data, tickets: [] };
+      history.replaceState(null, '', '#' + data.id);
       render();
     } catch (e) {
       w.saving = false;
@@ -676,10 +735,56 @@
     }
   }
 
+  // ── Launch pipeline ───────────────────────────────────────────────────────
+  // Posts to /api/flavors2/:id/launch which atomically creates the four
+  // pipeline tickets. We disable the button and re-fetch the detail so the
+  // task list renders immediately with the new tickets.
+  async function launchPipeline(id) {
+    const btn = $('[data-act="launch-pipeline"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Launching…'; }
+    try {
+      const r = await fetch(`/api/flavors2/${id}/launch`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Launch failed');
+      await loadFlavor(id);
+      render();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '🚀 Launch pipeline'; }
+      alert('Could not launch pipeline: ' + (e.message || ''));
+    }
+  }
+
+  // ── Save UPC / SKU ────────────────────────────────────────────────────────
+  // PATCHes the flavor record; the server auto-closes the matching pipeline
+  // ticket on a blank→set transition. We re-fetch on success so the task
+  // list immediately shows the now-closed UPC / SKU ticket.
+  async function saveIdentifier(field) {
+    const input = document.querySelector(`[data-id-field="${field}"]`);
+    if (!input) return;
+    const val = String(input.value || '').trim();
+    const btn = document.querySelector(`.fv-id-save[data-field="${field}"]`);
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [field]: val }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      await loadFlavor(state.detailId);
+      render();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+      alert('Could not save: ' + (e.message || ''));
+    }
+  }
+
   async function openDetail(id) {
     state.view = 'detail';
     state.detailId = id;
     state.detail = null;
+    if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
     render();
     try {
       await loadFlavor(id);

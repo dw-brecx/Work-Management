@@ -1204,6 +1204,19 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
       u.push('close_reason=?'); v.push(null);
     }
     if (u.length) { v.push(req.params.id); await run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
+
+    // Flavor-launch pipeline hook: when a flavor pipeline ticket transitions
+    // to Closed, let routes/flavors.js decide whether to spawn a follow-up
+    // (currently: label_design close → spawn the label_review ticket).
+    // Deferred so the PUT response stays snappy; failures log and are
+    // swallowed since the user-visible status flip already succeeded.
+    if (status === 'Closed' && oldStatus !== 'Closed' && exists.flavor_v2_id) {
+      setImmediate(() => {
+        const fresh = { ...exists, status: 'Closed' };
+        req.app.locals.flavorsHook?.onTicketClosed?.(fresh);
+      });
+    }
+
     if (assignees!==undefined) {
       await run('DELETE FROM ticket_assignees WHERE ticket_id=?', req.params.id);
       for (const a of assignees) {

@@ -200,16 +200,26 @@ module.exports = function attach(app, deps) {
   // Whitelisted fields only — formula inputs are immutable after creation so
   // the audited ingredient list never silently changes under existing tickets.
   // If you really need to re-derive, delete and re-create the flavor.
+  //
+  // Side effect: when upc / sku flips from blank → set, we auto-close the
+  // matching pipeline ticket so the worker doesn't have to bounce over to the
+  // tickets list to mark it done. Saves clicks and keeps the bottle in sync.
   const PATCH_FIELDS = ['upc', 'sku', 'status'];
   app.patch('/api/flavors2/:id', requireAuth, async (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const before = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!before) return res.status(404).json({ error: 'Not found' });
+
       const sets = []; const args = [];
+      const cleaned = {};
       for (const f of PATCH_FIELDS) {
         if (f in req.body) {
+          const v = String(req.body[f] || '').trim();
+          cleaned[f] = v;
           sets.push(`${f}=?`);
-          args.push(String(req.body[f] || '').trim());
+          args.push(v);
         }
       }
       if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
@@ -219,6 +229,15 @@ module.exports = function attach(app, deps) {
       }
       args.push(id);
       await run(`UPDATE flavors_v2 SET ${sets.join(',')} WHERE id=?`, ...args);
+
+      // Auto-close the matching pipeline ticket on first set. Only fires
+      // when the field went blank → non-blank (preventing a re-edit from
+      // re-closing an already-reopened ticket). The status fan-out hook in
+      // server.js's PUT /api/tickets will then take over from there
+      // (notifications, downstream label-review spawn, etc.).
+      if (cleaned.upc && !before.upc) await closeStepTicket(id, 'upc');
+      if (cleaned.sku && !before.sku) await closeStepTicket(id, 'sku');
+
       const row = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
       res.json(shape(row, { open: 0, closed: 0 }));
     } catch (e) {
@@ -226,6 +245,246 @@ module.exports = function attach(app, deps) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  async function closeStepTicket(flavorId, step) {
+    const t = await get(
+      `SELECT id, status FROM tickets
+        WHERE flavor_v2_id=? AND flavor_v2_step=? AND deleted_at IS NULL
+          AND status != 'Closed'
+        ORDER BY id ASC LIMIT 1`,
+      flavorId, step
+    );
+    if (!t) return;
+    await run(
+      `UPDATE tickets
+          SET status='Closed',
+              closed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+        WHERE id=?`,
+      t.id
+    );
+  }
+
+  // ── Launch pipeline ───────────────────────────────────────────────────────
+  // Atomically spawn the four initial tickets (UPC, SKU, NineYard, Label
+  // Design) for a flavor. Each ticket carries flavor_v2_id + flavor_v2_step
+  // so the bottle viz on the detail page tallies them, and the upc/sku
+  // tickets auto-close once their value lands on the flavor record (see
+  // PATCH handler above). Refuses to fire twice — if any pipeline ticket
+  // already exists for the flavor, returns 409.
+  app.post('/api/flavors2/:id/launch', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+
+      const already = await get(
+        'SELECT COUNT(*) AS n FROM tickets WHERE flavor_v2_id=? AND deleted_at IS NULL',
+        id
+      );
+      if (Number(already?.n || 0) > 0) {
+        return res.status(409).json({ error: 'Pipeline already launched for this flavor.' });
+      }
+
+      const created = [];
+      for (const spec of pipelineSpecs(f)) {
+        const tid = await allocateTicketId();
+        await run(
+          `INSERT INTO tickets
+            (id, title, status, priority, dept, created, overdue, tags_json,
+             comments_count, created_by, flavor_v2_id, flavor_v2_step,
+             syruvia_flavor_id, syruvia_flavor_name)
+           VALUES (?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
+          tid, spec.title, 'Open', spec.priority, spec.dept,
+          new Date().toISOString().slice(0,10), '[]',
+          req.session.userId, id, spec.step,
+          'flavor_v2:' + id, f.name
+        );
+        await run(
+          `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+             ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+          tid, spec.description
+        );
+        for (let i = 0; i < (spec.checklist || []).length; i++) {
+          await run(
+            `INSERT INTO ticket_subtasks (ticket_id, position, text, done) VALUES (?,?,?,0)`,
+            tid, i + 1, spec.checklist[i]
+          );
+        }
+        created.push({ id: tid, title: spec.title, step: spec.step });
+      }
+
+      res.status(201).json({ ok: true, tickets: created });
+    } catch (e) {
+      console.error('[flavors2] launch failed:', e.message);
+      res.status(500).json({ error: 'Could not launch pipeline — please retry.' });
+    }
+  });
+
+  // ── Pipeline specs ────────────────────────────────────────────────────────
+  // Where the rich per-step ticket content lives. Each entry is a single
+  // ticket: title, description (markdown-ish plain text — rendered as
+  // text in our current ticket detail view), optional checklist of subtask
+  // titles, priority, dept. Description string assembly is deliberately
+  // explicit so a glance tells you exactly what the worker will see.
+  function pipelineSpecs(f) {
+    const typeLabel = f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular';
+    const casePack  = f.type === 'sugar_free' ? '24 per case' : '12 per case';
+    const colorLine = f.color === 'none'
+      ? 'None'
+      : `${f.color}${f.syrup_color ? ' (' + f.syrup_color + ')' : ''}`;
+    const flavorTypeLabel = f.flavor_type === 'natural_and_artificial'
+      ? 'Natural + Artificial' : 'Natural';
+    const saltLine = f.has_salt ? `Yes — ${f.salt_pct}%` : 'No';
+    const flavorUrl = `/flavors.html#${f.id}`;
+
+    const sharedContext = [
+      `Flavor: ${f.name}`,
+      `Type: ${typeLabel}`,
+      `Color: ${colorLine}`,
+      `Flavor type: ${flavorTypeLabel}`,
+      `Use: ${f.use_of_syrup}`,
+      `Salt: ${saltLine}`,
+    ].join('\n');
+
+    return [
+      {
+        step: 'upc',
+        title: `Get GS1 UPC for ${f.name}`,
+        priority: 'High',
+        dept: 'Operations',
+        description:
+          `Get a GS1 UPC for this flavor and enter it on the flavor detail page. ` +
+          `The ticket auto-closes once the UPC is filled in.\n\n` +
+          sharedContext + `\nCase pack: ${casePack}\n\n` +
+          `→ Enter UPC at: ${flavorUrl}`,
+      },
+      {
+        step: 'sku',
+        title: `Assign SKU for ${f.name}`,
+        priority: 'High',
+        dept: 'Operations',
+        description:
+          `Assign an internal SKU for this flavor and enter it on the flavor ` +
+          `detail page. Auto-closes once filled in.\n\n` +
+          sharedContext + `\n\n→ Enter SKU at: ${flavorUrl}`,
+      },
+      {
+        step: 'nineyard',
+        title: `Add ${f.name} to NineYard`,
+        priority: 'Medium',
+        dept: 'Operations',
+        description:
+          `Add this flavor to NineYard (POS inventory). SKU + UPC come from ` +
+          `the linked tickets in this pipeline — wait until those land before ` +
+          `you start, or coordinate so values are entered together.\n\n` +
+          sharedContext + `\nCase pack: ${casePack}\n\n` +
+          `Check each line below as you enter it.`,
+        checklist: [
+          'SKU entered',
+          'UPC entered',
+          'Product name entered',
+          'Vendor entered',
+          'Price entered',
+          'Case pack entered',
+        ],
+      },
+      {
+        step: 'label_design',
+        title: `Design label for ${f.name}`,
+        priority: 'High',
+        dept: 'Design',
+        description:
+          `Design the product label for this flavor. UPC + SKU may not be ` +
+          `available yet — check the flavor detail page or coordinate with ` +
+          `the linked tickets if your design needs them on the artwork.\n\n` +
+          sharedContext + `\n` +
+          `Ingredients:\n${f.ingredients}\n` +
+          `Sodium: ${f.sodium_mg} mg / serving\n\n` +
+          `Once the draft is ready, attach the file and confirm OU has been ` +
+          `added. A review ticket is created automatically when you close ` +
+          `this one.`,
+        checklist: [
+          'OU symbol added to the design',
+          'Final label file attached',
+        ],
+      },
+    ];
+  }
+
+  // Ticket-id allocator — mirrors the loop in server.js's POST /api/tickets
+  // (max + 1 with a retry on collision). We don't share that endpoint
+  // because we need to insert four tickets in one request and want to
+  // attach flavor_v2_id / flavor_v2_step (the existing endpoint doesn't
+  // accept those fields).
+  async function allocateTicketId() {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const maxRow = await get(
+        `SELECT id FROM tickets WHERE id LIKE 'TKT-%'
+          ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`
+      );
+      let nextNum = 1000;
+      if (maxRow?.id) {
+        const m = /^TKT-(\d+)$/.exec(maxRow.id);
+        if (m) nextNum = parseInt(m[1], 10);
+      }
+      const candidate = 'TKT-' + (nextNum + 1);
+      if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) return candidate;
+    }
+    throw new Error('Could not allocate a unique ticket id');
+  }
+
+  // ── Hook exposed to server.js's PUT /api/tickets ──────────────────────────
+  // Called when a ticket transitions to Closed. If the ticket is part of the
+  // label-design step of a flavor pipeline, we spawn the follow-up label
+  // review ticket. Kept here (not inline in server.js) so all flavor-launch
+  // logic lives in one file.
+  app.locals.flavorsHook = {
+    async onTicketClosed(ticket) {
+      try {
+        if (!ticket || !ticket.flavor_v2_id) return;
+        if (ticket.flavor_v2_step !== 'label_design') return;
+        const f = await get('SELECT * FROM flavors_v2 WHERE id=?', ticket.flavor_v2_id);
+        if (!f) return;
+        // Idempotency: don't spawn a second review ticket if one already
+        // exists (e.g. label design ticket is reopened and re-closed).
+        const exists = await get(
+          `SELECT id FROM tickets
+            WHERE flavor_v2_id=? AND flavor_v2_step='label_review' AND deleted_at IS NULL`,
+          f.id
+        );
+        if (exists) return;
+        const tid = await allocateTicketId();
+        const desc =
+          `The label design ticket ${ticket.id} just closed for "${f.name}". ` +
+          `Review the attached label and confirm it's ready to send to print.\n\n` +
+          `Approve → close this ticket.\n` +
+          `Reject → comment with the issue and reopen ${ticket.id}.\n\n` +
+          `Flavor: ${f.name}\n` +
+          `Type: ${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'}\n` +
+          `UPC: ${f.upc || '(pending)'}\n` +
+          `SKU: ${f.sku || '(pending)'}`;
+        await run(
+          `INSERT INTO tickets
+            (id, title, status, priority, dept, created, overdue, tags_json,
+             comments_count, created_by, flavor_v2_id, flavor_v2_step,
+             syruvia_flavor_id, syruvia_flavor_name)
+           VALUES (?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
+          tid, `Review label design for ${f.name}`, 'Open', 'High', 'Design',
+          new Date().toISOString().slice(0,10), '[]',
+          null, f.id, 'label_review',
+          'flavor_v2:' + f.id, f.name
+        );
+        await run(
+          `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+             ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+          tid, desc
+        );
+      } catch (e) {
+        console.warn('[flavorsHook.onTicketClosed] failed:', e && e.message);
+      }
+    },
+  };
 
   // ── Delete ────────────────────────────────────────────────────────────────
   app.delete('/api/flavors2/:id', requireAuth, async (req, res) => {
