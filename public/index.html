@@ -6774,6 +6774,13 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 </div>
 
 <script>
+// Capture deeplink params at the very first moment, before any router/navigate
+// code can call history.pushState and strip the query string from the URL.
+(function() {
+  var _p = new URLSearchParams(window.location.search);
+  var _f = _p.get('flavor'), _fn = _p.get('flavor_name');
+  if (_f && _fn) window._syruviaDeepLink = { flavor: _f, flavor_name: _fn };
+})();
 // VERSION: 2026-04-29 18:37:36 — if you see this in DevTools 'Sources', you have the latest file
 // ========== WORKNEST ↔ WORKTRACK SYNC BRIDGE ==========
 // Shared mock-API layer that mirrors data and events between the Ticket App
@@ -8675,15 +8682,13 @@ let _syruviaFlavorsCache = null;
 
 async function loadSyruviaFlavors() {
   if (_syruviaFlavorsCache) return _syruviaFlavorsCache;
-  if (!SYRUVIA_URL) return [];
   try {
-    const r = await fetch(SYRUVIA_URL + '/api/bridge/flavors', {
-      headers: { Authorization: 'Bearer ' + (window.__CROSS_APP_SECRET__ || '') }
-    });
-    if (!r.ok) return [];
+    // Proxy through our own server to avoid cross-origin/CORS issues
+    const r = await fetch('/api/syruvia-flavors');
+    if (!r.ok) { _syruviaFlavorsCache = []; return []; }
     _syruviaFlavorsCache = await r.json();
     return _syruviaFlavorsCache;
-  } catch { return []; }
+  } catch { _syruviaFlavorsCache = []; return []; }
 }
 
 async function openFlavorPicker() {
@@ -15510,15 +15515,13 @@ async function initApp() {
   window.dispatchEvent(new Event('_wnReady'));
 
   // Auto-open Create Ticket modal when arriving from Syruvia Lab deep-link.
-  // Capture params NOW before the router strips the query string from the URL.
-  const _dp = new URLSearchParams(window.location.search);
-  const _dlFlavor = _dp.get('flavor');
-  const _dlFlavorName = _dp.get('flavor_name');
-  if (_dlFlavor && _dlFlavorName) {
-    window._syruviaDeepLink = { flavor: _dlFlavor, flavor_name: _dlFlavorName };
+  // Params were already captured into window._syruviaDeepLink at page-load time
+  // (before the router stripped the query string via history.pushState).
+  if (window._syruviaDeepLink) {
+    // Wait for the router's 200ms + 1200ms passes to settle, then open modal.
     setTimeout(() => {
       if (typeof openModal === 'function') openModal('create-ticket');
-    }, 600);
+    }, 1400);
   }
 }
 

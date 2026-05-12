@@ -4981,6 +4981,26 @@ app.get('/api/bridge/calendar-events', bridgeCors, requireBridgeSecret, async (r
   } catch (e) { console.error('[bridge] calendar-events error:', e.message); res.json({ tickets: [] }); }
 });
 
+// GET /api/syruvia-flavors — proxy to Syruvia Lab so the browser avoids cross-origin fetch
+// Returns the flavor list from Syruvia using the shared secret (server-to-server).
+app.get('/api/syruvia-flavors', requireAuth, async (req, res) => {
+  if (!SYRUVIA_URL || !CROSS_APP_SECRET) return res.json([]);
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 8000);
+    const r = await fetch(SYRUVIA_URL + '/api/bridge/flavors', {
+      headers: { Authorization: `Bearer ${CROSS_APP_SECRET}` },
+      signal: controller.signal,
+    });
+    clearTimeout(tid);
+    if (!r.ok) return res.json([]);
+    res.json(await r.json());
+  } catch (e) {
+    console.error('[syruvia-flavors proxy] error:', e.message);
+    res.json([]);
+  }
+});
+
 // PATCH /api/tickets/:id/link-flavor — link/unlink a Syruvia flavor (requires login)
 app.patch('/api/tickets/:id/link-flavor', requireAuth, async (req, res) => {
   try {
