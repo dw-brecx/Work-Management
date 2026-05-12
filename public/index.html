@@ -11834,9 +11834,9 @@ function populateCreateTicketModal() {
   pendingCreateAssignees = [];
   renderCreateAssigneeChips();
 
-  // Show Syruvia flavor section only when the URL is configured
+  // Show Syruvia flavor section if integration is configured OR a deeplink brought a flavor
   const syrSection = document.getElementById('m-syruvia-section');
-  if (syrSection) syrSection.style.display = SYRUVIA_URL ? 'block' : 'none';
+  if (syrSection) syrSection.style.display = (SYRUVIA_URL || window._syruviaDeepLink) ? 'block' : 'none';
 
   // Pre-fill flavor if the page was opened with ?flavor=ID&flavor_name=NAME.
   // Fall back to window._syruviaDeepLink because the router may have already
