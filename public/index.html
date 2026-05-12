@@ -2428,7 +2428,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       }
       #topbar > .search-wrap svg { left: 11px !important; width: 14px !important; height: 14px !important; }
       /* Float the typeahead dropdown wide below the topbar — it was
-         being clipped to the search-wrap width before. */
+         being clipped to the search-wrap width before. Cap height to
+         the viewport so 100s of results scroll within the screen. */
       #topbar > .search-wrap > .search-dropdown {
         position: fixed !important;
         top: 60px !important;
@@ -2436,6 +2437,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         right: 10px !important;
         width: auto !important;
         max-width: none !important;
+        max-height: calc(100vh - 90px) !important;
       }
       /* No auto-margin on .topbar-right anymore — justify-content handles
          alignment, and a small gap separates it from .search-wrap. */
@@ -3533,6 +3535,356 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         min-width: 36px !important; min-height: 36px !important;
         font-size: 13px !important;
       }
+    }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Mobile My Tickets (Kanban) redesign (≤ 768px)
+       ────────────────────────────────────────────────────────────────────
+       Vertical-stacked board with sticky column headers, compact 2-line
+       cards, horizontal-scroll scope chips, and a slimmer toolbar.
+       Drag-and-drop is replaced with tap-to-open on touch (the HTML5
+       drag API is unreliable on mobile anyway).
+       ════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      /* Page chrome */
+      #page-my-tickets.page { padding: 18px 14px 96px !important; }
+
+      /* Hero H1 with gradient (matches Dashboard + Tickets). */
+      #page-my-tickets > h1 {
+        font-size: 26px !important;
+        font-weight: 800 !important;
+        letter-spacing: -.03em !important;
+        margin: 4px 0 2px !important;
+        background: linear-gradient(120deg, #7c3aed, #ec4899) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        color: transparent !important;
+      }
+      #page-my-tickets > p {
+        font-size: 13.5px !important;
+        margin: 0 0 16px !important;
+      }
+
+      /* Toolbar: stack — search full-width, chips horizontal-scroll,
+         date range full-width compact. */
+      #page-my-tickets .mt-toolbar {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+        margin-bottom: 16px !important;
+      }
+      #page-my-tickets .mt-search-wrap {
+        width: 100% !important;
+        max-width: none !important;
+      }
+      #page-my-tickets .mt-search-wrap input {
+        height: 40px !important;
+        font-size: 14px !important;
+        padding-left: 36px !important;
+        border-radius: 10px !important;
+      }
+      /* Scope chip row — horizontal-scroll snap so all 4 fit. */
+      #page-my-tickets .mt-chip-row {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        scroll-snap-type: x mandatory;
+        gap: 8px !important;
+        margin: 0 -14px !important;
+        padding: 0 14px 4px !important;
+        -webkit-overflow-scrolling: touch;
+      }
+      #page-my-tickets .mt-chip-row::-webkit-scrollbar { display: none; }
+      #page-my-tickets .mt-chip {
+        flex: 0 0 auto !important;
+        scroll-snap-align: start;
+        padding: 8px 14px !important;
+        font-size: 12.5px !important;
+        min-height: 38px !important;
+      }
+      #page-my-tickets .mt-chip-divider { display: none !important; }
+      /* Date range: full-width select, custom dates wrap below. */
+      #page-my-tickets .mt-range-group {
+        width: 100% !important;
+      }
+      #page-my-tickets .mt-range-select {
+        width: 100% !important;
+        height: 40px !important;
+        font-size: 13.5px !important;
+        border-radius: 10px !important;
+      }
+      #page-my-tickets #mt-count {
+        font-size: 12px !important;
+      }
+
+      /* Kanban — vertical stack of column cards. Each column has a
+         sticky header so you can see what column you're in while
+         scrolling its tickets. */
+      #page-my-tickets .kanban {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 14px !important;
+      }
+      #page-my-tickets .kanban-col {
+        border-radius: 16px !important;
+        overflow: visible !important;
+      }
+      #page-my-tickets .kanban-header {
+        font-size: 13px !important;
+        font-weight: 700 !important;
+        letter-spacing: -.01em !important;
+        padding: 12px 16px !important;
+        position: sticky;
+        top: 56px;        /* below the mobile topbar */
+        z-index: 5;
+        border-radius: 16px 16px 0 0 !important;
+      }
+      #page-my-tickets .kanban-body {
+        padding: 10px !important;
+        min-height: 0 !important;
+      }
+      /* Cards — denser. ID + created stack tighter; title slightly
+         larger; meta line fits priority + due cleanly. */
+      #page-my-tickets .kanban-card {
+        padding: 11px 12px !important;
+        border-radius: 12px !important;
+        margin-bottom: 8px !important;
+        cursor: pointer !important;   /* never grab on touch */
+      }
+      #page-my-tickets .kanban-card:active { transform: scale(.99); transition: transform .08s; }
+      #page-my-tickets .kanban-card .k-id {
+        font-size: 11px !important;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
+      }
+      #page-my-tickets .kanban-card .k-title {
+        font-size: 13.5px !important;
+        font-weight: 500;
+        margin: 4px 0 6px !important;
+        line-height: 1.35 !important;
+      }
+      #page-my-tickets .kanban-card .k-meta {
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px !important;
+      }
+      #page-my-tickets .kanban-card .k-due { font-size: 11px !important; }
+
+      /* Dark theme for kanban surfaces. */
+      body.theme-dark #page-my-tickets .kanban-col { background: #131a2e !important; border-color: #25304a !important; }
+      body.theme-dark #page-my-tickets .kanban-card { background: #1c2540 !important; border-color: #25304a !important; }
+    }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Mobile My Reminders redesign (≤ 768px)
+       ────────────────────────────────────────────────────────────────────
+       Gradient hero, prominent + New Reminder button, scroll-snap chips,
+       and card layout that stacks the action buttons under the content
+       instead of crowding them into a tiny right-side column.
+       ════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      #page-my-reminders.page { padding: 18px 14px 96px !important; }
+
+      /* Hero — title + button row stacks cleanly on narrow screens. */
+      #page-my-reminders > div:first-child {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+        margin-bottom: 6px !important;
+      }
+      #page-my-reminders > div:first-child h1 {
+        font-size: 26px !important;
+        font-weight: 800 !important;
+        letter-spacing: -.03em !important;
+        background: linear-gradient(120deg, #0891b2, #4f46e5) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        color: transparent !important;
+      }
+      #page-my-reminders > div:first-child button.btn-primary {
+        width: 100% !important;
+        padding: 11px 16px !important;
+        font-size: 13.5px !important;
+        min-height: 44px !important;
+      }
+      #page-my-reminders > p {
+        font-size: 13px !important;
+        line-height: 1.45 !important;
+        margin-bottom: 14px !important;
+      }
+
+      /* Filter chips — bigger tap targets. */
+      #page-my-reminders .rem-filter {
+        padding: 8px 16px !important;
+        font-size: 12.5px !important;
+        min-height: 38px !important;
+        border-radius: 99px !important;
+      }
+
+      /* Reminder cards — stack actions below content on mobile so the
+         title has the full row width and the buttons get tap-friendly
+         sizes. */
+      #my-reminders-list .card {
+        padding: 14px !important;
+        border-radius: 16px !important;
+      }
+      #my-reminders-list .card > div[style*="justify-content:space-between"] {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+      }
+      #my-reminders-list .card > div > div:last-child {
+        flex-direction: row !important;
+        justify-content: flex-end !important;
+        gap: 8px !important;
+        margin-top: 4px;
+      }
+      #my-reminders-list .card > div > div:last-child > button {
+        font-size: 12px !important;
+        padding: 8px 14px !important;
+        min-height: 38px !important;
+      }
+      /* Title gets a bit more presence. */
+      #my-reminders-list .card div[style*="font-weight:600"] {
+        font-size: 14.5px !important;
+      }
+
+      body.theme-dark #my-reminders-list .card { background: #131a2e !important; border-color: #25304a !important; }
+    }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Mobile Ticket Detail redesign (≤ 768px)
+       ────────────────────────────────────────────────────────────────────
+       The 8-button action bar is the biggest desktop carryover — it gets
+       turned into a horizontal-scroll snap chip strip. The title block
+       gets more breathing room and the info grid stays 2-col but with
+       tighter padding so it fits a 360px viewport without truncation.
+       ════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      #page-ticket-detail .page-content { padding: 16px 14px 96px !important; }
+
+      /* Breadcrumb row — back button + path on one line. */
+      #page-ticket-detail .td-breadcrumb-row {
+        margin-bottom: 8px !important;
+      }
+      #page-ticket-detail .breadcrumb {
+        font-size: 11.5px !important;
+      }
+
+      /* Header row stacks: title block on top, action bar full-width below. */
+      #page-ticket-detail .td-header-row {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 12px !important;
+        margin-bottom: 14px !important;
+      }
+      #page-ticket-detail .td-id-row {
+        margin-bottom: 4px !important;
+      }
+      #page-ticket-detail #det-title {
+        font-size: 22px !important;
+        font-weight: 700 !important;
+        margin-bottom: 8px !important;
+        line-height: 1.3 !important;
+      }
+      #page-ticket-detail #det-badges {
+        gap: 5px !important;
+      }
+
+      /* Action bar — 8 buttons turn into a horizontal-scroll chip strip
+         so they're never cramped and never wrap onto multiple rows. */
+      #page-ticket-detail .td-action-bar {
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        scroll-snap-type: x mandatory;
+        gap: 6px !important;
+        margin: 0 -14px !important;
+        padding: 0 14px 4px !important;
+        -webkit-overflow-scrolling: touch;
+      }
+      #page-ticket-detail .td-action-bar::-webkit-scrollbar { display: none; }
+      #page-ticket-detail .td-action-bar .td-action-btn {
+        flex: 0 0 auto !important;
+        scroll-snap-align: start;
+        padding: 8px 12px !important;
+        font-size: 12px !important;
+        min-height: 38px !important;
+        border-radius: 10px !important;
+        white-space: nowrap;
+      }
+
+      /* Card padding tightens on narrow viewports. */
+      #page-ticket-detail .card {
+        padding: 14px !important;
+        border-radius: 16px !important;
+      }
+      #page-ticket-detail .td-card-title {
+        font-size: 13px !important;
+      }
+
+      /* Ticket Details grid — keep 2-col but allow wrapping for long
+         values; tighten internal field spacing. */
+      #page-ticket-detail #det-info-grid {
+        grid-template-columns: 1fr 1fr !important;
+        gap: 6px 10px !important;
+      }
+      /* On very narrow screens (≤ 380px), drop to a single column. */
+      @media (max-width: 380px) {
+        #page-ticket-detail #det-info-grid { grid-template-columns: 1fr !important; }
+      }
+
+      /* Description body / textarea sized for thumbs. */
+      #page-ticket-detail #det-desc-view { font-size: 13px !important; }
+      #page-ticket-detail #det-desc-textarea {
+        font-size: 14px !important;        /* ≥16px would be ideal to stop iOS zoom; 14 keeps the look tight */
+        min-height: 110px !important;
+      }
+
+      /* My Reminders inside the ticket — compact one-line rows. */
+      #det-reminders-list > div {
+        padding: 10px 12px !important;
+        border-radius: 12px !important;
+      }
+
+      /* Activity / Subtasks / Attachments tabs — scroll if needed. */
+      #page-ticket-detail .tabs {
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        -webkit-overflow-scrolling: touch;
+      }
+      #page-ticket-detail .tabs::-webkit-scrollbar { display: none; }
+      #page-ticket-detail .tab {
+        flex: 0 0 auto !important;
+        white-space: nowrap;
+      }
+
+      /* Right panel (comments) — give the chat-shaped list a real
+         scrollable height on mobile. The desktop rule sets flex:1, which
+         when the parent is the entire page can collapse to 0; cap it
+         to a tap-friendly viewport-relative height instead. */
+      #page-ticket-detail .right-panel.td-right {
+        padding: 14px !important;
+        min-height: 70vh !important;
+      }
+      #page-ticket-detail .td-right-resizer { display: none !important; }
+      #page-ticket-detail .td-comment-list {
+        max-height: 60vh !important;
+        flex: 1 1 auto !important;
+      }
+      #page-ticket-detail .td-side-title { font-size: 13px !important; }
+
+      /* Dark theme — already covered for .card / .right-panel via the
+         global body.theme-dark block. Just nudge a couple of inline-
+         styled surfaces. */
+      body.theme-dark #page-ticket-detail #det-desc-textarea { background: #0a0f1d !important; color: #f1f5f9 !important; }
     }
   </style>
 
@@ -11881,13 +12233,16 @@ function cancelInvite(idx) {
   function search(q) {
     const query = q.toLowerCase().trim();
     if (!query) return [];
+    // No artificial cap — the dropdown is max-height + overflow:auto, so
+    // 100s of matches scroll fine. A loose ceiling of 200 keeps things
+    // sane if a user has thousands of tickets matching a common term.
     return TICKETS_DATA.filter(t =>
       t.id.toLowerCase().includes(query) ||
       t.title.toLowerCase().includes(query) ||
       (t.assignee || '').toLowerCase().includes(query) ||
       (t.req || '').toLowerCase().includes(query) ||
       (t.tags || []).some(tag => tag.toLowerCase().includes(query))
-    ).slice(0, 6);
+    ).slice(0, 200);
   }
 
   function render(query) {
