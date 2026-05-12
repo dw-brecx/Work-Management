@@ -1876,15 +1876,41 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       }
     }
 
-    // ── New-comment email to all assignees + reporter (excluding actor / already-emailed) ──
+    // ── New-comment fan-out to everyone involved with this ticket ─────────
+    //   assignee(s) + reporter + requester + creator
+    // Previously the requester (tkt.req) was excluded — so the person who
+    // OPENED the ticket got no email / Slack / in-app notification when
+    // someone commented, unless they were also @-mentioned. Now they are
+    // included. Each watcher gets the same fan-out: in-app notification,
+    // email, push, Slack DM.
     const watchers = new Set();
     const assigneesRows = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id);
     assigneesRows.forEach(r => r.user_name && watchers.add(r.user_name));
     if (tkt?.reporter) watchers.add(tkt.reporter);
+    if (tkt?.req)      watchers.add(tkt.req);
+    // The creator (created_by user id) — included by id since they might
+    // not match by name. Resolved after the name pass so we don't double-add.
+    let creatorUser = null;
+    if (tkt?.created_by) {
+      creatorUser = await get('SELECT id,name,email FROM users WHERE id=?', tkt.created_by);
+    }
+    // Resolve every watcher name → user row, dedupe, and send.
+    const watcherUsers = [];
     for (const wname of watchers) {
       const w = await get('SELECT id,name,email FROM users WHERE name=?', wname);
-      if (!w || emailedUserIds.has(w.id)) continue;
+      if (w) watcherUsers.push(w);
+    }
+    if (creatorUser && !watcherUsers.some(w => w.id === creatorUser.id)) {
+      watcherUsers.push(creatorUser);
+    }
+    for (const w of watcherUsers) {
+      if (emailedUserIds.has(w.id)) continue;
       emailedUserIds.add(w.id);
+      // In-app notification — the bell icon was staying empty for non-
+      // mentioned watchers because this insert only existed on the
+      // @-mention + reply paths above.
+      await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        w.id, 'comment', '💬', `${u.name} commented on "${tkt?.title || req.params.id}"`, req.params.id);
       fireEmail('new-comment', () => sendNewCommentEmail({
         toEmail: w.email, toName: w.name,
         authorName: u.name, authorRole: u.role || '',
@@ -1898,10 +1924,6 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         tag: 'ticket-' + req.params.id + '-cmt',
         url: '/tickets/' + req.params.id,
       }).catch(()=>{});
-      // Slack DM to every watcher (same fan-out as email + push). Without
-      // this an assignee gets an email when someone comments but no DM —
-      // looks like the @mention path is broken when actually the
-      // watcher block is the one that fired.
       slackDmUser(w.id, {
         text: `💬 *${u.name}* commented on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
       }).catch(()=>{});
