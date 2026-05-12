@@ -245,8 +245,17 @@ module.exports = function attach(app, deps) {
       if (cleaned.upc && !before.upc) await closeStepTicket(id, 'upc');
       if (cleaned.sku && !before.sku) await closeStepTicket(id, 'sku');
 
-      const row = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
-      res.json(shape(row, { open: 0, closed: 0 }));
+      // Phase-2 trigger: once both UPC and SKU are set, spawn the NineYard
+      // and Label Design tickets so their descriptions can embed the real
+      // identifiers instead of placeholder "(pending)" strings. Idempotent
+      // — only fires when the phase-2 tickets don't yet exist.
+      const after = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if ((cleaned.upc !== undefined || cleaned.sku !== undefined)
+          && after.upc && after.sku) {
+        await maybeSpawnPhase2(after);
+      }
+
+      res.json(shape(after, { open: 0, closed: 0 }));
     } catch (e) {
       console.error('[flavors2] patch failed:', e.message);
       res.status(500).json({ error: e.message });
@@ -271,13 +280,11 @@ module.exports = function attach(app, deps) {
     );
   }
 
-  // ── Launch pipeline ───────────────────────────────────────────────────────
-  // Atomically spawn the four initial tickets (UPC, SKU, NineYard, Label
-  // Design) for a flavor. Each ticket carries flavor_v2_id + flavor_v2_step
-  // so the bottle viz on the detail page tallies them, and the upc/sku
-  // tickets auto-close once their value lands on the flavor record (see
-  // PATCH handler above). Refuses to fire twice — if any pipeline ticket
-  // already exists for the flavor, returns 409.
+  // ── Launch pipeline (phase 1: UPC + SKU only) ─────────────────────────────
+  // Spawn the two identifier-gathering tickets up front. The downstream
+  // NineYard + Label Design tickets are deferred to maybeSpawnPhase2() and
+  // only fire once both UPC and SKU are filled in — that way the real
+  // identifiers land in their descriptions instead of "(pending)".
   app.post('/api/flavors2/:id/launch', requireAuth, async (req, res) => {
     try {
       const id = Number(req.params.id);
@@ -294,32 +301,15 @@ module.exports = function attach(app, deps) {
       }
 
       const created = [];
-      for (const spec of pipelineSpecs(f)) {
-        const tid = await allocateTicketId();
-        await run(
-          `INSERT INTO tickets
-            (id, title, status, priority, dept, created, overdue, tags_json,
-             comments_count, created_by, flavor_v2_id, flavor_v2_step,
-             syruvia_flavor_id, syruvia_flavor_name)
-           VALUES (?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
-          tid, spec.title, 'Open', spec.priority, spec.dept,
-          new Date().toISOString().slice(0,10), '[]',
-          req.session.userId, id, spec.step,
-          'flavor_v2:' + id, f.name
-        );
-        await run(
-          `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
-             ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
-          tid, spec.description
-        );
-        for (let i = 0; i < (spec.checklist || []).length; i++) {
-          await run(
-            `INSERT INTO ticket_subtasks (ticket_id, position, text, done) VALUES (?,?,?,0)`,
-            tid, i + 1, spec.checklist[i]
-          );
-        }
-        created.push({ id: tid, title: spec.title, step: spec.step });
+      for (const spec of phase1Specs(f)) {
+        const t = await insertPipelineTicket(f, spec, req.session.userId);
+        created.push(t);
       }
+
+      // Defensive: if for some reason the flavor was created with UPC + SKU
+      // already populated (bulk import, admin edit), fire phase 2 right away
+      // so the launcher doesn't have to re-save the identifier fields.
+      if (f.upc && f.sku) await maybeSpawnPhase2(f);
 
       res.status(201).json({ ok: true, tickets: created });
     } catch (e) {
@@ -328,32 +318,83 @@ module.exports = function attach(app, deps) {
     }
   });
 
+  // ── Phase 2 spawn ─────────────────────────────────────────────────────────
+  // Idempotent — only inserts a phase-2 ticket if no live one exists for
+  // that step. Called from PATCH /api/flavors2/:id after UPC + SKU are
+  // both set, and from /launch defensively. Safe to call repeatedly.
+  async function maybeSpawnPhase2(f) {
+    for (const spec of phase2Specs(f)) {
+      const exists = await get(
+        `SELECT id FROM tickets
+          WHERE flavor_v2_id=? AND flavor_v2_step=? AND deleted_at IS NULL`,
+        f.id, spec.step
+      );
+      if (exists) continue;
+      await insertPipelineTicket(f, spec, null);
+    }
+  }
+
+  // Shared insert helper so phase-1, phase-2, and the label-review hook all
+  // use the same shape (description in ticket_details, checklist in
+  // ticket_subtasks, flavor_v2_name denormalised for chip rendering). We
+  // deliberately do NOT set syruvia_flavor_id — that field is for the v1
+  // external Syruvia Lab bridge, and populating it would make the ticket
+  // detail page render an "Open in Syruvia" link to the wrong app.
+  async function insertPipelineTicket(f, spec, createdBy) {
+    const tid = await allocateTicketId();
+    await run(
+      `INSERT INTO tickets
+        (id, title, status, priority, dept, created, overdue, tags_json,
+         comments_count, created_by, flavor_v2_id, flavor_v2_step, flavor_v2_name)
+       VALUES (?,?,?,?,?,?,0,?,0,?,?,?,?)`,
+      tid, spec.title, 'Open', spec.priority, spec.dept,
+      new Date().toISOString().slice(0,10), '[]',
+      createdBy, f.id, spec.step, f.name
+    );
+    await run(
+      `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+         ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+      tid, spec.description
+    );
+    for (let i = 0; i < (spec.checklist || []).length; i++) {
+      await run(
+        `INSERT INTO ticket_subtasks (ticket_id, position, text, done) VALUES (?,?,?,0)`,
+        tid, i + 1, spec.checklist[i]
+      );
+    }
+    return { id: tid, title: spec.title, step: spec.step };
+  }
+
   // ── Pipeline specs ────────────────────────────────────────────────────────
-  // Where the rich per-step ticket content lives. Each entry is a single
-  // ticket: title, description (markdown-ish plain text — rendered as
-  // text in our current ticket detail view), optional checklist of subtask
-  // titles, priority, dept. Description string assembly is deliberately
-  // explicit so a glance tells you exactly what the worker will see.
-  function pipelineSpecs(f) {
+  // Split into two phases. Phase-1 tickets (UPC, SKU) are spawned on launch
+  // — their descriptions don't depend on identifiers. Phase-2 tickets
+  // (NineYard, Label Design) wait until UPC + SKU are populated so they
+  // can embed the real values into their descriptions and checklists.
+  function flavorContext(f) {
     const typeLabel = f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular';
-    const casePack  = f.type === 'sugar_free' ? '24 per case' : '12 per case';
     const colorLine = f.color === 'none'
       ? 'None'
       : `${f.color}${f.syrup_color ? ' (' + f.syrup_color + ')' : ''}`;
     const flavorTypeLabel = f.flavor_type === 'natural_and_artificial'
       ? 'Natural + Artificial' : 'Natural';
     const saltLine = f.has_salt ? `Yes — ${f.salt_pct}%` : 'No';
-    const flavorUrl = `/flavors.html#${f.id}`;
+    return {
+      typeLabel,
+      casePack: f.type === 'sugar_free' ? '24 per case' : '12 per case',
+      shared: [
+        `Flavor: ${f.name}`,
+        `Type: ${typeLabel}`,
+        `Color: ${colorLine}`,
+        `Flavor type: ${flavorTypeLabel}`,
+        `Use: ${f.use_of_syrup}`,
+        `Salt: ${saltLine}`,
+      ].join('\n'),
+      flavorUrl: `/flavors.html#${f.id}`,
+    };
+  }
 
-    const sharedContext = [
-      `Flavor: ${f.name}`,
-      `Type: ${typeLabel}`,
-      `Color: ${colorLine}`,
-      `Flavor type: ${flavorTypeLabel}`,
-      `Use: ${f.use_of_syrup}`,
-      `Salt: ${saltLine}`,
-    ].join('\n');
-
+  function phase1Specs(f) {
+    const { shared, casePack, flavorUrl } = flavorContext(f);
     return [
       {
         step: 'upc',
@@ -363,7 +404,7 @@ module.exports = function attach(app, deps) {
         description:
           `Get a GS1 UPC for this flavor and enter it on the flavor detail page. ` +
           `The ticket auto-closes once the UPC is filled in.\n\n` +
-          sharedContext + `\nCase pack: ${casePack}\n\n` +
+          shared + `\nCase pack: ${casePack}\n\n` +
           `→ Enter UPC at: ${flavorUrl}`,
       },
       {
@@ -374,26 +415,38 @@ module.exports = function attach(app, deps) {
         description:
           `Assign an internal SKU for this flavor and enter it on the flavor ` +
           `detail page. Auto-closes once filled in.\n\n` +
-          sharedContext + `\n\n→ Enter SKU at: ${flavorUrl}`,
+          shared + `\n\n→ Enter SKU at: ${flavorUrl}`,
       },
+    ];
+  }
+
+  function phase2Specs(f) {
+    const { shared, casePack } = flavorContext(f);
+    const productName = `${f.name} ${f.type === 'sugar_free' ? 'Sugar-Free Syrup' : 'Syrup'}`;
+    return [
       {
         step: 'nineyard',
         title: `Add ${f.name} to NineYard`,
         priority: 'Medium',
         dept: 'Operations',
         description:
-          `Add this flavor to NineYard (POS inventory). SKU + UPC come from ` +
-          `the linked tickets in this pipeline — wait until those land before ` +
-          `you start, or coordinate so values are entered together.\n\n` +
-          sharedContext + `\nCase pack: ${casePack}\n\n` +
+          `Add this flavor to NineYard (POS inventory) with the values below.\n\n` +
+          shared + `\n` +
+          `\nValues to enter in NineYard:\n` +
+          `  • SKU: ${f.sku}\n` +
+          `  • UPC: ${f.upc}\n` +
+          `  • Product name: ${productName}\n` +
+          `  • Vendor: (your vendor)\n` +
+          `  • Price: (per current price rules)\n` +
+          `  • Case pack: ${casePack}\n\n` +
           `Check each line below as you enter it.`,
         checklist: [
-          'SKU entered',
-          'UPC entered',
-          'Product name entered',
+          `SKU entered (${f.sku})`,
+          `UPC entered (${f.upc})`,
+          `Product name entered (${productName})`,
           'Vendor entered',
           'Price entered',
-          'Case pack entered',
+          `Case pack entered (${casePack})`,
         ],
       },
       {
@@ -402,10 +455,11 @@ module.exports = function attach(app, deps) {
         priority: 'High',
         dept: 'Design',
         description:
-          `Design the product label for this flavor. UPC + SKU may not be ` +
-          `available yet — check the flavor detail page or coordinate with ` +
-          `the linked tickets if your design needs them on the artwork.\n\n` +
-          sharedContext + `\n` +
+          `Design the product label for this flavor. All identifiers are now ` +
+          `final — bake them into the artwork as needed.\n\n` +
+          shared + `\n` +
+          `UPC: ${f.upc}\n` +
+          `SKU: ${f.sku}\n\n` +
           `Ingredients:\n${f.ingredients}\n` +
           `Sodium: ${f.sodium_mg} mg / serving\n\n` +
           `Once the draft is ready, attach the file and confirm OU has been ` +
@@ -677,7 +731,6 @@ module.exports = function attach(app, deps) {
           f.id
         );
         if (exists) return;
-        const tid = await allocateTicketId();
         const desc =
           `The label design ticket ${ticket.id} just closed for "${f.name}". ` +
           `Review the attached label and confirm it's ready to send to print.\n\n` +
@@ -687,22 +740,13 @@ module.exports = function attach(app, deps) {
           `Type: ${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'}\n` +
           `UPC: ${f.upc || '(pending)'}\n` +
           `SKU: ${f.sku || '(pending)'}`;
-        await run(
-          `INSERT INTO tickets
-            (id, title, status, priority, dept, created, overdue, tags_json,
-             comments_count, created_by, flavor_v2_id, flavor_v2_step,
-             syruvia_flavor_id, syruvia_flavor_name)
-           VALUES (?,?,?,?,?,?,0,?,0,?,?,?,?,?)`,
-          tid, `Review label design for ${f.name}`, 'Open', 'High', 'Design',
-          new Date().toISOString().slice(0,10), '[]',
-          null, f.id, 'label_review',
-          'flavor_v2:' + f.id, f.name
-        );
-        await run(
-          `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
-             ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
-          tid, desc
-        );
+        await insertPipelineTicket(f, {
+          step: 'label_review',
+          title: `Review label design for ${f.name}`,
+          priority: 'High',
+          dept: 'Design',
+          description: desc,
+        }, null);
       } catch (e) {
         console.warn('[flavorsHook.onTicketClosed] failed:', e && e.message);
       }

@@ -838,9 +838,12 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN syruvia_flavor_name TEXT DEFAULT NULL");
   // Flavors v2 — every ticket spawned by the flavor-launch pipeline carries
   // the parent flavor id so the bottle viz on the flavor detail page can
-  // tally open/closed tickets without a join through the title.
+  // tally open/closed tickets without a join through the title. flavor_v2_name
+  // is denormalised so the ticket-detail chip can render without joining
+  // back to flavors_v2 on every ticket fetch.
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_id INTEGER DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_step TEXT DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_name TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
   // Cached Slack user id (looked up via users.lookupByEmail the first time
   // we want to DM this user). Empty string = "not yet looked up";
