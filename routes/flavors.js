@@ -253,7 +253,7 @@ module.exports = function attach(app, deps) {
       const after = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
       if ((cleaned.upc !== undefined || cleaned.sku !== undefined)
           && after.upc && after.sku) {
-        await maybeSpawnPhase2(after);
+        await maybeSpawnPhase2(after, req.session.userId);
       }
 
       res.json(shape(after, { open: 0, closed: 0 }));
@@ -310,7 +310,7 @@ module.exports = function attach(app, deps) {
       // Defensive: if for some reason the flavor was created with UPC + SKU
       // already populated (bulk import, admin edit), fire phase 2 right away
       // so the launcher doesn't have to re-save the identifier fields.
-      if (f.upc && f.sku) await maybeSpawnPhase2(f);
+      if (f.upc && f.sku) await maybeSpawnPhase2(f, req.session.userId);
 
       res.status(201).json({ ok: true, tickets: created });
     } catch (e) {
@@ -323,7 +323,7 @@ module.exports = function attach(app, deps) {
   // Idempotent — only inserts a phase-2 ticket if no live one exists for
   // that step. Called from PATCH /api/flavors2/:id after UPC + SKU are
   // both set, and from /launch defensively. Safe to call repeatedly.
-  async function maybeSpawnPhase2(f) {
+  async function maybeSpawnPhase2(f, createdBy) {
     for (const spec of phase2Specs(f)) {
       const exists = await get(
         `SELECT id FROM tickets
@@ -331,7 +331,7 @@ module.exports = function attach(app, deps) {
         f.id, spec.step
       );
       if (exists) continue;
-      await insertPipelineTicket(f, spec, null);
+      await insertPipelineTicket(f, spec, createdBy || null);
     }
   }
 
@@ -343,6 +343,15 @@ module.exports = function attach(app, deps) {
   // detail page render an "Open in Syruvia" link to the wrong app.
   async function insertPipelineTicket(f, spec, createdBy) {
     const tid = await allocateTicketId();
+    // Defensive: coerce to string + log length so a future "description
+    // empty after spawn" report is debuggable from server logs. The
+    // existing /api/tickets POST does String(req.body?.description || '')
+    // for the same reason.
+    const desc = String(spec.description || '');
+    console.log(
+      `[flavors2] insertPipelineTicket flavor=${f.id} step=${spec.step} ` +
+      `ticket=${tid} desc.len=${desc.length} checklist.len=${(spec.checklist || []).length}`
+    );
     await run(
       `INSERT INTO tickets
         (id, title, status, priority, dept, created, overdue, tags_json,
@@ -355,8 +364,28 @@ module.exports = function attach(app, deps) {
     await run(
       `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
          ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
-      tid, spec.description
+      tid, desc
     );
+    // Verify the description actually landed. If the INSERT silently writes
+    // empty text we want a loud warning in the logs the first time it
+    // happens, not a quiet "no description" UI bug that takes a day to
+    // diagnose. One extra read per pipeline ticket is cheap.
+    if (desc.length > 0) {
+      const back = await get(
+        'SELECT LENGTH(description) AS n FROM ticket_details WHERE ticket_id=?',
+        tid
+      );
+      const n = Number(back?.n || 0);
+      if (n === 0) {
+        console.warn(
+          `[flavors2] description read-back len=0 for ticket=${tid} — write claimed ${desc.length} chars`
+        );
+      } else if (n !== desc.length) {
+        console.warn(
+          `[flavors2] description read-back len=${n} but wrote len=${desc.length} for ticket=${tid}`
+        );
+      }
+    }
     for (let i = 0; i < (spec.checklist || []).length; i++) {
       await run(
         `INSERT INTO ticket_subtasks (ticket_id, position, text, done) VALUES (?,?,?,0)`,
