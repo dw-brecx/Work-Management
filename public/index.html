@@ -2354,8 +2354,42 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         padding-bottom: calc(20px + env(safe-area-inset-bottom)) !important;
       }
 
-      /* Hide the bulky topbar search on mobile — bottom nav is primary */
-      .search-wrap { display: none !important; }
+      /* Compact topbar search on mobile — icon-only pill that expands to
+         a full input when focused. Sits at the right edge next to the
+         theme toggle and notification bell, not stretched across the
+         topbar. */
+      #topbar > .search-wrap {
+        display: block !important;
+        flex: 0 0 auto !important;
+        margin-left: auto !important;   /* push to the right, next to topbar-right */
+        max-width: 38px !important;
+        width: 38px !important;
+        min-width: 38px !important;
+        overflow: hidden;
+        transition: max-width .22s ease, width .22s ease;
+      }
+      #topbar > .search-wrap:focus-within {
+        max-width: 220px !important;
+        width: 220px !important;
+        min-width: 0 !important;
+      }
+      #topbar > .search-wrap input {
+        width: 100% !important;
+        height: 36px !important;
+        padding: 6px 10px 6px 30px !important;
+        font-size: 13px !important;
+        border-radius: 10px !important;
+      }
+      #topbar > .search-wrap svg { left: 11px !important; width: 14px !important; height: 14px !important; }
+      /* Hide the placeholder until the search expands — otherwise it gets
+         awkwardly clipped behind the icon in the collapsed state. */
+      #topbar > .search-wrap input::placeholder { color: transparent !important; }
+      #topbar > .search-wrap:focus-within input::placeholder { color: #9ca3af !important; }
+      /* Sit theme/bell/profile right against the search input — no auto-margin. */
+      #topbar .topbar-right { margin-left: 6px !important; gap: 6px !important; }
+      .topbar-right .theme-toggle,
+      .topbar-right .notif-btn { width: 36px !important; height: 36px !important; border-radius: 10px !important; }
+      .notif-btn .notif-dot { font-size: 9px !important; }
 
       /* Hide topbar action buttons on mobile — they wrapped to a second row
          and pushed the bell + profile down on top of the page heading.
@@ -2676,6 +2710,369 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     ::-webkit-scrollbar-thumb { background: #c7d2fe; border-radius: 99px; }
     ::-webkit-scrollbar-thumb:hover { background: #818cf8; }
 
+    /* ── Theme toggle button ────────────────────────────────────────────── */
+    .theme-toggle {
+      position: relative;
+      width: 38px; height: 38px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: #fff !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 10px !important;
+      color: var(--text2) !important;
+      cursor: pointer;
+      padding: 0;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+    .theme-toggle:hover { background: #f0f5ff !important; border-color: #c7d7fe !important; color: #2563eb !important; }
+    .theme-toggle .theme-icon-sun { display: none; }
+    body.theme-dark .theme-toggle .theme-icon-moon { display: none; }
+    body.theme-dark .theme-toggle .theme-icon-sun  { display: inline-block; color: #fbbf24 !important; }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Dark theme — opt-in via body.theme-dark (toggle button + localStorage).
+       Overrides the hard-coded white surfaces in the wn-redesign block above
+       with deep-navy equivalents. Mobile bottom-nav, search, cards, tables,
+       and the dashboard chip all get retuned.
+       ════════════════════════════════════════════════════════════════════ */
+    body.theme-dark {
+      --bg:     #0a0f1d !important;
+      --bg2:    #131a2e !important;
+      --bg3:    #1e2843 !important;
+      --card:   #131a2e !important;
+      --border: #25304a !important;
+      --border2:#38456a !important;
+      --text:   #f1f5f9 !important;
+      --text2:  #94a3b8 !important;
+      --text3:  #64748b !important;
+    }
+    body.theme-dark #main,
+    body.theme-dark .page,
+    body.theme-dark .page-content { background: #0a0f1d !important; }
+    body.theme-dark #sidebar { background: #131a2e !important; border-right-color: #25304a !important; box-shadow: 2px 0 8px rgba(0,0,0,.20) !important; }
+    body.theme-dark .sb-logo-text { color: #f1f5f9 !important; }
+    body.theme-dark .sb-logo-sub  { color: #94a3b8 !important; }
+    body.theme-dark .sb-divider   { background: #25304a !important; }
+    body.theme-dark .sb-user-name { color: #f1f5f9 !important; }
+    body.theme-dark .nav-item     { color: #94a3b8 !important; }
+    body.theme-dark .nav-item:hover { background: rgba(59,130,246,.10) !important; color: #93c5fd !important; }
+    body.theme-dark .nav-item.active {
+      background: rgba(59,130,246,.18) !important;
+      color: #93c5fd !important;
+      box-shadow: 0 1px 4px rgba(0,0,0,.25) !important;
+    }
+    body.theme-dark #topbar { background: #131a2e !important; border-bottom-color: #25304a !important; box-shadow: 0 1px 4px rgba(0,0,0,.20) !important; }
+    body.theme-dark .search-wrap input {
+      background: #0a0f1d !important;
+      border-color: #25304a !important;
+      color: #f1f5f9 !important;
+    }
+    body.theme-dark .search-wrap input::placeholder { color: #64748b !important; }
+    body.theme-dark .search-wrap input:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 3px rgba(59,130,246,.15) !important; }
+    body.theme-dark .notif-btn,
+    body.theme-dark .theme-toggle { background: #1c2540 !important; border-color: #25304a !important; color: #94a3b8 !important; }
+    body.theme-dark .notif-btn:hover { background: #243056 !important; color: #93c5fd !important; }
+    body.theme-dark .card,
+    body.theme-dark .card-sm,
+    body.theme-dark .stat-card,
+    body.theme-dark .tbl {
+      background: #131a2e !important;
+      border-color: #25304a !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25), 0 1px 3px rgba(0,0,0,.18) !important;
+    }
+    body.theme-dark .card:hover { box-shadow: 0 6px 20px rgba(0,0,0,.32) !important; }
+    body.theme-dark .stat-value { color: #f1f5f9 !important; }
+    body.theme-dark .stat-label { color: #94a3b8 !important; }
+    body.theme-dark h1 { color: #f1f5f9 !important; }
+    body.theme-dark .page > p,
+    body.theme-dark .page-content > p { color: #94a3b8 !important; }
+    body.theme-dark .tbl th { background: #1c2540 !important; color: #94a3b8 !important; border-bottom-color: #25304a !important; }
+    body.theme-dark .tbl td { background: #131a2e !important; color: #e2e8f0 !important; border-bottom-color: #1f2942 !important; }
+    body.theme-dark .tbl tr:hover td { background: #1c2540 !important; }
+    body.theme-dark .tabs { background: #1c2540 !important; }
+    body.theme-dark .tab { color: #94a3b8 !important; }
+    body.theme-dark .tab.active { background: #131a2e !important; color: #93c5fd !important; box-shadow: 0 1px 4px rgba(0,0,0,.3) !important; }
+    body.theme-dark #mobile-bottom-nav { background: rgba(19,26,46,.97) !important; border-top-color: #25304a !important; }
+    body.theme-dark #mobile-bottom-nav .mb-tab { color: #94a3b8 !important; }
+    body.theme-dark #mobile-bottom-nav .mb-tab.active { color: #93c5fd !important; background: rgba(59,130,246,.18) !important; }
+    body.theme-dark #page-dashboard .dash-now-chip {
+      background: linear-gradient(135deg, rgba(59,130,246,.16), rgba(139,92,246,.16)) !important;
+      border-color: #2d3a5e !important;
+      color: #93c5fd !important;
+    }
+    body.theme-dark #dash-filter-bar { background: #131a2e !important; border-color: #25304a !important; }
+    body.theme-dark .pf-select,
+    body.theme-dark select,
+    body.theme-dark input[type="text"],
+    body.theme-dark input[type="search"],
+    body.theme-dark input[type="email"],
+    body.theme-dark textarea {
+      background: #0a0f1d !important;
+      color: #f1f5f9 !important;
+      border-color: #25304a !important;
+    }
+    body.theme-dark .btn-sec { background: #1c2540 !important; color: #cbd5e1 !important; border-color: #25304a !important; }
+    body.theme-dark .btn-sec:hover { background: #243056 !important; color: #93c5fd !important; }
+
+    /* ── Live date+time chip (desktop default) ─────────────────────────── */
+    .dash-now-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, #eff6ff, #eef2ff);
+      border: 1px solid #c7d7fe;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #1e40af;
+    }
+    .dash-now-chip .dash-now-icon { opacity: .8; }
+    .dash-now-chip .dash-now-sep { opacity: .5; }
+
+    /* ════════════════════════════════════════════════════════════════════
+       Mobile Dashboard redesign (≤ 768px)
+       ────────────────────────────────────────────────────────────────────
+       Goals: native-app feel, generous tap targets, vertical rhythm,
+       no horizontal squeeze, table → card list, donut + legend stacked.
+       Only scoped to #page-dashboard so other pages aren't affected.
+       ════════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      /* Page chrome — tighter, with breathing room above the bottom nav. */
+      #page-dashboard.page { padding: 18px 14px 96px !important; }
+
+      /* Hero greeting — bigger and friendlier than the desktop H1. */
+      #page-dashboard > h1 {
+        font-size: 26px !important;
+        font-weight: 800 !important;
+        letter-spacing: -.03em !important;
+        margin: 4px 0 2px !important;
+        background: linear-gradient(120deg, #4f46e5, #ec4899) !important;
+        -webkit-background-clip: text !important;
+        background-clip: text !important;
+        -webkit-text-fill-color: transparent !important;
+        color: transparent !important;
+      }
+      #page-dashboard > p {
+        font-size: 13.5px !important;
+        color: var(--text2) !important;
+        margin: 0 0 12px !important;
+        line-height: 1.4;
+      }
+
+      /* Live date+time — compact one-line pill, left-aligned. */
+      #page-dashboard .dash-now-chip {
+        display: inline-flex !important;
+        width: auto !important;
+        gap: 6px !important;
+        padding: 5px 12px !important;
+        margin: 0 0 14px !important;
+        border-radius: 99px !important;
+        font-size: 12px !important;
+        background: linear-gradient(135deg, #eff6ff, #f5f3ff) !important;
+        border: 1px solid #dbeafe !important;
+        white-space: nowrap;
+      }
+      #page-dashboard .dash-now-chip .dash-now-icon { width: 12px !important; height: 12px !important; }
+
+      /* Period / Department filters — 2-col grid: label-narrow, select-wide,
+         one label/select pair per row. Cleaner than letting flex wrap. */
+      #dash-filter-bar {
+        display: grid !important;
+        grid-template-columns: auto 1fr !important;
+        align-items: center !important;
+        gap: 10px 12px !important;
+        margin-bottom: 18px !important;
+        padding: 12px 14px !important;
+        background: #ffffff !important;
+        border: 1px solid rgba(0,0,0,.06) !important;
+        border-radius: 14px !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
+      }
+      #dash-filter-bar .pf-label {
+        font-size: 11px !important;
+        color: var(--text3) !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: .04em !important;
+        margin: 0 !important;
+      }
+      #dash-filter-bar .pf-select {
+        width: 100% !important;
+        min-width: 0 !important;
+        padding: 8px 12px !important;
+        font-size: 13.5px !important;
+        border-radius: 10px !important;
+      }
+
+      /* Section-title chips ("Your insights"). */
+      #page-dashboard > div[style*="text-transform:uppercase"] {
+        font-size: 11px !important;
+        margin: 22px 0 10px !important;
+        letter-spacing: .05em !important;
+      }
+
+      /* Main stat grid (4 KPI cards) — 2 × 2. */
+      #page-dashboard .stat-grid {
+        grid-template-columns: 1fr 1fr !important;
+        gap: 12px !important;
+        margin-bottom: 14px !important;
+      }
+      #page-dashboard .stat-card {
+        padding: 16px 14px !important;
+        border-radius: 18px !important;
+        min-height: 116px;
+        position: relative;
+      }
+      #page-dashboard .stat-card:hover { transform: none !important; }
+      #page-dashboard .stat-card:active {
+        transform: scale(.98) !important;
+        transition: transform .08s ease !important;
+      }
+      #page-dashboard .stat-icon {
+        width: 36px !important; height: 36px !important;
+        border-radius: 12px !important;
+        margin-bottom: 8px !important;
+      }
+      #page-dashboard .stat-icon svg { width: 18px !important; height: 18px !important; }
+      #page-dashboard .stat-label {
+        font-size: 11.5px !important;
+        line-height: 1.3 !important;
+        margin-bottom: 2px !important;
+      }
+      #page-dashboard .stat-value { font-size: 26px !important; }
+      #page-dashboard .stat-change { font-size: 10.5px !important; }
+
+      /* "Your insights" stat grid — full-width stack so the labels
+         ("Mentions awaiting your reply") have room to breathe and each
+         card feels tap-able. Selected via adjacent sibling of the
+         section label, not :nth-of-type (which counts ALL <div>s and
+         picks the wrong grid). */
+      #page-dashboard > div[style*="text-transform:uppercase"] + .stat-grid {
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+      }
+      #page-dashboard > div[style*="text-transform:uppercase"] + .stat-grid .stat-card {
+        display: grid !important;
+        grid-template-columns: 42px 1fr auto !important;
+        grid-template-rows: auto auto !important;
+        align-items: center !important;
+        column-gap: 12px !important;
+        row-gap: 2px !important;
+        min-height: 0 !important;
+        padding: 14px 16px !important;
+      }
+      #page-dashboard > div[style*="text-transform:uppercase"] + .stat-grid .stat-card .stat-icon {
+        grid-row: 1 / span 2;
+        margin-bottom: 0 !important;
+      }
+      #page-dashboard > div[style*="text-transform:uppercase"] + .stat-grid .stat-card .stat-label {
+        grid-row: 1; grid-column: 2;
+        margin: 0 !important;
+      }
+      #page-dashboard > div[style*="text-transform:uppercase"] + .stat-grid .stat-card .stat-value {
+        grid-row: 1 / span 2;
+        grid-column: 3;
+        font-size: 24px !important;
+        align-self: center;
+      }
+      #page-dashboard > div[style*="text-transform:uppercase"] + .stat-grid .stat-card .stat-change {
+        grid-row: 2; grid-column: 2;
+        margin-top: 0 !important;
+      }
+      /* Hide the visibility:hidden filler card on mobile entirely. */
+      #page-dashboard .stat-card[style*="visibility:hidden"] { display: none !important; }
+
+      /* Insight drawer — looser padding on mobile. */
+      #dash-insight-drawer {
+        border-radius: 16px !important;
+        padding: 14px !important;
+      }
+
+      /* Donut card — stack donut and legend vertically. */
+      #page-dashboard .donut-wrap {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 14px !important;
+      }
+      #page-dashboard .donut-wrap > div:first-child {
+        align-self: center;
+      }
+      #page-dashboard .donut-wrap > div:first-child svg {
+        width: 150px !important;
+        height: 150px !important;
+      }
+      #page-dashboard .donut-wrap .legend-item {
+        font-size: 13px !important;
+        margin-bottom: 0 !important;
+        padding: 7px 4px;
+        border-bottom: 1px solid #f3f5fb;
+      }
+      #page-dashboard .donut-wrap .legend-item:last-child { border-bottom: 0; }
+      #page-dashboard .donut-wrap .legend-dot { width: 10px !important; height: 10px !important; }
+
+      /* Generic card padding tweaks on mobile. */
+      #page-dashboard .card {
+        padding: 16px 14px !important;
+        border-radius: 18px !important;
+      }
+      #page-dashboard .card > div[style*="font-size:13px"] {
+        font-size: 14px !important;
+        font-weight: 600 !important;
+      }
+
+      /* Recent Tickets — convert the table to a stack of tap-friendly cards.
+         Each <tr> becomes a flex container; flex-wrap + per-cell `order` puts
+         the id + avatar on row 1, the title full-width on row 2, and the
+         priority / status / due chips on row 3. The JS that builds the table
+         doesn't need to change. */
+      #dash-ticket-table,
+      #dash-ticket-table tbody { display: block !important; background: transparent !important; }
+      #dash-ticket-table { border: 0 !important; box-shadow: none !important; }
+      #dash-ticket-table thead { display: none !important; }
+      #dash-ticket-table tr {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        gap: 4px 10px !important;
+        padding: 12px 14px !important;
+        margin-bottom: 8px !important;
+        background: #fff !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(0,0,0,.06) !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
+      }
+      #dash-ticket-table tr:hover td { background: transparent !important; }
+      #dash-ticket-table td {
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        max-width: none !important;
+        white-space: normal !important;
+      }
+      #dash-ticket-table td:nth-child(1) { /* ID */
+        order: 1; font-size: 11px !important; color: var(--accent) !important; font-weight: 600;
+      }
+      #dash-ticket-table td:nth-child(3) { /* Assignee avatar */
+        order: 2; margin-left: auto;
+      }
+      #dash-ticket-table td:nth-child(2) { /* Title */
+        order: 3; flex: 1 100%;
+        font-size: 13.5px !important; font-weight: 500;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap !important;
+      }
+      #dash-ticket-table td:nth-child(4) { order: 4; } /* Priority */
+      #dash-ticket-table td:nth-child(5) { order: 5; } /* Status */
+      #dash-ticket-table td:nth-child(6) { /* Due date */
+        order: 6; margin-left: auto;
+        font-size: 11.5px !important;
+      }
+
+      /* Admin row: Workload + Activity stacked vertical. */
+      #page-dashboard .admin-only > div[style*="grid-template-columns:1fr 1fr"] {
+        grid-template-columns: 1fr !important;
+      }
+    }
   </style>
 
 </head>
@@ -2838,6 +3235,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <button type="button" class="admin-scope-btn"        data-scope="all"  onclick="toggleAdminViewAll(true)"  aria-label="Show all workspace tickets">All</button>
       </div>
       <button class="btn-primary" onclick="openModal('create-ticket')">+ Create Ticket</button>
+      <!-- Day/Night toggle. Renders both icons; CSS hides one based on the
+           body.theme-dark class so the visible icon is the *target* mode. -->
+      <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle day/night mode">
+        <svg class="theme-icon-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="theme-icon-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
       <button class="notif-btn" id="notif-btn" onclick="toggleNotifPanel(event)" aria-label="Open notifications">
         <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
         <span class="notif-dot" id="notif-count">8</span>
@@ -2888,6 +3291,15 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <div id="page-dashboard" class="page active">
       <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Dashboard</h1>
       <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Welcome back, <span id="dash-welcome-name">there</span>! Here's what's happening.</p>
+
+      <!-- Live date + time chip — ticks every minute via updateDashNow().
+           Styled prominent on mobile, subtle pill on desktop. -->
+      <div class="dash-now-chip" id="dash-now" aria-live="polite">
+        <svg class="dash-now-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+        <span id="dash-now-date">—</span>
+        <span class="dash-now-sep">·</span>
+        <span id="dash-now-time">—</span>
+      </div>
 
       <div class="page-filter-bar" id="dash-filter-bar">
         <span class="pf-label">Period</span>
@@ -5825,7 +6237,58 @@ function renderInsightDrawer(category) {
   `;
 }
 
+// ── Day/Night theme toggle ───────────────────────────────────────────────
+// Reads / writes localStorage and flips a `theme-dark` class on <body>.
+// The CSS rules under that class re-skin sidebar / topbar / cards / mobile
+// bottom nav. The toggle button cycles between modes and swaps its icon
+// via the same class.
+function applyTheme(theme) {
+  document.body.classList.toggle('theme-dark', theme === 'dark');
+}
+function toggleTheme() {
+  const next = document.body.classList.contains('theme-dark') ? 'light' : 'dark';
+  try { localStorage.setItem('theme', next); } catch {}
+  applyTheme(next);
+}
+// Apply the saved theme as early as possible to avoid a light→dark flash.
+(function bootTheme() {
+  let saved = 'light';
+  try { saved = localStorage.getItem('theme') || 'light'; } catch {}
+  // Run synchronously if body already exists, otherwise after parse.
+  if (document.body) applyTheme(saved);
+  else document.addEventListener('DOMContentLoaded', () => applyTheme(saved));
+})();
+
+// Refresh the dashboard's live date + time chip. Called once at dashboard
+// init and then every minute by a setInterval started at module load.
+function updateDashNow() {
+  const dEl = document.getElementById('dash-now-date');
+  const tEl = document.getElementById('dash-now-time');
+  if (!dEl || !tEl) return;
+  const now = new Date();
+  try {
+    dEl.textContent = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    tEl.textContent = now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  } catch {
+    dEl.textContent = now.toDateString();
+    tEl.textContent = now.toTimeString().slice(0, 5);
+  }
+}
+// Tick every minute. setInterval IDs are kept in case we ever want to stop
+// the ticker (we don't right now — the chip is cheap to keep current even
+// when the dashboard isn't visible, since the DOM nodes still exist).
+setInterval(updateDashNow, 60 * 1000);
+// First paint as soon as the DOM is parsed enough for the nodes to exist.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', updateDashNow);
+} else {
+  updateDashNow();
+}
+
 function initDashboard() {
+  // Refresh the date/time the moment the dashboard renders so a stale
+  // value can't sit there if the user opened the tab hours ago.
+  updateDashNow();
   captureDashboardBaseline();
 
   // ---- Stat cards: baseline + delta from initial snapshot ----
