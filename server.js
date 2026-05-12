@@ -1212,89 +1212,105 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
       }
       const newAssignees = assignees.filter(a => !oldAssigneesAll.includes(a));
       if (newAssignees.length) {
-        const assigner = await getUser(req.session.userId);
-        const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
-        for (const name of newAssignees) {
-          const target = await get('SELECT id,name,email FROM users WHERE name=?', name);
-          if (target && target.id !== req.session.userId) {
-            await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-              target.id, 'assigned', '👤', `${assigner?.name || 'Someone'} assigned you to "${tkt?.title || req.params.id}"`, req.params.id);
-            fireEmail('ticket-assigned', () => sendTicketAssignedEmail({
-              toEmail: target.email, toName: target.name,
-              assignerName: assigner?.name || 'Someone',
-              ticketId: req.params.id, title: tkt?.title || '',
-              priority: tkt?.priority || 'Medium',
-              dueAt: tkt?.due || '',
-              status: tkt?.status || 'Open',
-              dept: tkt?.dept || '',
-              requester: tkt?.reporter || '',
-              description: tkt?.req || '',
-              tags: (() => { try { return JSON.parse(tkt?.tags_json || '[]'); } catch { return []; } })(),
-            }));
-            // Slack DM — same payload shape as the create-time assign.
-            slackDmUser(target.id, {
-              text: `🎫 *${assigner?.name || 'Someone'}* assigned you to <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}`,
-            }).catch(()=>{});
+        // Defer to background — assigning N people no longer adds N sequential
+        // DB roundtrips to the PUT response. Pool stays free for concurrent GETs.
+        setImmediate(() => { (async () => {
+          try {
+            const assigner = await getUser(req.session.userId);
+            const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+            const targets = (await Promise.all(
+              newAssignees.map(n => get('SELECT id,name,email FROM users WHERE name=?', n))
+            )).filter(Boolean);
+            for (const target of targets) {
+              if (target.id === req.session.userId) continue;
+              run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+                target.id, 'assigned', '👤', `${assigner?.name || 'Someone'} assigned you to "${tkt?.title || req.params.id}"`, req.params.id
+              ).catch(err => console.warn('[assign-notify] insert failed:', err && err.message));
+              fireEmail('ticket-assigned', () => sendTicketAssignedEmail({
+                toEmail: target.email, toName: target.name,
+                assignerName: assigner?.name || 'Someone',
+                ticketId: req.params.id, title: tkt?.title || '',
+                priority: tkt?.priority || 'Medium',
+                dueAt: tkt?.due || '',
+                status: tkt?.status || 'Open',
+                dept: tkt?.dept || '',
+                requester: tkt?.reporter || '',
+                description: tkt?.req || '',
+                tags: (() => { try { return JSON.parse(tkt?.tags_json || '[]'); } catch { return []; } })(),
+              }));
+              slackDmUser(target.id, {
+                text: `🎫 *${assigner?.name || 'Someone'}* assigned you to <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}`,
+              }).catch(()=>{});
+            }
+          } catch (err) {
+            console.warn('[new-assignee-fanout] failed:', err && err.message);
           }
-        }
+        })(); });
       }
     }
 
-    // ── Status change emails (status-changed, plus ticket-closed when applicable) ──
+    // ── Status change fan-out — deferred to background ──────────────────
     // Notify everyone tied to the ticket: assignees + reporter + REQUESTER,
     // minus the actor. Requester was missing before so the person who opened
-    // the ticket never heard about status changes.
+    // the ticket never heard about status changes. setImmediate keeps the
+    // PUT response fast even when many users need to be notified.
     if (status !== undefined && oldStatus && oldStatus !== status) {
-      const updated  = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
-      const changer  = await getUser(req.session.userId);
-      const currentAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
-      const recipientNames = new Set([...currentAssignees, updated.reporter, updated.req].filter(Boolean));
-      recipientNames.delete(changer?.name);
-      for (const name of recipientNames) {
-        const target = await emailForName(name);
-        if (!target?.email) continue;
-        fireEmail('status-changed', () => sendTicketStatusChangedEmail({
-          toEmail: target.email, toName: target.name,
-          changedByName: changer?.name || 'Someone',
-          ticketId: req.params.id, title: updated.title || '',
-          fromStatus: oldStatus, toStatus: status,
-        }));
-        // Push + Slack DM to every recipient, alongside the email.
-        const targetUser = await get('SELECT id FROM users WHERE name=?', name);
-        if (targetUser) {
-          sendPushToUser(targetUser.id, {
-            title: `${updated.title || req.params.id}`,
-            body: `${changer?.name || 'Someone'} changed status: ${oldStatus} → ${status}`,
-            tag: 'ticket-' + req.params.id,
-            url: '/tickets/' + req.params.id,
-          }).catch(()=>{});
-          slackDmUser(targetUser.id, {
-            text: `🔄 *${changer?.name || 'Someone'}* moved <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${updated.title ? ' — ' + updated.title : ''} from *${oldStatus}* to *${status}*`,
-          }).catch(()=>{});
-          // In-app bell notification too — was missing for status changes.
-          await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-            targetUser.id, 'status', '🔄', `${changer?.name || 'Someone'} moved "${updated.title || req.params.id}": ${oldStatus} → ${status}`, req.params.id);
+      const _oldStatus = oldStatus;
+      const _newStatus = status;
+      const _oldClosedFlag = exists.closed_email_sent;
+      setImmediate(() => { (async () => {
+        try {
+          const updated  = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+          const changer  = await getUser(req.session.userId);
+          const currentAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
+          const recipientNames = new Set([...currentAssignees, updated.reporter, updated.req].filter(Boolean));
+          recipientNames.delete(changer?.name);
+          // Resolve every recipient name → user row in parallel.
+          const recipients = (await Promise.all(
+            Array.from(recipientNames).map(n => get('SELECT id,name,email FROM users WHERE name=?', n))
+          )).filter(r => r && r.email);
+          for (const target of recipients) {
+            fireEmail('status-changed', () => sendTicketStatusChangedEmail({
+              toEmail: target.email, toName: target.name,
+              changedByName: changer?.name || 'Someone',
+              ticketId: req.params.id, title: updated.title || '',
+              fromStatus: _oldStatus, toStatus: _newStatus,
+            }));
+            sendPushToUser(target.id, {
+              title: `${updated.title || req.params.id}`,
+              body: `${changer?.name || 'Someone'} changed status: ${_oldStatus} → ${_newStatus}`,
+              tag: 'ticket-' + req.params.id,
+              url: '/tickets/' + req.params.id,
+            }).catch(()=>{});
+            slackDmUser(target.id, {
+              text: `🔄 *${changer?.name || 'Someone'}* moved <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${updated.title ? ' — ' + updated.title : ''} from *${_oldStatus}* to *${_newStatus}*`,
+            }).catch(()=>{});
+            run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+              target.id, 'status', '🔄', `${changer?.name || 'Someone'} moved "${updated.title || req.params.id}": ${_oldStatus} → ${_newStatus}`, req.params.id
+            ).catch(err => console.warn('[status-notify] insert failed:', err && err.message));
+          }
+          // ticket-closed email (idempotent flag).
+          if (String(_newStatus).toLowerCase() === 'closed' && !_oldClosedFlag) {
+            run('UPDATE tickets SET closed_email_sent=1 WHERE id=?', req.params.id)
+              .catch(err => console.warn('[status-notify] closed-flag update failed:', err && err.message));
+            const createdAt = updated.created_at ? new Date(updated.created_at) : null;
+            const daysOpen  = createdAt && !isNaN(createdAt) ? Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86400000)) : null;
+            for (const target of recipients) {
+              fireEmail('ticket-closed', () => sendTicketClosedEmail({
+                toEmail: target.email, toName: target.name,
+                closerName: changer?.name || 'Someone',
+                ticketId: req.params.id, title: updated.title || '',
+                resolution: updated.req || '',
+                resolvedAt: new Date(),
+                daysOpen,
+                commentsCount: updated.comments_count || 0,
+              }));
+            }
+          }
+        } catch (err) {
+          console.warn('[status-fanout] failed:', err && err.message);
         }
-      }
-      // If newly closed, also fire the ticket-closed email (idempotent flag).
-      if (String(status).toLowerCase() === 'closed' && !exists.closed_email_sent) {
-        await run('UPDATE tickets SET closed_email_sent=1 WHERE id=?', req.params.id);
-        const createdAt = updated.created_at ? new Date(updated.created_at) : null;
-        const daysOpen  = createdAt && !isNaN(createdAt) ? Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 86400000)) : null;
-        for (const name of recipientNames) {
-          const target = await emailForName(name);
-          if (!target?.email) continue;
-          fireEmail('ticket-closed', () => sendTicketClosedEmail({
-            toEmail: target.email, toName: target.name,
-            closerName: changer?.name || 'Someone',
-            ticketId: req.params.id, title: updated.title || '',
-            resolution: updated.req || '',
-            resolvedAt: new Date(),
-            daysOpen,
-            commentsCount: updated.comments_count || 0,
-          }));
-        }
-      }
+      })(); });
     }
 
     // ── Generic field-changes notification (everything except status / new
@@ -1322,76 +1338,75 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
     }
 
     if (otherChanges.length > 0) {
-      const updated = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
-      const changer = await getUser(req.session.userId);
-      // Build watcher set: assignees + reporter + requester + creator.
-      const watcherMap = new Map();
-      const newAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
-      for (const n of newAssignees) {
-        if (!n) continue;
-        const w = await get('SELECT id,name,email FROM users WHERE name=?', n);
-        if (w && w.id !== req.session.userId) watcherMap.set(w.id, w);
-      }
-      for (const n of [updated.reporter, updated.req].filter(Boolean)) {
-        const w = await get('SELECT id,name,email FROM users WHERE name=?', n);
-        if (w && w.id !== req.session.userId) watcherMap.set(w.id, w);
-      }
-      if (updated.created_by) {
-        const w = await get('SELECT id,name,email FROM users WHERE id=?', updated.created_by);
-        if (w && w.id !== req.session.userId) watcherMap.set(w.id, w);
-      }
-      // The status block above already emailed/Slacked these users for the
-      // status change itself; skip them here so we don't duplicate. (They
-      // still get the in-app bell entry below — that's intentional, it
-      // surfaces the full update summary.)
-      const statusEmailedIds = new Set();
-      if (status !== undefined && oldStatus !== status) {
-        for (const n of [...newAssignees, updated.reporter, updated.req].filter(Boolean)) {
-          if (n === changer?.name) continue;
-          const u2 = await get('SELECT id FROM users WHERE name=?', n);
-          if (u2) statusEmailedIds.add(u2.id);
+      // Snapshot what we need before launching the background task so we
+      // don't capture mutable state.
+      const _changesCopy = otherChanges.slice();
+      const _statusChanged = status !== undefined && oldStatus !== status;
+      const _assigneesChanged = assignees !== undefined;
+      const _addedAssignees = _assigneesChanged
+        ? (assignees || []).filter(a => !oldAssigneesAll.includes(a))
+        : [];
+      // Background fan-out — never blocks the PUT response.
+      setImmediate(() => { (async () => {
+        try {
+          const updated = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+          const changer = await getUser(req.session.userId);
+          const currentAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
+          // Resolve watchers in parallel: assignees + reporter + req + creator.
+          const [resolvedAssignees, resolvedReporter, resolvedReq, resolvedCreator] = await Promise.all([
+            Promise.all(currentAssignees.filter(Boolean).map(n => get('SELECT id,name,email FROM users WHERE name=?', n))),
+            updated.reporter ? get('SELECT id,name,email FROM users WHERE name=?', updated.reporter) : null,
+            updated.req      ? get('SELECT id,name,email FROM users WHERE name=?', updated.req)      : null,
+            updated.created_by ? get('SELECT id,name,email FROM users WHERE id=?', updated.created_by) : null,
+          ]);
+          const watcherMap = new Map();
+          [...resolvedAssignees, resolvedReporter, resolvedReq, resolvedCreator].filter(Boolean).forEach(w => {
+            if (w.id !== req.session.userId) watcherMap.set(w.id, w);
+          });
+          // Skip email for users who already got the status-changed or new-
+          // assignee specific email above so they aren't double-emailed.
+          const skipEmailIds = new Set();
+          if (_statusChanged) {
+            [...currentAssignees, updated.reporter, updated.req].filter(Boolean).forEach(n => {
+              const found = [...watcherMap.values()].find(w => w.name === n);
+              if (found) skipEmailIds.add(found.id);
+            });
+          }
+          if (_addedAssignees.length) {
+            _addedAssignees.forEach(n => {
+              const found = [...watcherMap.values()].find(w => w.name === n);
+              if (found) skipEmailIds.add(found.id);
+            });
+          }
+          const summary = _changesCopy.length === 1
+            ? _changesCopy[0]
+            : (_changesCopy.slice(0, -1).join(', ') + ' and ' + _changesCopy[_changesCopy.length - 1]);
+          for (const w of watcherMap.values()) {
+            run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+              w.id, 'ticket-updated', '🔔', `${changer?.name || 'Someone'} updated "${updated.title || req.params.id}": ${summary}`, req.params.id
+            ).catch(err => console.warn('[ticket-update-notify] insert failed:', err && err.message));
+            sendPushToUser(w.id, {
+              title: `${updated.title || req.params.id}`,
+              body: `${changer?.name || 'Someone'} updated ${summary}`,
+              tag: 'ticket-' + req.params.id,
+              url: '/tickets/' + req.params.id,
+            }).catch(()=>{});
+            slackDmUser(w.id, {
+              text: `🔔 *${changer?.name || 'Someone'}* updated <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${updated.title ? ' — ' + updated.title : ''}: ${summary}`,
+            }).catch(()=>{});
+            if (!skipEmailIds.has(w.id)) {
+              fireEmail('ticket-updated', () => sendTicketUpdatedEmail({
+                toEmail: w.email, toName: w.name,
+                changerName: changer?.name || 'Someone',
+                ticketId: req.params.id, title: updated.title || '',
+                changes: _changesCopy,
+              }));
+            }
+          }
+        } catch (err) {
+          console.warn('[ticket-update-fanout] failed:', err && err.message);
         }
-      }
-      // The new-assignee block already emailed any *added* assignees.
-      const assigneeEmailedIds = new Set();
-      if (assignees !== undefined) {
-        const added = (assignees || []).filter(a => !oldAssigneesAll.includes(a));
-        for (const n of added) {
-          const u2 = await get('SELECT id FROM users WHERE name=?', n);
-          if (u2) assigneeEmailedIds.add(u2.id);
-        }
-      }
-
-      const summary = otherChanges.length === 1
-        ? otherChanges[0]
-        : (otherChanges.slice(0, -1).join(', ') + ' and ' + otherChanges[otherChanges.length - 1]);
-
-      for (const w of watcherMap.values()) {
-        // In-app notification — always, gives the watcher a single bell
-        // entry summarising everything that changed in this update.
-        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-          w.id, 'ticket-updated', '🔔', `${changer?.name || 'Someone'} updated "${updated.title || req.params.id}": ${summary}`, req.params.id);
-        // Push + Slack — always
-        sendPushToUser(w.id, {
-          title: `${updated.title || req.params.id}`,
-          body: `${changer?.name || 'Someone'} updated ${summary}`,
-          tag: 'ticket-' + req.params.id,
-          url: '/tickets/' + req.params.id,
-        }).catch(()=>{});
-        slackDmUser(w.id, {
-          text: `🔔 *${changer?.name || 'Someone'}* updated <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${updated.title ? ' — ' + updated.title : ''}: ${summary}`,
-        }).catch(()=>{});
-        // Email — skip if they already got the status-change or new-assignee
-        // email above, so we don't double-email the same person.
-        if (!statusEmailedIds.has(w.id) && !assigneeEmailedIds.has(w.id)) {
-          fireEmail('ticket-updated', () => sendTicketUpdatedEmail({
-            toEmail: w.email, toName: w.name,
-            changerName: changer?.name || 'Someone',
-            ticketId: req.params.id, title: updated.title || '',
-            changes: otherChanges,
-          }));
-        }
-      }
+      })(); });
     }
 
     res.json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', req.params.id)));
@@ -1901,138 +1916,127 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
     await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
     const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
 
-    // Track who's been emailed about this comment so we don't double-send
-    // (e.g. someone is both an assignee and got mentioned).
-    const emailedUserIds = new Set([req.session.userId]);
+    // ── All comment fan-out (mentions, reply, watchers) runs in the
+    //    background so the POST returns immediately. Sequential awaits
+    //    here used to add seconds per request and starved the pg pool;
+    //    GETs on a slow Render-tier started timing out, which surfaced
+    //    as "I have to refresh many times to see comments". ────────────
+    const commentId = Number(info.lastInsertRowid);
+    setImmediate(() => { (async () => {
+      try {
+        const emailedUserIds = new Set([req.session.userId]);
 
-    // ── @-mentions: mention email + in-app notification ───────────────────
-    // Greedy regex captures the longest letter-and-spaces run after @
-    // (e.g. "@Eli did you create the subtasks" → captures the whole
-    // phrase). We then try progressively shorter prefixes against
-    // users.name so "@Eli did you …" still resolves to "Eli". Multi-word
-    // names ("John Smith") still match correctly because the longest
-    // prefix is tried first.
-    const mentionRaw = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
-    const matchedNames = new Set();
-    for (const captured of mentionRaw) {
-      const words = captured.split(' ');
-      for (let len = words.length; len >= 1; len--) {
-        const candidate = words.slice(0, len).join(' ');
-        const found = await get('SELECT name FROM users WHERE name=? LIMIT 1', candidate);
-        if (found) { matchedNames.add(found.name); break; }
-      }
-    }
-    const mentions = Array.from(matchedNames);
-    for (const name of mentions) {
-      const mentioned = await get('SELECT id,name,email,role,dept FROM users WHERE name=?', name);
-      if (mentioned && !emailedUserIds.has(mentioned.id)) {
-        emailedUserIds.add(mentioned.id);
-        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-          mentioned.id, 'mention', '💬', `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id);
-        fireEmail('mention', () => sendMentionEmail({
-          toEmail: mentioned.email, toName: mentioned.name,
-          authorName: u.name, authorRole: u.role || '', authorDept: u.dept || '',
-          ticketId: req.params.id, title: tkt?.title || '',
-          commentText: text.trim(),
-        }));
-        sendPushToUser(mentioned.id, {
-          title: `${u.name} mentioned you`,
-          body: text.trim().slice(0, 140),
-          tag: 'ticket-' + req.params.id + '-cmt',
-          url: '/tickets/' + req.params.id,
-        }).catch(()=>{});
-        // Slack DM with the mentioning author + a quoted comment snippet.
-        slackDmUser(mentioned.id, {
-          text: `💬 *${u.name}* mentioned you on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
-        }).catch(()=>{});
-      }
-    }
+        // ── @-mentions: longest-prefix match against users.name ───────────
+        const mentionRaw = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
+        const matchedNames = new Set();
+        for (const captured of mentionRaw) {
+          const words = captured.split(' ');
+          for (let len = words.length; len >= 1; len--) {
+            const candidate = words.slice(0, len).join(' ');
+            const found = await get('SELECT name FROM users WHERE name=? LIMIT 1', candidate);
+            if (found) { matchedNames.add(found.name); break; }
+          }
+        }
+        // Resolve all matched users in parallel.
+        const mentionedUsers = (await Promise.all(
+          Array.from(matchedNames).map(n => get('SELECT id,name,email,role,dept FROM users WHERE name=?', n))
+        )).filter(Boolean);
+        for (const m of mentionedUsers) {
+          if (emailedUserIds.has(m.id)) continue;
+          emailedUserIds.add(m.id);
+          run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+            m.id, 'mention', '💬', `${u.name} mentioned you in "${tkt?.title || req.params.id}"`, req.params.id
+          ).catch(err => console.warn('[mention-notify] insert failed:', err && err.message));
+          fireEmail('mention', () => sendMentionEmail({
+            toEmail: m.email, toName: m.name,
+            authorName: u.name, authorRole: u.role || '', authorDept: u.dept || '',
+            ticketId: req.params.id, title: tkt?.title || '',
+            commentText: text.trim(),
+          }));
+          sendPushToUser(m.id, {
+            title: `${u.name} mentioned you`,
+            body: text.trim().slice(0, 140),
+            tag: 'ticket-' + req.params.id + '-cmt',
+            url: '/tickets/' + req.params.id,
+          }).catch(()=>{});
+          slackDmUser(m.id, {
+            text: `💬 *${u.name}* mentioned you on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+          }).catch(()=>{});
+        }
 
-    // ── Reply-to-parent notification + email ──────────────────────────────
-    if (safeParentId) {
-      // Prefer author_user_id (stable across renames); fall back to author name
-      // for legacy rows where the id wasn't backfilled.
-      const parentInfo = await get(
-        `SELECT u.id AS user_id, u.name AS name, u.email AS email, u.role AS role
-           FROM ticket_comments tc
-           JOIN users u ON u.id = COALESCE(tc.author_user_id,
-                                           (SELECT id FROM users WHERE name = tc.author ORDER BY id ASC LIMIT 1))
-          WHERE tc.id = ?`, safeParentId);
-      if (parentInfo && !emailedUserIds.has(parentInfo.user_id)) {
-        emailedUserIds.add(parentInfo.user_id);
-        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-          parentInfo.user_id, 'comment', '↩', `${u.name} replied to your comment on "${tkt?.title || req.params.id}"`, req.params.id);
-        fireEmail('comment-reply', () => sendNewCommentEmail({
-          toEmail: parentInfo.email, toName: parentInfo.name,
-          authorName: u.name, authorRole: u.role || '',
-          authorBg: bg, authorFg: col,
-          ticketId: req.params.id, title: tkt?.title || '',
-          commentText: text.trim(),
-        }));
-        sendPushToUser(parentInfo.user_id, {
-          title: `${u.name} replied`,
-          body: text.trim().slice(0, 140),
-          tag: 'ticket-' + req.params.id + '-cmt',
-          url: '/tickets/' + req.params.id,
-        }).catch(()=>{});
-        slackDmUser(parentInfo.user_id, {
-          text: `↩ *${u.name}* replied to your comment on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
-        }).catch(()=>{});
-      }
-    }
+        // ── Reply-to-parent ──────────────────────────────────────────────
+        if (safeParentId) {
+          const parentInfo = await get(
+            `SELECT u.id AS user_id, u.name AS name, u.email AS email, u.role AS role
+               FROM ticket_comments tc
+               JOIN users u ON u.id = COALESCE(tc.author_user_id,
+                                               (SELECT id FROM users WHERE name = tc.author ORDER BY id ASC LIMIT 1))
+              WHERE tc.id = ?`, safeParentId);
+          if (parentInfo && !emailedUserIds.has(parentInfo.user_id)) {
+            emailedUserIds.add(parentInfo.user_id);
+            run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+              parentInfo.user_id, 'comment', '↩', `${u.name} replied to your comment on "${tkt?.title || req.params.id}"`, req.params.id
+            ).catch(err => console.warn('[reply-notify] insert failed:', err && err.message));
+            fireEmail('comment-reply', () => sendNewCommentEmail({
+              toEmail: parentInfo.email, toName: parentInfo.name,
+              authorName: u.name, authorRole: u.role || '',
+              authorBg: bg, authorFg: col,
+              ticketId: req.params.id, title: tkt?.title || '',
+              commentText: text.trim(),
+            }));
+            sendPushToUser(parentInfo.user_id, {
+              title: `${u.name} replied`,
+              body: text.trim().slice(0, 140),
+              tag: 'ticket-' + req.params.id + '-cmt',
+              url: '/tickets/' + req.params.id,
+            }).catch(()=>{});
+            slackDmUser(parentInfo.user_id, {
+              text: `↩ *${u.name}* replied to your comment on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+            }).catch(()=>{});
+          }
+        }
 
-    // ── New-comment fan-out to everyone involved with this ticket ─────────
-    //   assignee(s) + reporter + requester + creator
-    // Previously the requester (tkt.req) was excluded — so the person who
-    // OPENED the ticket got no email / Slack / in-app notification when
-    // someone commented, unless they were also @-mentioned. Now they are
-    // included. Each watcher gets the same fan-out: in-app notification,
-    // email, push, Slack DM.
-    const watchers = new Set();
-    const assigneesRows = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id);
-    assigneesRows.forEach(r => r.user_name && watchers.add(r.user_name));
-    if (tkt?.reporter) watchers.add(tkt.reporter);
-    if (tkt?.req)      watchers.add(tkt.req);
-    // The creator (created_by user id) — included by id since they might
-    // not match by name. Resolved after the name pass so we don't double-add.
-    let creatorUser = null;
-    if (tkt?.created_by) {
-      creatorUser = await get('SELECT id,name,email FROM users WHERE id=?', tkt.created_by);
-    }
-    // Resolve every watcher name → user row, dedupe, and send.
-    const watcherUsers = [];
-    for (const wname of watchers) {
-      const w = await get('SELECT id,name,email FROM users WHERE name=?', wname);
-      if (w) watcherUsers.push(w);
-    }
-    if (creatorUser && !watcherUsers.some(w => w.id === creatorUser.id)) {
-      watcherUsers.push(creatorUser);
-    }
-    for (const w of watcherUsers) {
-      if (emailedUserIds.has(w.id)) continue;
-      emailedUserIds.add(w.id);
-      // In-app notification — the bell icon was staying empty for non-
-      // mentioned watchers because this insert only existed on the
-      // @-mention + reply paths above.
-      await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-        w.id, 'comment', '💬', `${u.name} commented on "${tkt?.title || req.params.id}"`, req.params.id);
-      fireEmail('new-comment', () => sendNewCommentEmail({
-        toEmail: w.email, toName: w.name,
-        authorName: u.name, authorRole: u.role || '',
-        authorBg: bg, authorFg: col,
-        ticketId: req.params.id, title: tkt?.title || '',
-        commentText: text.trim(),
-      }));
-      sendPushToUser(w.id, {
-        title: `${u.name} commented on ${tkt?.title || req.params.id}`,
-        body: text.trim().slice(0, 140),
-        tag: 'ticket-' + req.params.id + '-cmt',
-        url: '/tickets/' + req.params.id,
-      }).catch(()=>{});
-      slackDmUser(w.id, {
-        text: `💬 *${u.name}* commented on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
-      }).catch(()=>{});
-    }
+        // ── Watcher fan-out: assignees + reporter + requester + creator ──
+        const watchers = new Set();
+        const assigneesRows = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id);
+        assigneesRows.forEach(r => r.user_name && watchers.add(r.user_name));
+        if (tkt?.reporter) watchers.add(tkt.reporter);
+        if (tkt?.req)      watchers.add(tkt.req);
+        const [resolvedWatchers, creatorUser] = await Promise.all([
+          Promise.all(Array.from(watchers).map(n => get('SELECT id,name,email FROM users WHERE name=?', n))),
+          tkt?.created_by ? get('SELECT id,name,email FROM users WHERE id=?', tkt.created_by) : Promise.resolve(null),
+        ]);
+        const watcherUsers = resolvedWatchers.filter(Boolean);
+        if (creatorUser && !watcherUsers.some(w => w.id === creatorUser.id)) {
+          watcherUsers.push(creatorUser);
+        }
+        for (const w of watcherUsers) {
+          if (emailedUserIds.has(w.id)) continue;
+          emailedUserIds.add(w.id);
+          run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+            w.id, 'comment', '💬', `${u.name} commented on "${tkt?.title || req.params.id}"`, req.params.id
+          ).catch(err => console.warn('[comment-notify] insert failed:', err && err.message));
+          fireEmail('new-comment', () => sendNewCommentEmail({
+            toEmail: w.email, toName: w.name,
+            authorName: u.name, authorRole: u.role || '',
+            authorBg: bg, authorFg: col,
+            ticketId: req.params.id, title: tkt?.title || '',
+            commentText: text.trim(),
+          }));
+          sendPushToUser(w.id, {
+            title: `${u.name} commented on ${tkt?.title || req.params.id}`,
+            body: text.trim().slice(0, 140),
+            tag: 'ticket-' + req.params.id + '-cmt',
+            url: '/tickets/' + req.params.id,
+          }).catch(()=>{});
+          slackDmUser(w.id, {
+            text: `💬 *${u.name}* commented on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+          }).catch(()=>{});
+        }
+      } catch (err) {
+        console.warn('[comment-fanout] failed:', err && err.message);
+      }
+    })(); });
 
     const _nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
     res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), createdAt: _nowUtc, time: formatUSDateTime(new Date().toISOString()) });
