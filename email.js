@@ -1245,6 +1245,44 @@ async function sendUpdateRequestedEmail({
 // ─────────────────────────────────────────────────────────────────────────────
 // Module exports
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic ticket-updated email. Fires when one or more fields change on a
+// ticket and the user is in the watcher set (requester / reporter / assignees /
+// creator). Body lists the fields that changed; the link sends them straight
+// to the ticket for the full before/after.
+// ─────────────────────────────────────────────────────────────────────────────
+async function sendTicketUpdatedEmail({
+  toEmail, toName, changerName, ticketId, title, changes,
+}) {
+  if (!toEmail) return { skipped: true };
+  const changeList = Array.isArray(changes) ? changes : [];
+  const summary = changeList.length === 0 ? 'updated this ticket'
+    : changeList.length === 1 ? `updated the ${changeList[0]}`
+    : `updated ${changeList.slice(0, -1).join(', ')} and ${changeList[changeList.length - 1]}`;
+  const subject = `${ticketId} updated`;
+  const url = ticketUrl(ticketId);
+  const html = shell({
+    name: 'Ticket updated', subject,
+    preheader: `${changerName || 'Someone'} ${summary} on ${ticketId}.`,
+    headerEyebrow: 'Ticket updated',
+    headerEmoji: '🔔',
+    headerTitle: `Update on ${escapeHtml(ticketId)}`,
+    headerSub: `<a href="${url}" style="color:#004874;text-decoration:none;font-weight:600;">${escapeHtml(ticketId)}</a>${title ? ` &middot; ${escapeHtml(title)}` : ''}`,
+    body:
+      `<p style="margin:0 0 6px 0;font-size:13px;color:#0f172a;line-height:1.65;">` +
+        `<b>${escapeHtml(changerName || 'Someone')}</b> ${escapeHtml(summary)}.` +
+      `</p>` +
+      (changeList.length
+        ? `<ul style="margin:6px 0 12px 18px;padding:0;font-size:12.5px;color:#475569;line-height:1.7;">` +
+          changeList.map(c => `<li>${escapeHtml(c)}</li>`).join('') +
+          `</ul>` : ''),
+    ctaText: 'Review ticket',
+    ctaHref: url,
+    footerNote: '',
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
 module.exports = {
   // Calendar
   sendMeetingInviteEmail,
@@ -1255,6 +1293,7 @@ module.exports = {
   // Tickets
   sendTicketAssignedEmail,
   sendTicketStatusChangedEmail,
+  sendTicketUpdatedEmail,
   sendNewCommentEmail,
   sendMentionEmail,
   sendTicketClosedEmail,

@@ -152,7 +152,7 @@ async function slackDmUser(userId, payload) {
 const {
   sendInviteEmail, sendWelcomeEmail, sendActivateAccountEmail,
   sendForgotPasswordEmail, sendPasswordChangedEmail, sendNewDeviceLoginEmail,
-  sendTicketAssignedEmail, sendTicketStatusChangedEmail, sendTicketClosedEmail,
+  sendTicketAssignedEmail, sendTicketStatusChangedEmail, sendTicketUpdatedEmail, sendTicketClosedEmail,
   sendNewCommentEmail, sendMentionEmail, sendOverdueDigestEmail,
   sendMeetingInviteEmail, sendMeetingReminderEmail, sendTaskAssignedEmail,
   sendDeadlineApproachingEmail, sendEventCancelledEmail,
@@ -1241,12 +1241,14 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
     }
 
     // ── Status change emails (status-changed, plus ticket-closed when applicable) ──
+    // Notify everyone tied to the ticket: assignees + reporter + REQUESTER,
+    // minus the actor. Requester was missing before so the person who opened
+    // the ticket never heard about status changes.
     if (status !== undefined && oldStatus && oldStatus !== status) {
       const updated  = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
       const changer  = await getUser(req.session.userId);
       const currentAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
-      // Notify everyone tied to the ticket: assignees + reporter, minus the actor.
-      const recipientNames = new Set([...currentAssignees, updated.reporter].filter(Boolean));
+      const recipientNames = new Set([...currentAssignees, updated.reporter, updated.req].filter(Boolean));
       recipientNames.delete(changer?.name);
       for (const name of recipientNames) {
         const target = await emailForName(name);
@@ -1257,7 +1259,7 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
           ticketId: req.params.id, title: updated.title || '',
           fromStatus: oldStatus, toStatus: status,
         }));
-        // Push the same status change to the user's installed PWA / browser.
+        // Push + Slack DM to every recipient, alongside the email.
         const targetUser = await get('SELECT id FROM users WHERE name=?', name);
         if (targetUser) {
           sendPushToUser(targetUser.id, {
@@ -1266,6 +1268,12 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
             tag: 'ticket-' + req.params.id,
             url: '/tickets/' + req.params.id,
           }).catch(()=>{});
+          slackDmUser(targetUser.id, {
+            text: `🔄 *${changer?.name || 'Someone'}* moved <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${updated.title ? ' — ' + updated.title : ''} from *${oldStatus}* to *${status}*`,
+          }).catch(()=>{});
+          // In-app bell notification too — was missing for status changes.
+          await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+            targetUser.id, 'status', '🔄', `${changer?.name || 'Someone'} moved "${updated.title || req.params.id}": ${oldStatus} → ${status}`, req.params.id);
         }
       }
       // If newly closed, also fire the ticket-closed email (idempotent flag).
@@ -1284,6 +1292,103 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
             resolvedAt: new Date(),
             daysOpen,
             commentsCount: updated.comments_count || 0,
+          }));
+        }
+      }
+    }
+
+    // ── Generic field-changes notification (everything except status / new
+    //    assignees, which have their own specific emails above) ──────────
+    //    Sends in-app + email + push + Slack DM to every watcher
+    //    (assignees + reporter + REQUESTER + creator, minus actor).
+    const otherChanges = [];
+    const cmp = (a, b) => String(a ?? '') !== String(b ?? '');
+    if (title    !== undefined && cmp(exists.title,    title))    otherChanges.push('title');
+    if (reqName  !== undefined && cmp(exists.req,      reqName))  otherChanges.push('requester');
+    if (reporter !== undefined && cmp(exists.reporter, reporter)) otherChanges.push('reporter');
+    if (priority !== undefined && cmp(exists.priority, priority)) otherChanges.push('priority');
+    if (dept     !== undefined && cmp(exists.dept,     dept))     otherChanges.push('department');
+    if (due      !== undefined && cmp(exists.due,      due))      otherChanges.push('due date');
+    // Detect any assignee change (not just additions). The new-assignee
+    // block above already emails the *added* assignees, but the requester
+    // / reporter / creator never heard about it; this block fixes that.
+    let assigneesChanged = false;
+    if (assignees !== undefined) {
+      const oldSorted = oldAssigneesAll.slice().sort();
+      const newSorted = (assignees || []).slice().sort();
+      assigneesChanged = (oldSorted.length !== newSorted.length) ||
+                         oldSorted.some((a, i) => a !== newSorted[i]);
+      if (assigneesChanged) otherChanges.push('assignees');
+    }
+
+    if (otherChanges.length > 0) {
+      const updated = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+      const changer = await getUser(req.session.userId);
+      // Build watcher set: assignees + reporter + requester + creator.
+      const watcherMap = new Map();
+      const newAssignees = (await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id)).map(a => a.user_name);
+      for (const n of newAssignees) {
+        if (!n) continue;
+        const w = await get('SELECT id,name,email FROM users WHERE name=?', n);
+        if (w && w.id !== req.session.userId) watcherMap.set(w.id, w);
+      }
+      for (const n of [updated.reporter, updated.req].filter(Boolean)) {
+        const w = await get('SELECT id,name,email FROM users WHERE name=?', n);
+        if (w && w.id !== req.session.userId) watcherMap.set(w.id, w);
+      }
+      if (updated.created_by) {
+        const w = await get('SELECT id,name,email FROM users WHERE id=?', updated.created_by);
+        if (w && w.id !== req.session.userId) watcherMap.set(w.id, w);
+      }
+      // The status block above already emailed/Slacked these users for the
+      // status change itself; skip them here so we don't duplicate. (They
+      // still get the in-app bell entry below — that's intentional, it
+      // surfaces the full update summary.)
+      const statusEmailedIds = new Set();
+      if (status !== undefined && oldStatus !== status) {
+        for (const n of [...newAssignees, updated.reporter, updated.req].filter(Boolean)) {
+          if (n === changer?.name) continue;
+          const u2 = await get('SELECT id FROM users WHERE name=?', n);
+          if (u2) statusEmailedIds.add(u2.id);
+        }
+      }
+      // The new-assignee block already emailed any *added* assignees.
+      const assigneeEmailedIds = new Set();
+      if (assignees !== undefined) {
+        const added = (assignees || []).filter(a => !oldAssigneesAll.includes(a));
+        for (const n of added) {
+          const u2 = await get('SELECT id FROM users WHERE name=?', n);
+          if (u2) assigneeEmailedIds.add(u2.id);
+        }
+      }
+
+      const summary = otherChanges.length === 1
+        ? otherChanges[0]
+        : (otherChanges.slice(0, -1).join(', ') + ' and ' + otherChanges[otherChanges.length - 1]);
+
+      for (const w of watcherMap.values()) {
+        // In-app notification — always, gives the watcher a single bell
+        // entry summarising everything that changed in this update.
+        await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+          w.id, 'ticket-updated', '🔔', `${changer?.name || 'Someone'} updated "${updated.title || req.params.id}": ${summary}`, req.params.id);
+        // Push + Slack — always
+        sendPushToUser(w.id, {
+          title: `${updated.title || req.params.id}`,
+          body: `${changer?.name || 'Someone'} updated ${summary}`,
+          tag: 'ticket-' + req.params.id,
+          url: '/tickets/' + req.params.id,
+        }).catch(()=>{});
+        slackDmUser(w.id, {
+          text: `🔔 *${changer?.name || 'Someone'}* updated <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${updated.title ? ' — ' + updated.title : ''}: ${summary}`,
+        }).catch(()=>{});
+        // Email — skip if they already got the status-change or new-assignee
+        // email above, so we don't double-email the same person.
+        if (!statusEmailedIds.has(w.id) && !assigneeEmailedIds.has(w.id)) {
+          fireEmail('ticket-updated', () => sendTicketUpdatedEmail({
+            toEmail: w.email, toName: w.name,
+            changerName: changer?.name || 'Someone',
+            ticketId: req.params.id, title: updated.title || '',
+            changes: otherChanges,
           }));
         }
       }

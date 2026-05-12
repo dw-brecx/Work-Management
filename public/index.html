@@ -1206,7 +1206,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .chk-delete:hover{background:#fef2f2;color:#dc2626}
 
   /* MENTION DROPDOWN (comment input) */
-  .mention-dropdown{display:none;position:absolute;left:8px;top:calc(100% + 6px);min-width:240px;max-width:320px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 40px rgba(15,23,42,.18);max-height:240px;overflow-y:auto;z-index:500;padding:5px;animation:sdFade .14s ease}
+  /* Mention-dropdown is anchored to .td-composer-box (which is pinned at
+     the BOTTOM of the chat-shaped comments panel since the recent
+     redesign). Position the dropdown ABOVE the composer with
+     bottom:calc(100% + 6px) — the old top:calc(100% + 6px) put it
+     directly off the bottom edge of the viewport on mobile. */
+  .mention-dropdown{display:none;position:absolute;left:8px;bottom:calc(100% + 6px);min-width:240px;max-width:320px;background:#fff;border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 40px rgba(15,23,42,.18);max-height:240px;overflow-y:auto;z-index:500;padding:5px;animation:sdFade .14s ease}
   .mention-dropdown.open{display:block}
   .mention-item{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:9px;cursor:pointer;font-size:12px;transition:background .12s ease}
   .mention-item:hover,.mention-item.active{background:rgba(0,72,116,.07)}
