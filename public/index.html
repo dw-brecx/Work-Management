@@ -984,14 +984,26 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   .td-side-add{display:inline-flex;align-items:center;gap:4px;background:transparent;border:1px dashed var(--border);color:var(--text3);font-size:10.5px;padding:5px 10px;border-radius:7px;cursor:pointer;font-family:inherit;margin-top:6px;transition:all .12s ease;font-weight:500}
   .td-side-add:hover{border-color:var(--accent);color:var(--accent);border-style:solid}
 
-  /* Inline comments block (right panel) */
-  .td-comment-composer{display:flex;gap:8px;align-items:flex-start;margin-bottom:12px}
+  /* Inline comments block (right panel) — chat-shaped layout:
+     the comment list flex-grows and scrolls internally; the composer is
+     pinned to the bottom of the panel like a chat input. */
+  #page-ticket-detail .td-right,
+  #page-plan-detail .right-panel { display:flex; flex-direction:column; }
+  #page-ticket-detail .td-right .td-side-block,
+  #page-plan-detail .right-panel .td-side-block {
+    display:flex;
+    flex-direction:column;
+    flex:1;
+    min-height:0;
+    margin-bottom:0;
+  }
+  .td-comment-composer{display:flex;gap:8px;align-items:flex-start;margin-top:10px;flex-shrink:0}
   .td-composer-box{flex:1;min-width:0;border:1px solid var(--border);border-radius:9px;background:#fff;position:relative}
   .td-composer-box textarea{width:100%;border:none;padding:9px 11px;font-size:11.5px;line-height:1.55;background:transparent;outline:none;font-family:inherit;resize:none;min-height:72px;display:block;color:var(--text)}
   .td-composer-box textarea:focus{border:none!important;box-shadow:none!important;background:transparent!important;outline:none!important}
   .td-composer-box textarea::placeholder{color:var(--text3)}
   .td-composer-actions{display:flex;justify-content:flex-end;padding:4px 6px 6px;border-top:1px solid var(--border)}
-  .td-comment-list{display:flex;flex-direction:column;gap:10px;max-height:480px;overflow-y:auto;padding-right:2px}
+  .td-comment-list{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow-y:auto;padding-right:2px}
   .td-comment-list::-webkit-scrollbar{width:5px}
   .td-comment-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
   .td-comment-list::-webkit-scrollbar-thumb:hover{background:var(--text3)}
@@ -3301,6 +3313,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <span class="td-side-progress" id="comments-trigger-count">0</span>
           </div>
 
+          <div class="td-comment-list" id="cmt-drawer-list"></div>
+
           <div class="td-comment-composer">
             <div class="avatar td-composer-avatar" id="td-comment-composer-avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px;overflow:hidden">JD</div>
             <div class="td-composer-box">
@@ -3311,8 +3325,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               </div>
             </div>
           </div>
-
-          <div class="td-comment-list" id="cmt-drawer-list"></div>
         </div>
       </div>
     </div>
@@ -3524,6 +3536,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <span class="td-side-progress" id="pd-comment-count">0</span>
           </div>
 
+          <div class="td-comment-list" id="pd-comment-list"></div>
+
           <div class="td-comment-composer">
             <div class="avatar td-composer-avatar" id="pd-comment-composer-avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px;overflow:hidden">JD</div>
             <div class="td-composer-box">
@@ -3533,8 +3547,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               </div>
             </div>
           </div>
-
-          <div class="td-comment-list" id="pd-comment-list"></div>
         </div>
       </div>
     </div>
@@ -8931,13 +8943,17 @@ function renderComments() {
         </div>
       `;
     }
-    // Show newest comments first at the top level so the user sees the
-    // latest activity without scrolling. Replies within a thread stay in
-    // chronological order so the conversation reads naturally top-down.
-    el.innerHTML = tops.slice().reverse().map(c => renderOne(c, 0)).join('');
+    // Chat-style: oldest at top, newest at the bottom. The composer is
+    // pinned below the list, so reading the conversation top-down stays
+    // natural and the newest reply lands right next to the input.
+    el.innerHTML = tops.map(c => renderOne(c, 0)).join('');
   }
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
+  // Scroll to the bottom so the newest comment is visible alongside the
+  // composer. requestAnimationFrame waits for layout so scrollHeight is
+  // accurate after the innerHTML replace.
+  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 }
 
 // "No reply needed" button on an @-mention comment. Marks ALL of the
@@ -9076,7 +9092,10 @@ function addComment() {
   const me = window.CURRENT_USER || {};
   const meName = me.name || 'You';
   const meInit = (meName.split(' ').map(w => w[0] || '').join('').slice(0,2) || 'U').toUpperCase();
-  localComments.unshift({
+  // Newest comment appended at the end so the chat-shaped panel keeps the
+  // freshest message right above the composer (server returns oldest→newest
+  // too, so this matches the canonical order).
+  localComments.push({
     author: meName, init: meInit,
     bg: me.color ? (me.color + '22') : '#dcfce7',
     col: me.color || '#166534',
@@ -12561,6 +12580,8 @@ function renderPlanComments() {
       </div>
     </div>
   `).join('');
+  // Chat-style: keep the newest comment in view next to the composer.
+  requestAnimationFrame(() => { wrap.scrollTop = wrap.scrollHeight; });
 }
 
 // Kept as no-op for backward compat (Activity tab is now its own card)
@@ -12651,7 +12672,9 @@ function addPlanComment() {
   const me = window.CURRENT_USER || {};
   const meName = me.name || 'You';
   const meInit = (meName.split(' ').map(w => w[0] || '').join('').slice(0,2) || 'U').toUpperCase();
-  PLAN_COMMENTS[currentPlanId].unshift({
+  // Chat-style: append at the end so the newest comment appears just
+  // above the composer.
+  PLAN_COMMENTS[currentPlanId].push({
     author: meName, initials: meInit, color: me.color || '#6366f1',
     time: formatNowUS(), text,
   });
