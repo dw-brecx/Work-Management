@@ -328,6 +328,46 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_flavors_v2_status ON flavors_v2 (status)`,
     `CREATE INDEX IF NOT EXISTS idx_flavors_v2_created ON flavors_v2 (created_at DESC)`,
+    // Sales channels (Amazon, Walmart, Custom, …). Drives the channel-listing
+    // tickets in a later phase and the channel-specific price + content
+    // rules. has_fba flips on the FBA / FBM split for marketplaces that do
+    // both (Amazon, occasionally Walmart). Soft-disable via `enabled` so
+    // killing a channel mid-launch doesn't break historical references.
+    `CREATE TABLE IF NOT EXISTS flavor_channels (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      code TEXT NOT NULL UNIQUE,
+      has_fba INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_flavor_channels_position ON flavor_channels (position)`,
+    // Listing-content example templates. The user pastes their existing copy
+    // here — title pattern, bullets, description — and the (later-phase)
+    // content generator substitutes flavor data into the placeholders to
+    // produce listings for new flavors in the same voice. Keyed by
+    // (syrup_use, flavor_type) so coffee templates only apply to coffee
+    // flavors, natural-only templates leave the "natural" emphasis intact
+    // for natural flavors, etc. `keywords` is a freeform comma-separated
+    // bag the worker can copy to the listing keywords field on a channel.
+    `CREATE TABLE IF NOT EXISTS flavor_listing_examples (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      syrup_use TEXT NOT NULL DEFAULT 'other',
+      flavor_type TEXT NOT NULL DEFAULT 'any',
+      listing_type TEXT NOT NULL DEFAULT 'single',
+      title_template TEXT NOT NULL DEFAULT '',
+      bullets_json TEXT NOT NULL DEFAULT '[]',
+      description_template TEXT NOT NULL DEFAULT '',
+      keywords TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_flavor_examples_lookup
+      ON flavor_listing_examples (syrup_use, flavor_type, listing_type)`,
     `CREATE TABLE IF NOT EXISTS attachments (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
@@ -873,6 +913,24 @@ async function init() {
       }
     }
   } catch (e) { console.warn('[seed] #general chat channel:', e.message); }
+
+  // Seed default flavor-launch v2 sales channels. Idempotent — only fires
+  // when the channels table is empty. The user can rename, disable, or add
+  // channels from Flavors → Settings.
+  const channelRows = await get('SELECT COUNT(*) AS n FROM flavor_channels');
+  if (!channelRows || Number(channelRows.n) === 0) {
+    const seedChannels = [
+      { name: 'Amazon',  code: 'amazon',  has_fba: 1, position: 1 },
+      { name: 'Walmart', code: 'walmart', has_fba: 0, position: 2 },
+      { name: 'Custom',  code: 'custom',  has_fba: 0, position: 3 },
+    ];
+    for (const c of seedChannels) {
+      await run(
+        'INSERT INTO flavor_channels (name, code, has_fba, enabled, position) VALUES (?,?,?,1,?)',
+        c.name, c.code, c.has_fba, c.position
+      );
+    }
+  }
 
   // Seed default flavor-launch tasks (template). Only inserted if the table is empty.
   const flavorRows = await get('SELECT COUNT(*) AS n FROM flavor_tasks');

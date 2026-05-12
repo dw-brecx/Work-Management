@@ -15,12 +15,46 @@
 
   const state = {
     me: null,
-    view: 'list',       // 'list' | 'wizard' | 'detail'
+    view: 'list',       // 'list' | 'wizard' | 'detail' | 'settings'
     flavors: [],
     detailId: null,
     detail: null,       // last fetched single-flavor payload
     wizard: defaultWizard(),
+    settings: {
+      tab: 'channels',  // 'channels' | 'examples'
+      channels: [],
+      examples: [],
+      listingTypes: ['single', 'single_with_pump', '4_pack', '6_pack'],
+      editingExample: null,   // null = list view; object = editor open
+      loading: false,
+    },
   };
+
+  const LISTING_TYPE_LABELS = {
+    single:           'Single (no pump)',
+    single_with_pump: 'Single with pump',
+    '4_pack':         '4-pack',
+    '6_pack':         '6-pack',
+  };
+  const SYRUP_USE_LABELS = { coffee: 'Coffee', fruity: 'Fruity', other: 'Other' };
+  const FLAVOR_TYPE_LABELS = {
+    natural: 'Natural', natural_and_artificial: 'Natural + Artificial', any: 'Any',
+  };
+  // Documented for the examples editor so users know what to type in
+  // the title / description / bullet templates.
+  const PLACEHOLDERS = [
+    ['{name}',        'Flavor name'],
+    ['{type}',        'Regular / Sugar-Free'],
+    ['{type_lower}',  'regular / sugar-free'],
+    ['{color}',       'Color word (e.g. caramel)'],
+    ['{syrup_color}', 'Syrup color hint'],
+    ['{use}',         'coffee / fruity / other'],
+    ['{flavor_type}', 'Natural / Natural + Artificial'],
+    ['{is_natural}',  '"Natural " prefix if natural, else blank'],
+    ['{ingredients}', 'Full ingredient list'],
+    ['{sodium_mg}',   'Sodium mg per serving'],
+    ['{salt_pct}',    'Salt percentage'],
+  ];
 
   function defaultWizard() {
     return {
@@ -89,11 +123,16 @@
   function render() {
     const root = $('#fv-app');
     let body;
-    if (state.view === 'wizard')      body = renderWizard();
-    else if (state.view === 'detail') body = renderDetail();
-    else                              body = renderList();
+    if (state.view === 'wizard')        body = renderWizard();
+    else if (state.view === 'detail')   body = renderDetail();
+    else if (state.view === 'settings') body = renderSettings();
+    else                                body = renderList();
     root.innerHTML = renderShell(body);
     bind();
+  }
+
+  function isAdmin() {
+    return !!state.me && ['Admin', 'Manager'].includes(state.me.permRole);
   }
 
   function renderShell(inner) {
@@ -112,6 +151,11 @@
           </div>
           <div class="fv-header-right">
             ${state.view === 'list' ? `<button class="fv-btn fv-btn-primary" data-act="new-flavor">+ New Flavor</button>` : ''}
+            ${isAdmin() && state.view !== 'settings'
+              ? `<button class="fv-icon-btn" data-act="open-settings" title="Flavor settings">
+                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+                 </button>`
+              : ''}
             ${state.me ? `<div class="fv-me" title="${escapeAttr(state.me.email||'')}">${escapeHtml(state.me.name || '')}</div>` : ''}
           </div>
         </header>
@@ -436,6 +480,187 @@
     `;
   }
 
+  // ── Settings view ─────────────────────────────────────────────────────────
+  // Two tabs: channels (where listings go) and listing-content examples
+  // (templates the eventual content generator substitutes flavor data into).
+  // Reachable from the gear icon in the header for admin / manager users.
+  function renderSettings() {
+    const s = state.settings;
+    return `
+      <div class="fv-settings">
+        <button class="fv-detail-back" data-act="back-to-list">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          All flavors
+        </button>
+        <div class="fv-settings-tabs">
+          <button class="fv-stab ${s.tab === 'channels' ? 'active' : ''}" data-act="settings-tab" data-tab="channels">Channels</button>
+          <button class="fv-stab ${s.tab === 'examples' ? 'active' : ''}" data-act="settings-tab" data-tab="examples">Listing examples</button>
+        </div>
+        <div class="fv-settings-body">
+          ${s.tab === 'channels' ? renderSettingsChannels() : renderSettingsExamples()}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSettingsChannels() {
+    const rows = state.settings.channels;
+    return `
+      <div class="fv-settings-head">
+        <div>
+          <h2>Sales channels</h2>
+          <p class="fv-muted">Each enabled channel gets a per-listing ticket in a later launch phase. <code>code</code> is used as the URL-safe key for SKU and price rules.</p>
+        </div>
+        <button class="fv-btn fv-btn-primary" data-act="add-channel">+ Add channel</button>
+      </div>
+      ${rows.length === 0
+        ? `<div class="fv-empty">No channels yet. Add Amazon, Walmart, or wherever you list.</div>`
+        : `<table class="fv-table">
+             <thead><tr><th>Name</th><th>Code</th><th>FBA / FBM</th><th>Enabled</th><th></th></tr></thead>
+             <tbody>
+               ${rows.map(c => `
+                 <tr>
+                   <td><input class="fv-input fv-tinp" data-channel-id="${c.id}" data-field="name" value="${escapeAttr(c.name)}"/></td>
+                   <td><code>${escapeHtml(c.code)}</code></td>
+                   <td>
+                     <label class="fv-toggle">
+                       <input type="checkbox" data-channel-id="${c.id}" data-field="has_fba" ${c.has_fba ? 'checked' : ''}/>
+                       <span>Has FBA + FBM</span>
+                     </label>
+                   </td>
+                   <td>
+                     <label class="fv-toggle">
+                       <input type="checkbox" data-channel-id="${c.id}" data-field="enabled" ${c.enabled ? 'checked' : ''}/>
+                       <span>Enabled</span>
+                     </label>
+                   </td>
+                   <td class="fv-row-actions">
+                     <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-channel" data-channel-id="${c.id}">Save</button>
+                     <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-channel" data-channel-id="${c.id}">Delete</button>
+                   </td>
+                 </tr>
+               `).join('')}
+             </tbody>
+           </table>`
+      }
+    `;
+  }
+
+  function renderSettingsExamples() {
+    const s = state.settings;
+    if (s.editingExample) return renderExampleEditor(s.editingExample);
+
+    const rows = s.examples;
+    return `
+      <div class="fv-settings-head">
+        <div>
+          <h2>Listing-content examples</h2>
+          <p class="fv-muted">Paste your existing listing copy here. The eventual generator picks a template by <b>syrup use × flavor type × listing type</b> and substitutes the flavor's data into the placeholders.</p>
+        </div>
+        <button class="fv-btn fv-btn-primary" data-act="new-example">+ New example</button>
+      </div>
+      ${rows.length === 0
+        ? `<div class="fv-empty">No examples yet. Paste your Amazon / Walmart listing copy as a template so new flavors get the same voice.</div>`
+        : `<div class="fv-example-list">
+             ${rows.map(e => `
+               <button class="fv-example-card" data-act="edit-example" data-id="${e.id}">
+                 <div class="fv-example-head">
+                   <div class="fv-example-name">${escapeHtml(e.name)}</div>
+                   <div class="fv-example-tags">
+                     <span class="fv-meta-pill">${escapeHtml(SYRUP_USE_LABELS[e.syrup_use] || e.syrup_use)}</span>
+                     <span class="fv-meta-pill">${escapeHtml(FLAVOR_TYPE_LABELS[e.flavor_type] || e.flavor_type)}</span>
+                     <span class="fv-meta-pill">${escapeHtml(LISTING_TYPE_LABELS[e.listing_type] || e.listing_type)}</span>
+                   </div>
+                 </div>
+                 ${e.title_template ? `<div class="fv-example-title">${escapeHtml(e.title_template)}</div>` : ''}
+                 <div class="fv-example-meta">${e.bullets.length} bullet${e.bullets.length === 1 ? '' : 's'} · ${e.description_template ? 'has description' : 'no description'}</div>
+               </button>
+             `).join('')}
+           </div>`
+      }
+    `;
+  }
+
+  function renderExampleEditor(ex) {
+    const bullets = Array.isArray(ex.bullets) ? ex.bullets : [];
+    return `
+      <div class="fv-settings-head">
+        <div>
+          <h2>${ex.id ? 'Edit example' : 'New example'}</h2>
+          <p class="fv-muted">Title / bullets / description support placeholders. Click one to copy it, or just type it where you want the substitution.</p>
+        </div>
+        <div class="fv-row-actions">
+          <button class="fv-btn fv-btn-sec" data-act="cancel-example">Cancel</button>
+          <button class="fv-btn fv-btn-primary" data-act="save-example">${ex.id ? 'Save changes' : 'Create example'}</button>
+        </div>
+      </div>
+
+      <div class="fv-example-grid">
+        <div class="fv-example-form">
+          <div class="fv-field-row">
+            <label class="fv-label">Template name</label>
+            <input class="fv-input" data-ex-field="name" value="${escapeAttr(ex.name || '')}" placeholder="e.g. Natural coffee — single bottle"/>
+          </div>
+          <div class="fv-example-row">
+            <div class="fv-field-row">
+              <label class="fv-label">Syrup use</label>
+              <select class="fv-input" data-ex-field="syrup_use">
+                ${Object.keys(SYRUP_USE_LABELS).map(k => `<option value="${k}" ${ex.syrup_use === k ? 'selected' : ''}>${SYRUP_USE_LABELS[k]}</option>`).join('')}
+              </select>
+            </div>
+            <div class="fv-field-row">
+              <label class="fv-label">Flavor type</label>
+              <select class="fv-input" data-ex-field="flavor_type">
+                ${Object.keys(FLAVOR_TYPE_LABELS).map(k => `<option value="${k}" ${ex.flavor_type === k ? 'selected' : ''}>${FLAVOR_TYPE_LABELS[k]}</option>`).join('')}
+              </select>
+            </div>
+            <div class="fv-field-row">
+              <label class="fv-label">Listing type</label>
+              <select class="fv-input" data-ex-field="listing_type">
+                ${state.settings.listingTypes.map(t => `<option value="${t}" ${ex.listing_type === t ? 'selected' : ''}>${LISTING_TYPE_LABELS[t] || t}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+
+          <div class="fv-field-row">
+            <label class="fv-label">Title template</label>
+            <input class="fv-input" data-ex-field="title_template" value="${escapeAttr(ex.title_template || '')}" placeholder="e.g. {is_natural}{name} Coffee Syrup — 25.4 fl oz"/>
+          </div>
+
+          <div class="fv-field-row">
+            <label class="fv-label">Bullet points (one per line, 1-10)</label>
+            <textarea class="fv-input fv-textarea" data-ex-field="bullets" rows="6" placeholder="Each line becomes a bullet. Use {placeholders} inline.">${escapeHtml(bullets.join('\n'))}</textarea>
+          </div>
+
+          <div class="fv-field-row">
+            <label class="fv-label">Description</label>
+            <textarea class="fv-input fv-textarea" data-ex-field="description_template" rows="6" placeholder="Long description with {placeholders}.">${escapeHtml(ex.description_template || '')}</textarea>
+          </div>
+
+          <div class="fv-field-row">
+            <label class="fv-label">Keywords (comma-separated, copied to listing keywords field)</label>
+            <textarea class="fv-input fv-textarea" data-ex-field="keywords" rows="3" placeholder="e.g. coffee syrup, barista, latte, espresso, cafe">${escapeHtml(ex.keywords || '')}</textarea>
+          </div>
+
+          <div class="fv-field-row">
+            <label class="fv-label">Internal notes</label>
+            <textarea class="fv-input fv-textarea" data-ex-field="notes" rows="2" placeholder="Anything for the next person who edits this template.">${escapeHtml(ex.notes || '')}</textarea>
+          </div>
+        </div>
+
+        <aside class="fv-example-side">
+          <div class="fv-preview-head">Placeholders</div>
+          <p class="fv-muted" style="font-size:11.5px;line-height:1.5">Click to copy, paste into any field.</p>
+          <ul class="fv-placeholder-list">
+            ${PLACEHOLDERS.map(([k, hint]) => `
+              <li><button class="fv-placeholder" data-act="copy-placeholder" data-value="${escapeAttr(k)}"><code>${escapeHtml(k)}</code><span>${escapeHtml(hint)}</span></button></li>
+            `).join('')}
+          </ul>
+        </aside>
+      </div>
+    `;
+  }
+
   // ── Bottle visualisation ──────────────────────────────────────────────────
   // SVG syrup bottle. Fill height is clamped 0-100; "sealed" toggles a cap
   // on top (used when every linked ticket is closed). Color comes from the
@@ -574,6 +799,21 @@
         const field = act.getAttribute('data-field');
         return saveIdentifier(field);
       }
+      if (name === 'open-settings')   return openSettings();
+      if (name === 'settings-tab')    { state.settings.tab = act.getAttribute('data-tab'); return render(); }
+      if (name === 'add-channel')     return addChannel();
+      if (name === 'save-channel')    return saveChannel(Number(act.getAttribute('data-channel-id')));
+      if (name === 'delete-channel')  return deleteChannel(Number(act.getAttribute('data-channel-id')));
+      if (name === 'new-example')     { state.settings.editingExample = blankExample(); return render(); }
+      if (name === 'edit-example')    return editExample(Number(act.getAttribute('data-id')));
+      if (name === 'cancel-example')  { state.settings.editingExample = null; return render(); }
+      if (name === 'save-example')    return saveExample();
+      if (name === 'copy-placeholder') {
+        const val = act.getAttribute('data-value');
+        if (navigator.clipboard) navigator.clipboard.writeText(val).catch(()=>{});
+        flashCopied(act);
+        return;
+      }
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
     // depends on the card's data-field on its parent .fv-options container.
@@ -596,17 +836,34 @@
   }
 
   function onInput(e) {
+    // Example editor fields — captured into state.settings.editingExample
+    // so the unsaved values survive a re-render (e.g. when the user clicks
+    // a placeholder, which doesn't have an explicit save step).
+    const ex = e.target.getAttribute && e.target.getAttribute('data-ex-field');
+    if (ex && state.settings.editingExample) {
+      if (ex === 'bullets') {
+        state.settings.editingExample.bullets = e.target.value.split('\n');
+      } else {
+        state.settings.editingExample[ex] = e.target.value;
+      }
+      return;
+    }
     const f = e.target.getAttribute && e.target.getAttribute('data-field');
     if (!f) return;
-    if (f === 'salt_pct') {
-      state.wizard.salt_pct = e.target.value;
-    } else {
-      state.wizard[f] = e.target.value;
+    if (state.view === 'wizard') {
+      if (f === 'salt_pct') state.wizard.salt_pct = e.target.value;
+      else                  state.wizard[f] = e.target.value;
+      refreshPreview();
     }
-    refreshPreview();
   }
 
-  function onChange() { /* hook for future inputs */ }
+  function onChange(e) {
+    // Same handling for <select> changes inside the example editor.
+    const ex = e.target.getAttribute && e.target.getAttribute('data-ex-field');
+    if (ex && state.settings.editingExample) {
+      state.settings.editingExample[ex] = e.target.value;
+    }
+  }
 
   // ── Wizard logic ──────────────────────────────────────────────────────────
   function wizardNext() {
@@ -778,6 +1035,152 @@
       if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
       alert('Could not save: ' + (e.message || ''));
     }
+  }
+
+  // ── Settings handlers ─────────────────────────────────────────────────────
+  function blankExample() {
+    return {
+      id: null, name: '', syrup_use: 'coffee', flavor_type: 'any',
+      listing_type: 'single', title_template: '', bullets: [],
+      description_template: '', keywords: '', notes: '',
+    };
+  }
+
+  async function openSettings() {
+    state.view = 'settings';
+    state.settings.editingExample = null;
+    render();
+    try {
+      await loadSettings();
+      render();
+    } catch (e) {
+      alert('Could not load settings: ' + (e.message || ''));
+    }
+  }
+
+  async function loadSettings() {
+    const [chRes, exRes, ltRes] = await Promise.all([
+      fetch('/api/flavors2/settings/channels'),
+      fetch('/api/flavors2/settings/examples'),
+      fetch('/api/flavors2/settings/listing-types'),
+    ]);
+    if (!chRes.ok || !exRes.ok || !ltRes.ok) throw new Error('Could not load settings');
+    state.settings.channels = await chRes.json();
+    state.settings.examples = await exRes.json();
+    const lt = await ltRes.json();
+    if (Array.isArray(lt.types) && lt.types.length) state.settings.listingTypes = lt.types;
+  }
+
+  // ── Channels ──────────────────────────────────────────────────────────────
+  async function addChannel() {
+    const name = prompt('Channel name (e.g. eBay, Faire):');
+    if (!name) return;
+    const code = prompt('Channel code (lowercase, used as URL key — e.g. ebay, faire):',
+                         name.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+    if (!code) return;
+    try {
+      const r = await fetch('/api/flavors2/settings/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), code: code.trim(), has_fba: false, enabled: true }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Add failed');
+      await loadSettings();
+      render();
+    } catch (e) { alert('Could not add channel: ' + (e.message || '')); }
+  }
+
+  async function saveChannel(id) {
+    const row = state.settings.channels.find(c => c.id === id);
+    if (!row) return;
+    // Pull live values from inputs (state lags behind the DOM because we
+    // don't re-render on every keystroke for the channels table).
+    const nameEl    = document.querySelector(`input[data-channel-id="${id}"][data-field="name"]`);
+    const fbaEl     = document.querySelector(`input[data-channel-id="${id}"][data-field="has_fba"]`);
+    const enabledEl = document.querySelector(`input[data-channel-id="${id}"][data-field="enabled"]`);
+    const body = {
+      name:    nameEl    ? nameEl.value.trim()    : row.name,
+      has_fba: fbaEl     ? fbaEl.checked          : row.has_fba,
+      enabled: enabledEl ? enabledEl.checked      : row.enabled,
+    };
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      // Update in place so the user doesn't lose other unsaved edits in the
+      // same table.
+      const idx = state.settings.channels.findIndex(c => c.id === id);
+      if (idx !== -1) state.settings.channels[idx] = data;
+    } catch (e) { alert('Could not save channel: ' + (e.message || '')); }
+  }
+
+  async function deleteChannel(id) {
+    const row = state.settings.channels.find(c => c.id === id);
+    if (!row) return;
+    if (!confirm(`Delete channel "${row.name}"? Existing tickets that reference it won't be deleted, but new launches won't include this channel.`)) return;
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${id}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.error || 'Delete failed');
+      }
+      await loadSettings();
+      render();
+    } catch (e) { alert('Could not delete channel: ' + (e.message || '')); }
+  }
+
+  // ── Listing examples ──────────────────────────────────────────────────────
+  function editExample(id) {
+    const found = state.settings.examples.find(e => e.id === id);
+    if (!found) return;
+    // Clone so cancel reverts cleanly and bullets becomes a mutable array.
+    state.settings.editingExample = {
+      ...found,
+      bullets: Array.isArray(found.bullets) ? [...found.bullets] : [],
+    };
+    render();
+  }
+
+  async function saveExample() {
+    const ex = state.settings.editingExample;
+    if (!ex) return;
+    if (!ex.name || !ex.name.trim()) { alert('Template needs a name.'); return; }
+    const body = {
+      name: ex.name, syrup_use: ex.syrup_use, flavor_type: ex.flavor_type,
+      listing_type: ex.listing_type,
+      title_template: ex.title_template || '',
+      bullets: (ex.bullets || []).map(b => String(b).trim()).filter(Boolean),
+      description_template: ex.description_template || '',
+      keywords: ex.keywords || '',
+      notes: ex.notes || '',
+    };
+    try {
+      const url = ex.id
+        ? `/api/flavors2/settings/examples/${ex.id}`
+        : '/api/flavors2/settings/examples';
+      const r = await fetch(url, {
+        method: ex.id ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      await loadSettings();
+      state.settings.editingExample = null;
+      render();
+    } catch (e) { alert('Could not save: ' + (e.message || '')); }
+  }
+
+  function flashCopied(btn) {
+    const orig = btn.dataset.origText || btn.innerHTML;
+    btn.dataset.origText = orig;
+    btn.classList.add('copied');
+    setTimeout(() => { btn.classList.remove('copied'); }, 600);
   }
 
   async function openDetail(id) {

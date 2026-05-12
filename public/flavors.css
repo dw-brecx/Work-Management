@@ -613,10 +613,201 @@ body {
   margin-top: 2px;
 }
 
+/* ── Settings view ─────────────────────────────────────────────────────── */
+.fv-icon-btn {
+  background: transparent;
+  border: 1px solid var(--fv-border);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+  color: var(--fv-text-2);
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.fv-icon-btn:hover { background: var(--fv-panel-2); color: var(--fv-text); border-color: var(--fv-border-strong); }
+
+.fv-settings { display: flex; flex-direction: column; gap: 16px; }
+
+.fv-settings-tabs {
+  display: flex; gap: 4px;
+  background: var(--fv-panel);
+  border: 1px solid var(--fv-border);
+  border-radius: var(--fv-radius);
+  padding: 6px;
+  align-self: flex-start;
+}
+.fv-stab {
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fv-text-2);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.fv-stab:hover { background: var(--fv-panel-2); color: var(--fv-text); }
+.fv-stab.active { background: var(--fv-accent); color: #fff; }
+
+.fv-settings-body {
+  background: var(--fv-panel);
+  border: 1px solid var(--fv-border);
+  border-radius: var(--fv-radius);
+  padding: 20px;
+}
+
+.fv-settings-head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--fv-border);
+}
+.fv-settings-head h2 { margin: 0 0 4px; font-size: 16px; }
+.fv-settings-head p { margin: 0; font-size: 12.5px; line-height: 1.5; max-width: 580px; }
+.fv-settings-head code {
+  background: var(--fv-panel-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+
+/* ── Channels table ────────────────────────────────────────────────────── */
+.fv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.fv-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fv-text-3);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--fv-border);
+}
+.fv-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--fv-border);
+  vertical-align: middle;
+}
+.fv-table tr:last-child td { border-bottom: none; }
+.fv-table code {
+  background: var(--fv-panel-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+.fv-tinp { padding: 6px 10px; font-size: 13px; }
+.fv-row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.fv-btn-sm { padding: 5px 10px; font-size: 11.5px; }
+.fv-btn-danger { color: var(--fv-danger); }
+.fv-btn-danger:hover { background: #fef2f2; }
+
+.fv-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  color: var(--fv-text-2);
+  cursor: pointer;
+}
+.fv-toggle input { accent-color: var(--fv-accent); cursor: pointer; }
+
+/* ── Listing-example list ──────────────────────────────────────────────── */
+.fv-example-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.fv-example-card {
+  text-align: left;
+  background: var(--fv-panel);
+  border: 1px solid var(--fv-border);
+  border-radius: 10px;
+  padding: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s, transform 0.05s;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.fv-example-card:hover { border-color: var(--fv-accent-2); }
+.fv-example-card:active { transform: translateY(1px); }
+.fv-example-head { display: flex; flex-direction: column; gap: 6px; }
+.fv-example-name { font-weight: 700; font-size: 14px; }
+.fv-example-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.fv-example-title {
+  font-size: 12.5px;
+  color: var(--fv-text-2);
+  background: var(--fv-panel-2);
+  padding: 6px 8px;
+  border-radius: 6px;
+  word-break: break-word;
+}
+.fv-example-meta { font-size: 11px; color: var(--fv-text-3); }
+
+/* ── Listing-example editor ────────────────────────────────────────────── */
+.fv-example-grid {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 20px;
+  align-items: start;
+}
+.fv-example-form { display: flex; flex-direction: column; gap: 12px; }
+.fv-example-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.fv-textarea {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 60px;
+}
+
+.fv-example-side {
+  background: var(--fv-panel-2);
+  border-radius: 10px;
+  padding: 14px;
+  position: sticky;
+  top: 80px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.fv-placeholder-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.fv-placeholder {
+  background: var(--fv-panel);
+  border: 1px solid var(--fv-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  display: flex; flex-direction: column; gap: 2px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.fv-placeholder:hover { border-color: var(--fv-accent-2); }
+.fv-placeholder.copied { background: #dcfce7; border-color: #16a34a; }
+.fv-placeholder.copied::after { content: '✓ copied'; font-size: 10px; color: #166534; }
+.fv-placeholder code {
+  font-size: 11.5px;
+  color: var(--fv-accent);
+  background: transparent;
+  padding: 0;
+}
+.fv-placeholder span {
+  font-size: 10.5px;
+  color: var(--fv-text-3);
+}
+
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  .fv-wizard, .fv-detail-grid { grid-template-columns: 1fr; }
-  .fv-wizard-preview, .fv-detail-bottle { position: static; }
+  .fv-wizard, .fv-detail-grid, .fv-example-grid { grid-template-columns: 1fr; }
+  .fv-wizard-preview, .fv-detail-bottle, .fv-example-side { position: static; }
+  .fv-example-row { grid-template-columns: 1fr; }
   .fv-main { padding: 16px; }
   .fv-header { padding: 12px 16px; }
 }

@@ -11,7 +11,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth } = deps;
+  const { get, all, run, requireAuth, requireAdmin } = deps;
+
+  // Listing types are baked in (single, single+pump, 4-pack, 6-pack). Adding
+  // a new pack format means a code change anyway (price rules, channel
+  // SKU generation, etc.), so a hardcoded enum is honest about that.
+  const LISTING_TYPES = ['single', 'single_with_pump', '4_pack', '6_pack'];
+  const SYRUP_USES_SETTING   = ['coffee', 'fruity', 'other'];
+  const FLAVOR_TYPE_FILTERS  = ['natural', 'natural_and_artificial', 'any'];
 
   // ── Formula rules ─────────────────────────────────────────────────────────
   // Ingredient list rules, factored out so the wizard preview (client side)
@@ -432,6 +439,222 @@ module.exports = function attach(app, deps) {
       if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) return candidate;
     }
     throw new Error('Could not allocate a unique ticket id');
+  }
+
+  // ── Settings: listing-type enum (read-only) ───────────────────────────────
+  // Exposed to the client so the examples editor can populate its dropdown
+  // without duplicating the constant. Authenticated users can read; only
+  // admins write the actual examples below.
+  app.get('/api/flavors2/settings/listing-types', requireAuth, (req, res) => {
+    res.json({ types: LISTING_TYPES });
+  });
+
+  // ── Settings: channels CRUD ───────────────────────────────────────────────
+  // All authenticated users can read the channel list (the eventual content
+  // generator needs it). Mutations are admin-only — channels drive every
+  // downstream pipeline ticket so accidental edits ripple.
+  app.get('/api/flavors2/settings/channels', requireAuth, async (req, res) => {
+    try {
+      const rows = await all('SELECT * FROM flavor_channels ORDER BY position ASC, id ASC');
+      res.json(rows.map(shapeChannel));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/settings/channels', requireAdmin, async (req, res) => {
+    try {
+      const name = String(req.body.name || '').trim();
+      const code = String(req.body.code || '').trim().toLowerCase();
+      const has_fba = req.body.has_fba ? 1 : 0;
+      const enabled = req.body.enabled === false ? 0 : 1;
+      if (!name) return res.status(400).json({ error: 'name required' });
+      if (!/^[a-z0-9_-]+$/.test(code)) {
+        return res.status(400).json({ error: 'code must be lowercase letters / digits / dash / underscore' });
+      }
+      const dup = await get('SELECT id FROM flavor_channels WHERE code=?', code);
+      if (dup) return res.status(409).json({ error: 'A channel with that code already exists.' });
+      const maxPos = await get('SELECT MAX(position) AS p FROM flavor_channels');
+      const pos = Number(maxPos?.p || 0) + 1;
+      const ins = await run(
+        'INSERT INTO flavor_channels (name, code, has_fba, enabled, position) VALUES (?,?,?,?,?) RETURNING id',
+        name, code, has_fba, enabled, pos
+      );
+      const row = await get('SELECT * FROM flavor_channels WHERE id=?', ins.lastInsertRowid);
+      res.status(201).json(shapeChannel(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Whitelisted patch — `code` is omitted on purpose since the eventual
+  // channel-SKU + price-rule tables will key off it. Rename via name only.
+  app.patch('/api/flavors2/settings/channels/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const sets = []; const args = [];
+      if ('name' in req.body) {
+        const n = String(req.body.name || '').trim();
+        if (!n) return res.status(400).json({ error: 'name cannot be blank' });
+        sets.push('name=?'); args.push(n);
+      }
+      if ('has_fba' in req.body)  { sets.push('has_fba=?'); args.push(req.body.has_fba ? 1 : 0); }
+      if ('enabled' in req.body)  { sets.push('enabled=?'); args.push(req.body.enabled ? 1 : 0); }
+      if ('position' in req.body) { sets.push('position=?'); args.push(Number(req.body.position) || 0); }
+      if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
+      args.push(id);
+      await run(`UPDATE flavor_channels SET ${sets.join(',')} WHERE id=?`, ...args);
+      const row = await get('SELECT * FROM flavor_channels WHERE id=?', id);
+      if (!row) return res.status(404).json({ error: 'Not found' });
+      res.json(shapeChannel(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/flavors2/settings/channels/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      await run('DELETE FROM flavor_channels WHERE id=?', id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  function shapeChannel(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      code: row.code,
+      has_fba: !!row.has_fba,
+      enabled: !!row.enabled,
+      position: row.position,
+    };
+  }
+
+  // ── Settings: listing-content examples CRUD ───────────────────────────────
+  // The user pastes their existing listing copy here keyed by
+  // (syrup_use, flavor_type, listing_type). The eventual generator does
+  // placeholder substitution against a flavor's data: {name}, {type},
+  // {color}, {ingredients}, {sodium}, etc. See LISTING_PLACEHOLDERS below.
+  app.get('/api/flavors2/settings/examples', requireAuth, async (req, res) => {
+    try {
+      const rows = await all('SELECT * FROM flavor_listing_examples ORDER BY syrup_use ASC, listing_type ASC, id DESC');
+      res.json(rows.map(shapeExample));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/settings/examples', requireAdmin, async (req, res) => {
+    try {
+      const { errors, clean } = validateExample(req.body || {});
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      const ins = await run(
+        `INSERT INTO flavor_listing_examples
+          (name, syrup_use, flavor_type, listing_type,
+           title_template, bullets_json, description_template, keywords, notes, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+        clean.name, clean.syrup_use, clean.flavor_type, clean.listing_type,
+        clean.title_template, JSON.stringify(clean.bullets), clean.description_template,
+        clean.keywords, clean.notes, req.session.userId
+      );
+      const row = await get('SELECT * FROM flavor_listing_examples WHERE id=?', ins.lastInsertRowid);
+      res.status(201).json(shapeExample(row));
+    } catch (e) {
+      console.error('[flavors2] example create failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch('/api/flavors2/settings/examples/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get('SELECT * FROM flavor_listing_examples WHERE id=?', id);
+      if (!existing) return res.status(404).json({ error: 'Not found' });
+      // Merge body over existing for validation — partial updates allowed.
+      const merged = {
+        name: 'name' in req.body ? req.body.name : existing.name,
+        syrup_use: 'syrup_use' in req.body ? req.body.syrup_use : existing.syrup_use,
+        flavor_type: 'flavor_type' in req.body ? req.body.flavor_type : existing.flavor_type,
+        listing_type: 'listing_type' in req.body ? req.body.listing_type : existing.listing_type,
+        title_template: 'title_template' in req.body ? req.body.title_template : existing.title_template,
+        bullets: 'bullets' in req.body ? req.body.bullets : safeJSON(existing.bullets_json, []),
+        description_template: 'description_template' in req.body ? req.body.description_template : existing.description_template,
+        keywords: 'keywords' in req.body ? req.body.keywords : existing.keywords,
+        notes: 'notes' in req.body ? req.body.notes : existing.notes,
+      };
+      const { errors, clean } = validateExample(merged);
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      await run(
+        `UPDATE flavor_listing_examples SET
+            name=?, syrup_use=?, flavor_type=?, listing_type=?,
+            title_template=?, bullets_json=?, description_template=?,
+            keywords=?, notes=?,
+            updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+          WHERE id=?`,
+        clean.name, clean.syrup_use, clean.flavor_type, clean.listing_type,
+        clean.title_template, JSON.stringify(clean.bullets), clean.description_template,
+        clean.keywords, clean.notes, id
+      );
+      const row = await get('SELECT * FROM flavor_listing_examples WHERE id=?', id);
+      res.json(shapeExample(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/flavors2/settings/examples/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      await run('DELETE FROM flavor_listing_examples WHERE id=?', id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  function validateExample(body) {
+    const errors = [];
+    const name = String(body.name || '').trim();
+    if (!name) errors.push('name is required');
+    if (name.length > 120) errors.push('name too long');
+    const syrup_use = String(body.syrup_use || 'other').trim();
+    if (!SYRUP_USES_SETTING.includes(syrup_use)) errors.push('syrup_use must be coffee, fruity, or other');
+    const flavor_type = String(body.flavor_type || 'any').trim();
+    if (!FLAVOR_TYPE_FILTERS.includes(flavor_type)) errors.push('flavor_type must be natural, natural_and_artificial, or any');
+    const listing_type = String(body.listing_type || 'single').trim();
+    if (!LISTING_TYPES.includes(listing_type)) errors.push('listing_type invalid');
+
+    let bullets = body.bullets;
+    if (typeof bullets === 'string') bullets = bullets.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!Array.isArray(bullets)) bullets = [];
+    bullets = bullets.map(b => String(b || '').trim()).filter(Boolean).slice(0, 10);
+
+    return {
+      errors,
+      clean: {
+        name, syrup_use, flavor_type, listing_type,
+        title_template:       String(body.title_template       || '').trim().slice(0, 500),
+        description_template: String(body.description_template || '').trim().slice(0, 5000),
+        keywords:             String(body.keywords             || '').trim().slice(0, 2000),
+        notes:                String(body.notes                || '').trim().slice(0, 1000),
+        bullets,
+      },
+    };
+  }
+
+  function shapeExample(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      syrup_use: row.syrup_use,
+      flavor_type: row.flavor_type,
+      listing_type: row.listing_type,
+      title_template: row.title_template,
+      bullets: safeJSON(row.bullets_json, []),
+      description_template: row.description_template,
+      keywords: row.keywords,
+      notes: row.notes,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  function safeJSON(s, fallback) {
+    try { const v = JSON.parse(s); return v == null ? fallback : v; }
+    catch { return fallback; }
   }
 
   // ── Hook exposed to server.js's PUT /api/tickets ──────────────────────────
