@@ -6187,6 +6187,11 @@ app.locals.chatAutoJoinGeneral = chatAutoJoinGeneral;
 // /api/spaces/public/:token endpoint used by the public share viewer.
 require('./routes/spaces')(app, { get, all, run, requireAuth });
 
+// ── Flavors v2 ────────────────────────────────────────────────────────────────
+// Guided flavor-launch wizard + linked-ticket pipeline. Lives in routes/flavors.js
+// and is served on /flavors.html (standalone page outside the SPA shell).
+require('./routes/flavors')(app, { get, all, run, requireAuth, requireAdmin });
+
 // Unauthenticated standalone HTML for the public share viewer (rendered at
 // /p/:token). Lives outside the SPA shell so it works without a session.
 const publicSpacePath = path.join(__dirname, 'public', 'public-space.html');

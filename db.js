@@ -300,6 +300,34 @@ async function init() {
       days_offset INTEGER DEFAULT 7,
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
+    // Flavor-launch v2 — guided wizard that captures formula inputs (sugar
+    // type, color, salt %, etc.), auto-generates the ingredient list + sodium
+    // value, and spawns a pipeline of linked tickets (UPC, SKU, NineYard,
+    // label, listing content, images, channel listings, mappings, variations).
+    // Each ticket links back via tickets.flavor_v2_id so a per-flavor bottle
+    // visualisation can fill as work completes.
+    `CREATE TABLE IF NOT EXISTS flavors_v2 (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'regular',
+      color TEXT NOT NULL DEFAULT 'none',
+      syrup_color TEXT NOT NULL DEFAULT '',
+      flavor_type TEXT NOT NULL DEFAULT 'natural',
+      use_of_syrup TEXT NOT NULL DEFAULT 'other',
+      has_salt INTEGER NOT NULL DEFAULT 0,
+      salt_pct NUMERIC NOT NULL DEFAULT 0,
+      ingredients TEXT NOT NULL DEFAULT '',
+      sodium_mg INTEGER NOT NULL DEFAULT 0,
+      upc TEXT NOT NULL DEFAULT '',
+      sku TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      completed_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_flavors_v2_status ON flavors_v2 (status)`,
+    `CREATE INDEX IF NOT EXISTS idx_flavors_v2_created ON flavors_v2 (created_at DESC)`,
     `CREATE TABLE IF NOT EXISTS attachments (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
@@ -768,6 +796,11 @@ async function init() {
   // Syruvia Lab integration — link a ticket to a flavor formula
   await safeAlter("ALTER TABLE tickets ADD COLUMN syruvia_flavor_id TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN syruvia_flavor_name TEXT DEFAULT NULL");
+  // Flavors v2 — every ticket spawned by the flavor-launch pipeline carries
+  // the parent flavor id so the bottle viz on the flavor detail page can
+  // tally open/closed tickets without a join through the title.
+  await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_id INTEGER DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_step TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
   // Cached Slack user id (looked up via users.lookupByEmail the first time
   // we want to DM this user). Empty string = "not yet looked up";
