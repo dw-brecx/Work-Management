@@ -8868,9 +8868,20 @@ function renderDescription() {
       view.innerHTML = '<span style="color:#dc2626">Couldn’t load description.</span> <a href="#" onclick="event.preventDefault();loadTicketDescription(getCurrentTicket()?.id, 2)" style="color:var(--accent);text-decoration:underline">Retry</a>';
       view.style.color = '';
       view.style.fontStyle = '';
+    } else if (state === undefined) {
+      // Self-heal: no loader has ever fired for this ticket id. That means
+      // the openTicketDetail wrapper chain didn't get to call
+      // loadTicketDescription (a wrapper threw, the panel was opened by a
+      // path that bypassed the watcher, etc.). Show "Loading…" and fire it
+      // now — when it lands it'll re-call us and the data will paint.
+      view.textContent = 'Loading description…';
+      view.style.color = 'var(--text3)';
+      view.style.fontStyle = 'italic';
+      console.warn('[renderDescription] state=undefined for ' + t.id + ' — kicking loader');
+      if (typeof loadTicketDescription === 'function') loadTicketDescription(t.id, 2);
     } else {
-      // Empty description — render a grey hint visually, but keep the data
-      // field empty so a "Save" doesn't persist this string.
+      // state === 'loaded' but description is empty — legitimately no
+      // description on this ticket. Render the hint.
       view.textContent = 'No description yet — click Edit to add one.';
       view.style.color = 'var(--text3)';
       view.style.fontStyle = 'italic';
@@ -8890,18 +8901,26 @@ window.loadTicketDescription = async function(id, retries) {
   if (!id) return;
   retries = (typeof retries === 'number') ? retries : 2;
   window.TICKET_DETAILS_STATE[id] = 'loading';
+  console.log('[ticket-details] load start id=' + id + ' current=' + window.currentDetailTicketId);
   // Repaint so the user sees "Loading…" instead of the prior state.
   if (window.currentDetailTicketId === id && typeof renderDescription === 'function') renderDescription();
   let attempt = 0;
   while (true) {
     try {
       const det = await apiGet('/api/tickets/' + id + '/details');
+      const fetched = det && typeof det.description === 'string' ? det.description : '';
+      console.log('[ticket-details] fetched id=' + id + ' desc.len=' + fetched.length + ' checklist.n=' + (Array.isArray(det && det.checklist) ? det.checklist.length : 0));
       if (det) {
         if (!TICKET_DETAILS[id]) TICKET_DETAILS[id] = { description: '', checklist: [] };
         TICKET_DETAILS[id].description = det.description || '';
         if (Array.isArray(det.checklist)) TICKET_DETAILS[id].checklist = det.checklist;
       }
       window.TICKET_DETAILS_STATE[id] = 'loaded';
+      // Read back what we just wrote — verifies no mutation between the
+      // assignment above and the next render. If these diverge, something
+      // else is touching TICKET_DETAILS[id] in the same tick.
+      const cached = (TICKET_DETAILS[id] && TICKET_DETAILS[id].description) || '';
+      console.log('[ticket-details] cached id=' + id + ' desc.len=' + cached.length + ' currentDetailId=' + window.currentDetailTicketId + ' currentTicketId=' + (typeof currentTicketId !== 'undefined' ? currentTicketId : '?'));
       if (window.currentDetailTicketId === id && typeof renderDescription === 'function') renderDescription();
       return;
     } catch (e) {
