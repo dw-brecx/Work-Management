@@ -50,15 +50,25 @@
       // Final-stage defense: Edge/Chrome with saved credentials will
       // still pop their picker on a focused text input that smells like
       // a username field. Marking the input readonly at load defeats
-      // that — autofill heuristics skip readonly inputs — and we strip
-      // the readonly the moment the user focuses or taps the input so
-      // typing isn't blocked. Cost is one cursor-style flash that most
-      // users never notice.
+      // that — autofill heuristics skip readonly inputs. We must NOT
+      // strip readonly until *after* the browser has run its autofill
+      // scan, which happens during the focus event itself. So we wait
+      // one frame (the browser has already given up by then) and only
+      // then drop readonly so typing works normally.
       inp.setAttribute('readonly', 'readonly');
-      var clear = function () { inp.removeAttribute('readonly'); };
-      inp.addEventListener('focus',     clear, { once: true });
-      inp.addEventListener('mousedown', clear, { once: true });
-      inp.addEventListener('touchstart', clear, { once: true, passive: true });
+      var armed = true;
+      function clear() {
+        if (!armed) return;
+        armed = false;
+        // requestAnimationFrame defers past the browser's autofill scan;
+        // setTimeout is the fallback if rAF isn't available.
+        var run = function () { inp.removeAttribute('readonly'); };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+        else setTimeout(run, 0);
+      }
+      inp.addEventListener('focus', clear);
+      // Do NOT clear on mousedown/touchstart — those fire BEFORE focus
+      // and would defeat the defense by removing readonly too early.
       inp.dataset.sxNoAutofill = '1';
     }
     function scan(root) {
@@ -2387,25 +2397,26 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         flex-wrap: nowrap !important;
         justify-content: flex-end !important;
       }
-      /* Search becomes an icon-only pill that expands to a full input
-         on focus. flex: 0 0 38px (no grow, no shrink, fixed basis) keeps
-         it next to the buttons in the cluster. */
+      /* Search — compact fixed-width pill on mobile. The earlier
+         icon-only collapse with overflow:hidden was clipping the
+         results dropdown, so the user couldn't see search hits.
+         Now: always-visible 140px input with a fixed-position dropdown
+         that floats wide below the topbar. */
       #topbar > .search-wrap {
         display: block !important;
         position: relative !important;
-        flex: 0 0 38px !important;
-        max-width: 38px !important;
-        width: 38px !important;
-        min-width: 38px !important;
+        flex: 0 0 140px !important;
+        max-width: 140px !important;
+        width: 140px !important;
+        min-width: 0 !important;
         margin: 0 !important;
-        overflow: hidden;
-        transition: flex-basis .22s ease, max-width .22s ease, width .22s ease, min-width .22s ease;
+        overflow: visible !important;
       }
       #topbar > .search-wrap:focus-within {
-        flex: 0 0 200px !important;
-        max-width: 200px !important;
-        width: 200px !important;
-        min-width: 200px !important;
+        flex: 0 0 180px !important;
+        max-width: 180px !important;
+        width: 180px !important;
+        transition: flex-basis .15s ease, max-width .15s ease, width .15s ease;
       }
       #topbar > .search-wrap input {
         width: 100% !important;
@@ -2416,9 +2427,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         background: var(--bg2) !important;
       }
       #topbar > .search-wrap svg { left: 11px !important; width: 14px !important; height: 14px !important; }
-      /* Hide the placeholder when collapsed — only show it after expansion. */
-      #topbar > .search-wrap input::placeholder { color: transparent !important; }
-      #topbar > .search-wrap:focus-within input::placeholder { color: #9ca3af !important; }
+      /* Float the typeahead dropdown wide below the topbar — it was
+         being clipped to the search-wrap width before. */
+      #topbar > .search-wrap > .search-dropdown {
+        position: fixed !important;
+        top: 60px !important;
+        left: 10px !important;
+        right: 10px !important;
+        width: auto !important;
+        max-width: none !important;
+      }
       /* No auto-margin on .topbar-right anymore — justify-content handles
          alignment, and a small gap separates it from .search-wrap. */
       #topbar .topbar-right {
@@ -3690,7 +3708,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <button class="mob-menu-btn" onclick="openMobileSidebar()" aria-label="Open menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
     <div class="search-wrap">
       <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="#94a3b8" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input type="text" placeholder="Search tickets, tasks… ⌘K" id="global-search" autocomplete="off"/>
+      <input type="search" placeholder="Search tickets, tasks… ⌘K" id="global-search" name="sx-global-search" autocomplete="off" data-form-type="other" data-1p-ignore="true" data-lpignore="true" readonly inputmode="search"/>
       <div id="search-dropdown" class="search-dropdown" role="listbox"></div>
     </div>
     <div class="topbar-right">
