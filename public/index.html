@@ -3857,21 +3857,30 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       }
 
       /* ── Action bar: horizontal-scroll chip strip with the primary
-         action (Status) highlighted as a filled gradient pill. ───── */
+         action (Status) highlighted as a filled gradient pill.
+         Note: mandatory scroll-snap + 8 snap points was making the
+         strip feel un-scrollable (every touch rubber-banded back to
+         the start). Dropped to proximity snap, and added explicit
+         touch-action: pan-x so the browser knows this strip handles
+         horizontal panning even if an ancestor has restrictive
+         touch behaviour. ─────────────────────────────────────────── */
       #page-ticket-detail .td-action-bar {
         display: flex !important;
         flex-wrap: nowrap !important;
         overflow-x: auto !important;
-        scroll-snap-type: x mandatory;
+        overflow-y: hidden !important;
+        scroll-snap-type: none !important;
+        touch-action: pan-x !important;
         gap: 8px !important;
         margin: 0 -14px !important;
         padding: 2px 14px 6px !important;
         -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        width: calc(100% + 28px) !important;
       }
       #page-ticket-detail .td-action-bar::-webkit-scrollbar { display: none; }
       #page-ticket-detail .td-action-bar .td-action-btn {
         flex: 0 0 auto !important;
-        scroll-snap-align: start;
         padding: 10px 14px !important;
         font-size: 12px !important;
         font-weight: 600 !important;
