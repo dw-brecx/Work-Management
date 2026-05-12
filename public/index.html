@@ -3760,131 +3760,286 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     }
 
     /* ════════════════════════════════════════════════════════════════════
-       Mobile Ticket Detail redesign (≤ 768px)
+       Mobile Ticket Detail — full redesign (≤ 768px)
        ────────────────────────────────────────────────────────────────────
-       The 8-button action bar is the biggest desktop carryover — it gets
-       turned into a horizontal-scroll snap chip strip. The title block
-       gets more breathing room and the info grid stays 2-col but with
-       tighter padding so it fits a 360px viewport without truncation.
+       Apple-app feel: large title hero, single-column info rows with
+       label-over-value, hi-vis primary actions in a chip strip, real
+       card spacing, pill-segmented tabs, comments anchored at the
+       bottom as a clear separate section. Every tap target ≥ 38-44px.
        ════════════════════════════════════════════════════════════════════ */
     @media (max-width: 768px) {
-      #page-ticket-detail .page-content { padding: 16px 14px 96px !important; }
+      #page-ticket-detail .page-content { padding: 14px 14px 96px !important; }
 
-      /* Breadcrumb row — back button + path on one line. */
+      /* ── Breadcrumb row: bigger back button, cleaner path ───────── */
       #page-ticket-detail .td-breadcrumb-row {
-        margin-bottom: 8px !important;
+        gap: 10px !important;
+        margin-bottom: 12px !important;
       }
+      #page-ticket-detail .td-back-btn {
+        width: 40px !important;
+        height: 40px !important;
+        border-radius: 12px !important;
+        flex-shrink: 0;
+      }
+      #page-ticket-detail .td-back-btn svg { width: 16px !important; height: 16px !important; }
       #page-ticket-detail .breadcrumb {
-        font-size: 11.5px !important;
+        font-size: 12px !important;
+        margin: 0 !important;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
       }
 
-      /* Header row stacks: title block on top, action bar full-width below. */
+      /* ── Hero block (id → title → badges) ───────────────────────── */
       #page-ticket-detail .td-header-row {
         flex-direction: column !important;
         align-items: stretch !important;
         gap: 12px !important;
-        margin-bottom: 14px !important;
+        margin-bottom: 16px !important;
       }
       #page-ticket-detail .td-id-row {
-        margin-bottom: 4px !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        letter-spacing: .02em !important;
+        gap: 6px !important;
+        margin-bottom: 2px !important;
+      }
+      #page-ticket-detail .td-copy-btn {
+        width: 28px !important;
+        height: 28px !important;
+        border-radius: 8px !important;
+        background: #f1f5f9;
+        border: 1px solid var(--border);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
       #page-ticket-detail #det-title {
-        font-size: 22px !important;
-        font-weight: 700 !important;
-        margin-bottom: 8px !important;
-        line-height: 1.3 !important;
+        font-size: 24px !important;
+        font-weight: 800 !important;
+        letter-spacing: -.02em !important;
+        line-height: 1.25 !important;
+        margin: 0 !important;
+        padding: 4px 0 !important;
+        color: var(--text) !important;
+        cursor: text;
       }
       #page-ticket-detail #det-badges {
-        gap: 5px !important;
+        gap: 6px !important;
+        margin-top: 2px;
+      }
+      #page-ticket-detail #det-badges .badge-status {
+        font-size: 11.5px !important;
+        padding: 4px 11px !important;
       }
 
-      /* Action bar — 8 buttons turn into a horizontal-scroll chip strip
-         so they're never cramped and never wrap onto multiple rows. */
+      /* ── Action bar: horizontal-scroll chip strip with the primary
+         action (Status) highlighted as a filled gradient pill. ───── */
       #page-ticket-detail .td-action-bar {
         display: flex !important;
         flex-wrap: nowrap !important;
         overflow-x: auto !important;
         scroll-snap-type: x mandatory;
-        gap: 6px !important;
+        gap: 8px !important;
         margin: 0 -14px !important;
-        padding: 0 14px 4px !important;
+        padding: 2px 14px 6px !important;
         -webkit-overflow-scrolling: touch;
       }
       #page-ticket-detail .td-action-bar::-webkit-scrollbar { display: none; }
       #page-ticket-detail .td-action-bar .td-action-btn {
         flex: 0 0 auto !important;
         scroll-snap-align: start;
-        padding: 8px 12px !important;
+        padding: 10px 14px !important;
         font-size: 12px !important;
-        min-height: 38px !important;
-        border-radius: 10px !important;
+        font-weight: 600 !important;
+        min-height: 40px !important;
+        border-radius: 12px !important;
         white-space: nowrap;
+        gap: 6px !important;
       }
+      #page-ticket-detail .td-action-bar .td-action-btn svg {
+        width: 14px !important; height: 14px !important;
+      }
+      /* Highlight the most-used action (Status) as a filled CTA so the
+         user sees a clear primary affordance without scrolling. */
+      #page-ticket-detail #status-trigger {
+        background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+        color: #fff !important;
+        border-color: transparent !important;
+        box-shadow: 0 4px 10px rgba(37, 99, 235, .22) !important;
+      }
+      #page-ticket-detail #status-trigger:hover { color: #fff !important; }
 
-      /* Card padding tightens on narrow viewports. */
+      /* ── Cards — consistent padding + rounding, more vertical rhythm ── */
       #page-ticket-detail .card {
-        padding: 14px !important;
-        border-radius: 16px !important;
+        padding: 16px !important;
+        border-radius: 18px !important;
+        margin-bottom: 12px !important;
+        box-shadow: 0 2px 8px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .04) !important;
       }
       #page-ticket-detail .td-card-title {
-        font-size: 13px !important;
+        font-size: 11.5px !important;
+        font-weight: 700 !important;
+        letter-spacing: .06em !important;
+        text-transform: uppercase !important;
+        color: var(--text2) !important;
       }
+      /* Edit pencil: real tap target, always visible on mobile. */
+      #page-ticket-detail .edit-btn {
+        width: 36px !important;
+        height: 36px !important;
+        font-size: 15px !important;
+        border-radius: 10px !important;
+        background: #f1f5f9 !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text2) !important;
+        opacity: 1 !important;
+      }
+      #page-ticket-detail .editable-card:hover .edit-btn,
+      #page-ticket-detail .info-row:hover .edit-btn { opacity: 1 !important; }
 
-      /* Ticket Details grid — keep 2-col but allow wrapping for long
-         values; tighten internal field spacing. */
+      /* ── Ticket Details: single-column key-value rows with the label
+         above each value. This reads like a native form on mobile and
+         leaves room for avatars / wrapping chips. ───────────────── */
       #page-ticket-detail #det-info-grid {
-        grid-template-columns: 1fr 1fr !important;
-        gap: 6px 10px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 0 !important;
+        grid-template-columns: none !important;
       }
-      /* On very narrow screens (≤ 380px), drop to a single column. */
-      @media (max-width: 380px) {
-        #page-ticket-detail #det-info-grid { grid-template-columns: 1fr !important; }
+      #page-ticket-detail #det-info-grid .info-row {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 4px !important;
+        padding: 10px 0 !important;
+        border-bottom: 1px solid #f1f5f9 !important;
+        min-height: 0 !important;
+      }
+      #page-ticket-detail #det-info-grid .info-row:last-child { border-bottom: 0 !important; }
+      #page-ticket-detail #det-info-grid .info-row-label {
+        width: auto !important;
+        font-size: 10.5px !important;
+        font-weight: 700 !important;
+        text-transform: uppercase !important;
+        letter-spacing: .05em !important;
+        color: var(--text3) !important;
+      }
+      #page-ticket-detail #det-info-grid .info-row-value {
+        font-size: 14px !important;
+        line-height: 1.4 !important;
+        width: 100% !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+      }
+      #page-ticket-detail .asgn-chip {
+        font-size: 12px !important;
+        padding: 3px 11px 3px 4px !important;
       }
 
-      /* Description body / textarea sized for thumbs. */
-      #page-ticket-detail #det-desc-view { font-size: 13px !important; }
+      /* ── Description ─────────────────────────────────────────────── */
+      #page-ticket-detail #det-desc-view {
+        font-size: 14px !important;
+        line-height: 1.55 !important;
+        color: var(--text) !important;
+      }
       #page-ticket-detail #det-desc-textarea {
-        font-size: 14px !important;        /* ≥16px would be ideal to stop iOS zoom; 14 keeps the look tight */
-        min-height: 110px !important;
-      }
-
-      /* My Reminders inside the ticket — compact one-line rows. */
-      #det-reminders-list > div {
-        padding: 10px 12px !important;
+        font-size: 14px !important;
+        line-height: 1.55 !important;
+        min-height: 140px !important;
+        padding: 12px !important;
         border-radius: 12px !important;
       }
 
-      /* Activity / Subtasks / Attachments tabs — scroll if needed. */
+      /* ── My Reminders sub-list — each reminder is a pill-card ──── */
+      #det-reminders-list > div {
+        padding: 12px 14px !important;
+        border-radius: 12px !important;
+        margin-bottom: 8px !important;
+        background: var(--bg2) !important;
+        border: 1px solid var(--border) !important;
+      }
+
+      /* ── Activity / Subtasks / Attachments — pill segmented control ─ */
       #page-ticket-detail .tabs {
+        display: flex !important;
+        background: #edf1f9 !important;
+        border-radius: 12px !important;
+        padding: 4px !important;
+        gap: 2px !important;
+        border-bottom: 0 !important;
+        margin-bottom: 14px !important;
         overflow-x: auto !important;
         flex-wrap: nowrap !important;
         -webkit-overflow-scrolling: touch;
       }
       #page-ticket-detail .tabs::-webkit-scrollbar { display: none; }
       #page-ticket-detail .tab {
-        flex: 0 0 auto !important;
-        white-space: nowrap;
-      }
-
-      /* Right panel (comments) — give the chat-shaped list a real
-         scrollable height on mobile. The desktop rule sets flex:1, which
-         when the parent is the entire page can collapse to 0; cap it
-         to a tap-friendly viewport-relative height instead. */
-      #page-ticket-detail .right-panel.td-right {
-        padding: 14px !important;
-        min-height: 70vh !important;
-      }
-      #page-ticket-detail .td-right-resizer { display: none !important; }
-      #page-ticket-detail .td-comment-list {
-        max-height: 60vh !important;
         flex: 1 1 auto !important;
+        text-align: center !important;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+        padding: 8px 12px !important;
+        border-radius: 8px !important;
+        border-bottom: 0 !important;
+        white-space: nowrap;
+        min-width: 0;
       }
-      #page-ticket-detail .td-side-title { font-size: 13px !important; }
+      #page-ticket-detail .tab.active {
+        background: #fff !important;
+        color: #1d4ed8 !important;
+        font-weight: 600 !important;
+        box-shadow: 0 1px 4px rgba(16, 24, 40, .10) !important;
+      }
+      #page-ticket-detail .tab-count {
+        font-size: 10px !important;
+        padding: 1px 5px !important;
+      }
 
-      /* Dark theme — already covered for .card / .right-panel via the
-         global body.theme-dark block. Just nudge a couple of inline-
-         styled surfaces. */
-      body.theme-dark #page-ticket-detail #det-desc-textarea { background: #0a0f1d !important; color: #f1f5f9 !important; }
+      /* ── "+ Add subtask" / "+ Add reminder" buttons — full-width on
+         mobile so they're clearly tap-able. ───────────────────────── */
+      #page-ticket-detail #chk-add-btn,
+      #page-ticket-detail .td-card .btn-sec {
+        font-size: 12.5px !important;
+        padding: 10px 14px !important;
+        min-height: 42px !important;
+        border-radius: 10px !important;
+      }
+
+      /* ── Comments right-panel: clearly separated, anchored as the
+         conversation section at the bottom of the page. ───────────── */
+      #page-ticket-detail .right-panel.td-right {
+        padding: 18px 14px !important;
+        margin-top: 12px !important;
+        border-top: 1px solid var(--border) !important;
+        border-left: 0 !important;
+        background: var(--bg2) !important;
+        min-height: 60vh !important;
+      }
+      body.theme-dark #page-ticket-detail .right-panel.td-right { background: #0f1525 !important; }
+      #page-ticket-detail .td-right-resizer { display: none !important; }
+      #page-ticket-detail .td-side-head {
+        margin-bottom: 12px !important;
+      }
+      #page-ticket-detail .td-side-title { font-size: 13px !important; font-weight: 700 !important; }
+      #page-ticket-detail .td-comment-list {
+        flex: 1 1 auto !important;
+        min-height: 50vh !important;
+      }
+      #page-ticket-detail .td-composer-box textarea {
+        font-size: 14px !important;
+        min-height: 80px !important;
+      }
+
+      /* ── Dark-theme polish for the surfaces this block adds. ───── */
+      body.theme-dark #page-ticket-detail #det-info-grid .info-row { border-bottom-color: #25304a !important; }
+      body.theme-dark #page-ticket-detail #det-desc-textarea { background: #0a0f1d !important; color: #f1f5f9 !important; border-color: #25304a !important; }
+      body.theme-dark #page-ticket-detail .tabs { background: #1c2540 !important; }
+      body.theme-dark #page-ticket-detail .tab.active { background: #131a2e !important; color: #93c5fd !important; }
+      body.theme-dark #page-ticket-detail .edit-btn { background: #1c2540 !important; border-color: #25304a !important; color: #94a3b8 !important; }
+      body.theme-dark #page-ticket-detail .td-copy-btn { background: #1c2540 !important; border-color: #25304a !important; }
+      body.theme-dark #page-ticket-detail #det-reminders-list > div { background: #131a2e !important; border-color: #25304a !important; }
     }
   </style>
 
