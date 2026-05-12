@@ -9,6 +9,7 @@
 //
 // Lives in its own file per the one-file-per-feature convention.
 // ─────────────────────────────────────────────────────────────────────────────
+const bcrypt = require('bcryptjs');
 
 module.exports = function attach(app, deps) {
   const { get, all, run, requireAuth, requireAdmin } = deps;
@@ -753,18 +754,57 @@ module.exports = function attach(app, deps) {
     },
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
-  app.delete('/api/flavors2/:id', requireAuth, async (req, res) => {
+  // ── Delete (admin, password-confirmed) ────────────────────────────────────
+  // Destructive: hard-deletes the flavor row and soft-deletes every linked
+  // ticket. Soft-delete means tickets remain recoverable via the existing
+  // admin trash / restore endpoints — the flavor itself is unrecoverable.
+  // We require the caller to re-enter their account password (verified via
+  // bcrypt against users.password_hash) so a stolen session can't silently
+  // wipe a flavor.
+  app.delete('/api/flavors2/:id', requireAdmin, async (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
-      // Detach any tickets so they don't dangle with a missing flavor_v2_id.
-      await run('UPDATE tickets SET flavor_v2_id=NULL WHERE flavor_v2_id=?', id);
+      const password = String(req.body?.password || '');
+      if (!password) return res.status(400).json({ error: 'Password required' });
+
+      const user = await get(
+        'SELECT id, password_hash FROM users WHERE id=?',
+        req.session.userId
+      );
+      if (!user || !user.password_hash) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      const ok = await bcrypt.compare(password, user.password_hash);
+      if (!ok) {
+        console.warn(`[flavors2] delete password mismatch — user ${req.session.userId} on flavor ${id}`);
+        return res.status(401).json({ error: 'Incorrect password.' });
+      }
+
+      const flavor = await get('SELECT name FROM flavors_v2 WHERE id=?', id);
+      if (!flavor) return res.status(404).json({ error: 'Not found' });
+
+      const tcount = await get(
+        `SELECT COUNT(*) AS n FROM tickets WHERE flavor_v2_id=? AND deleted_at IS NULL`,
+        id
+      );
+      const deletedTickets = Number(tcount?.n || 0);
+
+      await run(
+        `UPDATE tickets
+            SET deleted_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+          WHERE flavor_v2_id=? AND deleted_at IS NULL`,
+        id
+      );
       await run('DELETE FROM flavors_v2 WHERE id=?', id);
-      res.json({ ok: true });
+
+      console.log(
+        `[flavors2] DELETE flavor ${id} "${flavor.name}" by user ${req.session.userId} — ${deletedTickets} ticket(s) soft-deleted`
+      );
+      res.json({ ok: true, deletedTickets });
     } catch (e) {
       console.error('[flavors2] delete failed:', e.message);
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: 'Could not delete — please retry.' });
     }
   });
 

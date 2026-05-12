@@ -803,6 +803,101 @@ body {
   color: var(--fv-text-3);
 }
 
+/* ── Danger zone + Delete modal ────────────────────────────────────────── */
+.fv-danger-zone {
+  border-top: 1px solid var(--fv-border);
+  padding-top: 20px;
+  margin-top: 28px;
+}
+.fv-danger-label { color: var(--fv-danger); }
+
+.fv-btn-danger.fv-btn-outline {
+  background: #fff;
+  color: var(--fv-danger);
+  border-color: #fecaca;
+}
+.fv-btn-danger.fv-btn-outline:hover { background: #fef2f2; border-color: var(--fv-danger); }
+
+.fv-btn-danger.fv-btn-solid {
+  background: var(--fv-danger);
+  color: #fff;
+  border-color: var(--fv-danger);
+}
+.fv-btn-danger.fv-btn-solid:hover:not(:disabled) { background: #b91c1c; border-color: #b91c1c; }
+
+.fv-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+  animation: fv-fade-in 0.15s ease;
+}
+@keyframes fv-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.fv-modal {
+  background: var(--fv-panel);
+  border-radius: var(--fv-radius);
+  box-shadow: var(--fv-shadow-lg);
+  padding: 24px;
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fv-modal-in 0.18s ease;
+}
+@keyframes fv-modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.fv-modal h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.fv-modal-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fv-text-2);
+  margin: 0;
+}
+.fv-modal-body b { color: var(--fv-text); }
+.fv-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ── Toast ─────────────────────────────────────────────────────────────── */
+.fv-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: #0f172a;
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--fv-shadow-lg);
+  opacity: 0;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  z-index: 200;
+  max-width: 90vw;
+  text-align: center;
+}
+.fv-toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .fv-wizard, .fv-detail-grid, .fv-example-grid { grid-template-columns: 1fr; }

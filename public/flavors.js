@@ -28,6 +28,8 @@
       editingExample: null,   // null = list view; object = editor open
       loading: false,
     },
+    // null = modal closed; object = modal open with these fields
+    deleteModal: null,
   };
 
   const LISTING_TYPE_LABELS = {
@@ -127,8 +129,13 @@
     else if (state.view === 'detail')   body = renderDetail();
     else if (state.view === 'settings') body = renderSettings();
     else                                body = renderList();
-    root.innerHTML = renderShell(body);
+    root.innerHTML = renderShell(body) + (state.deleteModal ? renderDeleteModal() : '');
     bind();
+    // Focus password input when modal opens (after innerHTML swap).
+    if (state.deleteModal) {
+      const inp = $('#fv-delete-pw');
+      if (inp) inp.focus();
+    }
   }
 
   function isAdmin() {
@@ -468,6 +475,13 @@
                   `).join('')}</ul>`
               }
             </div>
+
+            ${isAdmin() ? `
+            <div class="fv-detail-section fv-danger-zone">
+              <div class="fv-section-label fv-danger-label">Danger zone</div>
+              <p class="fv-muted" style="font-size:12.5px;margin:0 0 10px">Deletes this flavor and soft-deletes every linked ticket. Tickets stay recoverable from the admin trash; the flavor record itself is unrecoverable.</p>
+              <button class="fv-btn fv-btn-danger fv-btn-outline" data-act="delete-flavor">Delete this flavor</button>
+            </div>` : ''}
           </section>
 
           <aside class="fv-detail-bottle">
@@ -661,6 +675,39 @@
     `;
   }
 
+  // ── Delete modal ──────────────────────────────────────────────────────────
+  // Rendered as a full-page overlay on top of the shell when
+  // state.deleteModal is set. Password is verified server-side via bcrypt
+  // against the user's account hash — see DELETE /api/flavors2/:id in
+  // routes/flavors.js. We don't echo the password back on re-render, so
+  // when the server returns "Incorrect password" the input clears and the
+  // user retypes.
+  function renderDeleteModal() {
+    const m = state.deleteModal;
+    const f = state.detail;
+    const total = (f.tickets_open || 0) + (f.tickets_closed || 0);
+    return `
+      <div class="fv-modal-overlay" data-act="dismiss-modal">
+        <form class="fv-modal" id="fv-delete-form">
+          <h2>Delete "${escapeHtml(f.name)}"?</h2>
+          <p class="fv-modal-body">
+            This permanently deletes the flavor.
+            ${total > 0 ? `It also soft-deletes the <b>${total} linked ticket${total === 1 ? '' : 's'}</b> (${f.tickets_open} open, ${f.tickets_closed} closed) — they stay recoverable from the admin trash.` : 'No tickets to delete.'}
+            <br/><br/>
+            <b>This cannot be undone for the flavor itself.</b>
+          </p>
+          <label class="fv-label" for="fv-delete-pw">Enter your account password to confirm</label>
+          <input id="fv-delete-pw" type="password" class="fv-input" autocomplete="current-password" placeholder="Password" ${m.submitting ? 'disabled' : ''}/>
+          ${m.error ? `<div class="fv-error">${escapeHtml(m.error)}</div>` : ''}
+          <div class="fv-modal-actions">
+            <button type="button" class="fv-btn fv-btn-sec" data-act="close-delete-modal">Cancel</button>
+            <button type="submit" class="fv-btn fv-btn-danger fv-btn-solid" ${m.submitting ? 'disabled' : ''}>${m.submitting ? 'Deleting…' : 'Delete flavor'}</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
   // ── Bottle visualisation ──────────────────────────────────────────────────
   // SVG syrup bottle. Fill height is clamped 0-100; "sealed" toggles a cap
   // on top (used when every linked ticket is closed). Color comes from the
@@ -753,13 +800,43 @@
     document.addEventListener('click', onClick);
     document.addEventListener('input', onInput);
     document.addEventListener('change', onChange);
+    // Capture Enter-to-submit on the delete-confirm form (and any future
+    // forms). Native submit fires before navigation; we preventDefault and
+    // route through our handler so the modal stays in place on failure.
+    // Submit handler — Enter in the password field OR clicking the submit
+    // button both fire this. We preventDefault to keep the page on this URL
+    // and route through submitDelete so the modal stays open on failure.
+    document.addEventListener('submit', (e) => {
+      if (e.target && e.target.id === 'fv-delete-form') {
+        e.preventDefault();
+        submitDelete();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && state.deleteModal && !state.deleteModal.submitting) {
+        state.deleteModal = null;
+        render();
+      }
+    });
   }
 
   function onClick(e) {
     const act = e.target.closest('[data-act]');
     if (act) {
-      e.preventDefault();
       const name = act.getAttribute('data-act');
+      // dismiss-modal: only fire on a direct click of the overlay itself,
+      // and only THEN suppress default. Clicks inside the modal (inputs,
+      // submit button, etc.) must keep their native behaviour — preventing
+      // default here would break input focus.
+      if (name === 'dismiss-modal') {
+        if (e.target === act) {
+          e.preventDefault();
+          state.deleteModal = null;
+          render();
+        }
+        return;
+      }
+      e.preventDefault();
       if (name === 'new-flavor') {
         state.wizard = defaultWizard();
         state.view = 'wizard';
@@ -813,6 +890,14 @@
         if (navigator.clipboard) navigator.clipboard.writeText(val).catch(()=>{});
         flashCopied(act);
         return;
+      }
+      if (name === 'delete-flavor') {
+        state.deleteModal = { error: '', submitting: false };
+        return render();
+      }
+      if (name === 'close-delete-modal') {
+        state.deleteModal = null;
+        return render();
       }
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
@@ -1174,6 +1259,65 @@
       state.settings.editingExample = null;
       render();
     } catch (e) { alert('Could not save: ' + (e.message || '')); }
+  }
+
+  // ── Delete flavor ─────────────────────────────────────────────────────────
+  // Submits the password to DELETE /api/flavors2/:id. On success: pop a
+  // toast with the soft-deleted ticket count and bounce back to the list.
+  // On bad password: clear the field, surface the server's error message,
+  // refocus the input.
+  async function submitDelete() {
+    if (!state.deleteModal || state.deleteModal.submitting) return;
+    const inp = $('#fv-delete-pw');
+    const password = inp ? inp.value : '';
+    if (!password) {
+      state.deleteModal.error = 'Enter your password.';
+      return render();
+    }
+    state.deleteModal.submitting = true;
+    state.deleteModal.error = '';
+    render();
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Delete failed');
+
+      const id = state.detailId;
+      state.deleteModal = null;
+      state.detail = null;
+      state.detailId = null;
+      state.view = 'list';
+      state.flavors = state.flavors.filter(f => f.id !== id);
+      if (location.hash) history.replaceState(null, '', location.pathname);
+      render();
+      // Lightweight toast — we don't ship a notifications system on this
+      // page, and a temporary banner is plenty for a destructive action.
+      flashToast(`Flavor deleted. ${data.deletedTickets || 0} ticket${data.deletedTickets === 1 ? '' : 's'} moved to admin trash.`);
+    } catch (e) {
+      state.deleteModal.submitting = false;
+      state.deleteModal.error = e.message || 'Could not delete';
+      // render() rebuilds the modal HTML, which gives us a fresh empty
+      // password input and auto-focuses it. No need to touch the DOM
+      // here; the old input node is gone.
+      render();
+    }
+  }
+
+  function flashToast(msg) {
+    const t = document.createElement('div');
+    t.className = 'fv-toast';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    // Force a paint then animate the slide-in. Removal after 3.5s.
+    requestAnimationFrame(() => t.classList.add('show'));
+    setTimeout(() => {
+      t.classList.remove('show');
+      setTimeout(() => t.remove(), 400);
+    }, 3500);
   }
 
   function flashCopied(btn) {
