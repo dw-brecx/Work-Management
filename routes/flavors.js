@@ -10,9 +10,12 @@
 // Lives in its own file per the one-file-per-feature convention.
 // ─────────────────────────────────────────────────────────────────────────────
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
+const { randomUUID } = require('crypto');
 
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth, requireAdmin } = deps;
+  const { get, all, run, requireAuth, requireAdmin, UPLOADS_DIR } = deps;
 
   // Listing types are baked in (single, single+pump, 4-pack, 6-pack). Adding
   // a new pack format means a code change anyway (price rules, channel
@@ -503,6 +506,76 @@ module.exports = function attach(app, deps) {
     ];
   }
 
+  // ── Attachment carry-over ─────────────────────────────────────────────────
+  // Used by the label-review spawn. We pull every file that was uploaded to
+  // the source ticket via any path (direct, subtask, comment) and physically
+  // duplicate it on disk under a fresh UUID filename. The new attachment
+  // rows are top-level on the destination ticket (comment_id / subtask_id
+  // NULL) so the reviewer sees the deliverable files immediately on the
+  // Attachments tab without re-opening the comment thread.
+  //
+  // Why duplicate on disk vs. share the file: /api/attachments/:id
+  // unconditionally fs.unlinkSync()'s the file when its row is deleted —
+  // so a "shared file, two rows" approach would have the design ticket's
+  // delete silently 404-ing the review's attachment. Disk cost is bounded
+  // (label files are small).
+  async function copyTicketAttachmentsTo(srcTicketId, dstTicketId) {
+    if (!UPLOADS_DIR) {
+      console.warn('[flavorsHook] copyTicketAttachmentsTo: UPLOADS_DIR not set');
+      return;
+    }
+    let rows = [];
+    try {
+      rows = await all(
+        `SELECT a.* FROM attachments a
+          WHERE a.ticket_id = ?
+             OR a.subtask_id IN (SELECT id FROM ticket_subtasks WHERE ticket_id = ?)
+             OR a.comment_id IN (SELECT id FROM ticket_comments WHERE ticket_id = ?)
+          ORDER BY a.created_at ASC`,
+        srcTicketId, srcTicketId, srcTicketId
+      );
+    } catch (e) {
+      console.warn('[flavorsHook] attachment query failed:', e && e.message);
+      return;
+    }
+    if (!rows.length) {
+      console.log(`[flavorsHook] no attachments to copy from ${srcTicketId} → ${dstTicketId}`);
+      return;
+    }
+    let copied = 0;
+    for (const a of rows) {
+      const srcPath = path.join(UPLOADS_DIR, a.filename);
+      if (!fs.existsSync(srcPath)) {
+        console.warn(`[flavorsHook] missing source file ${srcPath} — skipping`);
+        continue;
+      }
+      const ext = path.extname(a.filename) || '';
+      const newFilename = randomUUID() + ext;
+      const dstPath = path.join(UPLOADS_DIR, newFilename);
+      try {
+        fs.copyFileSync(srcPath, dstPath);
+      } catch (e) {
+        console.warn(`[flavorsHook] copyFileSync failed for ${a.filename}:`, e && e.message);
+        continue;
+      }
+      try {
+        await run(
+          `INSERT INTO attachments (ticket_id, filename, original_name, mime_type, size, uploader)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          dstTicketId, newFilename,
+          a.original_name || '', a.mime_type || '',
+          Number(a.size || 0), a.uploader || ''
+        );
+        copied++;
+      } catch (e) {
+        // INSERT failed — clean up the orphaned file copy.
+        console.warn(`[flavorsHook] attachment row insert failed for ${newFilename}:`, e && e.message);
+        try { fs.unlinkSync(dstPath); } catch {}
+      }
+    }
+    console.log(`[flavorsHook] copied ${copied}/${rows.length} attachment(s) from ${srcTicketId} → ${dstTicketId}`);
+  }
+
   // Ticket-id allocator — mirrors the loop in server.js's POST /api/tickets
   // (max + 1 with a retry on collision). We don't share that endpoint
   // because we need to insert four tickets in one request and want to
@@ -770,13 +843,19 @@ module.exports = function attach(app, deps) {
           `Type: ${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'}\n` +
           `UPC: ${f.upc || '(pending)'}\n` +
           `SKU: ${f.sku || '(pending)'}`;
-        await insertPipelineTicket(f, {
+        const review = await insertPipelineTicket(f, {
           step: 'label_review',
           title: `Review label design for ${f.name}`,
           priority: 'High',
           dept: 'Design',
           description: desc,
         }, null);
+        // Carry every file the designer uploaded to the design ticket
+        // (direct, subtask, or comment) onto the review ticket so the
+        // reviewer can actually review what they're reviewing. Each file
+        // is duplicated on disk (new UUID filename) so a later delete on
+        // either side doesn't break the other.
+        await copyTicketAttachmentsTo(ticket.id, review.id);
       } catch (e) {
         console.warn('[flavorsHook.onTicketClosed] failed:', e && e.message);
       }

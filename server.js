@@ -6203,7 +6203,12 @@ require('./routes/spaces')(app, { get, all, run, requireAuth });
 // ── Flavors v2 ────────────────────────────────────────────────────────────────
 // Guided flavor-launch wizard + linked-ticket pipeline. Lives in routes/flavors.js
 // and is served on /flavors.html (standalone page outside the SPA shell).
-require('./routes/flavors')(app, { get, all, run, requireAuth, requireAdmin });
+require('./routes/flavors')(app, {
+  get, all, run, requireAuth, requireAdmin,
+  // Needed by the label-review attachment copy (when label_design closes,
+  // the spawned review ticket inherits the design's uploaded files).
+  UPLOADS_DIR,
+});
 
 // Unauthenticated standalone HTML for the public share viewer (rendered at
 // /p/:token). Lives outside the SPA shell so it works without a session.
