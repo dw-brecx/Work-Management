@@ -34,6 +34,10 @@
     generateListingsModal: null,
     // null = closed; { channels: [...], submitting, error } = open
     generateImagesModal: null,
+    // null = closed; { channels, submitting, error } = open
+    generateChannelSkusModal: null,
+    // last fetched channel-SKU list for the current flavor (display only)
+    channelSkus: [],
   };
 
   const LISTING_TYPE_LABELS = {
@@ -123,6 +127,13 @@
     const r = await fetch('/api/flavors2/' + id);
     if (!r.ok) throw new Error('Could not load flavor');
     state.detail = await r.json();
+    // Fire-and-forget the channel-SKU fetch — empty array if generator hasn't
+    // run yet. We don't block the detail render on this; the SKU table
+    // section just won't appear until the next render after this resolves.
+    fetch('/api/flavors2/' + id + '/channel-skus').then(r2 => r2.ok ? r2.json() : []).then(arr => {
+      state.channelSkus = Array.isArray(arr) ? arr : [];
+      if (state.view === 'detail' && state.detailId === id) render();
+    }).catch(() => { state.channelSkus = []; });
   }
 
   // ── Render dispatcher ─────────────────────────────────────────────────────
@@ -134,9 +145,10 @@
     else if (state.view === 'settings') body = renderSettings();
     else                                body = renderList();
     let overlays = '';
-    if (state.deleteModal)            overlays += renderDeleteModal();
-    if (state.generateListingsModal)  overlays += renderGenerateListingsModal();
-    if (state.generateImagesModal)    overlays += renderGenerateImagesModal();
+    if (state.deleteModal)              overlays += renderDeleteModal();
+    if (state.generateListingsModal)    overlays += renderGenerateListingsModal();
+    if (state.generateImagesModal)      overlays += renderGenerateImagesModal();
+    if (state.generateChannelSkusModal) overlays += renderGenerateChannelSkusModal();
     root.innerHTML = renderShell(body) + overlays;
     bind();
     // Focus password input when modal opens (after innerHTML swap).
@@ -415,6 +427,8 @@
       listing_content: 'Listing',
       image_creation: 'Images',
       ebc: 'EBC',
+      channel_launch: 'Channel',
+      sku_mapping: 'SKU Map',
     }[step] || step;
   }
 
@@ -428,7 +442,83 @@
   // can't fire until phase 2 lands. Once the underlying tickets exist,
   // each row collapses to a green status banner.
   function renderListingActions(f) {
-    return renderListingContentSection(f) + renderImageTicketsSection(f);
+    return renderListingContentSection(f) +
+           renderImageTicketsSection(f) +
+           renderChannelSkusSection(f);
+  }
+
+  function renderChannelSkusSection(f) {
+    const launchTickets = (f.tickets || []).filter(t =>
+      t.flavor_v2_step === 'channel_launch' || t.flavor_v2_step === 'sku_mapping'
+    );
+    const hasListings  = (f.tickets || []).some(t => t.flavor_v2_step === 'listing_content');
+    const hasImages    = (f.tickets || []).some(t => t.flavor_v2_step === 'image_creation');
+    const ready = f.upc && f.sku;
+    if (launchTickets.length > 0) {
+      const launches = launchTickets.filter(t => t.flavor_v2_step === 'channel_launch').length;
+      const mapping  = launchTickets.filter(t => t.flavor_v2_step === 'sku_mapping').length;
+      const skus = state.channelSkus || [];
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Channel SKUs &amp; launch</div>
+          <div class="fv-listing-status">
+            <span>✓ ${launches} channel-launch ticket${launches === 1 ? '' : 's'}${mapping ? ' + 1 SKU mapping ticket' : ''} generated.</span>
+            ${skus.length > 0 ? `<span class="fv-muted" style="margin-left:6px">${skus.length} SKU${skus.length === 1 ? '' : 's'} stored.</span>` : ''}
+          </div>
+          ${skus.length > 0 ? renderChannelSkuTable(skus) : ''}
+        </div>
+      `;
+    }
+    const blockers = [];
+    if (!ready) blockers.push('Fill in UPC + SKU');
+    if (!hasListings) blockers.push('Run "Generate listing content"');
+    if (!hasImages)   blockers.push('Run "Create image tickets"');
+    const canRun = ready;
+    return `
+      <div class="fv-detail-section">
+        <div class="fv-section-label">Channel SKUs &amp; launch</div>
+        <p class="fv-muted" style="font-size:12.5px;margin:0 0 10px">
+          Generate per-channel SKUs (with FBA/FBM splits where applicable) and spawn one launch ticket per channel + a SKU mapping ticket.
+          ${blockers.length > 0
+            ? `<br/><b>Recommended first:</b> ${blockers.join(' · ')}.${canRun ? ' You can still proceed — references will be missing in the launch tickets.' : ''}`
+            : ''}
+        </p>
+        <button class="fv-btn fv-btn-primary" data-act="open-generate-channel-skus" ${canRun ? '' : 'disabled'}>
+          🏷 Generate channel SKUs &amp; launch tickets
+        </button>
+      </div>
+    `;
+  }
+
+  function renderChannelSkuTable(skus) {
+    // Group by channel for compact display.
+    const byChannel = new Map();
+    for (const s of skus) {
+      if (!byChannel.has(s.channel_name)) byChannel.set(s.channel_name, []);
+      byChannel.get(s.channel_name).push(s);
+    }
+    let html = `<details class="fv-sku-details"><summary>View generated SKUs</summary><div class="fv-sku-tables">`;
+    for (const [channel, list] of byChannel) {
+      html += `
+        <div class="fv-sku-block">
+          <div class="fv-sku-channel">${escapeHtml(channel)}</div>
+          <table class="fv-sku-table">
+            <thead><tr><th>Listing</th><th>Fulfilment</th><th>Channel SKU</th></tr></thead>
+            <tbody>
+              ${list.map(s => `
+                <tr>
+                  <td>${escapeHtml(LISTING_TYPE_LABELS[s.listing_type] || s.listing_type)}</td>
+                  <td>${s.fulfillment ? `<span class="fv-meta-pill">${escapeHtml(s.fulfillment.toUpperCase())}</span>` : '<span class="fv-muted">—</span>'}</td>
+                  <td><code>${escapeHtml(s.channel_sku)}</code></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+    html += `</div></details>`;
+    return html;
   }
 
   function renderListingContentSection(f) {
@@ -614,7 +704,7 @@
       ${rows.length === 0
         ? `<div class="fv-empty">No channels yet. Add Amazon, Walmart, or wherever you list.</div>`
         : `<table class="fv-table">
-             <thead><tr><th>Name</th><th>Code</th><th>FBA / FBM</th><th>Enabled</th><th></th></tr></thead>
+             <thead><tr><th>Name</th><th>Code</th><th>FBA / FBM</th><th>Enabled</th><th>SKU pattern</th><th></th></tr></thead>
              <tbody>
                ${rows.map(c => `
                  <tr>
@@ -632,6 +722,9 @@
                        <span>Enabled</span>
                      </label>
                    </td>
+                   <td>
+                     <input class="fv-input fv-tinp" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px" data-channel-id="${c.id}" data-field="sku_pattern" value="${escapeAttr(c.sku_pattern || '')}" placeholder="{sku}-{channel}-{listing}{-fulfillment}"/>
+                   </td>
                    <td class="fv-row-actions">
                      <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-channel" data-channel-id="${c.id}">Save</button>
                      <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-channel" data-channel-id="${c.id}">Delete</button>
@@ -639,7 +732,14 @@
                  </tr>
                `).join('')}
              </tbody>
-           </table>`
+           </table>
+           <p class="fv-muted" style="font-size:11px;margin-top:8px;line-height:1.5">
+             <b>SKU pattern placeholders:</b>
+             <code>{sku}</code> = base SKU,
+             <code>{channel}</code> = channel code (uppercased),
+             <code>{listing}</code> = S / SP / 4P / 6P,
+             <code>{-fulfillment}</code> = -FBA / -FBM (auto-prepends dash; blank when channel has no FBA).
+           </p>`
       }
     `;
   }
@@ -936,6 +1036,92 @@
     `;
   }
 
+  // ── Generate-channel-SKUs modal ───────────────────────────────────────────
+  // Confirmation step. Shows each enabled channel, the SKU pattern that
+  // will be applied, and a sample generated SKU per listing type so the
+  // user can sanity-check their pattern before spawning a pile of rows
+  // (e.g. 3 channels with FBA + 4 listing types = 32 SKUs).
+  function renderGenerateChannelSkusModal() {
+    const m = state.generateChannelSkusModal;
+    const f = state.detail;
+    const enabledChannels = (m.channels || []).filter(c => c.enabled);
+    const listingCodes = { single: 'S', single_with_pump: 'SP', '4_pack': '4P', '6_pack': '6P' };
+
+    // Mirror generateChannelSku() from routes/flavors.js so the preview
+    // here matches what the server will produce on submit.
+    function sampleSku(channel, listingType, fulfillment) {
+      return String(channel.sku_pattern || '{sku}-{channel}-{listing}{-fulfillment}')
+        .replace(/\{sku\}/g, f.sku || '')
+        .replace(/\{channel\}/g, (channel.code || '').toUpperCase())
+        .replace(/\{listing\}/g, listingCodes[listingType] || listingType.toUpperCase())
+        .replace(/\{-fulfillment\}/g, fulfillment ? ('-' + fulfillment.toUpperCase()) : '')
+        .replace(/\{fulfillment\}/g, fulfillment ? fulfillment.toUpperCase() : '');
+    }
+    const totalSkus = enabledChannels.reduce((sum, c) => sum + (c.has_fba ? 8 : 4), 0);
+
+    return `
+      <div class="fv-modal-overlay" data-act="dismiss-modal" data-modal="generate-channel-skus">
+        <div class="fv-modal fv-modal-wide">
+          <h2>Generate channel SKUs &amp; launch tickets</h2>
+          <p class="fv-modal-body">
+            Preview the SKUs that will be generated. Each enabled channel gets one launch
+            ticket bundling its SKUs + cross-references to listing content and image tickets,
+            plus one SKU mapping ticket covers all of them.
+            ${enabledChannels.length === 0 ? '<br/><br/><b>No enabled channels</b> — add or enable one in Settings → Channels.' : ''}
+          </p>
+
+          ${enabledChannels.length > 0 ? `
+            <div class="fv-gen-channels">
+              ${enabledChannels.map(c => `
+                <div class="fv-gen-channel">
+                  <div class="fv-gen-channel-head">
+                    <span class="fv-gen-channel-name">${escapeHtml(c.name)}</span>
+                    ${c.has_fba ? `<span class="fv-meta-pill">FBA + FBM</span>` : ''}
+                  </div>
+                  <div class="fv-gen-pattern">
+                    Pattern: <code>${escapeHtml(c.sku_pattern || '{sku}-{channel}-{listing}{-fulfillment}')}</code>
+                  </div>
+                  <ul class="fv-gen-variants">
+                    ${state.settings.listingTypes.map(lt => {
+                      if (c.has_fba) {
+                        return `
+                          <li>
+                            <span class="fv-gen-variant-label">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</span>
+                            <span class="fv-gen-variant-tpl"><code>${escapeHtml(sampleSku(c, lt, 'fba'))}</code> / <code>${escapeHtml(sampleSku(c, lt, 'fbm'))}</code></span>
+                          </li>
+                        `;
+                      }
+                      return `
+                        <li>
+                          <span class="fv-gen-variant-label">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</span>
+                          <span class="fv-gen-variant-tpl"><code>${escapeHtml(sampleSku(c, lt, ''))}</code></span>
+                        </li>
+                      `;
+                    }).join('')}
+                  </ul>
+                </div>
+              `).join('')}
+            </div>
+            <div class="fv-gen-total">
+              <b>${totalSkus}</b> channel SKU${totalSkus === 1 ? '' : 's'} + <b>${enabledChannels.length}</b> launch ticket${enabledChannels.length === 1 ? '' : 's'} + <b>1</b> mapping ticket
+            </div>
+          ` : ''}
+
+          ${m.error ? `<div class="fv-error">${escapeHtml(m.error)}</div>` : ''}
+
+          <div class="fv-modal-actions">
+            <button class="fv-btn fv-btn-sec" data-act="close-generate-channel-skus-modal">Cancel</button>
+            <button class="fv-btn fv-btn-primary"
+                    data-act="confirm-generate-channel-skus"
+                    ${(m.submitting || enabledChannels.length === 0) ? 'disabled' : ''}>
+              ${m.submitting ? 'Generating…' : 'Generate'}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   // ── Bottle visualisation ──────────────────────────────────────────────────
   // SVG syrup bottle. Fill height is clamped 0-100; "sealed" toggles a cap
   // on top (used when every linked ticket is closed). Color comes from the
@@ -1054,6 +1240,10 @@
         state.generateImagesModal = null;
         return render();
       }
+      if (state.generateChannelSkusModal && !state.generateChannelSkusModal.submitting) {
+        state.generateChannelSkusModal = null;
+        return render();
+      }
     });
   }
 
@@ -1071,9 +1261,10 @@
         if (e.target === act) {
           e.preventDefault();
           const which = act.getAttribute('data-modal') || 'delete';
-          if (which === 'generate-listings')     state.generateListingsModal = null;
-          else if (which === 'generate-images')  state.generateImagesModal = null;
-          else                                    state.deleteModal = null;
+          if (which === 'generate-listings')           state.generateListingsModal = null;
+          else if (which === 'generate-images')        state.generateImagesModal = null;
+          else if (which === 'generate-channel-skus')  state.generateChannelSkusModal = null;
+          else                                          state.deleteModal = null;
           render();
         }
         return;
@@ -1147,6 +1338,9 @@
       if (name === 'open-generate-images')         return openGenerateImages();
       if (name === 'close-generate-images-modal')  { state.generateImagesModal = null; return render(); }
       if (name === 'confirm-generate-images')      return confirmGenerateImages();
+      if (name === 'open-generate-channel-skus')         return openGenerateChannelSkus();
+      if (name === 'close-generate-channel-skus-modal')  { state.generateChannelSkusModal = null; return render(); }
+      if (name === 'confirm-generate-channel-skus')      return confirmGenerateChannelSkus();
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
     // depends on the card's data-field on its parent .fv-options container.
@@ -1432,10 +1626,12 @@
     const nameEl    = document.querySelector(`input[data-channel-id="${id}"][data-field="name"]`);
     const fbaEl     = document.querySelector(`input[data-channel-id="${id}"][data-field="has_fba"]`);
     const enabledEl = document.querySelector(`input[data-channel-id="${id}"][data-field="enabled"]`);
+    const patternEl = document.querySelector(`input[data-channel-id="${id}"][data-field="sku_pattern"]`);
     const body = {
       name:    nameEl    ? nameEl.value.trim()    : row.name,
       has_fba: fbaEl     ? fbaEl.checked          : row.has_fba,
       enabled: enabledEl ? enabledEl.checked      : row.enabled,
+      sku_pattern: patternEl ? patternEl.value.trim() : row.sku_pattern,
     };
     try {
       const r = await fetch(`/api/flavors2/settings/channels/${id}`, {
@@ -1588,6 +1784,43 @@
     } catch (e) {
       state.generateImagesModal.submitting = false;
       state.generateImagesModal.error = e.message || 'Could not generate';
+      render();
+    }
+  }
+
+  // ── Generate channel SKUs + per-channel launch tickets ───────────────────
+  async function openGenerateChannelSkus() {
+    state.generateChannelSkusModal = { channels: [], submitting: false, error: '', loading: true };
+    render();
+    try {
+      const r = await fetch('/api/flavors2/settings/channels');
+      if (!r.ok) throw new Error('Could not load channels');
+      state.generateChannelSkusModal.channels = await r.json();
+      state.generateChannelSkusModal.loading = false;
+      render();
+    } catch (e) {
+      state.generateChannelSkusModal.error = e.message || 'Load failed';
+      state.generateChannelSkusModal.loading = false;
+      render();
+    }
+  }
+
+  async function confirmGenerateChannelSkus() {
+    if (!state.generateChannelSkusModal || state.generateChannelSkusModal.submitting) return;
+    state.generateChannelSkusModal.submitting = true;
+    state.generateChannelSkusModal.error = '';
+    render();
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}/generate-channel-skus`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Generate failed');
+      state.generateChannelSkusModal = null;
+      await loadFlavor(state.detailId);
+      render();
+      flashToast(`Created ${data.tickets.length} ticket${data.tickets.length === 1 ? '' : 's'} (${data.skuCount} channel SKUs).`);
+    } catch (e) {
+      state.generateChannelSkusModal.submitting = false;
+      state.generateChannelSkusModal.error = e.message || 'Could not generate';
       render();
     }
   }

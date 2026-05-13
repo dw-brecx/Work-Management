@@ -368,6 +368,26 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_flavor_examples_lookup
       ON flavor_listing_examples (syrup_use, flavor_type, listing_type)`,
+    // Channel SKUs — generated from the per-channel sku_pattern by
+    // /api/flavors2/:id/generate-channel-skus. One row per
+    // (flavor × channel × listing_type × fulfillment). nineyard_sku is
+    // the base SKU on the flavor that this channel SKU maps back to in
+    // the POS system; filled at the same time we generate so the SKU
+    // mapping ticket can just list both sides for the worker.
+    `CREATE TABLE IF NOT EXISTS flavor_channel_skus (
+      id SERIAL PRIMARY KEY,
+      flavor_id INTEGER NOT NULL REFERENCES flavors_v2(id) ON DELETE CASCADE,
+      channel_id INTEGER NOT NULL REFERENCES flavor_channels(id) ON DELETE CASCADE,
+      listing_type TEXT NOT NULL,
+      fulfillment TEXT NOT NULL DEFAULT '',
+      channel_sku TEXT NOT NULL,
+      nineyard_sku TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_skus_unique
+      ON flavor_channel_skus (flavor_id, channel_id, listing_type, fulfillment)`,
+    `CREATE INDEX IF NOT EXISTS idx_channel_skus_flavor
+      ON flavor_channel_skus (flavor_id)`,
     `CREATE TABLE IF NOT EXISTS attachments (
       id SERIAL PRIMARY KEY,
       ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
@@ -844,6 +864,10 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_id INTEGER DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_step TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_name TEXT DEFAULT NULL");
+  // Per-channel SKU naming pattern. Placeholders are substituted in
+  // routes/flavors.js's generateChannelSku() — defaults to a sensible
+  // convention; admins override per channel from Flavors → Settings.
+  await safeAlter("ALTER TABLE flavor_channels ADD COLUMN sku_pattern TEXT DEFAULT '{sku}-{channel}-{listing}{-fulfillment}'");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
   // Cached Slack user id (looked up via users.lookupByEmail the first time
   // we want to DM this user). Empty string = "not yet looked up";

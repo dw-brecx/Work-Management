@@ -940,6 +940,73 @@ body {
   text-align: center;
 }
 
+.fv-gen-pattern {
+  font-size: 11.5px;
+  color: var(--fv-text-3);
+  margin-bottom: 6px;
+}
+.fv-gen-pattern code {
+  font-size: 11px;
+  background: var(--fv-panel);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--fv-text-2);
+}
+
+/* ── Channel SKU table on the detail page ──────────────────────────────── */
+.fv-sku-details {
+  margin-top: 10px;
+  background: var(--fv-panel-2);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.fv-sku-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fv-text-2);
+  user-select: none;
+}
+.fv-sku-tables {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.fv-sku-channel {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fv-text);
+  margin-bottom: 4px;
+}
+.fv-sku-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.fv-sku-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fv-text-3);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--fv-border);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.fv-sku-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--fv-border);
+}
+.fv-sku-table tr:last-child td { border-bottom: none; }
+.fv-sku-table code {
+  font-size: 11px;
+  background: var(--fv-panel);
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+}
+
 /* ── Toast ─────────────────────────────────────────────────────────────── */
 .fv-toast {
   position: fixed;

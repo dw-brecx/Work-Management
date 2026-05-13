@@ -655,6 +655,11 @@ module.exports = function attach(app, deps) {
       if ('has_fba' in req.body)  { sets.push('has_fba=?'); args.push(req.body.has_fba ? 1 : 0); }
       if ('enabled' in req.body)  { sets.push('enabled=?'); args.push(req.body.enabled ? 1 : 0); }
       if ('position' in req.body) { sets.push('position=?'); args.push(Number(req.body.position) || 0); }
+      if ('sku_pattern' in req.body) {
+        const p = String(req.body.sku_pattern || '').trim();
+        if (!p) return res.status(400).json({ error: 'sku_pattern cannot be blank' });
+        sets.push('sku_pattern=?'); args.push(p);
+      }
       if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
       args.push(id);
       await run(`UPDATE flavor_channels SET ${sets.join(',')} WHERE id=?`, ...args);
@@ -681,6 +686,7 @@ module.exports = function attach(app, deps) {
       has_fba: !!row.has_fba,
       enabled: !!row.enabled,
       position: row.position,
+      sku_pattern: row.sku_pattern || '{sku}-{channel}-{listing}{-fulfillment}',
     };
   }
 
@@ -1112,6 +1118,255 @@ module.exports = function attach(app, deps) {
       `  • RGB color profile, JPG / PNG, ≤2 MB each\n` +
       `  • Text on image kept minimal (Amazon's policy)\n` +
       `  • Standard modules: hero banner, features, lifestyle, comparison, trust signals\n`
+    );
+  }
+
+  // ── Channel SKU generation + per-channel listing tickets ─────────────────
+  // Listing-type → short code for SKU assembly. Adding a new listing type
+  // also needs an entry here; otherwise the pattern would emit a literal
+  // "{listing}" instead of a code.
+  const LISTING_CODE = {
+    single: 'S',
+    single_with_pump: 'SP',
+    '4_pack': '4P',
+    '6_pack': '6P',
+  };
+  const LISTING_LABEL_LOCAL = {
+    single: 'Single (no pump)',
+    single_with_pump: 'Single with pump',
+    '4_pack': '4-pack',
+    '6_pack': '6-pack',
+  };
+
+  // Replace {sku}, {channel}, {listing}, {-fulfillment} (or {fulfillment})
+  // in the channel's sku_pattern. The {-fulfillment} variant prepends a
+  // dash automatically — convenient because most channels don't split
+  // FBA/FBM and you want the SKU to NOT have a trailing dash for them.
+  function generateChannelSku(pattern, baseSku, channelCode, listingType, fulfillment) {
+    const lcode = LISTING_CODE[listingType] || listingType.toUpperCase();
+    const ff = fulfillment ? fulfillment.toUpperCase() : '';
+    return String(pattern || '{sku}-{channel}-{listing}{-fulfillment}')
+      .replace(/\{sku\}/g, baseSku || '')
+      .replace(/\{channel\}/g, (channelCode || '').toUpperCase())
+      .replace(/\{listing\}/g, lcode)
+      .replace(/\{-fulfillment\}/g, ff ? ('-' + ff) : '')
+      .replace(/\{fulfillment\}/g, ff);
+  }
+
+  // GET /api/flavors2/:id/channel-skus — flat list grouped by channel for
+  // the detail page to render. Empty array if generator hasn't fired yet.
+  app.get('/api/flavors2/:id/channel-skus', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const rows = await all(
+        `SELECT s.*, c.name AS channel_name, c.code AS channel_code, c.has_fba
+           FROM flavor_channel_skus s
+           JOIN flavor_channels c ON c.id = s.channel_id
+          WHERE s.flavor_id=?
+          ORDER BY c.position ASC, c.id ASC, s.listing_type ASC, s.fulfillment ASC`,
+        id
+      );
+      res.json(rows.map(r => ({
+        id: r.id,
+        channel_id: r.channel_id,
+        channel_name: r.channel_name,
+        channel_code: r.channel_code,
+        listing_type: r.listing_type,
+        fulfillment: r.fulfillment || '',
+        channel_sku: r.channel_sku,
+        nineyard_sku: r.nineyard_sku || '',
+      })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // POST /api/flavors2/:id/generate-channel-skus
+  //   1. Inserts every (channel × listing_type × fulfillment) row into
+  //      flavor_channel_skus using each channel's sku_pattern.
+  //   2. Spawns one "listing launch" ticket per channel bundling all the
+  //      SKUs + back-references to the listing-content and image tickets.
+  //   3. Spawns one SKU mapping ticket covering every generated channel
+  //      SKU so the worker can map them back to NineYard in one place.
+  // Idempotent — refuses to run while either kind of ticket already exists.
+  app.post('/api/flavors2/:id/generate-channel-skus', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      if (!f.upc || !f.sku) {
+        return res.status(409).json({ error: 'Set UPC and SKU first — channel SKUs build on the base SKU.' });
+      }
+      const already = await get(
+        `SELECT COUNT(*) AS n FROM tickets
+          WHERE flavor_v2_id=? AND flavor_v2_step IN ('channel_launch','sku_mapping') AND deleted_at IS NULL`,
+        id
+      );
+      if (Number(already?.n || 0) > 0) {
+        return res.status(409).json({ error: 'Channel-launch tickets already exist for this flavor. Delete them to regenerate.' });
+      }
+      const channels = await all(
+        'SELECT * FROM flavor_channels WHERE enabled=1 ORDER BY position ASC, id ASC'
+      );
+      if (!channels.length) {
+        return res.status(409).json({ error: 'No enabled channels. Add one in Flavors → Settings → Channels first.' });
+      }
+
+      // Cross-references: link back to the existing listing-content + image
+      // tickets per-channel where available, so the launch ticket points
+      // directly to the content/images the worker will copy from.
+      const allFlavorTickets = await all(
+        `SELECT id, title, flavor_v2_step FROM tickets
+          WHERE flavor_v2_id=? AND deleted_at IS NULL`,
+        id
+      );
+      const imageTicket = allFlavorTickets.find(t => t.flavor_v2_step === 'image_creation');
+      const ebcTicket   = allFlavorTickets.find(t => t.flavor_v2_step === 'ebc');
+
+      // Existing rows: should be empty (we just checked above for tickets,
+      // but a partial prior run might have orphaned SKU rows). Wipe and
+      // regenerate to keep the data in sync with the new tickets.
+      await run('DELETE FROM flavor_channel_skus WHERE flavor_id=?', id);
+
+      const skusByChannel = new Map(); // channel.id -> [{listing_type, fulfillment, channel_sku}]
+      for (const c of channels) {
+        const list = [];
+        for (const lt of LISTING_TYPES) {
+          const fulfillments = c.has_fba ? ['fba', 'fbm'] : [''];
+          for (const ff of fulfillments) {
+            const sku = generateChannelSku(c.sku_pattern, f.sku, c.code, lt, ff);
+            await run(
+              `INSERT INTO flavor_channel_skus
+                 (flavor_id, channel_id, listing_type, fulfillment, channel_sku, nineyard_sku)
+               VALUES (?,?,?,?,?,?)`,
+              id, c.id, lt, ff, sku, f.sku
+            );
+            list.push({ listing_type: lt, fulfillment: ff, channel_sku: sku });
+          }
+        }
+        skusByChannel.set(c.id, list);
+      }
+
+      // Find the listing-content ticket for each channel so the per-channel
+      // launch ticket can point at it. Match by title suffix — they're
+      // named "Listing content — {flavor} on {channel name}".
+      function listingContentForChannel(channelName) {
+        return allFlavorTickets.find(t =>
+          t.flavor_v2_step === 'listing_content' &&
+          String(t.title || '').endsWith(' on ' + channelName)
+        );
+      }
+
+      const created = [];
+      // Per-channel listing-launch ticket.
+      for (const c of channels) {
+        const lc = listingContentForChannel(c.name);
+        const desc = buildChannelLaunchDescription(
+          f, c, skusByChannel.get(c.id) || [],
+          lc, imageTicket, ebcTicket
+        );
+        const checklist = LISTING_TYPES.map(lt =>
+          `${LISTING_LABEL_LOCAL[lt]} live on ${c.name}`
+        );
+        const t = await insertPipelineTicket(f, {
+          step: 'channel_launch',
+          title: `Launch listings on ${c.name} — ${f.name}`,
+          priority: 'Medium',
+          dept: 'Operations',
+          description: desc,
+          checklist,
+        }, req.session.userId);
+        created.push({ id: t.id, kind: 'channel_launch', channel: c.name });
+      }
+
+      // Single SKU mapping ticket — checklist per channel SKU so the worker
+      // ticks them off as they map each one in NineYard.
+      const allSkus = [];
+      for (const c of channels) {
+        for (const s of (skusByChannel.get(c.id) || [])) {
+          allSkus.push({ ...s, channel: c.name });
+        }
+      }
+      const mapDesc = buildSkuMappingDescription(f, allSkus);
+      const mapChecklist = allSkus.map(s => {
+        const fulfix = s.fulfillment ? ' (' + s.fulfillment.toUpperCase() + ')' : '';
+        return `${s.channel_sku}${fulfix} → ${f.sku}  [${s.channel} · ${LISTING_LABEL_LOCAL[s.listing_type] || s.listing_type}]`;
+      });
+      const mapTicket = await insertPipelineTicket(f, {
+        step: 'sku_mapping',
+        title: `Map channel SKUs to NineYard — ${f.name}`,
+        priority: 'Medium',
+        dept: 'Operations',
+        description: mapDesc,
+        checklist: mapChecklist,
+      }, req.session.userId);
+      created.push({ id: mapTicket.id, kind: 'sku_mapping' });
+
+      res.status(201).json({ ok: true, tickets: created, skuCount: allSkus.length });
+    } catch (e) {
+      console.error('[flavors2] generate-channel-skus failed:', e.message);
+      res.status(500).json({ error: 'Could not generate channel SKUs — please retry.' });
+    }
+  });
+
+  function buildChannelLaunchDescription(f, channel, skus, listingContent, imageTicket, ebcTicket) {
+    // Group SKUs by listing_type so we can show one block per variant with
+    // both fulfilments together (relevant for Amazon FBA + FBM).
+    const byListing = new Map();
+    for (const s of skus) {
+      if (!byListing.has(s.listing_type)) byListing.set(s.listing_type, []);
+      byListing.get(s.listing_type).push(s);
+    }
+    const lines = [];
+    let idx = 1;
+    for (const lt of LISTING_TYPES) {
+      const group = byListing.get(lt) || [];
+      if (!group.length) continue;
+      lines.push(`${idx}. ${LISTING_LABEL_LOCAL[lt] || lt}`);
+      for (const s of group) {
+        if (s.fulfillment) {
+          lines.push(`     • ${s.fulfillment.toUpperCase()} SKU: ${s.channel_sku}`);
+        } else {
+          lines.push(`     • SKU: ${s.channel_sku}`);
+        }
+      }
+      lines.push(`     • Price: (per current price rules — TBD setting)`);
+      lines.push('');
+      idx++;
+    }
+    const refs = [];
+    if (listingContent) refs.push(`  • Listing content: ${listingContent.id} (${listingContent.title})`);
+    else                refs.push(`  • Listing content: (not yet generated — run "Generate listing content" first)`);
+    if (imageTicket)    refs.push(`  • Product images: ${imageTicket.id} (${imageTicket.title})`);
+    else                refs.push(`  • Product images: (not yet generated — run "Create image tickets" first)`);
+    if (channel.code === 'amazon') {
+      if (ebcTicket)    refs.push(`  • Amazon EBC: ${ebcTicket.id} (${ebcTicket.title})`);
+      else              refs.push(`  • Amazon EBC: (not yet generated)`);
+    }
+
+    return (
+      `Launch all listing variants for ${f.name} on ${channel.name}. ` +
+      `Each variant below has its channel SKU pre-generated — copy them as-is unless you need to override.\n\n` +
+      `Flavor: ${f.name} (${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'})\n` +
+      `Base SKU: ${f.sku}    UPC: ${f.upc}\n` +
+      (channel.has_fba ? `\nThis channel has FBA + FBM — each variant has two SKUs (one per fulfilment).\n` : '') +
+      `\nVariants:\n${lines.join('\n')}\n` +
+      `Cross-references on this flavor:\n${refs.join('\n')}\n\n` +
+      `Check each variant off below as it goes live.`
+    );
+  }
+
+  function buildSkuMappingDescription(f, allSkus) {
+    return (
+      `Map each generated channel SKU back to the base NineYard SKU so ` +
+      `inventory tracks correctly across marketplaces.\n\n` +
+      `Base NineYard SKU: ${f.sku}\n\n` +
+      `Channel SKUs to map (${allSkus.length} total):\n` +
+      allSkus.map(s => {
+        const ff = s.fulfillment ? ' (' + s.fulfillment.toUpperCase() + ')' : '';
+        return `  • ${s.channel_sku}${ff}  →  ${f.sku}  [${s.channel} · ${LISTING_LABEL_LOCAL[s.listing_type] || s.listing_type}]`;
+      }).join('\n') + `\n\n` +
+      `Tick each line in the subtasks list below as you map it in NineYard.`
     );
   }
 
