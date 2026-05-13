@@ -1131,6 +1131,13 @@ body {
   color: var(--fv-text-2);
 }
 
+/* ── Channel defaults grid ─────────────────────────────────────────────── */
+.fv-defaults-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
 /* ── Add-pattern inline form (channel patterns table) ─────────────────── */
 .fv-add-pattern {
   display: flex;

@@ -12,7 +12,9 @@
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
 const { randomUUID } = require('crypto');
+const JSZip = require('jszip');
 
 module.exports = function attach(app, deps) {
   const { get, all, run, requireAuth, requireAdmin, UPLOADS_DIR } = deps;
@@ -2419,6 +2421,316 @@ module.exports = function attach(app, deps) {
       res.status(500).json({ error: 'Could not generate ticket — please retry.' });
     }
   });
+
+  // ── Channel defaults ──────────────────────────────────────────────────────
+  // Per-channel key/value pairs the per-channel flat-file exporters use as
+  // defaults (Brand, Manufacturer, Product Type, Country of Origin, etc.).
+  // Stored as a single bulk PUT for the simplest UI — admin edits the form
+  // and saves; server replaces every key for that channel in one shot.
+  app.get('/api/flavors2/settings/channels/:id/defaults', requireAuth, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const rows = await all(
+        'SELECT key, value FROM flavor_channel_defaults WHERE channel_id=? ORDER BY key',
+        cid
+      );
+      const out = {};
+      for (const r of rows) out[r.key] = r.value;
+      res.json(out);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.put('/api/flavors2/settings/channels/:id/defaults', requireAdmin, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const body = req.body || {};
+      // Bulk upsert: insert or update each key; missing keys aren't deleted,
+      // so partial saves are fine. Pass an empty value to clear a key.
+      for (const [k, v] of Object.entries(body)) {
+        const key = String(k || '').trim().slice(0, 80);
+        if (!key) continue;
+        const val = String(v == null ? '' : v).slice(0, 5000);
+        await run(
+          `INSERT INTO flavor_channel_defaults (channel_id, key, value)
+             VALUES (?,?,?)
+             ON CONFLICT (channel_id, key) DO UPDATE SET
+               value = EXCLUDED.value,
+               updated_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`,
+          cid, key, val
+        );
+      }
+      const rows = await all(
+        'SELECT key, value FROM flavor_channel_defaults WHERE channel_id=? ORDER BY key',
+        cid
+      );
+      const out = {};
+      for (const r of rows) out[r.key] = r.value;
+      res.json(out);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Channel template upload (per channel) ─────────────────────────────────
+  // Templates live on disk under UPLOADS_DIR/flavor-templates/<channel_code>.xlsm
+  // (or whatever extension the user uploads). One template per channel.
+  // multer.memoryStorage() because we want raw bytes — the file gets moved
+  // to a deterministic path so the exporter can find it by channel code.
+  const templateUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB — Amazon templates are ~1-3MB
+  });
+
+  function templateDir() {
+    return path.join(UPLOADS_DIR || path.join(__dirname, '..', 'public', 'uploads'), 'flavor-templates');
+  }
+  function templatePathFor(code) {
+    return path.join(templateDir(), code + '.xlsm');
+  }
+
+  app.get('/api/flavors2/settings/channels/:id/template', requireAuth, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const channel = await get('SELECT code FROM flavor_channels WHERE id=?', cid);
+      if (!channel) return res.status(404).json({ error: 'Not found' });
+      const p = templatePathFor(channel.code);
+      let stat = null;
+      try { stat = fs.statSync(p); } catch {}
+      if (!stat) return res.json({ exists: false });
+      res.json({
+        exists: true,
+        size: stat.size,
+        uploaded_at: stat.mtime.toISOString(),
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/settings/channels/:id/template', requireAdmin, templateUpload.single('file'), async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+      const channel = await get('SELECT code FROM flavor_channels WHERE id=?', cid);
+      if (!channel) return res.status(404).json({ error: 'Channel not found' });
+      try { fs.mkdirSync(templateDir(), { recursive: true }); } catch {}
+      fs.writeFileSync(templatePathFor(channel.code), req.file.buffer);
+      res.json({ ok: true, size: req.file.buffer.length });
+    } catch (e) {
+      console.error('[flavors2] template upload failed:', e.message);
+      res.status(500).json({ error: 'Could not save template — ' + e.message });
+    }
+  });
+
+  // ── Amazon flat-file export ──────────────────────────────────────────────
+  // One row per (listing_type × fulfillment) of this flavor on the amazon
+  // channel. Writes rows starting at row 7 (rows 1-6 are template headers
+  // that Amazon needs preserved, including the encrypted settings metadata
+  // in row 1). Returns the modified .xlsm as a download.
+  app.get('/api/flavors2/:id/export/amazon', requireAuth, async (req, res) => {
+    try {
+      const fid = Number(req.params.id);
+      if (!Number.isFinite(fid)) return res.status(400).json({ error: 'Bad id' });
+      const flavor = await get('SELECT * FROM flavors_v2 WHERE id=?', fid);
+      if (!flavor) return res.status(404).json({ error: 'Not found' });
+      const channel = await get("SELECT * FROM flavor_channels WHERE code='amazon'");
+      if (!channel || !channel.enabled) {
+        return res.status(409).json({ error: 'Amazon channel is missing or disabled in Settings → Channels.' });
+      }
+      const tplPath = templatePathFor('amazon');
+      if (!fs.existsSync(tplPath)) {
+        return res.status(409).json({ error: 'Amazon template not uploaded yet. Upload it in Settings → Channels → Amazon → Template.' });
+      }
+
+      const rows = await buildAmazonRowsForFlavor(flavor, channel);
+      if (!rows.length) {
+        return res.status(409).json({ error: 'No channel SKUs for this flavor on Amazon. Generate channel SKUs first.' });
+      }
+
+      const buf = await injectRowsIntoTemplate(tplPath, rows);
+      const safeName = (flavor.name || 'flavor').replace(/[^A-Za-z0-9_-]+/g, '-');
+      res.setHeader('Content-Type', 'application/vnd.ms-excel.sheet.macroEnabled.12');
+      res.setHeader('Content-Disposition', `attachment; filename="amazon-${safeName}-${flavor.sku || flavor.id}.xlsm"`);
+      res.setHeader('Content-Length', buf.length);
+      res.end(buf);
+    } catch (e) {
+      console.error('[flavors2] amazon export failed:', e.message, e.stack);
+      res.status(500).json({ error: 'Export failed: ' + e.message });
+    }
+  });
+
+  // ── Amazon row builder + xlsm injector ────────────────────────────────────
+  // Column map: Amazon flat-file column letter → source instruction. Anything
+  // not in here ends up blank, which is fine for optional fields. Add more
+  // as the app starts holding more data we can source from.
+  function amazonColumnMap() {
+    return {
+      A:  { kind: 'channel_sku' },
+      B:  { kind: 'default', key: 'product_type', fallback: 'FOOD' },
+      C:  { kind: 'literal', value: '(Default) Create or Replace' },
+      D:  { kind: 'parentage_level' },
+      E:  { kind: 'parent_sku' },
+      F:  { kind: 'default', key: 'variation_theme', fallback: '' },
+      G:  { kind: 'listing_title' },
+      H:  { kind: 'default', key: 'brand', fallback: 'Syruvia' },
+      I:  { kind: 'literal', value: 'UPC' },
+      J:  { kind: 'flavor_upc' },
+      K:  { kind: 'default', key: 'item_type_keyword', fallback: '' },
+      L:  { kind: 'package_level' },
+      M:  { kind: 'package_qty' },
+      N:  { kind: 'package_contains_sku' },
+      O:  { kind: 'default', key: 'manufacturer', fallback: 'Syruvia' },
+      P:  { kind: 'default', key: 'unspsc_code', fallback: '' },
+      AB: { kind: 'listing_description' },
+      AC: { kind: 'bullet', index: 0 },
+      AD: { kind: 'bullet', index: 1 },
+      AE: { kind: 'bullet', index: 2 },
+      AF: { kind: 'bullet', index: 3 },
+      AG: { kind: 'bullet', index: 4 },
+      AH: { kind: 'keyword', index: 0 },
+      AI: { kind: 'keyword', index: 1 },
+      AJ: { kind: 'keyword', index: 2 },
+      AK: { kind: 'keyword', index: 3 },
+      AL: { kind: 'keyword', index: 4 },
+      DA: { kind: 'ingredients' },
+      EO: { kind: 'literal', value: 'new' },
+      HO: { kind: 'default', key: 'country_of_origin', fallback: 'US' },
+    };
+  }
+
+  async function buildAmazonRowsForFlavor(flavor, channel) {
+    const skus = await all(
+      'SELECT * FROM flavor_channel_skus WHERE flavor_id=? AND channel_id=? ORDER BY listing_type, fulfillment',
+      flavor.id, channel.id
+    );
+    const contents = await all(
+      'SELECT * FROM flavor_listing_content WHERE flavor_id=?', flavor.id
+    );
+    const contentByVariant = new Map();
+    for (const c of contents) {
+      contentByVariant.set(c.listing_variant, {
+        title: c.title || '',
+        description: c.description || '',
+        bullets: safeJSON(c.bullets_json, []),
+      });
+    }
+
+    const defaultRows = await all(
+      'SELECT key, value FROM flavor_channel_defaults WHERE channel_id=?', channel.id
+    );
+    const defaults = {};
+    for (const d of defaultRows) defaults[d.key] = d.value;
+
+    // Variation matches by listing_type so the row can fill parent SKU.
+    const variations = await all(
+      `SELECT * FROM flavor_variation_listings
+        WHERE channel_id=? AND enabled=1
+          AND (flavor_type_filter='any' OR flavor_type_filter=?)`,
+      channel.id, flavor.type
+    );
+    const variationByListingType = new Map();
+    for (const v of variations) {
+      const lts = v.listing_type_filter === 'any'
+        ? ['single', 'single_with_pump', '4_pack', '6_pack']
+        : [v.listing_type_filter];
+      for (const lt of lts) {
+        if (!variationByListingType.has(lt)) variationByListingType.set(lt, v);
+      }
+    }
+
+    // Keywords from listing_content.keywords or channel default — split by
+    // comma or newline, trim, max 5 (Amazon allows 5 search-term fields).
+    function keywordsFor(content) {
+      const raw = (content && contentKeywordsOf(content)) || defaults.search_terms || '';
+      return String(raw).split(/[,;\n]/g).map(s => s.trim()).filter(Boolean).slice(0, 5);
+    }
+    function contentKeywordsOf(c) {
+      // We don't currently store keywords on flavor_listing_content rows,
+      // only on flavor_listing_examples. Plumb through as empty for now —
+      // the default's search_terms wins.
+      return '';
+    }
+
+    function findSingleSku(fulfillment) {
+      const s = skus.find(x => x.listing_type === 'single' && x.fulfillment === fulfillment);
+      return s ? s.channel_sku : '';
+    }
+
+    const map = amazonColumnMap();
+    const rows = [];
+    for (const sku of skus) {
+      const content = contentByVariant.get(sku.listing_type) || { title: '', description: '', bullets: [] };
+      const variation = variationByListingType.get(sku.listing_type);
+      const isCase = sku.listing_type === '4_pack' || sku.listing_type === '6_pack';
+      const packQty = sku.listing_type === '4_pack' ? 4 : sku.listing_type === '6_pack' ? 6 : 1;
+      const kw = keywordsFor(content);
+
+      const row = {};
+      for (const [col, spec] of Object.entries(map)) {
+        let v = '';
+        switch (spec.kind) {
+          case 'literal':              v = spec.value; break;
+          case 'default':              v = defaults[spec.key] || spec.fallback || ''; break;
+          case 'channel_sku':          v = sku.channel_sku; break;
+          case 'flavor_upc':           v = flavor.upc || ''; break;
+          case 'parentage_level':      v = variation ? 'Child' : ''; break;
+          case 'parent_sku':           v = variation && variation.external_id ? variation.external_id : ''; break;
+          case 'listing_title':        v = content.title; break;
+          case 'listing_description':  v = content.description; break;
+          case 'bullet':               v = content.bullets[spec.index] || ''; break;
+          case 'keyword':              v = kw[spec.index] || ''; break;
+          case 'package_level':        v = isCase ? 'Case' : 'Unit'; break;
+          case 'package_qty':          v = packQty; break;
+          case 'package_contains_sku': v = isCase ? findSingleSku(sku.fulfillment) : ''; break;
+          case 'ingredients':          v = flavor.ingredients || ''; break;
+          default:                     v = '';
+        }
+        if (v !== '' && v !== null && v !== undefined) row[col] = String(v);
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function xmlEscapeAttr(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c])
+    );
+  }
+
+  async function injectRowsIntoTemplate(templatePath, rows) {
+    const tplBuf = fs.readFileSync(templatePath);
+    const zip = await JSZip.loadAsync(tplBuf);
+    const sheetPath = 'xl/worksheets/sheet5.xml';
+    const sheetFile = zip.file(sheetPath);
+    if (!sheetFile) {
+      throw new Error('Template missing Template sheet (sheet5.xml). Was this the right file?');
+    }
+    let sheetXml = await sheetFile.async('string');
+
+    const rowsXml = rows.map((row, idx) => {
+      const rowNum = 7 + idx;
+      const cells = [];
+      for (const [col, value] of Object.entries(row)) {
+        cells.push(
+          `<c r="${col}${rowNum}" t="inlineStr"><is><t xml:space="preserve">${xmlEscapeAttr(value)}</t></is></c>`
+        );
+      }
+      return `<row r="${rowNum}" spans="1:286">${cells.join('')}</row>`;
+    }).join('');
+
+    // Insert just before </sheetData>. Falls through harmlessly if the
+    // closing tag isn't found (export still works, Amazon's row scanner
+    // doesn't depend on placement).
+    sheetXml = sheetXml.replace('</sheetData>', rowsXml + '</sheetData>');
+
+    // Update <dimension> so the sheet metadata matches the new row count.
+    const lastRow = 6 + rows.length;
+    sheetXml = sheetXml.replace(/<dimension ref="A1:JZ\d+"\s*\/>/, `<dimension ref="A1:JZ${lastRow}"/>`);
+
+    zip.file(sheetPath, sheetXml);
+    return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
 
   // ── Hook exposed to server.js's PUT /api/tickets ──────────────────────────
   // Called when a ticket transitions to Closed. If the ticket is part of the

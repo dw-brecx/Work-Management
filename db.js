@@ -453,6 +453,19 @@ async function init() {
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_sku_patterns_unique
        ON flavor_channel_sku_patterns (channel_id, listing_type, fulfillment)`,
+    // Per-channel listing defaults (Brand, Manufacturer, Item Type Keyword,
+    // Country of Origin, etc.). Used by the per-channel flat-file exports
+    // (currently just Amazon) so the same Brand/Manufacturer values flow
+    // into every flavor row without having to retype them.
+    `CREATE TABLE IF NOT EXISTS flavor_channel_defaults (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL REFERENCES flavor_channels(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL DEFAULT '',
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_defaults_unique
+       ON flavor_channel_defaults (channel_id, key)`,
     // Channel SKUs — generated from the per-channel sku_pattern by
     // /api/flavors2/:id/generate-channel-skus. One row per
     // (flavor × channel × listing_type × fulfillment). nineyard_sku is

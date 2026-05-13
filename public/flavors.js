@@ -33,6 +33,8 @@
       expandedProductType: null,  // id of the product type whose card is expanded
       expandedChannel: null,      // id of the channel whose patterns sub-table is open
       channelPatterns: {},        // { channelId: [...patterns] } cache
+      channelDefaults: {},        // { channelId: { key: value } } cache
+      channelTemplates: {},       // { channelId: { exists, size, uploaded_at } | null }
       addingPatternFor: null,     // channelId — shows the "+ Add pattern" form inline
       editingVariation: null,     // null = list view; object = new/edit form
       listingTypes: ['single', 'single_with_pump', '4_pack', '6_pack'],
@@ -581,6 +583,7 @@
       const launches = launchTickets.filter(t => t.flavor_v2_step === 'channel_launch').length;
       const mapping  = launchTickets.filter(t => t.flavor_v2_step === 'sku_mapping').length;
       const skus = state.channelSkus || [];
+      const hasAmazonSkus = skus.some(s => s.channel_code === 'amazon');
       return `
         <div class="fv-detail-section">
           <div class="fv-section-label">Channel SKUs &amp; launch</div>
@@ -589,6 +592,17 @@
             ${skus.length > 0 ? `<span class="fv-muted" style="margin-left:6px">${skus.length} SKU${skus.length === 1 ? '' : 's'} stored.</span>` : ''}
           </div>
           ${skus.length > 0 ? renderChannelSkuTable(skus) : ''}
+          ${hasAmazonSkus ? `
+            <div style="margin-top:12px">
+              <a class="fv-btn fv-btn-sec" href="/api/flavors2/${f.id}/export/amazon" download>
+                📥 Export Amazon flat file
+              </a>
+              <p class="fv-muted" style="font-size:11px;margin:4px 0 0">
+                Downloads a copy of the Amazon template with one row per (listing × fulfillment) pre-filled with this flavor's data.
+                Configure brand / manufacturer / item type / etc. in Settings → Channels → Amazon → Channel defaults.
+              </p>
+            </div>
+          ` : ''}
         </div>
       `;
     }
@@ -1300,6 +1314,75 @@
               : `<button class="fv-btn fv-btn-sec fv-btn-sm" data-act="show-add-pattern" data-channel-id="${c.id}" style="margin-top:8px">+ Add pattern row</button>`
             }
           </div>
+
+          ${renderChannelDefaultsBlock(c)}
+          ${renderChannelTemplateBlock(c)}
+        </div>
+      </div>
+    `;
+  }
+
+  // ── Channel defaults editor (per-channel KV form) ─────────────────────────
+  // Used by per-channel flat-file exporters (Amazon today; others can read
+  // the same defaults later). Each key is freeform; the export code looks
+  // up well-known keys (brand, manufacturer, product_type, item_type_keyword,
+  // unspsc_code, country_of_origin, variation_theme, search_terms) and falls
+  // back to its own default if a key is blank or missing.
+  function renderChannelDefaultsBlock(c) {
+    const defaults = (state.settings.channelDefaults || {})[c.id] || null;
+    const KNOWN = [
+      { key: 'brand',              label: 'Brand',                example: 'Syruvia' },
+      { key: 'manufacturer',       label: 'Manufacturer',         example: 'Syruvia' },
+      { key: 'product_type',       label: 'Product Type',         example: 'FOOD' },
+      { key: 'item_type_keyword',  label: 'Item Type Keyword',    example: 'Coffee syrup' },
+      { key: 'unspsc_code',        label: 'UNSPSC Code',          example: '50171922' },
+      { key: 'country_of_origin',  label: 'Country of Origin',    example: 'US' },
+      { key: 'variation_theme',    label: 'Variation Theme Name', example: 'Flavor Name' },
+      { key: 'search_terms',       label: 'Search Terms (5 max, comma-separated)', example: 'coffee syrup, latte, espresso, barista, cafe' },
+    ];
+    return `
+      <div class="fv-pt-variant" style="margin-top:8px">
+        <legend>Channel defaults (used by flat-file exports)</legend>
+        <p class="fv-muted" style="font-size:11.5px;margin:0 0 8px">
+          These values flow into every flavor row exported for this channel. Blank fields fall back to the exporter's hardcoded fallback.
+        </p>
+        ${defaults === null
+          ? `<div class="fv-muted" style="font-size:12px">Loading defaults…</div>`
+          : `<div class="fv-defaults-grid">
+              ${KNOWN.map(k => `
+                <div class="fv-field-row">
+                  <label class="fv-label">${escapeHtml(k.label)} <span class="fv-muted" style="font-size:10.5px">${escapeHtml(k.example)}</span></label>
+                  <input class="fv-input fv-tinp" data-default-channel="${c.id}" data-default-key="${escapeAttr(k.key)}" value="${escapeAttr(defaults[k.key] || '')}" placeholder="${escapeAttr(k.example)}"/>
+                </div>
+              `).join('')}
+            </div>
+            <div style="margin-top:8px">
+              <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-channel-defaults" data-channel-id="${c.id}">Save defaults</button>
+            </div>`
+        }
+      </div>
+    `;
+  }
+
+  function renderChannelTemplateBlock(c) {
+    const tpl = (state.settings.channelTemplates || {})[c.id];
+    return `
+      <div class="fv-pt-variant" style="margin-top:8px">
+        <legend>Flat-file template</legend>
+        <p class="fv-muted" style="font-size:11.5px;margin:0 0 8px">
+          Upload the channel's blank flat-file template (e.g. the Amazon inventory file). The exporter copies the template, injects one row per (listing × fulfillment) of the flavor, and serves the filled file back. One template per channel — re-upload to replace.
+        </p>
+        ${tpl === undefined
+          ? `<div class="fv-muted" style="font-size:12px">Loading template status…</div>`
+          : tpl && tpl.exists
+            ? `<div class="fv-listing-status" style="margin-bottom:8px">
+                 ✓ Template uploaded · ${(tpl.size / 1024).toFixed(0)} KB · ${escapeHtml((tpl.uploaded_at || '').slice(0, 19))}
+               </div>`
+            : `<div class="fv-muted" style="font-size:12px;margin-bottom:8px">No template uploaded yet.</div>`
+        }
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="file" id="tpl-file-${c.id}" accept=".xlsm,.xlsx" style="font-size:12px"/>
+          <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="upload-template" data-channel-id="${c.id}">${tpl && tpl.exists ? 'Replace template' : 'Upload template'}</button>
         </div>
       </div>
     `;
@@ -1976,11 +2059,15 @@
           state.settings.expandedChannel = null;
         } else {
           state.settings.expandedChannel = id;
-          // Lazy-load patterns the first time this channel is expanded.
+          // Lazy-load patterns + defaults + template status when expanded.
           loadChannelPatterns(id);
+          loadChannelDefaults(id);
+          loadChannelTemplate(id);
         }
         return render();
       }
+      if (name === 'save-channel-defaults') return saveChannelDefaults(Number(act.getAttribute('data-channel-id')));
+      if (name === 'upload-template')        return uploadChannelTemplate(Number(act.getAttribute('data-channel-id')));
       if (name === 'show-add-pattern') {
         state.settings.addingPatternFor = Number(act.getAttribute('data-channel-id'));
         return render();
@@ -2436,6 +2523,68 @@
       render();
       flashToast('Pattern saved.');
     } catch (e) { alert('Could not save pattern: ' + (e.message || '')); }
+  }
+
+  async function loadChannelDefaults(channelId) {
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/defaults`);
+      state.settings.channelDefaults[channelId] = r.ok ? await r.json() : {};
+      render();
+    } catch (_) {
+      state.settings.channelDefaults[channelId] = {};
+      render();
+    }
+  }
+
+  async function saveChannelDefaults(channelId) {
+    const inputs = document.querySelectorAll(`[data-default-channel="${channelId}"][data-default-key]`);
+    const body = {};
+    inputs.forEach(el => {
+      body[el.getAttribute('data-default-key')] = el.value;
+    });
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/defaults`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      state.settings.channelDefaults[channelId] = data;
+      flashToast('Defaults saved.');
+      render();
+    } catch (e) { alert('Could not save defaults: ' + (e.message || '')); }
+  }
+
+  async function loadChannelTemplate(channelId) {
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/template`);
+      state.settings.channelTemplates[channelId] = r.ok ? await r.json() : { exists: false };
+      render();
+    } catch (_) {
+      state.settings.channelTemplates[channelId] = { exists: false };
+      render();
+    }
+  }
+
+  async function uploadChannelTemplate(channelId) {
+    const fileInput = document.getElementById('tpl-file-' + channelId);
+    if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+      alert('Pick a file first.');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/template`, {
+        method: 'POST',
+        body: fd,
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Upload failed');
+      await loadChannelTemplate(channelId);
+      flashToast('Template uploaded.');
+    } catch (e) { alert('Could not upload template: ' + (e.message || '')); }
   }
 
   async function deletePattern(channelId, patternId) {
