@@ -615,14 +615,17 @@
       `;
     }
     const variants = lc.variants || [];
+    const singleOnly = variants.length === 1 && variants[0].listing_variant === 'single';
+    if (singleOnly) return renderListingSingleOnly(variants[0]);
+
     const activeTab = state.listingTab || 'single';
     const active = variants.find(v => v.listing_variant === activeTab) || variants[0];
     const allApproved = variants.length === 4 && variants.every(v => v.approved);
     return `
       <div class="fv-detail-section">
-        <div class="fv-section-label">Listing content preview</div>
+        <div class="fv-section-label">Listing content (all variants)</div>
         <p class="fv-muted" style="font-size:12.5px;margin:0 0 12px">
-          Pre-filled from your product-type template + flavor data. Edit any field — changes save when you blur or hit save below. <b>Approve & generate</b> spawns one ticket per enabled channel with all 4 variants embedded.
+          Single+Pump / 4-Pack / 6-Pack were auto-filled from your approved Single — bullets + description copied, titles swapped per template. Tweak any tab inline, save, then approve all to spawn the per-channel tickets.
         </p>
 
         <div class="fv-lc-tabs">
@@ -637,13 +640,45 @@
         ${active ? renderListingVariantEditor(active) : ''}
 
         <div class="fv-lc-actions">
-          <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="regenerate-listing-content" title="Discard edits and re-run the template substitution">↻ Regenerate from template</button>
+          <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="regenerate-listing-content" title="Discard all variants and start over from the product-type template">↻ Start over from template</button>
           <button class="fv-btn fv-btn-primary"
                   data-act="approve-and-spawn-listings"
                   ${state.listingSubmitting ? 'disabled' : ''}>
             ${state.listingSubmitting
               ? 'Approving & spawning…'
-              : (allApproved ? '✓ Re-approve & generate listing tickets' : 'Approve & generate listing tickets')}
+              : (allApproved ? '✓ Re-approve & generate listing tickets' : 'Approve all & generate listing tickets')}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  // Single-only state: only the Single variant exists. Show its editor with
+  // a primary call-to-action explaining the propagate flow — once the user
+  // is happy with this content (especially BP1 which is the flavor-specific
+  // sensory description), they click "Approve single & generate other
+  // variants" and the system creates single+pump / 4-pack / 6-pack by
+  // carrying these bullets + description forward.
+  function renderListingSingleOnly(single) {
+    return `
+      <div class="fv-detail-section">
+        <div class="fv-section-label">Listing content — write the master copy</div>
+        <p class="fv-muted" style="font-size:12.5px;margin:0 0 8px">
+          Edit the <b>Single bottle</b> listing below. Pay attention to <b>BP1</b> — that's where you write the flavor-specific sensory description ("rich and buttery", "bright and citrusy", etc.). The other 3 variants (Single+Pump, 4-Pack, 6-Pack) will be auto-generated from this one when you approve below.
+        </p>
+        <div class="fv-lc-only-single">
+          <span class="fv-lc-only-badge">Single bottle</span>
+          <span class="fv-muted">+ 3 variants pending</span>
+        </div>
+
+        ${renderListingVariantEditor(single)}
+
+        <div class="fv-lc-actions">
+          <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="regenerate-listing-content" title="Discard this draft and re-substitute from the product-type template">↻ Reset to template</button>
+          <button class="fv-btn fv-btn-primary"
+                  data-act="propagate-from-single"
+                  ${state.listingSubmitting ? 'disabled' : ''}>
+            ${state.listingSubmitting ? 'Generating other variants…' : '✓ Approve single & generate other variants'}
           </button>
         </div>
       </div>
@@ -1661,6 +1696,7 @@
       if (name === 'save-listing-variant')      return saveListingVariant(act.getAttribute('data-variant'));
       if (name === 'regenerate-listing-content') return regenerateListingContent();
       if (name === 'approve-and-spawn-listings') return approveAndSpawnListings();
+      if (name === 'propagate-from-single')      return propagateFromSingle();
       if (name === 'open-generate-images')         return openGenerateImages();
       if (name === 'close-generate-images-modal')  { state.generateImagesModal = null; return render(); }
       if (name === 'confirm-generate-images')      return confirmGenerateImages();
@@ -2141,6 +2177,37 @@
       render();
       flashToast(`${LISTING_TYPE_LABELS[variant] || variant} saved.`);
     } catch (e) { alert('Could not save: ' + (e.message || '')); }
+  }
+
+  // Save the visible single-tab edits, then POST /propagate which: (a)
+  // approves single, (b) generates the other 3 variants by carrying single's
+  // bullets + description forward and swapping in the packs title / pump
+  // suffix per the product type. Switches the UI from "single only" to
+  // "4 tabs" automatically because state.listingContent.variants now has 4.
+  async function propagateFromSingle() {
+    if (!state.detailId || state.listingSubmitting) return;
+    state.listingSubmitting = true;
+    render();
+    try {
+      // Persist any unsaved edits in the single tab before propagating.
+      await saveListingVariant('single');
+      const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/propagate`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Propagate failed');
+      state.listingContent = {
+        needs_setup: false,
+        product_type_key: state.detail?.use_of_syrup || null,
+        variants: data.variants,
+      };
+      state.listingTab = 'single_with_pump';  // jump to the next variant the user will review
+      state.listingSubmitting = false;
+      render();
+      flashToast('Other variants generated — review and approve all to spawn channel tickets.');
+    } catch (e) {
+      state.listingSubmitting = false;
+      render();
+      alert('Could not generate other variants: ' + (e.message || ''));
+    }
   }
 
   async function regenerateListingContent() {

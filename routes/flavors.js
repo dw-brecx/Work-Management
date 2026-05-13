@@ -1243,6 +1243,12 @@ module.exports = function attach(app, deps) {
           WHERE flavor_id=? ORDER BY listing_variant ASC`,
         id
       );
+      // First visit — generate ONLY the single variant from the product
+      // type's template. The other 3 variants are created in a second pass
+      // (POST .../listing-content/propagate) after the user has edited and
+      // approved the single. This keeps the user focused on the one bullet
+      // they need to write (the flavor-specific sensory description) and
+      // avoids generating throwaway content for the other variants.
       if (rows.length === 0) {
         const generated = await buildListingContentFromProductType(f);
         if (!generated) {
@@ -1252,13 +1258,15 @@ module.exports = function attach(app, deps) {
             variants: [],
           });
         }
-        for (const v of generated) {
+        const singleVariant = generated.find(g => g.listing_variant === 'single');
+        if (singleVariant) {
           await run(
             `INSERT INTO flavor_listing_content
               (flavor_id, listing_variant, title, bullets_json, description, approved)
              VALUES (?,?,?,?,?,0)
              ON CONFLICT (flavor_id, listing_variant) DO NOTHING`,
-            id, v.listing_variant, v.title, JSON.stringify(v.bullets), v.description
+            id, singleVariant.listing_variant, singleVariant.title,
+            JSON.stringify(singleVariant.bullets), singleVariant.description
           );
         }
         rows = await all(
@@ -1321,6 +1329,101 @@ module.exports = function attach(app, deps) {
       res.json(shapeListingContent(row));
     } catch (e) {
       console.error('[flavors2] listing-content patch failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/flavors2/:id/listing-content/propagate
+  //   Carries the (edited + approved) single variant's bullets + description
+  //   forward to the other 3 variants — only the titles differ. This lets
+  //   the user write BP1's flavor-specific sensory description ONCE for the
+  //   single bottle, then the system auto-fills single+pump (adds the pump
+  //   suffix to the title + appends BP6) and 4-pack / 6-pack (swaps in the
+  //   packs title template) without needing an AI rewrite per variant.
+  //
+  //   Marks the single variant approved as part of the flow. If the other
+  //   3 already exist, they're overwritten — the contract is "single is the
+  //   master copy; propagation refreshes everything else."
+  app.post('/api/flavors2/:id/listing-content/propagate', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      const pt = await get(
+        'SELECT * FROM flavor_product_types WHERE key=? AND enabled=1',
+        f.use_of_syrup
+      );
+      if (!pt) {
+        return res.status(409).json({ error: 'Product type for this flavor is missing. Restore it in Settings → Product types.' });
+      }
+      const single = await get(
+        'SELECT * FROM flavor_listing_content WHERE flavor_id=? AND listing_variant=?',
+        id, 'single'
+      );
+      if (!single) {
+        return res.status(409).json({ error: 'Generate the single variant first.' });
+      }
+
+      const singleBullets = safeJSON(single.bullets_json, []);
+      const singleDesc = single.description || '';
+      const isSF = f.type === 'sugar_free';
+      const titlePacks = isSF ? pt.title_sf_packs : pt.title_reg_packs;
+      const pumpSuffix = pt.pump_title_suffix || 'With Pump';
+      const pumpExtra = substituteProductTypeText(pt.bullet_pump_extra || '', f, '');
+
+      // Approve the single (this is the explicit "I'm happy with single,
+      // generate the rest" moment).
+      await run(
+        `UPDATE flavor_listing_content
+            SET approved=1,
+                updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+          WHERE flavor_id=? AND listing_variant='single'`,
+        id
+      );
+
+      const others = [
+        {
+          listing_variant: 'single_with_pump',
+          title: ((single.title || '') + ' ' + pumpSuffix).trim().replace(/\s+/g, ' '),
+          bullets: pumpExtra ? [...singleBullets, pumpExtra] : singleBullets,
+          description: singleDesc,
+        },
+        {
+          listing_variant: '4_pack',
+          title: substituteProductTypeText(titlePacks, f, '4-Pack'),
+          bullets: singleBullets,
+          description: singleDesc,
+        },
+        {
+          listing_variant: '6_pack',
+          title: substituteProductTypeText(titlePacks, f, '6-Pack'),
+          bullets: singleBullets,
+          description: singleDesc,
+        },
+      ];
+      for (const v of others) {
+        await run(
+          `INSERT INTO flavor_listing_content
+             (flavor_id, listing_variant, title, bullets_json, description, approved)
+           VALUES (?,?,?,?,?,0)
+           ON CONFLICT (flavor_id, listing_variant) DO UPDATE SET
+             title = EXCLUDED.title,
+             bullets_json = EXCLUDED.bullets_json,
+             description = EXCLUDED.description,
+             approved = 0,
+             updated_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`,
+          id, v.listing_variant, v.title, JSON.stringify(v.bullets), v.description
+        );
+      }
+
+      const rows = await all(
+        'SELECT * FROM flavor_listing_content WHERE flavor_id=? ORDER BY listing_variant ASC',
+        id
+      );
+      res.json({ variants: rows.map(shapeListingContent) });
+    } catch (e) {
+      console.error('[flavors2] listing-content propagate failed:', e.message);
       res.status(500).json({ error: e.message });
     }
   });

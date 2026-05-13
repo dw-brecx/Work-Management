@@ -1026,6 +1026,20 @@ body {
 .fv-lc-variant {
   display: flex; flex-direction: column; gap: 12px;
 }
+
+/* ── Single-only state (before propagate) ──────────────────────────────── */
+.fv-lc-only-single {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--fv-accent-soft);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  margin-bottom: 12px;
+}
+.fv-lc-only-badge {
+  font-weight: 700;
+  color: var(--fv-accent);
+}
 .fv-lc-variant-meta {
   display: flex; justify-content: space-between; align-items: center;
   font-size: 12px;
