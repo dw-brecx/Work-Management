@@ -1152,14 +1152,25 @@ module.exports = function attach(app, deps) {
     if (packSize) {
       result = result.replace(/\.{3}-Pack/g, packSize);
     }
-    // Naturally Flavored is only valid copy for natural flavors. For
-    // natural+artificial, strip the parenthetical (and the leading space
-    // if it leaves a double space).
-    if (f.flavor_type !== 'natural') {
-      result = result
-        .replace(/ ?\(Naturally Flavored\)/gi, '')
-        .replace(/ ?\(Natural Flavors,?\)/gi, '');
+    // Natural-only parenthetical callouts. In the templates these are
+    // wrapped in parens to mark them as "natural-only — drop me for N+A
+    // flavors". For natural flavors we keep the inner text but drop the
+    // parens; for N+A we drop the whole thing. List is explicit so we
+    // don't accidentally touch unrelated parentheticals (sizes, asides,
+    // etc.) elsewhere in the copy.
+    const NATURAL_CALLOUTS = [
+      /\((Naturally Flavored,?)\)/gi,
+      /\((Naturally)\)/gi,
+      /\((Natural Flavors,?)\)/gi,
+      /\((and no artificial coloring)\)/gi,
+    ];
+    const keepInner = f.flavor_type === 'natural';
+    for (const re of NATURAL_CALLOUTS) {
+      result = result.replace(re, (_match, inner) => keepInner ? inner : '');
     }
+    // Collapse runs of spaces / tabs left behind by N+A strips, but keep
+    // newlines so multi-paragraph descriptions don't fold into one line.
+    result = result.replace(/[ \t]{2,}/g, ' ');
     return result;
   }
 
