@@ -31,6 +31,9 @@
       productTypes: [],
       variations: [],
       expandedProductType: null,  // id of the product type whose card is expanded
+      expandedChannel: null,      // id of the channel whose patterns sub-table is open
+      channelPatterns: {},        // { channelId: [...patterns] } cache
+      addingPatternFor: null,     // channelId — shows the "+ Add pattern" form inline
       editingVariation: null,     // null = list view; object = new/edit form
       listingTypes: ['single', 'single_with_pump', '4_pack', '6_pack'],
       editingExample: null,   // null = list view; object = editor open
@@ -1183,55 +1186,140 @@
   }
 
   function renderSettingsChannels() {
-    const rows = state.settings.channels;
+    const rows = state.settings.channels || [];
     return `
       <div class="fv-settings-head">
         <div>
           <h2>Sales channels</h2>
-          <p class="fv-muted">Each enabled channel gets a per-listing ticket in a later launch phase. <code>code</code> is used as the URL-safe key for SKU and price rules.</p>
+          <p class="fv-muted">
+            Each enabled channel gets per-listing tickets in the launch flow. Expand a channel
+            to manage its SKU patterns — per-(listing × fulfillment) templates with a single
+            <code>(SKU)</code> placeholder for the flavor's base SKU.
+          </p>
         </div>
         <button class="fv-btn fv-btn-primary" data-act="add-channel">+ Add channel</button>
       </div>
       ${rows.length === 0
         ? `<div class="fv-empty">No channels yet. Add Amazon, Walmart, or wherever you list.</div>`
-        : `<table class="fv-table">
-             <thead><tr><th>Name</th><th>Code</th><th>FBA / FBM</th><th>Enabled</th><th>SKU pattern</th><th></th></tr></thead>
-             <tbody>
-               ${rows.map(c => `
-                 <tr>
-                   <td><input class="fv-input fv-tinp" data-channel-id="${c.id}" data-field="name" value="${escapeAttr(c.name)}"/></td>
-                   <td><code>${escapeHtml(c.code)}</code></td>
-                   <td>
-                     <label class="fv-toggle">
-                       <input type="checkbox" data-channel-id="${c.id}" data-field="has_fba" ${c.has_fba ? 'checked' : ''}/>
-                       <span>Has FBA + FBM</span>
-                     </label>
-                   </td>
-                   <td>
-                     <label class="fv-toggle">
-                       <input type="checkbox" data-channel-id="${c.id}" data-field="enabled" ${c.enabled ? 'checked' : ''}/>
-                       <span>Enabled</span>
-                     </label>
-                   </td>
-                   <td>
-                     <input class="fv-input fv-tinp" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px" data-channel-id="${c.id}" data-field="sku_pattern" value="${escapeAttr(c.sku_pattern || '')}" placeholder="{sku}-{channel}-{listing}{-fulfillment}"/>
-                   </td>
-                   <td class="fv-row-actions">
-                     <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-channel" data-channel-id="${c.id}">Save</button>
-                     <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-channel" data-channel-id="${c.id}">Delete</button>
-                   </td>
-                 </tr>
-               `).join('')}
-             </tbody>
-           </table>
-           <p class="fv-muted" style="font-size:11px;margin-top:8px;line-height:1.5">
-             <b>SKU pattern placeholders:</b>
-             <code>{sku}</code> = base SKU,
-             <code>{channel}</code> = channel code (uppercased),
-             <code>{listing}</code> = S / SP / 4P / 6P,
-             <code>{-fulfillment}</code> = -FBA / -FBM (auto-prepends dash; blank when channel has no FBA).
-           </p>`
+        : `<div class="fv-pt-list">${rows.map(renderChannelCard).join('')}</div>`
       }
+    `;
+  }
+
+  function renderChannelCard(c) {
+    const expanded = state.settings.expandedChannel === c.id;
+    if (!expanded) {
+      return `
+        <div class="fv-pt-card">
+          <button class="fv-pt-head" data-act="toggle-channel" data-id="${c.id}">
+            <div class="fv-pt-head-left">
+              <span class="fv-pt-name">${escapeHtml(c.name)}</span>
+              <code class="fv-pt-key">${escapeHtml(c.code)}</code>
+            </div>
+            <div class="fv-pt-head-right">
+              ${c.enabled ? '<span class="fv-meta-pill">Enabled</span>' : '<span class="fv-meta-pill" style="color:#a16207">Disabled</span>'}
+              ${c.has_fba ? '<span class="fv-meta-pill">FBA + FBM</span>' : ''}
+              <span class="fv-pt-chevron">▾</span>
+            </div>
+          </button>
+        </div>
+      `;
+    }
+    const patterns = (state.settings.channelPatterns || {})[c.id] || [];
+    return `
+      <div class="fv-pt-card fv-pt-card-open">
+        <button class="fv-pt-head" data-act="toggle-channel" data-id="${c.id}">
+          <div class="fv-pt-head-left">
+            <span class="fv-pt-name">${escapeHtml(c.name)}</span>
+            <code class="fv-pt-key">${escapeHtml(c.code)}</code>
+          </div>
+          <div class="fv-pt-head-right">
+            <span class="fv-pt-chevron rotated">▾</span>
+          </div>
+        </button>
+        <div class="fv-pt-body">
+          <div class="fv-pt-row" style="grid-template-columns:2fr 1fr 1fr auto">
+            <div class="fv-field-row">
+              <label class="fv-label">Display name</label>
+              <input class="fv-input" data-channel-id="${c.id}" data-field="name" value="${escapeAttr(c.name)}"/>
+            </div>
+            <div class="fv-field-row" style="align-self:end">
+              <label class="fv-toggle" style="margin-bottom:8px">
+                <input type="checkbox" data-channel-id="${c.id}" data-field="has_fba" ${c.has_fba ? 'checked' : ''}/>
+                <span>Has FBA + FBM</span>
+              </label>
+            </div>
+            <div class="fv-field-row" style="align-self:end">
+              <label class="fv-toggle" style="margin-bottom:8px">
+                <input type="checkbox" data-channel-id="${c.id}" data-field="enabled" ${c.enabled ? 'checked' : ''}/>
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div class="fv-row-actions" style="align-self:end">
+              <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-channel" data-channel-id="${c.id}">Save channel</button>
+              <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-channel" data-channel-id="${c.id}">Delete</button>
+            </div>
+          </div>
+
+          <div class="fv-pt-variant" style="margin-top:8px">
+            <legend>SKU patterns</legend>
+            <p class="fv-muted" style="font-size:11.5px;margin:0 0 8px">
+              One row per (listing type × fulfillment). Template uses <code>(SKU)</code> for the flavor's base SKU — everything else is literal.
+              Example: <code>F-(SKU)-NP-UPC</code> with base SKU <code>SY-5500</code> renders <code>F-SY-5500-NP-UPC</code>.
+            </p>
+            ${patterns.length === 0
+              ? `<div class="fv-muted" style="font-size:12px;padding:6px 0">No patterns for this channel yet — add the first row below.</div>`
+              : `<table class="fv-table">
+                  <thead><tr><th>Listing type</th><th>Fulfilment</th><th>Template</th><th>Preview (SKU=SY-5500)</th><th></th></tr></thead>
+                  <tbody>
+                    ${patterns.map(p => `
+                      <tr>
+                        <td>
+                          <select class="fv-input fv-tinp" data-pattern-id="${p.id}" data-pf-field="listing_type">
+                            ${state.settings.listingTypes.map(lt => `<option value="${lt}" ${p.listing_type === lt ? 'selected' : ''}>${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</option>`).join('')}
+                          </select>
+                        </td>
+                        <td>
+                          <input class="fv-input fv-tinp" data-pattern-id="${p.id}" data-pf-field="fulfillment" value="${escapeAttr(p.fulfillment)}" placeholder="fba / fbm / wfs / —" style="max-width:100px"/>
+                        </td>
+                        <td>
+                          <input class="fv-input fv-tinp" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px" data-pattern-id="${p.id}" data-pf-field="template" value="${escapeAttr(p.template)}" placeholder="F-(SKU)-…"/>
+                        </td>
+                        <td><code style="font-size:11px">${escapeHtml(previewPattern(p.template, 'SY-5500'))}</code></td>
+                        <td class="fv-row-actions">
+                          <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-pattern" data-channel-id="${c.id}" data-pattern-id="${p.id}">Save</button>
+                          <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-pattern" data-channel-id="${c.id}" data-pattern-id="${p.id}">Delete</button>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>`
+            }
+            ${state.settings.addingPatternFor === c.id
+              ? renderAddPatternForm(c.id)
+              : `<button class="fv-btn fv-btn-sec fv-btn-sm" data-act="show-add-pattern" data-channel-id="${c.id}" style="margin-top:8px">+ Add pattern row</button>`
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function previewPattern(template, sku) {
+    return String(template || '').replace(/\(SKU\)/g, sku);
+  }
+
+  function renderAddPatternForm(channelId) {
+    return `
+      <div class="fv-add-pattern">
+        <select class="fv-input fv-tinp" id="new-pattern-listing-${channelId}">
+          ${state.settings.listingTypes.map(lt => `<option value="${lt}">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</option>`).join('')}
+        </select>
+        <input class="fv-input fv-tinp" id="new-pattern-fulfillment-${channelId}" placeholder="fba / fbm / wfs / blank" style="max-width:140px"/>
+        <input class="fv-input fv-tinp" id="new-pattern-template-${channelId}" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px" placeholder="F-(SKU)-NP" />
+        <button class="fv-btn fv-btn-primary fv-btn-sm" data-act="create-pattern" data-channel-id="${channelId}">Create</button>
+        <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="cancel-add-pattern">Cancel</button>
+      </div>
     `;
   }
 
@@ -1588,65 +1676,65 @@
     const m = state.generateChannelSkusModal;
     const f = state.detail;
     const enabledChannels = (m.channels || []).filter(c => c.enabled);
-    const listingCodes = { single: 'S', single_with_pump: 'SP', '4_pack': '4P', '6_pack': '6P' };
+    const patterns = m.patterns || [];
 
-    // Mirror generateChannelSku() from routes/flavors.js so the preview
-    // here matches what the server will produce on submit.
-    function sampleSku(channel, listingType, fulfillment) {
-      return String(channel.sku_pattern || '{sku}-{channel}-{listing}{-fulfillment}')
-        .replace(/\{sku\}/g, f.sku || '')
-        .replace(/\{channel\}/g, (channel.code || '').toUpperCase())
-        .replace(/\{listing\}/g, listingCodes[listingType] || listingType.toUpperCase())
-        .replace(/\{-fulfillment\}/g, fulfillment ? ('-' + fulfillment.toUpperCase()) : '')
-        .replace(/\{fulfillment\}/g, fulfillment ? fulfillment.toUpperCase() : '');
+    // Group patterns by channel for the per-channel preview blocks.
+    const patternsByChannel = new Map();
+    for (const p of patterns) {
+      if (!patternsByChannel.has(p.channel_id)) patternsByChannel.set(p.channel_id, []);
+      patternsByChannel.get(p.channel_id).push(p);
     }
-    const totalSkus = enabledChannels.reduce((sum, c) => sum + (c.has_fba ? 8 : 4), 0);
+    const channelsWithPatterns = enabledChannels.filter(c => patternsByChannel.has(c.id));
+    const channelsWithoutPatterns = enabledChannels.filter(c => !patternsByChannel.has(c.id));
+    const totalSkus = patterns.reduce((n) => n + 1, 0);
+    const totalLaunchTickets = channelsWithPatterns.length;
+
+    function previewSku(p) {
+      return String(p.template || '').replace(/\(SKU\)/g, f.sku || '');
+    }
 
     return `
       <div class="fv-modal-overlay" data-act="dismiss-modal" data-modal="generate-channel-skus">
         <div class="fv-modal fv-modal-wide">
           <h2>Generate channel SKUs &amp; launch tickets</h2>
           <p class="fv-modal-body">
-            Preview the SKUs that will be generated. Each enabled channel gets one launch
-            ticket bundling its SKUs + cross-references to listing content and image tickets,
-            plus one SKU mapping ticket covers all of them.
+            One channel SKU per pattern row defined in Settings → Channels. Each channel
+            with at least one pattern also gets a launch ticket bundling its SKUs +
+            cross-references to listing content and image tickets, plus one SKU mapping
+            ticket covers all of them.
             ${enabledChannels.length === 0 ? '<br/><br/><b>No enabled channels</b> — add or enable one in Settings → Channels.' : ''}
           </p>
 
-          ${enabledChannels.length > 0 ? `
+          ${channelsWithPatterns.length > 0 ? `
             <div class="fv-gen-channels">
-              ${enabledChannels.map(c => `
+              ${channelsWithPatterns.map(c => `
                 <div class="fv-gen-channel">
                   <div class="fv-gen-channel-head">
                     <span class="fv-gen-channel-name">${escapeHtml(c.name)}</span>
-                    ${c.has_fba ? `<span class="fv-meta-pill">FBA + FBM</span>` : ''}
-                  </div>
-                  <div class="fv-gen-pattern">
-                    Pattern: <code>${escapeHtml(c.sku_pattern || '{sku}-{channel}-{listing}{-fulfillment}')}</code>
+                    <span class="fv-muted" style="font-size:11px">${(patternsByChannel.get(c.id) || []).length} SKU${(patternsByChannel.get(c.id) || []).length === 1 ? '' : 's'}</span>
                   </div>
                   <ul class="fv-gen-variants">
-                    ${state.settings.listingTypes.map(lt => {
-                      if (c.has_fba) {
-                        return `
-                          <li>
-                            <span class="fv-gen-variant-label">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</span>
-                            <span class="fv-gen-variant-tpl"><code>${escapeHtml(sampleSku(c, lt, 'fba'))}</code> / <code>${escapeHtml(sampleSku(c, lt, 'fbm'))}</code></span>
-                          </li>
-                        `;
-                      }
-                      return `
-                        <li>
-                          <span class="fv-gen-variant-label">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</span>
-                          <span class="fv-gen-variant-tpl"><code>${escapeHtml(sampleSku(c, lt, ''))}</code></span>
-                        </li>
-                      `;
-                    }).join('')}
+                    ${(patternsByChannel.get(c.id) || []).map(p => `
+                      <li>
+                        <span class="fv-gen-variant-label">${escapeHtml(LISTING_TYPE_LABELS[p.listing_type] || p.listing_type)}${p.fulfillment ? ' · ' + escapeHtml(p.fulfillment.toUpperCase()) : ''}</span>
+                        <span class="fv-gen-variant-tpl"><code>${escapeHtml(previewSku(p))}</code></span>
+                      </li>
+                    `).join('')}
                   </ul>
                 </div>
               `).join('')}
             </div>
+            ${channelsWithoutPatterns.length > 0 ? `
+              <div class="fv-error" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
+                ⚠ ${channelsWithoutPatterns.length} enabled channel${channelsWithoutPatterns.length === 1 ? '' : 's'} have no SKU patterns and will be <b>skipped</b>: ${channelsWithoutPatterns.map(c => escapeHtml(c.name)).join(', ')}. Add patterns in Settings → Channels.
+              </div>
+            ` : ''}
             <div class="fv-gen-total">
-              <b>${totalSkus}</b> channel SKU${totalSkus === 1 ? '' : 's'} + <b>${enabledChannels.length}</b> launch ticket${enabledChannels.length === 1 ? '' : 's'} + <b>1</b> mapping ticket
+              <b>${totalSkus}</b> channel SKU${totalSkus === 1 ? '' : 's'} + <b>${totalLaunchTickets}</b> launch ticket${totalLaunchTickets === 1 ? '' : 's'} + <b>1</b> mapping ticket
+            </div>
+          ` : enabledChannels.length > 0 ? `
+            <div class="fv-error" style="background:#fef2f2">
+              No enabled channel has any SKU patterns defined. Add patterns in Settings → Channels (expand a channel card) before generating.
             </div>
           ` : ''}
 
@@ -1656,7 +1744,7 @@
             <button class="fv-btn fv-btn-sec" data-act="close-generate-channel-skus-modal">Cancel</button>
             <button class="fv-btn fv-btn-primary"
                     data-act="confirm-generate-channel-skus"
-                    ${(m.submitting || enabledChannels.length === 0) ? 'disabled' : ''}>
+                    ${(m.submitting || channelsWithPatterns.length === 0) ? 'disabled' : ''}>
               ${m.submitting ? 'Generating…' : 'Generate'}
             </button>
           </div>
@@ -1882,6 +1970,28 @@
       if (name === 'add-channel')     return addChannel();
       if (name === 'save-channel')    return saveChannel(Number(act.getAttribute('data-channel-id')));
       if (name === 'delete-channel')  return deleteChannel(Number(act.getAttribute('data-channel-id')));
+      if (name === 'toggle-channel') {
+        const id = Number(act.getAttribute('data-id'));
+        if (state.settings.expandedChannel === id) {
+          state.settings.expandedChannel = null;
+        } else {
+          state.settings.expandedChannel = id;
+          // Lazy-load patterns the first time this channel is expanded.
+          loadChannelPatterns(id);
+        }
+        return render();
+      }
+      if (name === 'show-add-pattern') {
+        state.settings.addingPatternFor = Number(act.getAttribute('data-channel-id'));
+        return render();
+      }
+      if (name === 'cancel-add-pattern') {
+        state.settings.addingPatternFor = null;
+        return render();
+      }
+      if (name === 'create-pattern')  return createPattern(Number(act.getAttribute('data-channel-id')));
+      if (name === 'save-pattern')    return savePattern(Number(act.getAttribute('data-channel-id')), Number(act.getAttribute('data-pattern-id')));
+      if (name === 'delete-pattern')  return deletePattern(Number(act.getAttribute('data-channel-id')), Number(act.getAttribute('data-pattern-id')));
       if (name === 'new-example')     { state.settings.editingExample = blankExample(); return render(); }
       if (name === 'edit-example')    return editExample(Number(act.getAttribute('data-id')));
       if (name === 'cancel-example')  { state.settings.editingExample = null; return render(); }
@@ -2242,16 +2352,14 @@
     const row = state.settings.channels.find(c => c.id === id);
     if (!row) return;
     // Pull live values from inputs (state lags behind the DOM because we
-    // don't re-render on every keystroke for the channels table).
+    // don't re-render on every keystroke for the channels card).
     const nameEl    = document.querySelector(`input[data-channel-id="${id}"][data-field="name"]`);
     const fbaEl     = document.querySelector(`input[data-channel-id="${id}"][data-field="has_fba"]`);
     const enabledEl = document.querySelector(`input[data-channel-id="${id}"][data-field="enabled"]`);
-    const patternEl = document.querySelector(`input[data-channel-id="${id}"][data-field="sku_pattern"]`);
     const body = {
       name:    nameEl    ? nameEl.value.trim()    : row.name,
       has_fba: fbaEl     ? fbaEl.checked          : row.has_fba,
       enabled: enabledEl ? enabledEl.checked      : row.enabled,
-      sku_pattern: patternEl ? patternEl.value.trim() : row.sku_pattern,
     };
     try {
       const r = await fetch(`/api/flavors2/settings/channels/${id}`, {
@@ -2266,6 +2374,77 @@
       const idx = state.settings.channels.findIndex(c => c.id === id);
       if (idx !== -1) state.settings.channels[idx] = data;
     } catch (e) { alert('Could not save channel: ' + (e.message || '')); }
+  }
+
+  // ── SKU patterns per channel ─────────────────────────────────────────────
+  async function loadChannelPatterns(channelId) {
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/sku-patterns`);
+      if (!r.ok) throw new Error('Could not load patterns');
+      state.settings.channelPatterns[channelId] = await r.json();
+      render();
+    } catch (e) {
+      state.settings.channelPatterns[channelId] = [];
+      render();
+    }
+  }
+
+  async function createPattern(channelId) {
+    const listingEl     = document.getElementById('new-pattern-listing-' + channelId);
+    const fulfillmentEl = document.getElementById('new-pattern-fulfillment-' + channelId);
+    const templateEl    = document.getElementById('new-pattern-template-' + channelId);
+    const body = {
+      listing_type: listingEl ? listingEl.value : 'single',
+      fulfillment: fulfillmentEl ? fulfillmentEl.value.trim() : '',
+      template: templateEl ? templateEl.value.trim() : '',
+    };
+    if (!body.template) { alert('Template is required.'); return; }
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/sku-patterns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Create failed');
+      await loadChannelPatterns(channelId);
+      state.settings.addingPatternFor = null;
+      render();
+    } catch (e) { alert('Could not create pattern: ' + (e.message || '')); }
+  }
+
+  async function savePattern(channelId, patternId) {
+    const listingEl     = document.querySelector(`[data-pattern-id="${patternId}"][data-pf-field="listing_type"]`);
+    const fulfillmentEl = document.querySelector(`[data-pattern-id="${patternId}"][data-pf-field="fulfillment"]`);
+    const templateEl    = document.querySelector(`[data-pattern-id="${patternId}"][data-pf-field="template"]`);
+    const body = {
+      listing_type: listingEl ? listingEl.value : undefined,
+      fulfillment: fulfillmentEl ? fulfillmentEl.value.trim() : undefined,
+      template: templateEl ? templateEl.value.trim() : undefined,
+    };
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/sku-patterns/${patternId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      const list = state.settings.channelPatterns[channelId] || [];
+      const idx = list.findIndex(p => p.id === patternId);
+      if (idx !== -1) list[idx] = data;
+      render();
+      flashToast('Pattern saved.');
+    } catch (e) { alert('Could not save pattern: ' + (e.message || '')); }
+  }
+
+  async function deletePattern(channelId, patternId) {
+    if (!confirm('Delete this SKU pattern? Existing channel SKUs already generated for flavors aren\'t affected — only future generations stop emitting this row.')) return;
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/sku-patterns/${patternId}`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Delete failed'); }
+      await loadChannelPatterns(channelId);
+    } catch (e) { alert('Could not delete: ' + (e.message || '')); }
   }
 
   async function deleteChannel(id) {
@@ -2663,12 +2842,23 @@
 
   // ── Generate channel SKUs + per-channel launch tickets ───────────────────
   async function openGenerateChannelSkus() {
-    state.generateChannelSkusModal = { channels: [], submitting: false, error: '', loading: true };
+    state.generateChannelSkusModal = { channels: [], patterns: [], submitting: false, error: '', loading: true };
     render();
     try {
-      const r = await fetch('/api/flavors2/settings/channels');
-      if (!r.ok) throw new Error('Could not load channels');
-      state.generateChannelSkusModal.channels = await r.json();
+      const chRes = await fetch('/api/flavors2/settings/channels');
+      if (!chRes.ok) throw new Error('Could not load channels');
+      const channels = await chRes.json();
+      state.generateChannelSkusModal.channels = channels;
+      // Fan out: fetch every enabled channel's patterns in parallel so the
+      // preview shows the exact SKUs the server will emit.
+      const patternResults = await Promise.all(
+        channels.filter(c => c.enabled).map(c =>
+          fetch(`/api/flavors2/settings/channels/${c.id}/sku-patterns`)
+            .then(r => r.ok ? r.json() : [])
+            .catch(() => [])
+        )
+      );
+      state.generateChannelSkusModal.patterns = patternResults.flat();
       state.generateChannelSkusModal.loading = false;
       render();
     } catch (e) {

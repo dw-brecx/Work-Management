@@ -693,7 +693,125 @@ module.exports = function attach(app, deps) {
       has_fba: !!row.has_fba,
       enabled: !!row.enabled,
       position: row.position,
+      // Legacy single-template column — kept on the wire for older clients,
+      // but the new SKU generator ignores it in favour of the per-pattern
+      // rows in flavor_channel_sku_patterns. New UI doesn't surface this.
       sku_pattern: row.sku_pattern || '{sku}-{channel}-{listing}{-fulfillment}',
+    };
+  }
+
+  // ── SKU patterns: per-(channel × listing × fulfillment) CRUD ──────────────
+  // Patterns are scoped to a channel and listed in position order so the
+  // user controls the row order in Settings. Fulfillment is freeform text
+  // (so a channel can use fba / fbm / wfs / blank / anything) — generator
+  // stores whatever's in the row.
+  app.get('/api/flavors2/settings/channels/:id/sku-patterns', requireAuth, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const rows = await all(
+        'SELECT * FROM flavor_channel_sku_patterns WHERE channel_id=? ORDER BY position ASC, id ASC',
+        cid
+      );
+      res.json(rows.map(shapeSkuPattern));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/settings/channels/:id/sku-patterns', requireAdmin, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const { errors, clean } = validateSkuPattern(req.body || {});
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      const dup = await get(
+        'SELECT id FROM flavor_channel_sku_patterns WHERE channel_id=? AND listing_type=? AND fulfillment=?',
+        cid, clean.listing_type, clean.fulfillment
+      );
+      if (dup) return res.status(409).json({ error: 'A pattern for that (listing, fulfillment) already exists. Edit that one.' });
+      const maxPos = await get('SELECT MAX(position) AS p FROM flavor_channel_sku_patterns WHERE channel_id=?', cid);
+      const pos = Number(maxPos?.p || 0) + 1;
+      const ins = await run(
+        `INSERT INTO flavor_channel_sku_patterns
+           (channel_id, listing_type, fulfillment, template, position)
+         VALUES (?,?,?,?,?) RETURNING id`,
+        cid, clean.listing_type, clean.fulfillment, clean.template, pos
+      );
+      const row = await get('SELECT * FROM flavor_channel_sku_patterns WHERE id=?', ins.lastInsertRowid);
+      res.status(201).json(shapeSkuPattern(row));
+    } catch (e) {
+      console.error('[flavors2] sku-pattern create failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch('/api/flavors2/settings/channels/:id/sku-patterns/:patternId', requireAdmin, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      const pid = Number(req.params.patternId);
+      if (!Number.isFinite(cid) || !Number.isFinite(pid)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get(
+        'SELECT * FROM flavor_channel_sku_patterns WHERE id=? AND channel_id=?',
+        pid, cid
+      );
+      if (!existing) return res.status(404).json({ error: 'Not found' });
+      const merged = {
+        listing_type: 'listing_type' in req.body ? req.body.listing_type : existing.listing_type,
+        fulfillment:  'fulfillment'  in req.body ? req.body.fulfillment  : existing.fulfillment,
+        template:     'template'     in req.body ? req.body.template     : existing.template,
+      };
+      const { errors, clean } = validateSkuPattern(merged);
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      // Uniqueness check: only if the user changed listing or fulfillment.
+      if (clean.listing_type !== existing.listing_type || clean.fulfillment !== existing.fulfillment) {
+        const dup = await get(
+          'SELECT id FROM flavor_channel_sku_patterns WHERE channel_id=? AND listing_type=? AND fulfillment=? AND id != ?',
+          cid, clean.listing_type, clean.fulfillment, pid
+        );
+        if (dup) return res.status(409).json({ error: 'Another pattern for that (listing, fulfillment) already exists.' });
+      }
+      await run(
+        `UPDATE flavor_channel_sku_patterns SET
+           listing_type=?, fulfillment=?, template=?,
+           updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id=?`,
+        clean.listing_type, clean.fulfillment, clean.template, pid
+      );
+      const row = await get('SELECT * FROM flavor_channel_sku_patterns WHERE id=?', pid);
+      res.json(shapeSkuPattern(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/flavors2/settings/channels/:id/sku-patterns/:patternId', requireAdmin, async (req, res) => {
+    try {
+      const pid = Number(req.params.patternId);
+      if (!Number.isFinite(pid)) return res.status(400).json({ error: 'Bad id' });
+      await run('DELETE FROM flavor_channel_sku_patterns WHERE id=?', pid);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  function validateSkuPattern(body) {
+    const errors = [];
+    const listing_type = String(body.listing_type || '').trim();
+    if (!LISTING_TYPES.includes(listing_type)) errors.push('listing_type must be one of: ' + LISTING_TYPES.join(', '));
+    const fulfillment = String(body.fulfillment || '').trim().toLowerCase().slice(0, 20);
+    if (!/^[a-z0-9_-]*$/.test(fulfillment)) errors.push('fulfillment must be alphanumeric (or blank)');
+    const template = String(body.template || '').trim();
+    if (!template) errors.push('template is required');
+    if (template.length > 200) errors.push('template too long');
+    return { errors, clean: { listing_type, fulfillment, template } };
+  }
+
+  function shapeSkuPattern(row) {
+    return {
+      id: row.id,
+      channel_id: row.channel_id,
+      listing_type: row.listing_type,
+      fulfillment: row.fulfillment || '',
+      template: row.template,
+      position: row.position,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     };
   }
 
@@ -1791,15 +1909,10 @@ module.exports = function attach(app, deps) {
   }
 
   // ── Channel SKU generation + per-channel listing tickets ─────────────────
-  // Listing-type → short code for SKU assembly. Adding a new listing type
-  // also needs an entry here; otherwise the pattern would emit a literal
-  // "{listing}" instead of a code.
-  const LISTING_CODE = {
-    single: 'S',
-    single_with_pump: 'SP',
-    '4_pack': '4P',
-    '6_pack': '6P',
-  };
+  // SKU assembly now lives in flavor_channel_sku_patterns — per-channel ×
+  // per-listing-type × per-fulfillment templates, each containing literal
+  // text + a single `(SKU)` placeholder. See substitutePatternTemplate
+  // above and the seeds in db.js for the user's real convention.
   const LISTING_LABEL_LOCAL = {
     single: 'Single (no pump)',
     single_with_pump: 'Single with pump',
@@ -1807,19 +1920,12 @@ module.exports = function attach(app, deps) {
     '6_pack': '6-pack',
   };
 
-  // Replace {sku}, {channel}, {listing}, {-fulfillment} (or {fulfillment})
-  // in the channel's sku_pattern. The {-fulfillment} variant prepends a
-  // dash automatically — convenient because most channels don't split
-  // FBA/FBM and you want the SKU to NOT have a trailing dash for them.
-  function generateChannelSku(pattern, baseSku, channelCode, listingType, fulfillment) {
-    const lcode = LISTING_CODE[listingType] || listingType.toUpperCase();
-    const ff = fulfillment ? fulfillment.toUpperCase() : '';
-    return String(pattern || '{sku}-{channel}-{listing}{-fulfillment}')
-      .replace(/\{sku\}/g, baseSku || '')
-      .replace(/\{channel\}/g, (channelCode || '').toUpperCase())
-      .replace(/\{listing\}/g, lcode)
-      .replace(/\{-fulfillment\}/g, ff ? ('-' + ff) : '')
-      .replace(/\{fulfillment\}/g, ff);
+  // Substitute the base SKU into a per-(channel × listing_type × fulfillment)
+  // template. The only placeholder is `(SKU)` — matches the user's existing
+  // convention from their pattern sheet. Anything else stays literal so the
+  // generator emits exactly what the template says.
+  function substitutePatternTemplate(template, baseSku) {
+    return String(template || '').replace(/\(SKU\)/g, baseSku || '');
   }
 
   // GET /api/flavors2/:id/channel-skus — flat list grouped by channel for
@@ -1897,23 +2003,40 @@ module.exports = function attach(app, deps) {
       // regenerate to keep the data in sync with the new tickets.
       await run('DELETE FROM flavor_channel_skus WHERE flavor_id=?', id);
 
+      // Pull every pattern row for every enabled channel in one query —
+      // cheaper than N round-trips per channel and lets us see at a glance
+      // which channels have no patterns (skipped silently with a log line).
+      const allPatterns = await all(
+        `SELECT p.*, c.code AS channel_code, c.name AS channel_name
+           FROM flavor_channel_sku_patterns p
+           JOIN flavor_channels c ON c.id = p.channel_id
+          WHERE c.enabled = 1
+          ORDER BY c.position ASC, p.position ASC, p.id ASC`
+      );
+
       const skusByChannel = new Map(); // channel.id -> [{listing_type, fulfillment, channel_sku}]
+      const channelsWithPatterns = new Set(allPatterns.map(p => p.channel_id));
       for (const c of channels) {
-        const list = [];
-        for (const lt of LISTING_TYPES) {
-          const fulfillments = c.has_fba ? ['fba', 'fbm'] : [''];
-          for (const ff of fulfillments) {
-            const sku = generateChannelSku(c.sku_pattern, f.sku, c.code, lt, ff);
-            await run(
-              `INSERT INTO flavor_channel_skus
-                 (flavor_id, channel_id, listing_type, fulfillment, channel_sku, nineyard_sku)
-               VALUES (?,?,?,?,?,?)`,
-              id, c.id, lt, ff, sku, f.sku
-            );
-            list.push({ listing_type: lt, fulfillment: ff, channel_sku: sku });
-          }
+        if (!channelsWithPatterns.has(c.id)) {
+          console.warn(`[flavors2] channel ${c.code} has no SKU patterns — skipping`);
+          continue;
         }
-        skusByChannel.set(c.id, list);
+        skusByChannel.set(c.id, []);
+      }
+      for (const p of allPatterns) {
+        const sku = substitutePatternTemplate(p.template, f.sku);
+        await run(
+          `INSERT INTO flavor_channel_skus
+             (flavor_id, channel_id, listing_type, fulfillment, channel_sku, nineyard_sku)
+           VALUES (?,?,?,?,?,?)`,
+          id, p.channel_id, p.listing_type, p.fulfillment, sku, f.sku
+        );
+        if (!skusByChannel.has(p.channel_id)) skusByChannel.set(p.channel_id, []);
+        skusByChannel.get(p.channel_id).push({
+          listing_type: p.listing_type,
+          fulfillment: p.fulfillment,
+          channel_sku: sku,
+        });
       }
 
       // Find the listing-content ticket for each channel so the per-channel

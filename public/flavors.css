@@ -1131,6 +1131,18 @@ body {
   color: var(--fv-text-2);
 }
 
+/* ── Add-pattern inline form (channel patterns table) ─────────────────── */
+.fv-add-pattern {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 0;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.fv-add-pattern .fv-input { flex: 1; min-width: 0; }
+.fv-add-pattern input[id^="new-pattern-template-"] { flex: 2; min-width: 200px; }
+
 /* ── Variation listings ────────────────────────────────────────────────── */
 .fv-var-channel { margin-bottom: 20px; }
 .fv-var-channel:last-child { margin-bottom: 0; }

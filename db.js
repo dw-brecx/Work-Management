@@ -435,6 +435,24 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_variation_listings_channel
        ON flavor_variation_listings (channel_id, position)`,
+    // Per-(channel × listing_type × fulfillment) SKU template. Supersedes
+    // the single `flavor_channels.sku_pattern` column — the user's real
+    // convention varies by listing type within a channel (Amazon Main =
+    // `-NP`, with-pump = `-WP`, 6-case = `-1Case`, etc.), so one channel-
+    // wide template can't express it. Sparse matrix is fine: if there's
+    // no row for a combo, the generator just doesn't emit that SKU.
+    `CREATE TABLE IF NOT EXISTS flavor_channel_sku_patterns (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL REFERENCES flavor_channels(id) ON DELETE CASCADE,
+      listing_type TEXT NOT NULL,
+      fulfillment TEXT NOT NULL DEFAULT '',
+      template TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_sku_patterns_unique
+       ON flavor_channel_sku_patterns (channel_id, listing_type, fulfillment)`,
     // Channel SKUs — generated from the per-channel sku_pattern by
     // /api/flavors2/:id/generate-channel-skus. One row per
     // (flavor × channel × listing_type × fulfillment). nineyard_sku is
@@ -1032,6 +1050,59 @@ async function init() {
       );
     }
   }
+
+  // Add Canada idempotently (not part of the original 3-channel seed but
+  // added later from the user's real convention). Only inserts if missing.
+  const canadaExists = await get("SELECT id FROM flavor_channels WHERE code='canada'");
+  if (!canadaExists) {
+    const maxPos = await get('SELECT MAX(position) AS p FROM flavor_channels');
+    await run(
+      'INSERT INTO flavor_channels (name, code, has_fba, enabled, position) VALUES (?,?,1,1,?)',
+      'Canada', 'canada', Number(maxPos?.p || 0) + 1
+    );
+  }
+
+  // Seed channel SKU patterns from the user's real convention. Per channel,
+  // only seeds when no patterns exist for that channel yet — so a user can
+  // delete + replace any subset without re-seeding overwriting their work.
+  async function seedPatternsIfMissing(channelCode, rows) {
+    const ch = await get('SELECT id FROM flavor_channels WHERE code=?', channelCode);
+    if (!ch) return;
+    const existing = await get(
+      'SELECT COUNT(*) AS n FROM flavor_channel_sku_patterns WHERE channel_id=?',
+      ch.id
+    );
+    if (Number(existing?.n || 0) > 0) return;
+    let pos = 0;
+    for (const r of rows) {
+      pos++;
+      await run(
+        `INSERT INTO flavor_channel_sku_patterns
+           (channel_id, listing_type, fulfillment, template, position)
+         VALUES (?,?,?,?,?)
+         ON CONFLICT (channel_id, listing_type, fulfillment) DO NOTHING`,
+        ch.id, r.listing_type, r.fulfillment, r.template, pos
+      );
+    }
+  }
+  await seedPatternsIfMissing('amazon', [
+    { listing_type: 'single',           fulfillment: 'fba', template: 'F-(SKU)-NP-UPC' },
+    { listing_type: 'single',           fulfillment: 'fbm', template: 'F-(SKU)-NP' },
+    { listing_type: 'single_with_pump', fulfillment: 'fba', template: 'F-(SKU)-WP-FBA' },
+    { listing_type: 'single_with_pump', fulfillment: 'fbm', template: 'F-(SKU)-WP' },
+    { listing_type: '4_pack',           fulfillment: 'fba', template: 'F-(SKU)-Case-4-FBA' },
+    { listing_type: '4_pack',           fulfillment: 'fbm', template: 'F-(SKU)-Case-4' },
+    { listing_type: '6_pack',           fulfillment: 'fba', template: 'F-(SKU)-1Case-FBA' },
+    { listing_type: '6_pack',           fulfillment: 'fbm', template: 'F-(SKU)-1Case' },
+  ]);
+  await seedPatternsIfMissing('walmart', [
+    { listing_type: 'single',           fulfillment: 'wfs', template: 'W-SY-Mix-(SKU)' },
+    { listing_type: 'single_with_pump', fulfillment: 'wfs', template: 'W-(SKU)-WP' },
+    { listing_type: '6_pack',           fulfillment: 'fbm', template: 'W-(SKU)-1Case' },
+  ]);
+  await seedPatternsIfMissing('canada', [
+    { listing_type: 'single',           fulfillment: 'fba', template: 'CF-(SKU)-A' },
+  ]);
 
   // Seed the user's curated 10-category product-type taxonomy from the
   // title.xlsx they shared. Only fires when the table is empty — once they
