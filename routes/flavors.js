@@ -975,6 +975,146 @@ module.exports = function attach(app, deps) {
     }
   });
 
+  // ── Image ticket generation ───────────────────────────────────────────────
+  // Spawns the main product-image ticket (one per flavor, with a subtask
+  // per image slot × enabled channel) and, when Amazon is enabled, the EBC
+  // module ticket. Designers attach the final file to each subtask via the
+  // existing /api/upload endpoint with a subtask_id. Idempotent: refuses
+  // to re-spawn either ticket while a live one exists.
+  //
+  // Image counts per channel:
+  //   • Main image: 1
+  //   • Additional: 7 (regular) / 8 (sugar-free) — SF gets an extra slot
+  //     for a typical sucralose / no-sugar callout image.
+  app.post('/api/flavors2/:id/generate-images', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      if (!f.upc || !f.sku) {
+        return res.status(409).json({ error: 'Set UPC and SKU first — image briefs reference them.' });
+      }
+      const already = await get(
+        `SELECT COUNT(*) AS n FROM tickets
+          WHERE flavor_v2_id=? AND flavor_v2_step IN ('image_creation','ebc') AND deleted_at IS NULL`,
+        id
+      );
+      if (Number(already?.n || 0) > 0) {
+        return res.status(409).json({ error: 'Image tickets already exist for this flavor. Delete them to regenerate.' });
+      }
+
+      const channels = await all(
+        'SELECT * FROM flavor_channels WHERE enabled=1 ORDER BY position ASC, id ASC'
+      );
+      if (!channels.length) {
+        return res.status(409).json({ error: 'No enabled channels. Add one in Flavors → Settings → Channels first.' });
+      }
+
+      const isSF = f.type === 'sugar_free';
+      const additionalCount = isSF ? 8 : 7;
+      const created = [];
+
+      // Main product-image ticket — one row, big subtask list.
+      const imgDesc = buildImageTicketDescription(f, channels, additionalCount, isSF);
+      const imgChecklist = [];
+      for (const c of channels) {
+        imgChecklist.push(`${c.name} — Main image`);
+        for (let i = 1; i <= additionalCount; i++) {
+          imgChecklist.push(`${c.name} — Additional image ${i}`);
+        }
+      }
+      const imgTicket = await insertPipelineTicket(f, {
+        step: 'image_creation',
+        title: `Create product images for ${f.name}`,
+        priority: 'High',
+        dept: 'Design',
+        description: imgDesc,
+        checklist: imgChecklist,
+      }, req.session.userId);
+      created.push({ id: imgTicket.id, kind: 'image_creation' });
+
+      // EBC ticket — Amazon-specific. Only spawn if Amazon is enabled.
+      const amazon = channels.find(c => c.code === 'amazon');
+      if (amazon) {
+        const ebcDesc = buildEbcTicketDescription(f);
+        const ebcChecklist = [
+          'EBC Module 1 — Hero / brand banner',
+          'EBC Module 2 — Product features',
+          'EBC Module 3 — Lifestyle / usage',
+          'EBC Module 4 — Comparison / variants',
+          'EBC Module 5 — Trust / certifications',
+        ];
+        const ebcTicket = await insertPipelineTicket(f, {
+          step: 'ebc',
+          title: `Create Amazon EBC content for ${f.name}`,
+          priority: 'Medium',
+          dept: 'Design',
+          description: ebcDesc,
+          checklist: ebcChecklist,
+        }, req.session.userId);
+        created.push({ id: ebcTicket.id, kind: 'ebc' });
+      }
+
+      res.status(201).json({ ok: true, tickets: created });
+    } catch (e) {
+      console.error('[flavors2] generate-images failed:', e.message);
+      res.status(500).json({ error: 'Could not generate image tickets — please retry.' });
+    }
+  });
+
+  function buildImageTicketDescription(f, channels, additionalCount, isSF) {
+    const typeLabel = isSF ? 'Sugar-Free' : 'Regular';
+    const colorLine = f.color === 'none'
+      ? 'None'
+      : `${f.color}${f.syrup_color ? ' (' + f.syrup_color + ')' : ''}`;
+    const channelList = channels.map(c =>
+      `  • ${c.name}${c.has_fba ? ' (FBA + FBM share these images)' : ''}`
+    ).join('\n');
+    return (
+      `Create all product images for this flavor. Attach the final file to ` +
+      `each subtask below as it's ready — the subtask check turns green ` +
+      `once a file is on it.\n\n` +
+      `Flavor: ${f.name} (${typeLabel})\n` +
+      `Color: ${colorLine}\n` +
+      `Use: ${f.use_of_syrup}\n` +
+      `UPC: ${f.upc}\n` +
+      `SKU: ${f.sku}\n\n` +
+      `Ingredients:\n${f.ingredients}\n\n` +
+      `Sodium: ${f.sodium_mg} mg / serving\n\n` +
+      `Channels covered:\n${channelList}\n\n` +
+      `Image requirements (per channel):\n` +
+      `  • Main image: white background, product centered, ≥2000×2000 px\n` +
+      `  • ${additionalCount} additional images: lifestyle / detail / ` +
+      `nutrition / ingredients / usage shots\n` +
+      (isSF
+        ? `  • Sugar-Free flavors get one extra slot — typically a ` +
+          `sucralose / no-sugar / zero-calorie callout image.\n`
+        : ''
+      ) +
+      `\nTotal slots: ${channels.length} channel(s) × ${1 + additionalCount} ` +
+      `image(s) = ${channels.length * (1 + additionalCount)} subtasks below.`
+    );
+  }
+
+  function buildEbcTicketDescription(f) {
+    const typeLabel = f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular';
+    return (
+      `Design Amazon Enhanced Brand Content (A+) modules for this flavor. ` +
+      `Each module image goes on its own subtask below — attach when ready. ` +
+      `Add more subtasks via the Subtasks tab if your design needs more than 5.\n\n` +
+      `Flavor: ${f.name} (${typeLabel})\n` +
+      `Color: ${f.color === 'none' ? 'None' : f.color}\n` +
+      `UPC: ${f.upc}\n` +
+      `SKU: ${f.sku}\n\n` +
+      `Amazon EBC spec:\n` +
+      `  • Module images: 970×600 px (full-width) or smaller for partial-width modules\n` +
+      `  • RGB color profile, JPG / PNG, ≤2 MB each\n` +
+      `  • Text on image kept minimal (Amazon's policy)\n` +
+      `  • Standard modules: hero banner, features, lifestyle, comparison, trust signals\n`
+    );
+  }
+
   // ── Hook exposed to server.js's PUT /api/tickets ──────────────────────────
   // Called when a ticket transitions to Closed. If the ticket is part of the
   // label-design step of a flavor pipeline, we spawn the follow-up label

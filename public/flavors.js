@@ -32,6 +32,8 @@
     deleteModal: null,
     // null = closed; { channels: [...], submitting, error } = open
     generateListingsModal: null,
+    // null = closed; { channels: [...], submitting, error } = open
+    generateImagesModal: null,
   };
 
   const LISTING_TYPE_LABELS = {
@@ -134,6 +136,7 @@
     let overlays = '';
     if (state.deleteModal)            overlays += renderDeleteModal();
     if (state.generateListingsModal)  overlays += renderGenerateListingsModal();
+    if (state.generateImagesModal)    overlays += renderGenerateImagesModal();
     root.innerHTML = renderShell(body) + overlays;
     bind();
     // Focus password input when modal opens (after innerHTML swap).
@@ -410,6 +413,8 @@
       label_design: 'Label',
       label_review: 'Label Review',
       listing_content: 'Listing',
+      image_creation: 'Images',
+      ebc: 'EBC',
     }[step] || step;
   }
 
@@ -417,12 +422,16 @@
     return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
   }
 
-  // ── Listing-content action row ────────────────────────────────────────────
-  // Shown between Identifiers and Tasks. Visible once UPC + SKU are filled
-  // in (so the content generator can embed them) AND no listing_content
-  // tickets exist yet for this flavor. Once tickets exist, this collapses
-  // to a status row pointing the user to them.
+  // ── Listing-content + image action rows ───────────────────────────────────
+  // Shown between Identifiers and Tasks. Both share the same UPC+SKU
+  // precondition — they bake those values into ticket descriptions so they
+  // can't fire until phase 2 lands. Once the underlying tickets exist,
+  // each row collapses to a green status banner.
   function renderListingActions(f) {
+    return renderListingContentSection(f) + renderImageTicketsSection(f);
+  }
+
+  function renderListingContentSection(f) {
     const existing = (f.tickets || []).filter(t => t.flavor_v2_step === 'listing_content');
     const ready = f.upc && f.sku;
     if (existing.length > 0) {
@@ -446,6 +455,39 @@
         </p>
         <button class="fv-btn fv-btn-primary" data-act="open-generate-listings" ${ready ? '' : 'disabled'}>
           📝 Generate listing content
+        </button>
+      </div>
+    `;
+  }
+
+  function renderImageTicketsSection(f) {
+    const imgTickets = (f.tickets || []).filter(t =>
+      t.flavor_v2_step === 'image_creation' || t.flavor_v2_step === 'ebc'
+    );
+    const ready = f.upc && f.sku;
+    if (imgTickets.length > 0) {
+      const main = imgTickets.filter(t => t.flavor_v2_step === 'image_creation').length;
+      const ebc  = imgTickets.filter(t => t.flavor_v2_step === 'ebc').length;
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Image tickets</div>
+          <div class="fv-listing-status">
+            <span>✓ ${main} product-image ticket${main === 1 ? '' : 's'}${ebc ? ' + ' + ebc + ' EBC ticket' + (ebc === 1 ? '' : 's') : ''} generated.</span>
+            <span class="fv-muted" style="margin-left:6px">Designers attach each image to its subtask.</span>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="fv-detail-section">
+        <div class="fv-section-label">Image tickets</div>
+        <p class="fv-muted" style="font-size:12.5px;margin:0 0 10px">
+          ${ready
+            ? 'Create a product-image ticket with a subtask per image slot (main + 7-or-8 additional per enabled channel), plus an Amazon EBC ticket if Amazon is enabled.'
+            : 'Fill in UPC + SKU above first — the image briefs reference them.'}
+        </p>
+        <button class="fv-btn fv-btn-primary" data-act="open-generate-images" ${ready ? '' : 'disabled'}>
+          🎨 Create image tickets
         </button>
       </div>
     `;
@@ -826,6 +868,74 @@
     `;
   }
 
+  // ── Generate-images modal ─────────────────────────────────────────────────
+  // Confirmation step before POST. Shows per-channel image slot counts and
+  // whether Amazon EBC will spawn (only fires when the seeded "amazon"
+  // channel is enabled — admin can disable it and skip EBC entirely).
+  function renderGenerateImagesModal() {
+    const m = state.generateImagesModal;
+    const f = state.detail;
+    const enabledChannels = (m.channels || []).filter(c => c.enabled);
+    const isSF = f.type === 'sugar_free';
+    const additional = isSF ? 8 : 7;
+    const totalSlots = enabledChannels.length * (1 + additional);
+    const amazon = enabledChannels.find(c => c.code === 'amazon');
+    return `
+      <div class="fv-modal-overlay" data-act="dismiss-modal" data-modal="generate-images">
+        <div class="fv-modal fv-modal-wide">
+          <h2>Create image tickets</h2>
+          <p class="fv-modal-body">
+            One product-image ticket with subtasks for every image slot
+            ${amazon ? ' + one Amazon EBC ticket' : ''}.
+            Designers attach the final file to each subtask via the standard upload flow.
+            ${enabledChannels.length === 0 ? '<br/><br/><b>No enabled channels</b> — add or enable one in Settings → Channels.' : ''}
+          </p>
+
+          ${enabledChannels.length > 0 ? `
+            <div class="fv-gen-channels">
+              ${enabledChannels.map(c => `
+                <div class="fv-gen-channel">
+                  <div class="fv-gen-channel-head">
+                    <span class="fv-gen-channel-name">${escapeHtml(c.name)}</span>
+                    ${c.has_fba ? `<span class="fv-meta-pill">FBA + FBM</span>` : ''}
+                  </div>
+                  <div class="fv-gen-imgcount">
+                    1 main + ${additional} additional ${isSF ? '<span class="fv-muted">(SF gets 1 extra)</span>' : ''}
+                  </div>
+                </div>
+              `).join('')}
+              ${amazon ? `
+                <div class="fv-gen-channel" style="border:1px dashed var(--fv-border-strong);background:transparent">
+                  <div class="fv-gen-channel-head">
+                    <span class="fv-gen-channel-name">📐 Amazon EBC</span>
+                    <span class="fv-meta-pill">A+ Content</span>
+                  </div>
+                  <div class="fv-gen-imgcount">5 default modules (add more on the ticket if needed)</div>
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="fv-gen-total">
+              <b>${totalSlots}</b> product-image slot${totalSlots === 1 ? '' : 's'}
+              ${amazon ? ` + <b>5</b> EBC module slots` : ''}
+            </div>
+          ` : ''}
+
+          ${m.error ? `<div class="fv-error">${escapeHtml(m.error)}</div>` : ''}
+
+          <div class="fv-modal-actions">
+            <button class="fv-btn fv-btn-sec" data-act="close-generate-images-modal">Cancel</button>
+            <button class="fv-btn fv-btn-primary"
+                    data-act="confirm-generate-images"
+                    ${(m.submitting || enabledChannels.length === 0) ? 'disabled' : ''}>
+              ${m.submitting ? 'Creating tickets…' : (amazon ? 'Create 2 tickets' : 'Create 1 ticket')}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   // ── Bottle visualisation ──────────────────────────────────────────────────
   // SVG syrup bottle. Fill height is clamped 0-100; "sealed" toggles a cap
   // on top (used when every linked ticket is closed). Color comes from the
@@ -940,6 +1050,10 @@
         state.generateListingsModal = null;
         return render();
       }
+      if (state.generateImagesModal && !state.generateImagesModal.submitting) {
+        state.generateImagesModal = null;
+        return render();
+      }
     });
   }
 
@@ -957,8 +1071,9 @@
         if (e.target === act) {
           e.preventDefault();
           const which = act.getAttribute('data-modal') || 'delete';
-          if (which === 'generate-listings') state.generateListingsModal = null;
-          else                                state.deleteModal = null;
+          if (which === 'generate-listings')     state.generateListingsModal = null;
+          else if (which === 'generate-images')  state.generateImagesModal = null;
+          else                                    state.deleteModal = null;
           render();
         }
         return;
@@ -1029,6 +1144,9 @@
       if (name === 'open-generate-listings')   return openGenerateListings();
       if (name === 'close-generate-modal')     { state.generateListingsModal = null; return render(); }
       if (name === 'confirm-generate-listings') return confirmGenerateListings();
+      if (name === 'open-generate-images')         return openGenerateImages();
+      if (name === 'close-generate-images-modal')  { state.generateImagesModal = null; return render(); }
+      if (name === 'confirm-generate-images')      return confirmGenerateImages();
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
     // depends on the card's data-field on its parent .fv-options container.
@@ -1433,6 +1551,43 @@
     } catch (e) {
       state.generateListingsModal.submitting = false;
       state.generateListingsModal.error = e.message || 'Could not generate';
+      render();
+    }
+  }
+
+  // ── Generate image tickets ────────────────────────────────────────────────
+  async function openGenerateImages() {
+    state.generateImagesModal = { channels: [], submitting: false, error: '', loading: true };
+    render();
+    try {
+      const r = await fetch('/api/flavors2/settings/channels');
+      if (!r.ok) throw new Error('Could not load channels');
+      state.generateImagesModal.channels = await r.json();
+      state.generateImagesModal.loading = false;
+      render();
+    } catch (e) {
+      state.generateImagesModal.error = e.message || 'Load failed';
+      state.generateImagesModal.loading = false;
+      render();
+    }
+  }
+
+  async function confirmGenerateImages() {
+    if (!state.generateImagesModal || state.generateImagesModal.submitting) return;
+    state.generateImagesModal.submitting = true;
+    state.generateImagesModal.error = '';
+    render();
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}/generate-images`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Generate failed');
+      state.generateImagesModal = null;
+      await loadFlavor(state.detailId);
+      render();
+      flashToast(`Created ${data.tickets.length} image ticket${data.tickets.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      state.generateImagesModal.submitting = false;
+      state.generateImagesModal.error = e.message || 'Could not generate';
       render();
     }
   }

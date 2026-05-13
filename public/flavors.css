@@ -925,6 +925,21 @@ body {
 .fv-gen-variant-tpl   { color: var(--fv-text-3); font-size: 11px; text-align: right; }
 .fv-gen-variants li.missing .fv-gen-variant-tpl { color: #b45309; }
 
+.fv-gen-imgcount {
+  font-size: 12.5px;
+  color: var(--fv-text-2);
+}
+
+.fv-gen-total {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--fv-accent-soft);
+  color: var(--fv-accent);
+  border-radius: 6px;
+  font-size: 12.5px;
+  text-align: center;
+}
+
 /* ── Toast ─────────────────────────────────────────────────────────────── */
 .fv-toast {
   position: fixed;
