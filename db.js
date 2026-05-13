@@ -396,6 +396,24 @@ async function init() {
       updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_flavor_product_types_position ON flavor_product_types (position)`,
+    // Per-flavor approved listing content. One row per (flavor, variant).
+    // Variants: 'single', 'single_with_pump', '4_pack', '6_pack'. Generated
+    // lazily on first preview by substituting the flavor's data into the
+    // picked product type's template; then the user edits inline and
+    // approves. Tickets spawn from this table, not from the template.
+    `CREATE TABLE IF NOT EXISTS flavor_listing_content (
+      id SERIAL PRIMARY KEY,
+      flavor_id INTEGER NOT NULL REFERENCES flavors_v2(id) ON DELETE CASCADE,
+      listing_variant TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      bullets_json TEXT NOT NULL DEFAULT '[]',
+      description TEXT NOT NULL DEFAULT '',
+      approved INTEGER NOT NULL DEFAULT 0,
+      generated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_content_unique
+       ON flavor_listing_content (flavor_id, listing_variant)`,
     // Channel SKUs — generated from the per-channel sku_pattern by
     // /api/flavors2/:id/generate-channel-skus. One row per
     // (flavor × channel × listing_type × fulfillment). nineyard_sku is

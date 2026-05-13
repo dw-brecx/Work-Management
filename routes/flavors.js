@@ -72,6 +72,12 @@ module.exports = function attach(app, deps) {
   }
 
   // ── Input validation ──────────────────────────────────────────────────────
+  // `use_of_syrup` is now any non-empty string — Build B replaced the
+  // 3-option enum with the 10-category product-type taxonomy backed by
+  // flavor_product_types. The wizard reads keys from that table dynamically;
+  // we accept whatever it sends as long as it's a non-empty slug. Lookup
+  // happens at render time (so a deleted product type degrades to a clear
+  // "no template" message rather than rejecting on save).
   function validate(body) {
     const errors = [];
     const name = String(body.name || '').trim();
@@ -91,7 +97,8 @@ module.exports = function attach(app, deps) {
     if (!FLAVOR_TYPES.includes(flavor_type)) errors.push('flavor_type must be natural or natural_and_artificial');
 
     const use_of_syrup = String(body.use_of_syrup || '').trim();
-    if (!SYRUP_USES.includes(use_of_syrup)) errors.push('use_of_syrup must be coffee, fruity, or other');
+    if (!use_of_syrup) errors.push('use_of_syrup is required');
+    if (use_of_syrup.length > 60) errors.push('use_of_syrup too long');
 
     const has_salt = !!body.has_salt;
     let salt_pct = Number(body.salt_pct || 0);
@@ -1120,6 +1127,332 @@ module.exports = function attach(app, deps) {
       `Sodium: ${f.sodium_mg} mg / serving\n` +
       `\n(Nutrition facts image will be generated in the Images ticket.)\n`;
     return intro + blocks + footer;
+  }
+
+  // ── Per-flavor listing content (Build B) ──────────────────────────────────
+  // Replaces the legacy flavor_listing_examples flow. Each flavor has 4
+  // variants of listing content (single, single+pump, 4-pack, 6-pack) that
+  // are auto-generated from its picked product type, then editable, then
+  // approved before channel tickets spawn.
+
+  const LISTING_VARIANTS = ['single', 'single_with_pump', '4_pack', '6_pack'];
+
+  // Substitute flavor data into a product-type template string. Preserves
+  // the user's xlsx notation: `---` (3+ dashes) → flavor name, `...-Pack`
+  // → pack size label, `(Naturally Flavored)` / `(Natural Flavors)` →
+  // stripped when the flavor is natural+artificial.
+  function substituteProductTypeText(text, f, packSize) {
+    let result = String(text || '');
+    // Flavor name — match 3 or more dashes. Done first so subsequent
+    // replacements don't interfere with surrounding context.
+    result = result.replace(/-{3,}/g, f.name || '');
+    // Pack size: literal "...-Pack" → "4-Pack" / "6-Pack" etc. Only fires
+    // for the packs variants; callers pass empty string otherwise so the
+    // marker stays for the user to edit if they want.
+    if (packSize) {
+      result = result.replace(/\.{3}-Pack/g, packSize);
+    }
+    // Naturally Flavored is only valid copy for natural flavors. For
+    // natural+artificial, strip the parenthetical (and the leading space
+    // if it leaves a double space).
+    if (f.flavor_type !== 'natural') {
+      result = result
+        .replace(/ ?\(Naturally Flavored\)/gi, '')
+        .replace(/ ?\(Natural Flavors,?\)/gi, '');
+    }
+    return result;
+  }
+
+  // Build the 4 listing variants for a flavor by substituting its data
+  // into the picked product type. Returns null when no product type is
+  // selected or the picked key doesn't exist in flavor_product_types yet
+  // (deleted by admin, etc.) — caller surfaces a clear error to the UI.
+  async function buildListingContentFromProductType(f) {
+    if (!f.use_of_syrup) return null;
+    const pt = await get(
+      'SELECT * FROM flavor_product_types WHERE key=? AND enabled=1',
+      f.use_of_syrup
+    );
+    if (!pt) return null;
+
+    const isSF = f.type === 'sugar_free';
+    const titleSingle = isSF ? pt.title_sf_single : pt.title_reg_single;
+    const titlePacks  = isSF ? pt.title_sf_packs  : pt.title_reg_packs;
+    const bullets     = safeJSON(isSF ? pt.bullets_sf_json : pt.bullets_reg_json, []);
+    const pumpSuffix  = pt.pump_title_suffix || 'With Pump';
+    const pumpExtra   = pt.bullet_pump_extra || '';
+    const description = pt.description || '';
+
+    const sub = (s, pack) => substituteProductTypeText(s, f, pack);
+
+    return [
+      {
+        listing_variant: 'single',
+        title: sub(titleSingle, ''),
+        bullets: bullets.map(b => sub(b, '')),
+        description: sub(description, ''),
+      },
+      {
+        listing_variant: 'single_with_pump',
+        title: (sub(titleSingle, '') + ' ' + pumpSuffix).trim().replace(/\s+/g, ' '),
+        bullets: [...bullets.map(b => sub(b, '')), sub(pumpExtra, '')].filter(Boolean),
+        description: sub(description, ''),
+      },
+      {
+        listing_variant: '4_pack',
+        title: sub(titlePacks, '4-Pack'),
+        bullets: bullets.map(b => sub(b, '4-Pack')),
+        description: sub(description, '4-Pack'),
+      },
+      {
+        listing_variant: '6_pack',
+        title: sub(titlePacks, '6-Pack'),
+        bullets: bullets.map(b => sub(b, '6-Pack')),
+        description: sub(description, '6-Pack'),
+      },
+    ];
+  }
+
+  function shapeListingContent(row) {
+    return {
+      id: row.id,
+      flavor_id: row.flavor_id,
+      listing_variant: row.listing_variant,
+      title: row.title || '',
+      bullets: safeJSON(row.bullets_json, []),
+      description: row.description || '',
+      approved: !!row.approved,
+      generated_at: row.generated_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  // GET /api/flavors2/:id/listing-content
+  //   Returns the 4 variants for this flavor. If they don't yet exist,
+  //   generates them from the picked product type and persists. If the
+  //   flavor has no product type set, returns { needs_setup: true }.
+  app.get('/api/flavors2/:id/listing-content', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+
+      let rows = await all(
+        `SELECT * FROM flavor_listing_content
+          WHERE flavor_id=? ORDER BY listing_variant ASC`,
+        id
+      );
+      if (rows.length === 0) {
+        const generated = await buildListingContentFromProductType(f);
+        if (!generated) {
+          return res.json({
+            needs_setup: true,
+            product_type_key: f.use_of_syrup || null,
+            variants: [],
+          });
+        }
+        for (const v of generated) {
+          await run(
+            `INSERT INTO flavor_listing_content
+              (flavor_id, listing_variant, title, bullets_json, description, approved)
+             VALUES (?,?,?,?,?,0)
+             ON CONFLICT (flavor_id, listing_variant) DO NOTHING`,
+            id, v.listing_variant, v.title, JSON.stringify(v.bullets), v.description
+          );
+        }
+        rows = await all(
+          `SELECT * FROM flavor_listing_content
+            WHERE flavor_id=? ORDER BY listing_variant ASC`,
+          id
+        );
+      }
+      res.json({
+        needs_setup: false,
+        product_type_key: f.use_of_syrup || null,
+        variants: rows.map(shapeListingContent),
+      });
+    } catch (e) {
+      console.error('[flavors2] listing-content get failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PATCH /api/flavors2/:id/listing-content/:variant
+  //   Updates one variant's title / bullets / description. Editing an
+  //   approved variant flips approved back to 0 — the user explicitly
+  //   re-approves after edits via POST .../approve-all.
+  app.patch('/api/flavors2/:id/listing-content/:variant', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const variant = String(req.params.variant || '');
+      if (!Number.isFinite(id) || !LISTING_VARIANTS.includes(variant)) {
+        return res.status(400).json({ error: 'Bad id or variant' });
+      }
+      const sets = []; const args = [];
+      if ('title' in req.body) {
+        sets.push('title=?'); args.push(String(req.body.title || '').slice(0, 1000));
+      }
+      if ('bullets' in req.body) {
+        let arr = req.body.bullets;
+        if (typeof arr === 'string') arr = arr.split('\n');
+        if (!Array.isArray(arr)) arr = [];
+        arr = arr.map(b => String(b || '').slice(0, 3000)).slice(0, 10);
+        sets.push('bullets_json=?'); args.push(JSON.stringify(arr));
+      }
+      if ('description' in req.body) {
+        sets.push('description=?'); args.push(String(req.body.description || '').slice(0, 10000));
+      }
+      if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
+      // Edits drop approval — caller re-approves via approve-all.
+      sets.push('approved=0');
+      sets.push(`updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
+      args.push(id, variant);
+      await run(
+        `UPDATE flavor_listing_content SET ${sets.join(',')}
+          WHERE flavor_id=? AND listing_variant=?`,
+        ...args
+      );
+      const row = await get(
+        'SELECT * FROM flavor_listing_content WHERE flavor_id=? AND listing_variant=?',
+        id, variant
+      );
+      if (!row) return res.status(404).json({ error: 'Variant not found' });
+      res.json(shapeListingContent(row));
+    } catch (e) {
+      console.error('[flavors2] listing-content patch failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/flavors2/:id/listing-content/regenerate
+  //   Discards all 4 variants and re-generates from the picked product
+  //   type. Used when the admin edited a product type and wants to pick
+  //   up the new template (or after switching product type on the flavor).
+  app.post('/api/flavors2/:id/listing-content/regenerate', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      const generated = await buildListingContentFromProductType(f);
+      if (!generated) {
+        return res.status(409).json({ error: 'Pick a product type on the flavor first.' });
+      }
+      await run('DELETE FROM flavor_listing_content WHERE flavor_id=?', id);
+      for (const v of generated) {
+        await run(
+          `INSERT INTO flavor_listing_content
+            (flavor_id, listing_variant, title, bullets_json, description, approved)
+           VALUES (?,?,?,?,?,0)`,
+          id, v.listing_variant, v.title, JSON.stringify(v.bullets), v.description
+        );
+      }
+      const rows = await all(
+        'SELECT * FROM flavor_listing_content WHERE flavor_id=? ORDER BY listing_variant ASC',
+        id
+      );
+      res.json({ variants: rows.map(shapeListingContent) });
+    } catch (e) {
+      console.error('[flavors2] listing-content regenerate failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/flavors2/:id/listing-content/approve-and-spawn
+  //   Marks all 4 variants approved and spawns one per-channel listing
+  //   ticket bundling the approved content. Replaces the older
+  //   generate-listings endpoint flow.
+  app.post('/api/flavors2/:id/listing-content/approve-and-spawn', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      if (!f.upc || !f.sku) {
+        return res.status(409).json({ error: 'Set UPC and SKU first.' });
+      }
+      const variants = await all(
+        'SELECT * FROM flavor_listing_content WHERE flavor_id=? ORDER BY listing_variant ASC',
+        id
+      );
+      if (variants.length !== 4) {
+        return res.status(409).json({ error: 'Generate the listing-content preview first.' });
+      }
+      const alreadyTickets = await get(
+        `SELECT COUNT(*) AS n FROM tickets
+          WHERE flavor_v2_id=? AND flavor_v2_step='listing_content' AND deleted_at IS NULL`,
+        id
+      );
+      if (Number(alreadyTickets?.n || 0) > 0) {
+        return res.status(409).json({ error: 'Listing-content tickets already exist. Delete them to regenerate.' });
+      }
+      const channels = await all(
+        'SELECT * FROM flavor_channels WHERE enabled=1 ORDER BY position ASC, id ASC'
+      );
+      if (!channels.length) {
+        return res.status(409).json({ error: 'No enabled channels. Add one in Settings → Channels first.' });
+      }
+
+      await run(
+        'UPDATE flavor_listing_content SET approved=1 WHERE flavor_id=?',
+        id
+      );
+
+      const shaped = variants.map(shapeListingContent);
+      const labels = {
+        single: 'Single (no pump)',
+        single_with_pump: 'Single with pump',
+        '4_pack': '4-pack',
+        '6_pack': '6-pack',
+      };
+      const created = [];
+      for (const channel of channels) {
+        const desc = buildChannelListingDescFromApproved(channel, f, shaped, labels);
+        const checklist = LISTING_VARIANTS.map(v => `${labels[v]} — content reviewed & published on ${channel.name}`);
+        const t = await insertPipelineTicket(f, {
+          step: 'listing_content',
+          title: `Listing content — ${f.name} on ${channel.name}`,
+          priority: 'Medium',
+          dept: 'Operations',
+          description: desc,
+          checklist,
+        }, req.session.userId);
+        created.push({ id: t.id, channel: channel.name });
+      }
+      res.status(201).json({ ok: true, tickets: created });
+    } catch (e) {
+      console.error('[flavors2] approve-and-spawn failed:', e.message);
+      res.status(500).json({ error: 'Could not spawn tickets — please retry.' });
+    }
+  });
+
+  function buildChannelListingDescFromApproved(channel, f, variants, labels) {
+    const lines = [
+      `APPROVED listing content for ${channel.name} — ${f.name}`,
+      '',
+      `Flavor: ${f.name} (${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'})`,
+      `UPC: ${f.upc}    SKU: ${f.sku}`,
+      channel.has_fba ? `Note: ${channel.name} has FBA + FBM — same content for both.` : '',
+      '',
+    ].filter(Boolean);
+    for (const v of variants) {
+      lines.push('────────────────────────────────────────────');
+      lines.push(`${(labels[v.listing_variant] || v.listing_variant).toUpperCase()}`);
+      lines.push('────────────────────────────────────────────');
+      lines.push('Title:');
+      lines.push('  ' + (v.title || '(empty)'));
+      lines.push('');
+      lines.push('Bullets:');
+      if (v.bullets.length) lines.push(...v.bullets.map(b => '  • ' + b));
+      else                  lines.push('  (none)');
+      lines.push('');
+      lines.push('Description:');
+      lines.push(v.description || '(empty)');
+      lines.push('');
+    }
+    lines.push('Tick each variant off below as it goes live on ' + channel.name + '.');
+    return lines.join('\n');
   }
 
   // POST /api/flavors2/:id/generate-listings

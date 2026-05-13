@@ -988,6 +988,56 @@ body {
   margin-top: 8px;
 }
 
+/* ── Listing content preview (Build B) ─────────────────────────────────── */
+.fv-lc-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--fv-panel-2);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 14px;
+}
+.fv-lc-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fv-text-2);
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.fv-lc-tab:hover { background: var(--fv-panel); color: var(--fv-text); }
+.fv-lc-tab.active { background: var(--fv-accent); color: #fff; }
+.fv-lc-tick {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px;
+  font-size: 10px;
+  background: #16a34a; color: #fff;
+  border-radius: 50%;
+}
+.fv-lc-tab.active .fv-lc-tick { background: #fff; color: var(--fv-accent); }
+.fv-lc-variant {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.fv-lc-variant-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px;
+  padding-top: 4px;
+}
+.fv-lc-actions {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--fv-border);
+}
+
 /* ── Listing-content actions on the detail page ────────────────────────── */
 .fv-listing-status {
   font-size: 12.5px;

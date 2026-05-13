@@ -19,6 +19,10 @@
     flavors: [],
     detailId: null,
     detail: null,       // last fetched single-flavor payload
+    productTypes: [],   // shared across wizard + settings + detail-preview
+    listingContent: null,  // { needs_setup, variants[] } for the detail view
+    listingTab: 'single',  // active tab inside the listing content section
+    listingSubmitting: false,  // tracks Approve-and-spawn submission
     wizard: defaultWizard(),
     settings: {
       tab: 'product-types',  // 'product-types' | 'channels' | 'examples'
@@ -47,6 +51,20 @@
     single_with_pump: 'Single with pump',
     '4_pack':         '4-pack',
     '6_pack':         '6-pack',
+  };
+  // Wizard step 5 icons per product-type key. New keys fall back to 🧪 so
+  // adding a product type in Settings doesn't break the wizard render.
+  const WIZARD_ICONS = {
+    coffee: '☕',
+    cocktails: '🍸',
+    fruit: '🍓',
+    lattes: '🥛',
+    smoothie: '🥤',
+    tea: '🍵',
+    unique: '✨',
+    coffee_cocktails: '🥃',
+    coffee_fruit: '🍒',
+    cocktails_fruit: '🍹',
   };
   const SYRUP_USE_LABELS = { coffee: 'Coffee', fruity: 'Fruity', other: 'Other' };
   const FLAVOR_TYPE_LABELS = {
@@ -93,7 +111,7 @@
       const r = await fetch('/api/auth/me');
       if (r.status === 401) { location.href = '/login.html'; return; }
       state.me = await r.json();
-      await loadFlavors();
+      await Promise.all([loadFlavors(), loadProductTypes()]);
       // Deep-link support: /flavors.html#42 opens flavor 42 directly. Ticket
       // descriptions link to this URL, so workers landing here from a UPC /
       // SKU ticket arrive on the right detail page.
@@ -104,6 +122,13 @@
     } catch (e) {
       $('#fv-app').innerHTML = errorBlock('Could not load Flavors. ' + (e.message || ''));
     }
+  }
+
+  async function loadProductTypes() {
+    try {
+      const r = await fetch('/api/flavors2/settings/product-types');
+      if (r.ok) state.productTypes = await r.json();
+    } catch (_) { /* leave empty — wizard shows fallback */ }
   }
 
   function onHashChange() {
@@ -136,6 +161,14 @@
       state.channelSkus = Array.isArray(arr) ? arr : [];
       if (state.view === 'detail' && state.detailId === id) render();
     }).catch(() => { state.channelSkus = []; });
+    // Auto-generated listing content (Build B). First fetch generates the
+    // 4 variants from the product type + flavor data and persists; later
+    // fetches return what's stored (possibly edited by the user).
+    state.listingContent = null;
+    fetch('/api/flavors2/' + id + '/listing-content').then(r2 => r2.ok ? r2.json() : null).then(data => {
+      state.listingContent = data;
+      if (state.view === 'detail' && state.detailId === id) render();
+    }).catch(() => { state.listingContent = null; });
   }
 
   // ── Render dispatcher ─────────────────────────────────────────────────────
@@ -335,16 +368,30 @@
             { value: 'natural_and_artificial', icon: '⚗️', label: 'Natural + Artificial',     sub: 'NATURAL AND ARTIFICIAL FLAVORS' },
           ])}
         `;
-      case 5:
+      case 5: {
+        // Source the 10 product types directly from flavor_product_types so
+        // edits in Settings → Product types flow through to the wizard
+        // without a code change. Falls back to the legacy 3-option list if
+        // the fetch failed (e.g. server still booting).
+        const types = (state.productTypes || []).filter(p => p.enabled);
+        const options = types.length
+          ? types.map(p => ({
+              value: p.key,
+              icon: WIZARD_ICONS[p.key] || '🧪',
+              label: p.name,
+              sub: '',
+            }))
+          : [
+              { value: 'coffee', icon: '☕', label: 'Coffee', sub: 'Latte, espresso, barista' },
+              { value: 'fruity', icon: '🍓', label: 'Fruity', sub: 'Soda, lemonade, mocktail' },
+              { value: 'other',  icon: '✨', label: 'Other',  sub: 'Dessert, baking, etc.' },
+            ];
         return `
-          <h2 class="fv-step-title">What's it used for?</h2>
-          <p class="fv-step-hint">Used to drive listing-content keywords later (e.g. coffee flavors lean into espresso vocabulary).</p>
-          ${optionCards('use_of_syrup', w.use_of_syrup, [
-            { value: 'coffee', icon: '☕', label: 'Coffee', sub: 'Latte, espresso, barista' },
-            { value: 'fruity', icon: '🍓', label: 'Fruity', sub: 'Soda, lemonade, mocktail' },
-            { value: 'other',  icon: '✨', label: 'Other',  sub: 'Dessert, baking, etc.' },
-          ])}
+          <h2 class="fv-step-title">What product type is this?</h2>
+          <p class="fv-step-hint">Drives the auto-generated listing title + bullets. Each option corresponds to one of your 10 templates in Settings → Product types — edits there feed back here automatically.</p>
+          ${optionCards('use_of_syrup', w.use_of_syrup, options)}
         `;
+      }
       case 6: {
         const hasSalt = w.has_salt === true;
         return `
@@ -524,30 +571,105 @@
   }
 
   function renderListingContentSection(f) {
-    const existing = (f.tickets || []).filter(t => t.flavor_v2_step === 'listing_content');
+    const existingTickets = (f.tickets || []).filter(t => t.flavor_v2_step === 'listing_content');
     const ready = f.upc && f.sku;
-    if (existing.length > 0) {
+    if (existingTickets.length > 0) {
       return `
         <div class="fv-detail-section">
           <div class="fv-section-label">Listing content</div>
           <div class="fv-listing-status">
-            <span>✓ ${existing.length} listing-content ticket${existing.length === 1 ? '' : 's'} generated.</span>
-            <span class="fv-muted" style="margin-left:6px">Delete them to regenerate after editing templates.</span>
+            <span>✓ ${existingTickets.length} listing-content ticket${existingTickets.length === 1 ? '' : 's'} generated.</span>
+            <span class="fv-muted" style="margin-left:6px">Delete them to revise and regenerate.</span>
           </div>
         </div>
       `;
     }
+    if (!ready) {
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Listing content</div>
+          <p class="fv-muted" style="font-size:12.5px;margin:0">
+            Fill in UPC + SKU above first — the generated copy embeds them.
+          </p>
+        </div>
+      `;
+    }
+    const lc = state.listingContent;
+    if (!lc) {
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Listing content</div>
+          <p class="fv-muted" style="font-size:12.5px;margin:0">Generating preview…</p>
+        </div>
+      `;
+    }
+    if (lc.needs_setup) {
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Listing content</div>
+          <div class="fv-error" style="margin:0">
+            This flavor's product type (<code>${escapeHtml(lc.product_type_key || '—')}</code>) doesn't exist in Settings → Product types. Add or rename it, then click <b>Regenerate</b> below.
+          </div>
+          <button class="fv-btn fv-btn-sec" data-act="regenerate-listing-content" style="margin-top:10px">Regenerate preview</button>
+        </div>
+      `;
+    }
+    const variants = lc.variants || [];
+    const activeTab = state.listingTab || 'single';
+    const active = variants.find(v => v.listing_variant === activeTab) || variants[0];
+    const allApproved = variants.length === 4 && variants.every(v => v.approved);
     return `
       <div class="fv-detail-section">
-        <div class="fv-section-label">Listing content</div>
-        <p class="fv-muted" style="font-size:12.5px;margin:0 0 10px">
-          ${ready
-            ? 'Generate one listing-content ticket per enabled channel. Each ticket gets all 4 variants (single, single+pump, 4-pack, 6-pack) with template substitution.'
-            : 'Fill in UPC + SKU above first — the generator embeds them in the listing copy.'}
+        <div class="fv-section-label">Listing content preview</div>
+        <p class="fv-muted" style="font-size:12.5px;margin:0 0 12px">
+          Pre-filled from your product-type template + flavor data. Edit any field — changes save when you blur or hit save below. <b>Approve & generate</b> spawns one ticket per enabled channel with all 4 variants embedded.
         </p>
-        <button class="fv-btn fv-btn-primary" data-act="open-generate-listings" ${ready ? '' : 'disabled'}>
-          📝 Generate listing content
-        </button>
+
+        <div class="fv-lc-tabs">
+          ${variants.map(v => `
+            <button class="fv-lc-tab ${activeTab === v.listing_variant ? 'active' : ''}" data-act="lc-tab" data-variant="${v.listing_variant}">
+              ${escapeHtml(LISTING_TYPE_LABELS[v.listing_variant] || v.listing_variant)}
+              ${v.approved ? '<span class="fv-lc-tick">✓</span>' : ''}
+            </button>
+          `).join('')}
+        </div>
+
+        ${active ? renderListingVariantEditor(active) : ''}
+
+        <div class="fv-lc-actions">
+          <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="regenerate-listing-content" title="Discard edits and re-run the template substitution">↻ Regenerate from template</button>
+          <button class="fv-btn fv-btn-primary"
+                  data-act="approve-and-spawn-listings"
+                  ${state.listingSubmitting ? 'disabled' : ''}>
+            ${state.listingSubmitting
+              ? 'Approving & spawning…'
+              : (allApproved ? '✓ Re-approve & generate listing tickets' : 'Approve & generate listing tickets')}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderListingVariantEditor(v) {
+    const bullets = Array.isArray(v.bullets) ? v.bullets : [];
+    return `
+      <div class="fv-lc-variant">
+        <div class="fv-field-row">
+          <label class="fv-label">Title</label>
+          <textarea class="fv-input" rows="2" data-lc-variant="${v.listing_variant}" data-lc-field="title">${escapeHtml(v.title)}</textarea>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-label">Bullets (one per line)</label>
+          <textarea class="fv-input fv-textarea" rows="${Math.max(8, bullets.length + 1)}" data-lc-variant="${v.listing_variant}" data-lc-field="bullets">${escapeHtml(bullets.join('\n'))}</textarea>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-label">Description</label>
+          <textarea class="fv-input fv-textarea" rows="6" data-lc-variant="${v.listing_variant}" data-lc-field="description">${escapeHtml(v.description)}</textarea>
+        </div>
+        <div class="fv-lc-variant-meta">
+          <span class="fv-muted">Status: ${v.approved ? '<b>Approved</b>' : 'Pending approval'}</span>
+          <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-listing-variant" data-variant="${v.listing_variant}">Save this variant</button>
+        </div>
       </div>
     `;
   }
@@ -1532,6 +1654,13 @@
       if (name === 'open-generate-listings')   return openGenerateListings();
       if (name === 'close-generate-modal')     { state.generateListingsModal = null; return render(); }
       if (name === 'confirm-generate-listings') return confirmGenerateListings();
+      if (name === 'lc-tab') {
+        state.listingTab = act.getAttribute('data-variant');
+        return render();
+      }
+      if (name === 'save-listing-variant')      return saveListingVariant(act.getAttribute('data-variant'));
+      if (name === 'regenerate-listing-content') return regenerateListingContent();
+      if (name === 'approve-and-spawn-listings') return approveAndSpawnListings();
       if (name === 'open-generate-images')         return openGenerateImages();
       if (name === 'close-generate-images-modal')  { state.generateImagesModal = null; return render(); }
       if (name === 'confirm-generate-images')      return confirmGenerateImages();
@@ -1606,7 +1735,7 @@
       case 2: return w.type ? '' : 'Pick regular or sugar-free.';
       case 3: return w.color ? '' : 'Pick a color (or "none").';
       case 4: return w.flavor_type ? '' : 'Pick a flavor type.';
-      case 5: return w.use_of_syrup ? '' : 'Pick a use case.';
+      case 5: return w.use_of_syrup ? '' : 'Pick a product type.';
       case 6:
         if (w.has_salt === null) return 'Does this flavor have salt?';
         if (w.has_salt && !(Number(w.salt_pct) > 0)) return 'Enter a salt % greater than 0.';
@@ -1984,7 +2113,75 @@
     } catch (e) { alert('Could not save: ' + (e.message || '')); }
   }
 
-  // ── Generate listing-content tickets ──────────────────────────────────────
+  // ── Listing content preview / approve (Build B) ──────────────────────────
+  // Read every input for this variant from the DOM (textareas only auto-
+  // commit on blur; here we collect them all on Save).
+  async function saveListingVariant(variant) {
+    if (!state.detailId || !variant) return;
+    const titleEl = document.querySelector(`textarea[data-lc-variant="${variant}"][data-lc-field="title"]`);
+    const bulletsEl = document.querySelector(`textarea[data-lc-variant="${variant}"][data-lc-field="bullets"]`);
+    const descEl = document.querySelector(`textarea[data-lc-variant="${variant}"][data-lc-field="description"]`);
+    const body = {};
+    if (titleEl)   body.title = titleEl.value;
+    if (bulletsEl) body.bullets = bulletsEl.value.split('\n');
+    if (descEl)    body.description = descEl.value;
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/${variant}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      // Patch in place so the editor doesn't lose other unsaved tabs.
+      if (state.listingContent && state.listingContent.variants) {
+        const idx = state.listingContent.variants.findIndex(v => v.listing_variant === variant);
+        if (idx !== -1) state.listingContent.variants[idx] = data;
+      }
+      render();
+      flashToast(`${LISTING_TYPE_LABELS[variant] || variant} saved.`);
+    } catch (e) { alert('Could not save: ' + (e.message || '')); }
+  }
+
+  async function regenerateListingContent() {
+    if (!state.detailId) return;
+    if (!confirm('Discard the current edits and regenerate from the product-type template?')) return;
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/regenerate`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Regenerate failed');
+      state.listingContent = { needs_setup: false, product_type_key: state.detail?.use_of_syrup || null, variants: data.variants };
+      render();
+      flashToast('Listing content regenerated from template.');
+    } catch (e) { alert('Could not regenerate: ' + (e.message || '')); }
+  }
+
+  async function approveAndSpawnListings() {
+    if (!state.detailId || state.listingSubmitting) return;
+    state.listingSubmitting = true;
+    render();
+    try {
+      // Save the currently-visible tab first so its in-flight edits are
+      // included in the spawn. Other tabs were saved by the user explicitly.
+      const activeTab = state.listingTab || 'single';
+      const hasUnsavedActive = !!document.querySelector(`textarea[data-lc-variant="${activeTab}"]`);
+      if (hasUnsavedActive) await saveListingVariant(activeTab);
+
+      const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/approve-and-spawn`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Spawn failed');
+      await loadFlavor(state.detailId);
+      state.listingSubmitting = false;
+      render();
+      flashToast(`Approved & spawned ${data.tickets.length} listing ticket${data.tickets.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      state.listingSubmitting = false;
+      render();
+      alert('Could not approve & spawn: ' + (e.message || ''));
+    }
+  }
+
+  // ── Generate listing-content tickets (legacy — kept for the old modal) ────
   // The modal does a confirmation + a live preview of which channels get
   // tickets and which listing types have templates (so the user can fix
   // gaps in Settings before committing). The server is authoritative for
