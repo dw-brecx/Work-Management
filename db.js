@@ -414,6 +414,27 @@ async function init() {
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_content_unique
        ON flavor_listing_content (flavor_id, listing_variant)`,
+    // Variation listings — parent listings on Amazon / Walmart / Custom that
+    // each new flavor gets added to as a child variant once inventory
+    // arrives. Filters say which flavors apply: flavor_type_filter narrows
+    // to regular / sugar_free / any, listing_type_filter narrows to a
+    // specific pack/pump variant or any. external_id holds the parent
+    // ASIN / SKU / URL the worker needs in NineYard or the marketplace UI.
+    `CREATE TABLE IF NOT EXISTS flavor_variation_listings (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER REFERENCES flavor_channels(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      flavor_type_filter TEXT NOT NULL DEFAULT 'any',
+      listing_type_filter TEXT NOT NULL DEFAULT 'any',
+      external_id TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_variation_listings_channel
+       ON flavor_variation_listings (channel_id, position)`,
     // Channel SKUs — generated from the per-channel sku_pattern by
     // /api/flavors2/:id/generate-channel-skus. One row per
     // (flavor × channel × listing_type × fulfillment). nineyard_sku is

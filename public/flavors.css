@@ -1131,6 +1131,40 @@ body {
   color: var(--fv-text-2);
 }
 
+/* ── Variation listings ────────────────────────────────────────────────── */
+.fv-var-channel { margin-bottom: 20px; }
+.fv-var-channel:last-child { margin-bottom: 0; }
+.fv-var-channel-head {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fv-text-3);
+  padding: 6px 0;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--fv-border);
+}
+
+.fv-variation-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fv-variation-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--fv-panel-2);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.fv-variation-name { display: flex; align-items: center; gap: 8px; }
+
 /* ── Channel SKU table on the detail page ──────────────────────────────── */
 .fv-sku-details {
   margin-top: 10px;

@@ -2028,6 +2028,264 @@ module.exports = function attach(app, deps) {
     );
   }
 
+  // ── Variation listings ────────────────────────────────────────────────────
+  // Parent listings on Amazon / Walmart / Custom that each new flavor gets
+  // added to as a child variant when inventory arrives. Settings CRUD +
+  // per-flavor match + ticket spawn live here.
+  const VARIATION_FLAVOR_FILTERS = ['regular', 'sugar_free', 'any'];
+  const VARIATION_LISTING_FILTERS = ['single', 'single_with_pump', '4_pack', '6_pack', 'any'];
+
+  app.get('/api/flavors2/settings/variation-listings', requireAuth, async (req, res) => {
+    try {
+      const rows = await all(
+        `SELECT v.*, c.name AS channel_name, c.code AS channel_code, c.has_fba
+           FROM flavor_variation_listings v
+           LEFT JOIN flavor_channels c ON c.id = v.channel_id
+          ORDER BY c.position ASC, c.id ASC, v.position ASC, v.id ASC`
+      );
+      res.json(rows.map(shapeVariationListing));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/settings/variation-listings', requireAdmin, async (req, res) => {
+    try {
+      const { errors, clean } = validateVariation(req.body || {});
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      const maxPos = await get(
+        'SELECT MAX(position) AS p FROM flavor_variation_listings WHERE channel_id=?',
+        clean.channel_id
+      );
+      const pos = Number(maxPos?.p || 0) + 1;
+      const ins = await run(
+        `INSERT INTO flavor_variation_listings
+           (channel_id, name, flavor_type_filter, listing_type_filter,
+            external_id, notes, enabled, position)
+         VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+        clean.channel_id, clean.name, clean.flavor_type_filter, clean.listing_type_filter,
+        clean.external_id, clean.notes, clean.enabled ? 1 : 0, pos
+      );
+      const row = await get(
+        `SELECT v.*, c.name AS channel_name, c.code AS channel_code, c.has_fba
+           FROM flavor_variation_listings v
+           LEFT JOIN flavor_channels c ON c.id = v.channel_id
+          WHERE v.id=?`, ins.lastInsertRowid
+      );
+      res.status(201).json(shapeVariationListing(row));
+    } catch (e) {
+      console.error('[flavors2] variation create failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch('/api/flavors2/settings/variation-listings/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get('SELECT * FROM flavor_variation_listings WHERE id=?', id);
+      if (!existing) return res.status(404).json({ error: 'Not found' });
+      const merged = {
+        channel_id:           'channel_id'           in req.body ? req.body.channel_id           : existing.channel_id,
+        name:                 'name'                 in req.body ? req.body.name                 : existing.name,
+        flavor_type_filter:   'flavor_type_filter'   in req.body ? req.body.flavor_type_filter   : existing.flavor_type_filter,
+        listing_type_filter:  'listing_type_filter'  in req.body ? req.body.listing_type_filter  : existing.listing_type_filter,
+        external_id:          'external_id'          in req.body ? req.body.external_id          : existing.external_id,
+        notes:                'notes'                in req.body ? req.body.notes                : existing.notes,
+        enabled:              'enabled'              in req.body ? !!req.body.enabled            : !!existing.enabled,
+      };
+      const { errors, clean } = validateVariation(merged);
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      await run(
+        `UPDATE flavor_variation_listings SET
+           channel_id=?, name=?, flavor_type_filter=?, listing_type_filter=?,
+           external_id=?, notes=?, enabled=?,
+           updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id=?`,
+        clean.channel_id, clean.name, clean.flavor_type_filter, clean.listing_type_filter,
+        clean.external_id, clean.notes, clean.enabled ? 1 : 0,
+        id
+      );
+      const row = await get(
+        `SELECT v.*, c.name AS channel_name, c.code AS channel_code, c.has_fba
+           FROM flavor_variation_listings v
+           LEFT JOIN flavor_channels c ON c.id = v.channel_id
+          WHERE v.id=?`, id
+      );
+      res.json(shapeVariationListing(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/flavors2/settings/variation-listings/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      await run('DELETE FROM flavor_variation_listings WHERE id=?', id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  function validateVariation(body) {
+    const errors = [];
+    const channel_id = Number(body.channel_id);
+    if (!Number.isFinite(channel_id) || channel_id <= 0) errors.push('channel_id is required');
+    const name = String(body.name || '').trim();
+    if (!name) errors.push('name is required');
+    if (name.length > 160) errors.push('name too long');
+    const flavor_type_filter = String(body.flavor_type_filter || 'any').trim();
+    if (!VARIATION_FLAVOR_FILTERS.includes(flavor_type_filter)) {
+      errors.push('flavor_type_filter must be regular, sugar_free, or any');
+    }
+    const listing_type_filter = String(body.listing_type_filter || 'any').trim();
+    if (!VARIATION_LISTING_FILTERS.includes(listing_type_filter)) {
+      errors.push('listing_type_filter must be single / single_with_pump / 4_pack / 6_pack / any');
+    }
+    return {
+      errors,
+      clean: {
+        channel_id, name, flavor_type_filter, listing_type_filter,
+        external_id: String(body.external_id || '').trim().slice(0, 200),
+        notes: String(body.notes || '').slice(0, 2000),
+        enabled: !!body.enabled,
+      },
+    };
+  }
+
+  function shapeVariationListing(row) {
+    return {
+      id: row.id,
+      channel_id: row.channel_id,
+      channel_name: row.channel_name || '',
+      channel_code: row.channel_code || '',
+      channel_has_fba: !!row.has_fba,
+      name: row.name,
+      flavor_type_filter: row.flavor_type_filter || 'any',
+      listing_type_filter: row.listing_type_filter || 'any',
+      external_id: row.external_id || '',
+      notes: row.notes || '',
+      enabled: !!row.enabled,
+      position: row.position,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  // Match all enabled variation listings for a given flavor + channel SKUs.
+  // Returns an array of { variation, skus: [...] } pairs, where skus is the
+  // subset of the flavor's channel_skus that fall under this variation
+  // (same channel + listing_type matches the filter).
+  async function matchVariationsForFlavor(flavorId) {
+    const f = await get('SELECT * FROM flavors_v2 WHERE id=?', flavorId);
+    if (!f) return [];
+    const allVariations = await all(
+      `SELECT v.*, c.name AS channel_name, c.code AS channel_code, c.has_fba
+         FROM flavor_variation_listings v
+         LEFT JOIN flavor_channels c ON c.id = v.channel_id
+        WHERE v.enabled=1
+        ORDER BY c.position ASC, v.position ASC, v.id ASC`
+    );
+    const flavorType = f.type;  // 'regular' | 'sugar_free'
+    const matches = [];
+    for (const v of allVariations) {
+      if (v.flavor_type_filter !== 'any' && v.flavor_type_filter !== flavorType) continue;
+      // Pull channel SKUs on this channel that match the listing_type filter.
+      const sql = v.listing_type_filter === 'any'
+        ? 'SELECT * FROM flavor_channel_skus WHERE flavor_id=? AND channel_id=? ORDER BY listing_type ASC, fulfillment ASC'
+        : 'SELECT * FROM flavor_channel_skus WHERE flavor_id=? AND channel_id=? AND listing_type=? ORDER BY listing_type ASC, fulfillment ASC';
+      const args = v.listing_type_filter === 'any'
+        ? [flavorId, v.channel_id]
+        : [flavorId, v.channel_id, v.listing_type_filter];
+      const skus = await all(sql, ...args);
+      if (skus.length === 0) continue;  // flavor wasn't launched on this channel — skip
+      matches.push({ variation: shapeVariationListing(v), skus });
+    }
+    return matches;
+  }
+
+  app.get('/api/flavors2/:id/variation-matches', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const matches = await matchVariationsForFlavor(id);
+      res.json(matches.map(m => ({
+        variation: m.variation,
+        sku_count: m.skus.length,
+        skus: m.skus.map(s => ({
+          listing_type: s.listing_type,
+          fulfillment: s.fulfillment || '',
+          channel_sku: s.channel_sku,
+        })),
+      })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/:id/generate-variation-ticket', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      const already = await get(
+        `SELECT COUNT(*) AS n FROM tickets
+          WHERE flavor_v2_id=? AND flavor_v2_step='variation_listing' AND deleted_at IS NULL`,
+        id
+      );
+      if (Number(already?.n || 0) > 0) {
+        return res.status(409).json({ error: 'Variation-listing ticket already exists. Delete it to regenerate.' });
+      }
+      const matches = await matchVariationsForFlavor(id);
+      if (!matches.length) {
+        return res.status(409).json({ error: 'No matching variation listings. Add some in Settings → Variations, or generate channel SKUs first.' });
+      }
+
+      // Build description with a section per variation.
+      const lines = [
+        `Add ${f.name} to the variation listings below. For each, log into the`,
+        `channel's catalog UI (or NineYard for Custom) and attach the listed`,
+        `child SKUs to the parent ASIN / variation ID.`,
+        '',
+        `Flavor: ${f.name} (${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'})`,
+        `UPC: ${f.upc || '(missing)'}    Base SKU: ${f.sku || '(missing)'}`,
+        '',
+      ];
+      const checklist = [];
+      const labels = {
+        single: 'Single (no pump)',
+        single_with_pump: 'Single with pump',
+        '4_pack': '4-pack',
+        '6_pack': '6-pack',
+      };
+      for (const m of matches) {
+        const v = m.variation;
+        lines.push('────────────────────────────────────────────');
+        lines.push(`${v.channel_name} — ${v.name}`);
+        lines.push('────────────────────────────────────────────');
+        lines.push(`Parent ID: ${v.external_id || '(none set — fill in Settings → Variations)'}`);
+        if (v.notes) lines.push(`Notes: ${v.notes}`);
+        lines.push(`Child SKUs to add (${m.skus.length}):`);
+        for (const s of m.skus) {
+          const ff = s.fulfillment ? ` (${(s.fulfillment).toUpperCase()})` : '';
+          lines.push(`  • ${s.channel_sku}${ff}  [${labels[s.listing_type] || s.listing_type}]`);
+        }
+        lines.push('');
+        checklist.push(`${v.channel_name} — ${v.name}`);
+      }
+      lines.push('Tick each variation off below as the flavor is attached.');
+
+      const ticket = await insertPipelineTicket(f, {
+        step: 'variation_listing',
+        title: `Add ${f.name} to variation listings`,
+        priority: 'Medium',
+        dept: 'Operations',
+        description: lines.join('\n'),
+        checklist,
+      }, req.session.userId);
+
+      res.status(201).json({ ok: true, ticket: { id: ticket.id }, matchCount: matches.length });
+    } catch (e) {
+      console.error('[flavors2] generate-variation-ticket failed:', e.message);
+      res.status(500).json({ error: 'Could not generate ticket — please retry.' });
+    }
+  });
+
   // ── Hook exposed to server.js's PUT /api/tickets ──────────────────────────
   // Called when a ticket transitions to Closed. If the ticket is part of the
   // label-design step of a flavor pipeline, we spawn the follow-up label

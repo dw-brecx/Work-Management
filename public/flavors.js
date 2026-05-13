@@ -25,11 +25,13 @@
     listingSubmitting: false,  // tracks Approve-and-spawn submission
     wizard: defaultWizard(),
     settings: {
-      tab: 'product-types',  // 'product-types' | 'channels' | 'examples'
+      tab: 'product-types',  // 'product-types' | 'channels' | 'variations' | 'examples'
       channels: [],
       examples: [],
       productTypes: [],
+      variations: [],
       expandedProductType: null,  // id of the product type whose card is expanded
+      editingVariation: null,     // null = list view; object = new/edit form
       listingTypes: ['single', 'single_with_pump', '4_pack', '6_pack'],
       editingExample: null,   // null = list view; object = editor open
       loading: false,
@@ -44,6 +46,9 @@
     generateChannelSkusModal: null,
     // last fetched channel-SKU list for the current flavor (display only)
     channelSkus: [],
+    // Variation listing matches for the current flavor (loaded lazily).
+    variationMatches: [],
+    variationSubmitting: false,
   };
 
   const LISTING_TYPE_LABELS = {
@@ -169,6 +174,15 @@
       state.listingContent = data;
       if (state.view === 'detail' && state.detailId === id) render();
     }).catch(() => { state.listingContent = null; });
+    // Variation listings — only meaningful once channel SKUs exist, but
+    // we fire the fetch unconditionally; the server returns [] when no
+    // match. Empty array → section shows "no matches" hint with link to
+    // Settings → Variations.
+    state.variationMatches = [];
+    fetch('/api/flavors2/' + id + '/variation-matches').then(r3 => r3.ok ? r3.json() : []).then(arr => {
+      state.variationMatches = Array.isArray(arr) ? arr : [];
+      if (state.view === 'detail' && state.detailId === id) render();
+    }).catch(() => { state.variationMatches = []; });
   }
 
   // ── Render dispatcher ─────────────────────────────────────────────────────
@@ -478,6 +492,7 @@
       ebc: 'EBC',
       channel_launch: 'Channel',
       sku_mapping: 'SKU Map',
+      variation_listing: 'Variations',
     }[step] || step;
   }
 
@@ -493,7 +508,63 @@
   function renderListingActions(f) {
     return renderListingContentSection(f) +
            renderImageTicketsSection(f) +
-           renderChannelSkusSection(f);
+           renderChannelSkusSection(f) +
+           renderVariationListingsSection(f);
+  }
+
+  function renderVariationListingsSection(f) {
+    // Only show this section after channel SKUs exist — variations are
+    // about attaching channel SKUs to parent listings, so they're
+    // meaningless beforehand.
+    const channelSkus = state.channelSkus || [];
+    if (channelSkus.length === 0) return '';
+    const existing = (f.tickets || []).filter(t => t.flavor_v2_step === 'variation_listing');
+    if (existing.length > 0) {
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Variation listings</div>
+          <div class="fv-listing-status">
+            <span>✓ Variation-listing ticket generated.</span>
+            <span class="fv-muted" style="margin-left:6px">Delete it to regenerate after editing variations.</span>
+          </div>
+        </div>
+      `;
+    }
+    const matches = state.variationMatches || [];
+    if (matches.length === 0) {
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Variation listings</div>
+          <p class="fv-muted" style="font-size:12.5px;margin:0">
+            No variation listings match this flavor. Add some in Settings → Variation listings — typically one per parent listing you maintain (e.g. Amazon parent ASINs grouped by REG/SF + pump/no-pump, plus your Custom rollups for REG and SF).
+          </p>
+        </div>
+      `;
+    }
+    const totalSkus = matches.reduce((sum, m) => sum + (m.sku_count || 0), 0);
+    return `
+      <div class="fv-detail-section">
+        <div class="fv-section-label">Variation listings</div>
+        <p class="fv-muted" style="font-size:12.5px;margin:0 0 10px">
+          When inventory arrives, attach this flavor's channel SKUs to the parent listings below.
+          <b>${matches.length}</b> variation${matches.length === 1 ? '' : 's'} match this flavor (${totalSkus} child SKU${totalSkus === 1 ? '' : 's'} to attach in total).
+        </p>
+        <ul class="fv-variation-list">
+          ${matches.map(m => `
+            <li>
+              <span class="fv-variation-name">
+                <span class="fv-meta-pill">${escapeHtml(m.variation.channel_name)}</span>
+                ${escapeHtml(m.variation.name)}
+              </span>
+              <span class="fv-muted" style="font-size:11.5px">${m.sku_count} SKU${m.sku_count === 1 ? '' : 's'}${m.variation.external_id ? ' · ' + escapeHtml(m.variation.external_id) : ''}</span>
+            </li>
+          `).join('')}
+        </ul>
+        <button class="fv-btn fv-btn-primary" data-act="generate-variation-ticket" ${state.variationSubmitting ? 'disabled' : ''}>
+          ${state.variationSubmitting ? 'Spawning ticket…' : '🔗 Generate variation-listing ticket'}
+        </button>
+      </div>
+    `;
   }
 
   function renderChannelSkusSection(f) {
@@ -842,11 +913,13 @@
         <div class="fv-settings-tabs">
           <button class="fv-stab ${s.tab === 'product-types' ? 'active' : ''}" data-act="settings-tab" data-tab="product-types">Product types</button>
           <button class="fv-stab ${s.tab === 'channels' ? 'active' : ''}" data-act="settings-tab" data-tab="channels">Channels</button>
+          <button class="fv-stab ${s.tab === 'variations' ? 'active' : ''}" data-act="settings-tab" data-tab="variations">Variation listings</button>
           <button class="fv-stab ${s.tab === 'examples' ? 'active' : ''}" data-act="settings-tab" data-tab="examples">Listing examples (legacy)</button>
         </div>
         <div class="fv-settings-body">
           ${s.tab === 'product-types' ? renderSettingsProductTypes()
             : s.tab === 'channels'    ? renderSettingsChannels()
+            : s.tab === 'variations'  ? renderSettingsVariations()
             :                            renderSettingsExamples()}
         </div>
       </div>
@@ -970,6 +1043,142 @@
           <textarea class="fv-input fv-textarea" rows="${Math.max(8, bullets.length + 1)}" data-pt-id="${pt.id}" data-pt-field="bullets_${variant}">${escapeHtml(bullets.join('\n'))}</textarea>
         </div>
       </fieldset>
+    `;
+  }
+
+  // ── Settings — Variation listings tab ────────────────────────────────────
+  // Parent listings on Amazon / Walmart / Custom that flavors get added to
+  // as child variants when inventory arrives. Filters control which flavors
+  // match: regular vs sugar_free, and which listing-type slot (single,
+  // single+pump, 4-pack, 6-pack, or any).
+  function renderSettingsVariations() {
+    const s = state.settings;
+    if (s.editingVariation) return renderVariationEditor(s.editingVariation);
+    const rows = s.variations || [];
+    // Group by channel for compact display.
+    const byChannel = new Map();
+    for (const v of rows) {
+      const key = v.channel_name || '(no channel)';
+      if (!byChannel.has(key)) byChannel.set(key, []);
+      byChannel.get(key).push(v);
+    }
+    return `
+      <div class="fv-settings-head">
+        <div>
+          <h2>Variation listings</h2>
+          <p class="fv-muted">
+            Parent listings that exist on each channel (Amazon parent ASINs, Walmart variations, Custom rollups). When inventory arrives for a new flavor, the app spawns one ticket listing every variation this flavor should be added to — based on its REG/SF + the listing type each variation covers.
+          </p>
+        </div>
+        <button class="fv-btn fv-btn-primary" data-act="add-variation">+ Add variation listing</button>
+      </div>
+      ${rows.length === 0
+        ? `<div class="fv-empty">No variation listings yet. Add one per existing parent listing you maintain — e.g. "Amazon — Reg coffee — Single with pump", "Custom — All sugar-free flavors".</div>`
+        : Array.from(byChannel.entries()).map(([channelName, list]) => `
+            <div class="fv-var-channel">
+              <div class="fv-var-channel-head">${escapeHtml(channelName)}</div>
+              <table class="fv-table">
+                <thead><tr>
+                  <th>Name</th><th>Flavor type</th><th>Listing type</th><th>Parent ID</th><th>Enabled</th><th></th>
+                </tr></thead>
+                <tbody>
+                  ${list.map(v => `
+                    <tr>
+                      <td>${escapeHtml(v.name)}${v.notes ? `<div class="fv-muted" style="font-size:11px;margin-top:2px">${escapeHtml(v.notes)}</div>` : ''}</td>
+                      <td>${variationFilterLabel('flavor', v.flavor_type_filter)}</td>
+                      <td>${variationFilterLabel('listing', v.listing_type_filter)}</td>
+                      <td><code>${escapeHtml(v.external_id || '—')}</code></td>
+                      <td>${v.enabled ? '<span class="fv-meta-pill">Enabled</span>' : '<span class="fv-meta-pill" style="color:#a16207">Disabled</span>'}</td>
+                      <td class="fv-row-actions">
+                        <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="edit-variation" data-id="${v.id}">Edit</button>
+                        <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-variation" data-id="${v.id}">Delete</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `).join('')
+      }
+    `;
+  }
+
+  function variationFilterLabel(kind, val) {
+    if (val === 'any') return '<span class="fv-muted">Any</span>';
+    if (kind === 'flavor') {
+      return val === 'regular' ? 'Regular' : 'Sugar-Free';
+    }
+    return escapeHtml(LISTING_TYPE_LABELS[val] || val);
+  }
+
+  function renderVariationEditor(v) {
+    const channels = state.settings.channels || [];
+    const FLAVOR_FILTERS = [
+      { value: 'any',         label: 'Any flavor type' },
+      { value: 'regular',     label: 'Regular only' },
+      { value: 'sugar_free',  label: 'Sugar-Free only' },
+    ];
+    const LISTING_FILTERS = [
+      { value: 'any',               label: 'Any listing type' },
+      { value: 'single',            label: 'Single (no pump) only' },
+      { value: 'single_with_pump',  label: 'Single with pump only' },
+      { value: '4_pack',            label: '4-pack only' },
+      { value: '6_pack',            label: '6-pack only' },
+    ];
+    return `
+      <div class="fv-settings-head">
+        <div>
+          <h2>${v.id ? 'Edit variation listing' : 'New variation listing'}</h2>
+          <p class="fv-muted">
+            Defines a parent listing flavors will be added to as child variants when inventory arrives. The filters decide which flavors match.
+          </p>
+        </div>
+        <div class="fv-row-actions">
+          <button class="fv-btn fv-btn-sec" data-act="cancel-variation">Cancel</button>
+          <button class="fv-btn fv-btn-primary" data-act="save-variation">${v.id ? 'Save changes' : 'Create variation'}</button>
+        </div>
+      </div>
+      <div class="fv-example-form" style="max-width:640px">
+        <div class="fv-field-row">
+          <label class="fv-label">Name</label>
+          <input class="fv-input" data-vr-field="name" value="${escapeAttr(v.name || '')}" placeholder="e.g. Amazon — Reg coffee — Single with pump"/>
+        </div>
+        <div class="fv-example-row">
+          <div class="fv-field-row">
+            <label class="fv-label">Channel</label>
+            <select class="fv-input" data-vr-field="channel_id">
+              <option value="">— pick a channel —</option>
+              ${channels.map(c => `<option value="${c.id}" ${Number(v.channel_id) === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fv-field-row">
+            <label class="fv-label">Flavor-type filter</label>
+            <select class="fv-input" data-vr-field="flavor_type_filter">
+              ${FLAVOR_FILTERS.map(f => `<option value="${f.value}" ${v.flavor_type_filter === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="fv-field-row">
+            <label class="fv-label">Listing-type filter</label>
+            <select class="fv-input" data-vr-field="listing_type_filter">
+              ${LISTING_FILTERS.map(f => `<option value="${f.value}" ${v.listing_type_filter === f.value ? 'selected' : ''}>${f.label}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-label">Parent ID <span class="fv-muted">(ASIN, parent SKU, listing URL — whatever the worker needs)</span></label>
+          <input class="fv-input" data-vr-field="external_id" value="${escapeAttr(v.external_id || '')}" placeholder="e.g. B0ABC123 or https://walmart.com/ip/12345"/>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-label">Notes for the worker</label>
+          <textarea class="fv-input fv-textarea" rows="3" data-vr-field="notes" placeholder="Anything the worker needs to know when attaching SKUs to this parent.">${escapeHtml(v.notes || '')}</textarea>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-toggle" style="font-size:13px">
+            <input type="checkbox" data-vr-field="enabled" ${v.enabled !== false ? 'checked' : ''}/>
+            <span>Enabled (matches will appear in flavor variation tickets)</span>
+          </label>
+        </div>
+      </div>
     `;
   }
 
@@ -1651,6 +1860,25 @@
         return render();
       }
       if (name === 'save-pt') return saveProductType(Number(act.getAttribute('data-id')));
+      if (name === 'add-variation') {
+        state.settings.editingVariation = blankVariation();
+        return render();
+      }
+      if (name === 'edit-variation') {
+        const id = Number(act.getAttribute('data-id'));
+        const v = (state.settings.variations || []).find(x => x.id === id);
+        if (v) {
+          state.settings.editingVariation = { ...v };
+          render();
+        }
+        return;
+      }
+      if (name === 'cancel-variation') {
+        state.settings.editingVariation = null;
+        return render();
+      }
+      if (name === 'save-variation') return saveVariation();
+      if (name === 'delete-variation') return deleteVariation(Number(act.getAttribute('data-id')));
       if (name === 'add-channel')     return addChannel();
       if (name === 'save-channel')    return saveChannel(Number(act.getAttribute('data-channel-id')));
       if (name === 'delete-channel')  return deleteChannel(Number(act.getAttribute('data-channel-id')));
@@ -1703,6 +1931,7 @@
       if (name === 'open-generate-channel-skus')         return openGenerateChannelSkus();
       if (name === 'close-generate-channel-skus-modal')  { state.generateChannelSkusModal = null; return render(); }
       if (name === 'confirm-generate-channel-skus')      return confirmGenerateChannelSkus();
+      if (name === 'generate-variation-ticket')          return generateVariationTicket();
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
     // depends on the card's data-field on its parent .fv-options container.
@@ -1725,6 +1954,19 @@
   }
 
   function onInput(e) {
+    // Variation editor — same pattern as the example editor: capture into
+    // state.settings.editingVariation so unsaved values survive a re-render
+    // (e.g. when the user switches the channel dropdown, which triggers
+    // an onChange that re-renders).
+    const vrField = e.target.getAttribute && e.target.getAttribute('data-vr-field');
+    if (vrField && state.settings.editingVariation) {
+      const v = e.target;
+      state.settings.editingVariation[vrField] =
+        v.type === 'checkbox' ? v.checked :
+        v.tagName === 'SELECT' && vrField === 'channel_id' ? (v.value ? Number(v.value) : null) :
+        v.value;
+      return;
+    }
     // Example editor fields — captured into state.settings.editingExample
     // so the unsaved values survive a re-render (e.g. when the user clicks
     // a placeholder, which doesn't have an explicit save step).
@@ -1751,6 +1993,15 @@
     const ex = e.target.getAttribute && e.target.getAttribute('data-ex-field');
     if (ex && state.settings.editingExample) {
       state.settings.editingExample[ex] = e.target.value;
+    }
+    // Variation editor <select> + checkbox change events.
+    const vr = e.target.getAttribute && e.target.getAttribute('data-vr-field');
+    if (vr && state.settings.editingVariation) {
+      const v = e.target;
+      state.settings.editingVariation[vr] =
+        v.type === 'checkbox' ? v.checked :
+        v.tagName === 'SELECT' && vr === 'channel_id' ? (v.value ? Number(v.value) : null) :
+        v.value;
     }
   }
 
@@ -1949,16 +2200,20 @@
   }
 
   async function loadSettings() {
-    const [chRes, exRes, ltRes, ptRes] = await Promise.all([
+    const [chRes, exRes, ltRes, ptRes, vrRes] = await Promise.all([
       fetch('/api/flavors2/settings/channels'),
       fetch('/api/flavors2/settings/examples'),
       fetch('/api/flavors2/settings/listing-types'),
       fetch('/api/flavors2/settings/product-types'),
+      fetch('/api/flavors2/settings/variation-listings'),
     ]);
-    if (!chRes.ok || !exRes.ok || !ltRes.ok || !ptRes.ok) throw new Error('Could not load settings');
+    if (!chRes.ok || !exRes.ok || !ltRes.ok || !ptRes.ok || !vrRes.ok) {
+      throw new Error('Could not load settings');
+    }
     state.settings.channels = await chRes.json();
     state.settings.examples = await exRes.json();
     state.settings.productTypes = await ptRes.json();
+    state.settings.variations = await vrRes.json();
     const lt = await ltRes.json();
     if (Array.isArray(lt.types) && lt.types.length) state.settings.listingTypes = lt.types;
   }
@@ -2026,6 +2281,59 @@
       await loadSettings();
       render();
     } catch (e) { alert('Could not delete channel: ' + (e.message || '')); }
+  }
+
+  // ── Variation listings (Settings + per-flavor) ────────────────────────────
+  function blankVariation() {
+    return {
+      id: null, channel_id: null, name: '',
+      flavor_type_filter: 'any', listing_type_filter: 'any',
+      external_id: '', notes: '', enabled: true,
+    };
+  }
+
+  async function saveVariation() {
+    const v = state.settings.editingVariation;
+    if (!v) return;
+    if (!v.name || !v.name.trim()) { alert('Give the variation a name.'); return; }
+    if (!Number(v.channel_id))     { alert('Pick a channel.'); return; }
+    const body = {
+      channel_id: Number(v.channel_id),
+      name: v.name.trim(),
+      flavor_type_filter: v.flavor_type_filter || 'any',
+      listing_type_filter: v.listing_type_filter || 'any',
+      external_id: (v.external_id || '').trim(),
+      notes: v.notes || '',
+      enabled: v.enabled !== false,
+    };
+    try {
+      const url = v.id
+        ? `/api/flavors2/settings/variation-listings/${v.id}`
+        : '/api/flavors2/settings/variation-listings';
+      const r = await fetch(url, {
+        method: v.id ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      await loadSettings();
+      state.settings.editingVariation = null;
+      render();
+      flashToast('Variation listing saved.');
+    } catch (e) { alert('Could not save: ' + (e.message || '')); }
+  }
+
+  async function deleteVariation(id) {
+    const v = (state.settings.variations || []).find(x => x.id === id);
+    if (!v) return;
+    if (!confirm(`Delete variation "${v.name}"? Existing tickets that reference it stay intact, but new flavors won't see this variation in their match list.`)) return;
+    try {
+      const r = await fetch(`/api/flavors2/settings/variation-listings/${id}`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Delete failed'); }
+      await loadSettings();
+      render();
+    } catch (e) { alert('Could not delete: ' + (e.message || '')); }
   }
 
   // ── Product types (Build A) ───────────────────────────────────────────────
@@ -2328,6 +2636,28 @@
       state.generateImagesModal.submitting = false;
       state.generateImagesModal.error = e.message || 'Could not generate';
       render();
+    }
+  }
+
+  // ── Variation listings — spawn ticket ─────────────────────────────────────
+  // No confirmation modal — the section already lists every variation that
+  // will end up on the ticket, so the user has reviewed before clicking.
+  async function generateVariationTicket() {
+    if (!state.detailId || state.variationSubmitting) return;
+    state.variationSubmitting = true;
+    render();
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}/generate-variation-ticket`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Spawn failed');
+      await loadFlavor(state.detailId);
+      state.variationSubmitting = false;
+      render();
+      flashToast(`Variation ticket created across ${data.matchCount} listings.`);
+    } catch (e) {
+      state.variationSubmitting = false;
+      render();
+      alert('Could not spawn ticket: ' + (e.message || ''));
     }
   }
 
