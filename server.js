@@ -1151,7 +1151,27 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
         }).catch(()=>{});
       }
     }
-    res.status(201).json(await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id)));
+    const newTicket = await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id));
+    res.status(201).json(newTicket);
+
+    // Sync new ticket to Syruvia tasks (fire-and-forget)
+    const _syruviaUrl = process.env.SYRUVIA_URL || '';
+    const _crossSecret = process.env.CROSS_APP_SECRET || '';
+    if (_syruviaUrl && _crossSecret) {
+      fetch(`${_syruviaUrl}/api/bridge/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${_crossSecret}` },
+        body: JSON.stringify({
+          wm_ticket_id: id,
+          title,
+          description: req.body?.description || null,
+          assigned_to_name: assignee || null,
+          due_date: due || null,
+          flavor_id: syruvia_flavor_id || null,
+          flavor_name: syruvia_flavor_name || null,
+        }),
+      }).catch(e => console.error('[syruvia-sync] task sync failed:', e.message));
+    }
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
