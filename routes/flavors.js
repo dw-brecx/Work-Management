@@ -690,6 +690,99 @@ module.exports = function attach(app, deps) {
     };
   }
 
+  // ── Settings: product types CRUD ──────────────────────────────────────────
+  // The user's curated 10-category taxonomy (Coffee, Cocktails, Fruit,
+  // Lattes, Smoothie, Tea, Unique, Coffee & Cocktails, Coffee & Fruit,
+  // Cocktails & Fruit). Each row owns the full per-type listing copy:
+  // titles for single + packs in both REG and SF, all 5 BPs in REG and SF,
+  // the pump suffix, BP6 (pump-only), and the shared description.
+  // Build B will: (a) expand wizard step 5 to pick from these, and
+  // (b) replace the listing-content generator's substitution path to use
+  // this table instead of the older flavor_listing_examples records.
+  app.get('/api/flavors2/settings/product-types', requireAuth, async (req, res) => {
+    try {
+      const rows = await all(
+        'SELECT * FROM flavor_product_types ORDER BY position ASC, id ASC'
+      );
+      res.json(rows.map(shapeProductType));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/flavors2/settings/product-types/:id', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get('SELECT * FROM flavor_product_types WHERE id=?', id);
+      if (!existing) return res.status(404).json({ error: 'Not found' });
+      const sets = []; const args = [];
+      const setText = (col, max) => {
+        if (col in req.body) {
+          const v = String(req.body[col] || '').slice(0, max);
+          sets.push(`${col}=?`); args.push(v);
+        }
+      };
+      if ('name' in req.body) {
+        const v = String(req.body.name || '').trim();
+        if (!v) return res.status(400).json({ error: 'name cannot be blank' });
+        sets.push('name=?'); args.push(v.slice(0, 120));
+      }
+      if ('enabled' in req.body)  { sets.push('enabled=?');  args.push(req.body.enabled ? 1 : 0); }
+      if ('position' in req.body) { sets.push('position=?'); args.push(Number(req.body.position) || 0); }
+      setText('title_reg_single', 500);
+      setText('title_sf_single', 500);
+      setText('title_reg_packs', 500);
+      setText('title_sf_packs', 500);
+      setText('pump_title_suffix', 100);
+      setText('bullet_pump_extra', 2000);
+      setText('description', 10000);
+      // Bullets — accept array of strings or newline-joined string. Cap at 10.
+      const normaliseBullets = (raw) => {
+        let arr = raw;
+        if (typeof arr === 'string') arr = arr.split('\n');
+        if (!Array.isArray(arr)) arr = [];
+        return arr.map(b => String(b || '').slice(0, 2000)).slice(0, 10);
+      };
+      if ('bullets_reg' in req.body) {
+        sets.push('bullets_reg_json=?');
+        args.push(JSON.stringify(normaliseBullets(req.body.bullets_reg)));
+      }
+      if ('bullets_sf' in req.body) {
+        sets.push('bullets_sf_json=?');
+        args.push(JSON.stringify(normaliseBullets(req.body.bullets_sf)));
+      }
+      if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
+      sets.push(`updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
+      args.push(id);
+      await run(`UPDATE flavor_product_types SET ${sets.join(',')} WHERE id=?`, ...args);
+      const row = await get('SELECT * FROM flavor_product_types WHERE id=?', id);
+      res.json(shapeProductType(row));
+    } catch (e) {
+      console.error('[flavors2] product-type patch failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  function shapeProductType(row) {
+    return {
+      id: row.id,
+      key: row.key,
+      name: row.name,
+      enabled: !!row.enabled,
+      position: row.position,
+      title_reg_single: row.title_reg_single || '',
+      title_sf_single:  row.title_sf_single || '',
+      title_reg_packs:  row.title_reg_packs || '',
+      title_sf_packs:   row.title_sf_packs || '',
+      pump_title_suffix: row.pump_title_suffix || 'With Pump',
+      bullets_reg: safeJSON(row.bullets_reg_json, []),
+      bullets_sf:  safeJSON(row.bullets_sf_json, []),
+      bullet_pump_extra: row.bullet_pump_extra || '',
+      description: row.description || '',
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
   // ── Settings: listing-content examples CRUD ───────────────────────────────
   // The user pastes their existing listing copy here keyed by
   // (syrup_use, flavor_type, listing_type). The eventual generator does

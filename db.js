@@ -368,6 +368,34 @@ async function init() {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_flavor_examples_lookup
       ON flavor_listing_examples (syrup_use, flavor_type, listing_type)`,
+    // Product types — the user's curated 10-category taxonomy
+    // (Coffee, Cocktails, Fruit, Lattes, Smoothie, Tea, Unique, plus three
+    // combos). Each type owns the full per-type listing copy: titles for
+    // single + packs in REG and SF, all 5 bullets for REG and SF, the
+    // pump-suffix appended to the single title for the pump variant, the
+    // extra BP6 that only ships with pump variants, and the shared
+    // product description. This supersedes the older flavor_listing_examples
+    // taxonomy keyed by (syrup_use × flavor_type × listing_type) — kept
+    // intact for now so existing data isn't lost.
+    `CREATE TABLE IF NOT EXISTS flavor_product_types (
+      id SERIAL PRIMARY KEY,
+      key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      position INTEGER NOT NULL DEFAULT 0,
+      title_reg_single TEXT NOT NULL DEFAULT '',
+      title_sf_single TEXT NOT NULL DEFAULT '',
+      title_reg_packs TEXT NOT NULL DEFAULT '',
+      title_sf_packs TEXT NOT NULL DEFAULT '',
+      pump_title_suffix TEXT NOT NULL DEFAULT 'With Pump',
+      bullets_reg_json TEXT NOT NULL DEFAULT '[]',
+      bullets_sf_json TEXT NOT NULL DEFAULT '[]',
+      bullet_pump_extra TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_flavor_product_types_position ON flavor_product_types (position)`,
     // Channel SKUs — generated from the per-channel sku_pattern by
     // /api/flavors2/:id/generate-channel-skus. One row per
     // (flavor × channel × listing_type × fulfillment). nineyard_sku is
@@ -962,6 +990,255 @@ async function init() {
       await run(
         'INSERT INTO flavor_channels (name, code, has_fba, enabled, position) VALUES (?,?,?,1,?)',
         c.name, c.code, c.has_fba, c.position
+      );
+    }
+  }
+
+  // Seed the user's curated 10-category product-type taxonomy from the
+  // title.xlsx they shared. Only fires when the table is empty — once they
+  // edit any row, never re-seed.
+  //
+  // The strings preserve their original notation:
+  //   ---           → placeholder for flavor name (rendered as {name} later)
+  //   ...-Pack      → placeholder for pack size (4-Pack / 6-Pack)
+  //   (Naturally Flavored) / (Natural Flavors,) → kept verbatim; the
+  //                   product-types editor lets admins strip parens for
+  //                   natural+artificial flavors if their voice differs
+  //   AI Flavor Description … → marker for the AI-generated sensory
+  //                   description bullet 1 will become once Claude is wired
+  //                   in build B. For now it ships as static text.
+  const productTypeRows = await get('SELECT COUNT(*) AS n FROM flavor_product_types');
+  if (!productTypeRows || Number(productTypeRows.n) === 0) {
+    const PACKS_REG = " ----- Syrup by Syruvia ...-Pack, 25.4 fl oz, (Natural Flavors,) Wholesale Coffee Syrup Shops, Cafes, Baristas, Bistros, & Beverage Bars, Bulk Kosher & Gluten-Free";
+    const PACKS_SF  = "Sugar-Free ----- Syrup by Syruvia ...-Pack, 25.4 fl oz, (Natural Flavors,) Wholesale Coffee Syrup Shops, Cafes, Baristas, Bistros, & Beverage Bars, Bulk Kosher & Gluten-Free";
+    const PUMP_BP = "Convenient & Ready to Use: Each bottle includes a pump for mess-free, precise pouring—making it easy to add the perfect amount of syrup to every drink.";
+    const DESCRIPTION = "Introducing Syruvia, a trusted supplier of a wide selection of high-quality syrups & concentrates, where you can find the most tantalizing flavors to sweeten your everyday life! We are employing only carefully selected ingredients with no additives or harsh fillers to create clean and delicious syrups that offer a unique sense-pampering experience! We strive for greatness in every aspect of our business, from the richest syrup flavors to the unwavering commitment to exceptional quality, to offer you the finest selection of aromas. Delight Your Taste Buds with the Syruvia Syrups!  Made in the USA with pure and clean ingredients, the Syruvia Syrups  have a fresh taste and amazing flavor that enriches your drink without overpowering its unparalleled taste! Subtle yet rich, the syrups are perfect for coffee, latte, tea, smoothies, shakes or desserts, adding a creamy texture and unique sweetness that will take your taste buds by surprise! Still not convinced? Here are some of the amazing features of our syrups: 1. 25.4 fl oz bottle; 2. Made with high-quality, clean ingredients; 3. Kosher-certified; 4. Made in the USA; 5. Large selection of flavors for all tastes; 6. Ideal for coffee, tea, latte, smoothie, protein shakes, oatmeal, breakfast, desserts, ice cream topping, frappe, cocktails, baked goods and more; 7. Smooth and subtle aroma; 8. Creamy texture and rich taste; 9. 25 servings per bottle; Indulge in the exceptional aromas of our syrups!";
+    const QUALITY_BP = "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,";
+
+    // Shared bullet 2 + 3 + 4 for the single-product types pull from the
+    // type-specific copy on the worksheet. Combos reuse the generic
+    // "Add Flavor to Every Drink / Endless Possibilities / Quality" set.
+    const COFFEE_BP1_REG = `----(Naturally Flavored) Coffee Syrup AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`;
+    const COFFEE_BP1_SF  = ` Sugar free ----(Naturally Flavored) Coffee Syrup AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`;
+    const GENERIC_BP1_REG = `----(Naturally Flavored) Syrup AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`;
+    const GENERIC_BP1_SF  = ` Sugar free ----(Naturally Flavored) Syrup AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`;
+
+    const TYPES = [
+      {
+        key: 'coffee', name: 'Coffee', position: 1,
+        title_reg_single: "Syruvia Coffee Syrup, --- Flavored Syrup for Drinks, Lattes, and Desserts (Natural Flavors) – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free Coffee Syrup, ---- Flavored Syrup for Drinks, Lattes, and Desserts (Natural Flavors) – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          COFFEE_BP1_REG,
+          "Add Flavor to Your Coffee: Awaken your senses and indulge in the delightful taste of coffee crafted to your liking with Syruvia coffee syrup! Our syrups bring rich flavor, inviting aroma, and a sweet note that brightens your senses every morning!",
+          "Endless Coffee Possibilities: Thanks to its rich aroma and delightful taste, our coffee syrup can be added to a wide range of drinks, including shakes, lattes, cappuccinos, iced coffees, protein shakes, and more!",
+          "Quality You Can Trust: Syruvia coffee syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our coffee syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our Coffee syrup adds creamy flavor and rich sweetness to your coffee, lattes, cappuccinos, and espresso drinks for a smooth café-style experience! Made with pure cane sugar, it enhances every cup with balanced sweetness.",
+        ],
+        bullets_sf: [
+          COFFEE_BP1_SF,
+          "Add Flavor to Your Coffee: Awaken your senses and indulge in the delightful taste of coffee crafted to your liking with Syruvia coffee syrup! Our syrups bring rich flavor, inviting aroma, and a sweet note that brightens your senses every morning!",
+          "Endless Coffee Possibilities: Thanks to its rich aroma and delightful taste, our coffee syrup can be added to a wide range of drinks, including shakes, lattes, cappuccinos, iced coffees, protein shakes, and more!",
+          "Quality You Can Trust: Syruvia coffee syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our coffee syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free coffee syrup is a great way to enjoy creamy café-style drinks with zero calories and carbs! it adds smooth sweetness to lattes and espresso drinks without the added sugar.",
+        ],
+      },
+      {
+        key: 'cocktails', name: 'Cocktails', position: 2,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Cocktails, Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Cocktails, Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          `----(Naturally Flavored) Syrup for Cocktails AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Add Flavor to Your Cocktails: Awaken your senses and indulge in the vibrant taste of drinks crafted your way with Syruvia syrup! Our syrups bring bold flavor, smooth aroma, and a sweet touch that makes every sip more exciting!",
+          "Endless Cocktail Creations: Thanks to its vibrant aroma and delightful taste, our syrup can be added to a variety of cocktails, mocktails, frozen drinks, and specialty beverages for a flavorful twist in every sip!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring)  to deliver excellent freshness and rich flavor in every pour! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our syrup adds smooth flavor, vibrant sweetness, and a delicious twist to cocktails, mocktails, and specialty drinks! Made with pure cane sugar, it brings balanced sweetness to every sip.",
+        ],
+        bullets_sf: [
+          `Sugar free ----(Naturally Flavored) Syrup for Cocktails AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Add Flavor to Your Cocktails: Awaken your senses and indulge in the vibrant taste of drinks crafted your way with Syruvia syrup! Our syrups bring bold flavor, smooth aroma, and a sweet touch that makes every sip more exciting!",
+          "Endless Cocktail Creations: Thanks to its vibrant aroma and delightful taste, our syrup can be added to a variety of cocktails, mocktails, frozen drinks, and specialty beverages for a flavorful twist in every sip!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every pour! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free syrup is a great way to enjoy flavorful cocktails, mocktails, and specialty drinks with zero calories and carbs! it adds delicious sweetness without the added sugar.",
+        ],
+      },
+      {
+        key: 'fruit', name: 'Fruit', position: 3,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          GENERIC_BP1_REG,
+          "Add a Burst of Fruit Flavor: Awaken your senses and enjoy refreshing drinks made your way with Syruvia syrup! Our syrups bring vibrant flavor, fruity aroma, and a sweet touch that brightens every sip!",
+          "Endless Fruity Possibilities: Thanks to its vibrant aroma and refreshing taste, our syrup can be added to lemonades, smoothies, fruit drinks, teas, frozen beverages, and more for a burst of fruity flavor!",
+          "Quality You Can Trust: Syruvia fruit syrups are made in the USA with high-quality ingredients (and no artificial coloring)  to deliver excellent freshness and vibrant flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our fruit syrup adds vibrant flavor and refreshing sweetness to lemonades, teas, smoothies, and fruity drinks! Made with pure cane sugar, it delivers a bright and delicious taste in every sip.",
+        ],
+        bullets_sf: [
+          GENERIC_BP1_SF,
+          "Add a Burst of Fruit Flavor: Awaken your senses and enjoy refreshing drinks made your way with Syruvia syrup! Our syrups bring vibrant flavor, fruity aroma, and a sweet touch that brightens every sip!",
+          "Endless Fruity Possibilities: Thanks to its vibrant aroma and refreshing taste, our syrup can be added to lemonades, smoothies, fruit drinks, teas, frozen beverages, and more for a burst of fruity flavor!",
+          "Quality You Can Trust: Syruvia fruit syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and vibrant flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free fruit syrup is a refreshing way to enjoy fruity drinks, lemonades, teas, smoothies, with zero calories and carbs! it adds vibrant sweetness to lemonades, teas, and beverages without the added sugar.",
+        ],
+      },
+      {
+        key: 'lattes', name: 'Lattes', position: 4,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Lattes, Drinks, Cappuccinos, Iced coffees, Espresso Drinks, – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Lattes, Drinks, Cappuccinos, Iced coffees, Espresso Drinks, – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          `----(Naturally Flavored) Syrup  for Lattes  AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Elevate Your Latte Experience: Awaken your senses and indulge in smooth, café-style lattes crafted your way with Syruvia syrup! Our syrups bring creamy flavor, inviting aroma, and a sweet touch to every cup!",
+          "Endless Latte Possibilities: Thanks to its rich aroma and delightful taste, our syrup can be added to lattes, cappuccinos, iced coffees, espresso drinks, and café-style creations for a smooth and flavorful experience!",
+          "Quality You Can Trust: Syruvia latte syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich café-style flavor in every cup! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our latte syrup adds creamy flavor and rich sweetness to lattes, cappuccinos, and espresso drinks for a smooth café-style experience! Made with pure cane sugar, it enhances every cup with balanced sweetness.",
+        ],
+        bullets_sf: [
+          `Sugar free ----(Naturally Flavored) Syrup for Lattes AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Elevate Your Latte Experience: Awaken your senses and indulge in smooth, café-style lattes crafted your way with Syruvia syrup! Our syrups bring creamy flavor, inviting aroma, and a sweet touch to every cup!",
+          "Endless Latte Possibilities: Thanks to its rich aroma and delightful taste, our syrup can be added to lattes, cappuccinos, iced coffees, espresso drinks, and café-style creations for a smooth and flavorful experience!",
+          "Quality You Can Trust: Syruvia latte syrups are made in the USA with high-quality ingredients (and no artificial coloring)  to deliver excellent freshness and rich café-style flavor in every cup! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free latte syrup is a great way to enjoy creamy café-style drinks with zero calories and carbs! it adds smooth sweetness to lattes and espresso drinks without the added sugar.",
+        ],
+      },
+      {
+        key: 'smoothie', name: 'Smoothie', position: 5,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Smoothies, Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Smoothies, Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          `----(Naturally Flavored) Syrup for Smoothies AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Blend More Flavor into Every Smoothie: Awaken your senses and enjoy refreshing smoothies crafted your way with Syruvia syrup! Our syrups bring vibrant flavor, fruity aroma, and a sweet touch to every blend!",
+          "Endless Smoothie Possibilities: Thanks to its vibrant aroma and delightful taste, our syrup can be blended into smoothies, shakes, frozen drinks, protein shakes, and fruity creations for extra flavor in every sip!",
+          "Quality You Can Trust: Syruvia smoothie syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and vibrant flavor in every blend! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our smoothie syrup adds vibrant flavor and rich sweetness to smoothies, shakes, and frozen drinks for a refreshing taste in every blend! Made with pure cane sugar, it delivers delicious sweetness with every sip.",
+        ],
+        bullets_sf: [
+          `Sugar free ----(Naturally Flavored) Syrup for Smoothies Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Blend More Flavor into Every Smoothie: Awaken your senses and enjoy refreshing smoothies crafted your way with Syruvia syrup! Our syrups bring vibrant flavor, fruity aroma, and a sweet touch to every blend!",
+          "Endless Smoothie Possibilities: Thanks to its vibrant aroma and delightful taste, our syrup can be blended into smoothies, shakes, frozen drinks, protein shakes, and fruity creations for extra flavor in every sip!",
+          "Quality You Can Trust: Syruvia smoothie syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and vibrant flavor in every blend! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free smoothie syrup is a refreshing way to enjoy smoothies and shakes with zero calories and carbs! it adds delicious sweetness to every blend without the added sugar.",
+        ],
+      },
+      {
+        key: 'tea', name: 'Tea', position: 6,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Teas, Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Teas, Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          `----(Naturally Flavored) Tea Syrup AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Add Flavor to Your Tea Moments: Awaken your senses and enjoy smooth tea-inspired drinks crafted your way with Syruvia syrup! Our syrups bring refreshing flavor, inviting aroma, and a sweet touch to every sip!",
+          "Endless Tea Possibilities: Thanks to its smooth aroma and delightful taste, our syrup can be added to iced teas, milk teas, refreshers, fruit teas, and specialty tea-inspired drinks for a refreshing flavor boost!",
+          "Quality You Can Trust: Syruvia tea syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and smooth flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our tea syrup adds smooth flavor and refreshing sweetness to teas, refreshers, and specialty drinks for a flavorful experience in every sip! Made with pure cane sugar, it brings balanced sweetness to your favorite tea-inspired beverages.",
+        ],
+        bullets_sf: [
+          ` Sugar free ----(Naturally Flavored) Tea Syrup AI Flavor Description Paints a sensory picture of the flavor itself  what it tastes like, its texture,  and the mood or feeling it evokes"`,
+          "Add Flavor to Your Tea Moments: Awaken your senses and enjoy smooth tea-inspired drinks crafted your way with Syruvia syrup! Our syrups bring refreshing flavor, inviting aroma, and a sweet touch to every sip!",
+          "Endless Tea Possibilities: Thanks to its smooth aroma and delightful taste, our syrup can be added to iced teas, milk teas, refreshers, fruit teas, and specialty tea-inspired drinks for a refreshing flavor boost!",
+          "Quality You Can Trust: Syruvia tea syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and smooth flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free tea syrup is a refreshing way to enjoy tea-inspired drinks with zero calories and carbs! it adds smooth sweetness to teas and refreshers without the added sugar.",
+        ],
+      },
+      {
+        key: 'unique', name: 'Unique', position: 7,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Specialty Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Specialty Drinks, Lemonades, Iced Teas, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          GENERIC_BP1_REG,
+          "Create Drinks Like No Other: Awaken your senses and explore bold, unique flavors crafted your way with Syruvia syrup! Our syrups bring exciting flavor, smooth aroma, and a creative touch to every sip!",
+          "Endless Flavor Creations: Thanks to its bold aroma and delightful taste, our syrup can be added to creative drinks, specialty beverages, desserts, shakes, and more for a unique flavor experience!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and bold flavor in every creation! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: Our syrup adds bold flavor and rich sweetness to creative drinks and specialty creations for a unique taste experience! Made with pure cane sugar, it delivers smooth sweetness in every sip.",
+        ],
+        bullets_sf: [
+          GENERIC_BP1_SF,
+          "Create Drinks Like No Other: Awaken your senses and explore bold, unique flavors crafted your way with Syruvia syrup! Our syrups bring exciting flavor, smooth aroma, and a creative touch to every sip!",
+          "Endless Flavor Creations: Thanks to its bold aroma and delightful taste, our syrup can be added to creative drinks, specialty beverages, desserts, shakes, and more for a unique flavor experience!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and bold flavor in every creation! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar free syrup is a flavorful way to enjoy creative drinks with zero calories and carbs! it adds delicious sweetness to specialty beverages without the added sugar.",
+        ],
+      },
+      {
+        key: 'coffee_cocktails', name: 'Coffee & Cocktails', position: 8,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Coffee, Cocktails, Drinks, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Coffee, Cocktails, Drinks, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          COFFEE_BP1_REG,
+          "Add Flavor to Every Drink: Awaken your senses and enjoy delicious beverages crafted your way with Syruvia syrup! Our syrups bring smooth flavor, inviting aroma, and a sweet touch that makes every sip more enjoyable!",
+          "Endless Possibilities: Thanks to its rich aroma and delightful taste, our syrup can be added to a wide range of drinks, including coffees, shakes, lattes, cappuccinos, iced coffees, protein shakes, and more!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: This versatile syrup adds smooth flavor and vibrant, balanced sweetness to every sip. Perfect for coffee, cocktails, mocktails, and specialty drinks, it delivers a rich, café-style taste and a delicious twist to all your favorite beverages.",
+        ],
+        bullets_sf: [
+          COFFEE_BP1_SF,
+          "Add Flavor to Every Drink: Awaken your senses and enjoy delicious beverages crafted your way with Syruvia syrup! Our syrups bring smooth flavor, inviting aroma, and a sweet touch that makes every sip more enjoyable!",
+          "Endless Possibilities: Thanks to its rich aroma and delightful taste, our syrup can be added to a wide range of drinks, including coffees, shakes, lattes, cappuccinos, iced coffees, protein shakes, and more!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar-free syrup delivers rich flavor and delicious sweetness to coffee, cocktails, mocktails, and specialty drinks—without the sugar. it contains zero calories and zero carbs, so you can enjoy every sip guilt-free.",
+        ],
+      },
+      {
+        key: 'coffee_fruit', name: 'Coffee & Fruit', position: 9,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Coffee, Fruit Drinks, Lemonades, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Coffee, Fruit Drinks, Lemonades, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          GENERIC_BP1_REG,
+          "Add Flavor to Every Drink: Awaken your senses and enjoy delicious beverages crafted your way with Syruvia syrup! Our syrups bring smooth flavor, inviting aroma, and a sweet touch that makes every sip more enjoyable!",
+          "Endless Possibilities: Thanks to its vibrant aroma and refreshing taste, our syrup can be added to Coffees, lemonades, smoothies, fruit drinks, teas, frozen beverages, and more for a burst of fruity flavor!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: This versatile syrup adds smooth, balanced sweetness and vibrant flavor to coffee, lemonades, teas, smoothies, and fruity drinks. Crafted with pure cane sugar, it delivers a rich café-style taste for coffee and a bright, refreshing twist for fruit beverages in every sip.",
+        ],
+        bullets_sf: [
+          GENERIC_BP1_SF,
+          "Add Flavor to Every Drink: Awaken your senses and enjoy delicious beverages crafted your way with Syruvia syrup! Our syrups bring smooth flavor, inviting aroma, and a sweet touch that makes every sip more enjoyable!",
+          "Endless Possibilities: Thanks to its vibrant aroma and refreshing taste, our syrup can be added to Coffees, lemonades, smoothies, fruit drinks, teas, frozen beverages, and more for a burst of fruity flavor!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar-free syrup brings rich flavor and vibrant sweetness to coffee, lemonades, teas, and fruity drinks—without the sugar. it contains zero calories and zero carbs so you can enjoy every beverage guilt-free.",
+        ],
+      },
+      {
+        key: 'cocktails_fruit', name: 'Cocktails & Fruit', position: 10,
+        title_reg_single: "Syruvia --- Syrup, (Naturally) Flavored Syrup for Cocktails, Fruit Drinks, Lemonades, and Desserts – 25.4 fl oz",
+        title_sf_single:  "Syruvia Sugar Free --- Syrup, (Naturally) Flavored Syrup for Cocktails, Fruit Drinks, Lemonades, and Desserts – 25.4 fl oz",
+        title_reg_packs: PACKS_REG, title_sf_packs: PACKS_SF,
+        bullets_reg: [
+          GENERIC_BP1_REG,
+          "Add Flavor to Every Drink: Awaken your senses and enjoy delicious beverages crafted your way with Syruvia syrup! Our syrups bring smooth flavor, inviting aroma, and a sweet touch that makes every sip more enjoyable!",
+          "Endless Possibilities: Thanks to its vibrant aroma and refreshing taste, our syrup can be added to cocktails, mocktails, lemonades, smoothies, fruit drinks, teas, frozen beverages, and more for a burst of fruity flavor!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "Made with Pure Cane Sugar: This versatile syrup adds smooth, balanced sweetness and vibrant flavor to cocktails, mocktails, lemonades, teas, smoothies, and fruity drinks. Crafted with pure cane sugar, it delivers a rich café-style taste for coffee and a bright, refreshing twist for fruit beverages in every sip.",
+        ],
+        bullets_sf: [
+          GENERIC_BP1_SF,
+          "Add Flavor to Every Drink: Awaken your senses and enjoy delicious beverages crafted your way with Syruvia syrup! Our syrups bring smooth flavor, inviting aroma, and a sweet touch that makes every sip more enjoyable!",
+          "Endless Possibilities: Thanks to its vibrant aroma and refreshing taste, our syrup can be added to cocktails, mocktails, lemonades, smoothies, fruit drinks, teas, frozen beverages, and more for a burst of fruity flavor!",
+          "Quality You Can Trust: Syruvia syrups are made in the USA with high-quality ingredients (and no artificial coloring) to deliver excellent freshness and rich flavor in every sip! Our syrups are Kosher-certified, free from unnecessary fillers,",
+          "A Diet-Friendly Choice: This sugar-free syrup brings rich flavor and vibrant sweetness to cocktails, mocktails, lemonades, teas, and fruity drinks—without the sugar. it contains zero calories and zero carbs so you can enjoy every beverage guilt-free.",
+        ],
+      },
+    ];
+
+    for (const t of TYPES) {
+      await run(
+        `INSERT INTO flavor_product_types
+           (key, name, position, enabled,
+            title_reg_single, title_sf_single, title_reg_packs, title_sf_packs,
+            pump_title_suffix, bullets_reg_json, bullets_sf_json,
+            bullet_pump_extra, description)
+         VALUES (?,?,?,1,?,?,?,?,?,?,?,?,?)`,
+        t.key, t.name, t.position,
+        t.title_reg_single, t.title_sf_single, t.title_reg_packs, t.title_sf_packs,
+        'With Pump',
+        JSON.stringify(t.bullets_reg), JSON.stringify(t.bullets_sf),
+        PUMP_BP, DESCRIPTION
       );
     }
   }

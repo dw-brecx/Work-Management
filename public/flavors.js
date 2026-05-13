@@ -21,9 +21,11 @@
     detail: null,       // last fetched single-flavor payload
     wizard: defaultWizard(),
     settings: {
-      tab: 'channels',  // 'channels' | 'examples'
+      tab: 'product-types',  // 'product-types' | 'channels' | 'examples'
       channels: [],
       examples: [],
+      productTypes: [],
+      expandedProductType: null,  // id of the product type whose card is expanded
       listingTypes: ['single', 'single_with_pump', '4_pack', '6_pack'],
       editingExample: null,   // null = list view; object = editor open
       loading: false,
@@ -681,13 +683,136 @@
           All flavors
         </button>
         <div class="fv-settings-tabs">
+          <button class="fv-stab ${s.tab === 'product-types' ? 'active' : ''}" data-act="settings-tab" data-tab="product-types">Product types</button>
           <button class="fv-stab ${s.tab === 'channels' ? 'active' : ''}" data-act="settings-tab" data-tab="channels">Channels</button>
-          <button class="fv-stab ${s.tab === 'examples' ? 'active' : ''}" data-act="settings-tab" data-tab="examples">Listing examples</button>
+          <button class="fv-stab ${s.tab === 'examples' ? 'active' : ''}" data-act="settings-tab" data-tab="examples">Listing examples (legacy)</button>
         </div>
         <div class="fv-settings-body">
-          ${s.tab === 'channels' ? renderSettingsChannels() : renderSettingsExamples()}
+          ${s.tab === 'product-types' ? renderSettingsProductTypes()
+            : s.tab === 'channels'    ? renderSettingsChannels()
+            :                            renderSettingsExamples()}
         </div>
       </div>
+    `;
+  }
+
+  function renderSettingsProductTypes() {
+    const rows = state.settings.productTypes || [];
+    return `
+      <div class="fv-settings-head">
+        <div>
+          <h2>Product types</h2>
+          <p class="fv-muted">
+            Curated 10-category taxonomy seeded from your title.xlsx. Each card holds
+            the titles + 5 BPs for REG and SF, the pump suffix, the extra BP for pumps,
+            and the shared product description. When a flavor is created (Build B),
+            the wizard will pick one of these, and the app will pre-fill every listing
+            variant using these fields.
+          </p>
+          <p class="fv-muted" style="font-size:11.5px;margin-top:6px">
+            Placeholders kept from your sheet:
+            <code>---</code> = flavor name,
+            <code>...-Pack</code> = pack size,
+            <code>(Naturally Flavored)</code> / <code>(Natural Flavors)</code> = stay as-typed (strip for N+A flavors if your voice differs).
+            <code>AI Flavor Description …</code> in BP1 will become a Claude call in Build B; for now it ships as static text.
+          </p>
+        </div>
+      </div>
+      <div class="fv-pt-list">
+        ${rows.map(renderProductTypeCard).join('')}
+      </div>
+    `;
+  }
+
+  function renderProductTypeCard(pt) {
+    const expanded = state.settings.expandedProductType === pt.id;
+    if (!expanded) {
+      return `
+        <div class="fv-pt-card">
+          <button class="fv-pt-head" data-act="toggle-pt" data-id="${pt.id}">
+            <div class="fv-pt-head-left">
+              <span class="fv-pt-name">${escapeHtml(pt.name)}</span>
+              <code class="fv-pt-key">${escapeHtml(pt.key)}</code>
+            </div>
+            <div class="fv-pt-head-right">
+              ${pt.enabled ? '<span class="fv-meta-pill">Enabled</span>' : '<span class="fv-meta-pill" style="color:#a16207">Disabled</span>'}
+              <span class="fv-muted" style="font-size:11px">${pt.bullets_reg.length} REG · ${pt.bullets_sf.length} SF bullets</span>
+              <span class="fv-pt-chevron">▾</span>
+            </div>
+          </button>
+        </div>
+      `;
+    }
+    // Expanded editor — all fields visible, save/cancel on the bottom.
+    return `
+      <div class="fv-pt-card fv-pt-card-open">
+        <button class="fv-pt-head" data-act="toggle-pt" data-id="${pt.id}">
+          <div class="fv-pt-head-left">
+            <span class="fv-pt-name">${escapeHtml(pt.name)}</span>
+            <code class="fv-pt-key">${escapeHtml(pt.key)}</code>
+          </div>
+          <div class="fv-pt-head-right">
+            <span class="fv-pt-chevron rotated">▾</span>
+          </div>
+        </button>
+        <div class="fv-pt-body">
+          <div class="fv-pt-row">
+            <div class="fv-field-row">
+              <label class="fv-label">Display name</label>
+              <input class="fv-input" data-pt-id="${pt.id}" data-pt-field="name" value="${escapeAttr(pt.name)}"/>
+            </div>
+            <div class="fv-field-row">
+              <label class="fv-label">Pump title suffix</label>
+              <input class="fv-input" data-pt-id="${pt.id}" data-pt-field="pump_title_suffix" value="${escapeAttr(pt.pump_title_suffix)}" placeholder="With Pump"/>
+            </div>
+            <div class="fv-field-row" style="align-self:end">
+              <label class="fv-toggle" style="margin-bottom:8px">
+                <input type="checkbox" data-pt-id="${pt.id}" data-pt-field="enabled" ${pt.enabled ? 'checked' : ''}/>
+                <span>Enabled (shows in wizard)</span>
+              </label>
+            </div>
+          </div>
+
+          ${renderPtVariant(pt, 'reg', 'Regular')}
+          ${renderPtVariant(pt, 'sf',  'Sugar-Free')}
+
+          <div class="fv-field-row">
+            <label class="fv-label">BP6 — extra bullet (pump variants only)</label>
+            <textarea class="fv-input fv-textarea" rows="2" data-pt-id="${pt.id}" data-pt-field="bullet_pump_extra">${escapeHtml(pt.bullet_pump_extra)}</textarea>
+          </div>
+
+          <div class="fv-field-row">
+            <label class="fv-label">Shared product description</label>
+            <textarea class="fv-input fv-textarea" rows="6" data-pt-id="${pt.id}" data-pt-field="description">${escapeHtml(pt.description)}</textarea>
+          </div>
+
+          <div class="fv-pt-actions">
+            <button class="fv-btn fv-btn-sec" data-act="toggle-pt" data-id="${pt.id}">Close</button>
+            <button class="fv-btn fv-btn-primary" data-act="save-pt" data-id="${pt.id}">Save changes</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderPtVariant(pt, variant, label) {
+    const bullets = (variant === 'reg' ? pt.bullets_reg : pt.bullets_sf) || [];
+    return `
+      <fieldset class="fv-pt-variant">
+        <legend>${label}</legend>
+        <div class="fv-field-row">
+          <label class="fv-label">Title (single bottle)</label>
+          <input class="fv-input" data-pt-id="${pt.id}" data-pt-field="title_${variant}_single" value="${escapeAttr(pt['title_' + variant + '_single'])}"/>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-label">Title (packs — uses <code>...-Pack</code> for pack size)</label>
+          <input class="fv-input" data-pt-id="${pt.id}" data-pt-field="title_${variant}_packs" value="${escapeAttr(pt['title_' + variant + '_packs'])}"/>
+        </div>
+        <div class="fv-field-row">
+          <label class="fv-label">5 bullet points (one per line)</label>
+          <textarea class="fv-input fv-textarea" rows="${Math.max(8, bullets.length + 1)}" data-pt-id="${pt.id}" data-pt-field="bullets_${variant}">${escapeHtml(bullets.join('\n'))}</textarea>
+        </div>
+      </fieldset>
     `;
   }
 
@@ -1363,6 +1488,12 @@
       }
       if (name === 'open-settings')   return openSettings();
       if (name === 'settings-tab')    { state.settings.tab = act.getAttribute('data-tab'); return render(); }
+      if (name === 'toggle-pt') {
+        const id = Number(act.getAttribute('data-id'));
+        state.settings.expandedProductType = (state.settings.expandedProductType === id) ? null : id;
+        return render();
+      }
+      if (name === 'save-pt') return saveProductType(Number(act.getAttribute('data-id')));
       if (name === 'add-channel')     return addChannel();
       if (name === 'save-channel')    return saveChannel(Number(act.getAttribute('data-channel-id')));
       if (name === 'delete-channel')  return deleteChannel(Number(act.getAttribute('data-channel-id')));
@@ -1653,14 +1784,16 @@
   }
 
   async function loadSettings() {
-    const [chRes, exRes, ltRes] = await Promise.all([
+    const [chRes, exRes, ltRes, ptRes] = await Promise.all([
       fetch('/api/flavors2/settings/channels'),
       fetch('/api/flavors2/settings/examples'),
       fetch('/api/flavors2/settings/listing-types'),
+      fetch('/api/flavors2/settings/product-types'),
     ]);
-    if (!chRes.ok || !exRes.ok || !ltRes.ok) throw new Error('Could not load settings');
+    if (!chRes.ok || !exRes.ok || !ltRes.ok || !ptRes.ok) throw new Error('Could not load settings');
     state.settings.channels = await chRes.json();
     state.settings.examples = await exRes.json();
+    state.settings.productTypes = await ptRes.json();
     const lt = await ltRes.json();
     if (Array.isArray(lt.types) && lt.types.length) state.settings.listingTypes = lt.types;
   }
@@ -1728,6 +1861,42 @@
       await loadSettings();
       render();
     } catch (e) { alert('Could not delete channel: ' + (e.message || '')); }
+  }
+
+  // ── Product types (Build A) ───────────────────────────────────────────────
+  // Read every input inside the expanded card and PATCH the row. Inputs use
+  // data-pt-id + data-pt-field attributes so we can collect them without
+  // tracking each one in state — convenient because the card has ~15 fields
+  // and only mutates on Save (no live state echoing required).
+  async function saveProductType(id) {
+    const body = {};
+    const inputs = document.querySelectorAll(`[data-pt-id="${id}"][data-pt-field]`);
+    inputs.forEach(el => {
+      const field = el.getAttribute('data-pt-field');
+      let val;
+      if (el.type === 'checkbox')      val = el.checked;
+      else                              val = el.value;
+      // Bullets fields ship as newline-joined text — server splits.
+      body[field] = val;
+    });
+    if (Object.keys(body).length === 0) return;
+    try {
+      const r = await fetch(`/api/flavors2/settings/product-types/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      // Patch the row in state in-place so the expanded card re-renders
+      // with the canonical server-side values (e.g. bullets normalised).
+      const idx = state.settings.productTypes.findIndex(p => p.id === id);
+      if (idx !== -1) state.settings.productTypes[idx] = data;
+      render();
+      flashToast(`Saved ${data.name}.`);
+    } catch (e) {
+      alert('Could not save: ' + (e.message || ''));
+    }
   }
 
   // ── Listing examples ──────────────────────────────────────────────────────

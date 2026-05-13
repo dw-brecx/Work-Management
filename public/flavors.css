@@ -747,6 +747,77 @@ body {
 }
 .fv-example-meta { font-size: 11px; color: var(--fv-text-3); }
 
+/* ── Product types (Settings tab) ──────────────────────────────────────── */
+.fv-pt-list { display: flex; flex-direction: column; gap: 8px; }
+.fv-pt-card {
+  background: var(--fv-panel);
+  border: 1px solid var(--fv-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.fv-pt-card-open { border-color: var(--fv-accent-2); }
+.fv-pt-head {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; padding: 12px 14px;
+  background: transparent; border: none;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.fv-pt-head:hover { background: var(--fv-panel-2); }
+.fv-pt-head-left { display: flex; align-items: center; gap: 10px; }
+.fv-pt-head-right { display: flex; align-items: center; gap: 10px; }
+.fv-pt-name { font-size: 14px; font-weight: 600; color: var(--fv-text); }
+.fv-pt-key {
+  font-size: 11px;
+  background: var(--fv-panel-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: var(--fv-text-3);
+}
+.fv-pt-chevron { color: var(--fv-text-3); transition: transform 0.15s; }
+.fv-pt-chevron.rotated { transform: rotate(180deg); }
+.fv-pt-body {
+  padding: 14px;
+  border-top: 1px solid var(--fv-border);
+  background: var(--fv-bg);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.fv-pt-row {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1fr;
+  gap: 12px;
+}
+.fv-pt-variant {
+  border: 1px solid var(--fv-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--fv-panel);
+  display: flex; flex-direction: column; gap: 10px;
+  margin: 0;
+}
+.fv-pt-variant legend {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fv-text-2);
+  padding: 0 6px;
+}
+.fv-pt-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--fv-border);
+}
+.fv-settings-head p code,
+.fv-pt-body code {
+  font-size: 11px;
+  background: var(--fv-panel-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--fv-text-2);
+}
+
 /* ── Mode toggle (template / paste) ────────────────────────────────────── */
 .fv-mode-toggle {
   display: grid;
