@@ -814,6 +814,167 @@ module.exports = function attach(app, deps) {
     catch { return fallback; }
   }
 
+  // ── Listing content generation ────────────────────────────────────────────
+  // Substitution: replace {placeholder} tokens in a template with values
+  // derived from the flavor. Unknown placeholders are left intact so the
+  // user sees them and can adjust the template later — silently dropping
+  // unknowns would mask typos.
+  function substitute(template, f) {
+    return String(template || '').replace(/\{(\w+)\}/g, (match, key) => {
+      switch (key) {
+        case 'name':         return f.name || '';
+        case 'type':         return f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular';
+        case 'type_lower':   return f.type === 'sugar_free' ? 'sugar-free' : 'regular';
+        case 'color':        return f.color === 'none' ? '' : (f.color || '');
+        case 'syrup_color':  return f.syrup_color || '';
+        case 'use':          return f.use_of_syrup || '';
+        case 'flavor_type':  return f.flavor_type === 'natural_and_artificial' ? 'Natural + Artificial' : 'Natural';
+        // Trailing space so a title like "{is_natural}{name} Syrup" renders
+        // "Natural Vanilla Syrup" for naturals and "Vanilla Syrup" for N+A
+        // without leaving a double-space when blank.
+        case 'is_natural':   return f.flavor_type === 'natural' ? 'Natural ' : '';
+        case 'ingredients':  return f.ingredients || '';
+        case 'sodium_mg':    return String(f.sodium_mg || 0);
+        case 'salt_pct':     return String(f.salt_pct || 0);
+        default:             return match;
+      }
+    });
+  }
+
+  // Pick the best example for a listing type. Strictly requires the
+  // listing_type to match (no fallback across pack sizes), but accepts a
+  // looser match on syrup_use / flavor_type so a worker can ship templates
+  // incrementally without all 12 combinations covered.
+  function pickExample(examples, f, listing_type) {
+    const pool = examples.filter(e => e.listing_type === listing_type);
+    if (!pool.length) return null;
+    const exact = pool.find(e => e.syrup_use === f.use_of_syrup && e.flavor_type === f.flavor_type);
+    if (exact) return exact;
+    const useAny = pool.find(e => e.syrup_use === f.use_of_syrup && e.flavor_type === 'any');
+    if (useAny) return useAny;
+    const flavAny = pool.find(e => e.syrup_use === 'other' && e.flavor_type === f.flavor_type);
+    if (flavAny) return flavAny;
+    const both = pool.find(e => e.syrup_use === 'other' && e.flavor_type === 'any');
+    if (both) return both;
+    return pool[0];
+  }
+
+  function renderListingBlock(ex, f, listing_type, listingLabels) {
+    const heading = listingLabels[listing_type] || listing_type;
+    if (!ex) {
+      return (
+        `────────────────────────────────────────────\n` +
+        `${heading.toUpperCase()}\n` +
+        `────────────────────────────────────────────\n` +
+        `(No template found for this listing type. Add one in ` +
+        `Flavors → Settings → Listing Examples to auto-fill next time.)\n`
+      );
+    }
+    const title       = substitute(ex.title_template, f);
+    const bullets     = (ex.bullets || []).map(b => substitute(b, f));
+    const description = substitute(ex.description_template, f);
+    const keywords    = substitute(ex.keywords, f);
+    return (
+      `────────────────────────────────────────────\n` +
+      `${heading.toUpperCase()}  •  Template: ${ex.name}\n` +
+      `────────────────────────────────────────────\n` +
+      `Title:\n  ${title || '(empty)'}\n\n` +
+      `Bullets:\n${bullets.length ? bullets.map(b => '  • ' + b).join('\n') : '  (none in template)'}\n\n` +
+      `Description:\n${description || '  (empty)'}\n\n` +
+      `Keywords:\n${keywords || '  (none)'}\n`
+    );
+  }
+
+  function buildListingDescription(channel, f, examples, listingLabels) {
+    const intro =
+      `Generated listing content for ${channel.name} — ${f.name}\n\n` +
+      `Review each variant below and copy it into ${channel.name}'s listing form when ready. ` +
+      `Edit any text directly on this ticket — saves are independent per channel.\n` +
+      (channel.has_fba ? `\nNote: ${channel.name} has FBA + FBM. Same listing content applies to both fulfilment SKUs.\n` : '') +
+      `\nFlavor: ${f.name} (${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'})\n` +
+      `Color: ${f.color === 'none' ? 'None' : f.color}${f.syrup_color ? ' (' + f.syrup_color + ')' : ''}\n` +
+      `UPC: ${f.upc}   SKU: ${f.sku}\n\n`;
+    const blocks = LISTING_TYPES.map(lt =>
+      renderListingBlock(pickExample(examples, f, lt), f, lt, listingLabels)
+    ).join('\n');
+    const footer =
+      `\n────────────────────────────────────────────\n` +
+      `INGREDIENTS (same for every variant)\n` +
+      `────────────────────────────────────────────\n` +
+      `${f.ingredients}\n\n` +
+      `Sodium: ${f.sodium_mg} mg / serving\n` +
+      `\n(Nutrition facts image will be generated in the Images ticket.)\n`;
+    return intro + blocks + footer;
+  }
+
+  // POST /api/flavors2/:id/generate-listings
+  // Spawns one "listing content" ticket per enabled channel. Each ticket's
+  // description contains all 4 listing variants (single, single+pump, 4-pack,
+  // 6-pack) with placeholder substitution against the flavor's data, plus a
+  // checklist so the worker can tick off each variant as it's published.
+  app.post('/api/flavors2/:id/generate-listings', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
+      if (!f) return res.status(404).json({ error: 'Not found' });
+      if (!f.upc || !f.sku) {
+        return res.status(409).json({ error: 'Set UPC and SKU first — they need to land on the listing copy.' });
+      }
+      // Idempotent: refuse if any listing_content ticket already exists for
+      // this flavor. The user can delete those first to regenerate.
+      const already = await get(
+        `SELECT COUNT(*) AS n FROM tickets
+          WHERE flavor_v2_id=? AND flavor_v2_step='listing_content' AND deleted_at IS NULL`,
+        id
+      );
+      if (Number(already?.n || 0) > 0) {
+        return res.status(409).json({ error: 'Listing-content tickets already exist for this flavor. Delete them to regenerate.' });
+      }
+
+      const channels = await all(
+        'SELECT * FROM flavor_channels WHERE enabled=1 ORDER BY position ASC, id ASC'
+      );
+      if (!channels.length) {
+        return res.status(409).json({ error: 'No enabled channels. Add one in Flavors → Settings → Channels first.' });
+      }
+      const examplesRaw = await all('SELECT * FROM flavor_listing_examples');
+      const examples = examplesRaw.map(e => ({
+        ...e,
+        bullets: (() => { try { return JSON.parse(e.bullets_json || '[]'); } catch { return []; } })(),
+      }));
+
+      const listingLabels = {
+        single: 'Single (no pump)',
+        single_with_pump: 'Single with pump',
+        '4_pack': '4-pack',
+        '6_pack': '6-pack',
+      };
+
+      const created = [];
+      for (const channel of channels) {
+        const desc = buildListingDescription(channel, f, examples, listingLabels);
+        const checklist = LISTING_TYPES.map(lt =>
+          `${listingLabels[lt]} — content reviewed & published on ${channel.name}`
+        );
+        const t = await insertPipelineTicket(f, {
+          step: 'listing_content',
+          title: `Listing content — ${f.name} on ${channel.name}`,
+          priority: 'Medium',
+          dept: 'Operations',
+          description: desc,
+          checklist,
+        }, req.session.userId);
+        created.push({ id: t.id, channel: channel.name });
+      }
+
+      res.status(201).json({ ok: true, tickets: created });
+    } catch (e) {
+      console.error('[flavors2] generate-listings failed:', e.message);
+      res.status(500).json({ error: 'Could not generate listings — please retry.' });
+    }
+  });
+
   // ── Hook exposed to server.js's PUT /api/tickets ──────────────────────────
   // Called when a ticket transitions to Closed. If the ticket is part of the
   // label-design step of a flavor pipeline, we spawn the follow-up label

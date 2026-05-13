@@ -874,6 +874,57 @@ body {
   margin-top: 8px;
 }
 
+/* ── Listing-content actions on the detail page ────────────────────────── */
+.fv-listing-status {
+  font-size: 12.5px;
+  padding: 10px 12px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+  border-radius: 8px;
+}
+
+/* ── Generate-listings modal ───────────────────────────────────────────── */
+.fv-modal-wide { max-width: 580px; }
+
+.fv-gen-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.fv-gen-channel {
+  background: var(--fv-panel-2);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.fv-gen-channel-head {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.fv-gen-channel-name { font-size: 13.5px; }
+.fv-gen-variants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 14px;
+  font-size: 12px;
+}
+.fv-gen-variants li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.fv-gen-variants li.missing { color: #a16207; }
+.fv-gen-variant-label { color: var(--fv-text-2); }
+.fv-gen-variant-tpl   { color: var(--fv-text-3); font-size: 11px; text-align: right; }
+.fv-gen-variants li.missing .fv-gen-variant-tpl { color: #b45309; }
+
 /* ── Toast ─────────────────────────────────────────────────────────────── */
 .fv-toast {
   position: fixed;

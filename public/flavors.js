@@ -30,6 +30,8 @@
     },
     // null = modal closed; object = modal open with these fields
     deleteModal: null,
+    // null = closed; { channels: [...], submitting, error } = open
+    generateListingsModal: null,
   };
 
   const LISTING_TYPE_LABELS = {
@@ -129,7 +131,10 @@
     else if (state.view === 'detail')   body = renderDetail();
     else if (state.view === 'settings') body = renderSettings();
     else                                body = renderList();
-    root.innerHTML = renderShell(body) + (state.deleteModal ? renderDeleteModal() : '');
+    let overlays = '';
+    if (state.deleteModal)            overlays += renderDeleteModal();
+    if (state.generateListingsModal)  overlays += renderGenerateListingsModal();
+    root.innerHTML = renderShell(body) + overlays;
     bind();
     // Focus password input when modal opens (after innerHTML swap).
     if (state.deleteModal) {
@@ -404,11 +409,46 @@
       nineyard: 'NineYard',
       label_design: 'Label',
       label_review: 'Label Review',
+      listing_content: 'Listing',
     }[step] || step;
   }
 
   function slug(s) {
     return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  }
+
+  // ── Listing-content action row ────────────────────────────────────────────
+  // Shown between Identifiers and Tasks. Visible once UPC + SKU are filled
+  // in (so the content generator can embed them) AND no listing_content
+  // tickets exist yet for this flavor. Once tickets exist, this collapses
+  // to a status row pointing the user to them.
+  function renderListingActions(f) {
+    const existing = (f.tickets || []).filter(t => t.flavor_v2_step === 'listing_content');
+    const ready = f.upc && f.sku;
+    if (existing.length > 0) {
+      return `
+        <div class="fv-detail-section">
+          <div class="fv-section-label">Listing content</div>
+          <div class="fv-listing-status">
+            <span>✓ ${existing.length} listing-content ticket${existing.length === 1 ? '' : 's'} generated.</span>
+            <span class="fv-muted" style="margin-left:6px">Delete them to regenerate after editing templates.</span>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="fv-detail-section">
+        <div class="fv-section-label">Listing content</div>
+        <p class="fv-muted" style="font-size:12.5px;margin:0 0 10px">
+          ${ready
+            ? 'Generate one listing-content ticket per enabled channel. Each ticket gets all 4 variants (single, single+pump, 4-pack, 6-pack) with template substitution.'
+            : 'Fill in UPC + SKU above first — the generator embeds them in the listing copy.'}
+        </p>
+        <button class="fv-btn fv-btn-primary" data-act="open-generate-listings" ${ready ? '' : 'disabled'}>
+          📝 Generate listing content
+        </button>
+      </div>
+    `;
   }
 
   // ── Detail view ───────────────────────────────────────────────────────────
@@ -454,6 +494,8 @@
               ${idEditor('upc', 'UPC', f.upc, 'Filled here closes the GS1 UPC ticket')}
               ${idEditor('sku', 'SKU', f.sku, 'Filled here closes the SKU ticket')}
             </div>
+
+            ${renderListingActions(f)}
 
             <div class="fv-detail-section">
               <div class="fv-section-label">Tasks (${f.tickets_closed}/${total || 0} done)</div>
@@ -708,6 +750,82 @@
     `;
   }
 
+  // ── Generate-listings modal ───────────────────────────────────────────────
+  // Confirmation step before the POST. We load channels + examples once when
+  // the modal opens so the user can see exactly which channels will get
+  // tickets and whether the templates for each listing type exist. Lets
+  // them spot "no template" gaps before spawning tickets that would say
+  // "(No template found)" inline.
+  function renderGenerateListingsModal() {
+    const m = state.generateListingsModal;
+    const f = state.detail;
+    const enabledChannels = (m.channels || []).filter(c => c.enabled);
+    const examples = m.examples || [];
+    const listingTypes = state.settings.listingTypes;
+
+    function pickExampleClient(listingType) {
+      const pool = examples.filter(e => e.listing_type === listingType);
+      if (!pool.length) return null;
+      return (
+        pool.find(e => e.syrup_use === f.use_of_syrup && e.flavor_type === f.flavor_type) ||
+        pool.find(e => e.syrup_use === f.use_of_syrup && e.flavor_type === 'any') ||
+        pool.find(e => e.syrup_use === 'other'        && e.flavor_type === f.flavor_type) ||
+        pool.find(e => e.syrup_use === 'other'        && e.flavor_type === 'any') ||
+        pool[0]
+      );
+    }
+
+    return `
+      <div class="fv-modal-overlay" data-act="dismiss-modal" data-modal="generate-listings">
+        <div class="fv-modal fv-modal-wide">
+          <h2>Generate listing content</h2>
+          <p class="fv-modal-body">
+            One ticket per enabled channel will be created, each containing all 4 listing variants
+            with placeholder substitution against this flavor's data.
+            ${enabledChannels.length === 0 ? '<br/><br/><b>No enabled channels</b> — add or enable one in Settings → Channels.' : ''}
+          </p>
+
+          ${enabledChannels.length > 0 ? `
+            <div class="fv-gen-channels">
+              ${enabledChannels.map(c => `
+                <div class="fv-gen-channel">
+                  <div class="fv-gen-channel-head">
+                    <span class="fv-gen-channel-name">${escapeHtml(c.name)}</span>
+                    ${c.has_fba ? `<span class="fv-meta-pill">FBA + FBM</span>` : ''}
+                  </div>
+                  <ul class="fv-gen-variants">
+                    ${listingTypes.map(lt => {
+                      const ex = pickExampleClient(lt);
+                      return `
+                        <li class="${ex ? 'has' : 'missing'}">
+                          <span class="fv-gen-variant-label">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</span>
+                          <span class="fv-gen-variant-tpl">${ex ? '→ ' + escapeHtml(ex.name) : '⚠ no template'}</span>
+                        </li>
+                      `;
+                    }).join('')}
+                  </ul>
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+
+          ${m.error ? `<div class="fv-error">${escapeHtml(m.error)}</div>` : ''}
+
+          <div class="fv-modal-actions">
+            <button class="fv-btn fv-btn-sec" data-act="close-generate-modal">Cancel</button>
+            <button class="fv-btn fv-btn-primary"
+                    data-act="confirm-generate-listings"
+                    ${(m.submitting || enabledChannels.length === 0) ? 'disabled' : ''}>
+              ${m.submitting
+                ? 'Creating tickets…'
+                : `Create ${enabledChannels.length} ticket${enabledChannels.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   // ── Bottle visualisation ──────────────────────────────────────────────────
   // SVG syrup bottle. Fill height is clamped 0-100; "sealed" toggles a cap
   // on top (used when every linked ticket is closed). Color comes from the
@@ -813,9 +931,14 @@
       }
     });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && state.deleteModal && !state.deleteModal.submitting) {
+      if (e.key !== 'Escape') return;
+      if (state.deleteModal && !state.deleteModal.submitting) {
         state.deleteModal = null;
-        render();
+        return render();
+      }
+      if (state.generateListingsModal && !state.generateListingsModal.submitting) {
+        state.generateListingsModal = null;
+        return render();
       }
     });
   }
@@ -827,11 +950,15 @@
       // dismiss-modal: only fire on a direct click of the overlay itself,
       // and only THEN suppress default. Clicks inside the modal (inputs,
       // submit button, etc.) must keep their native behaviour — preventing
-      // default here would break input focus.
+      // default here would break input focus. `data-modal` on the overlay
+      // tells us which modal to clear; default is the delete modal so the
+      // older callsites still work without an attribute.
       if (name === 'dismiss-modal') {
         if (e.target === act) {
           e.preventDefault();
-          state.deleteModal = null;
+          const which = act.getAttribute('data-modal') || 'delete';
+          if (which === 'generate-listings') state.generateListingsModal = null;
+          else                                state.deleteModal = null;
           render();
         }
         return;
@@ -899,6 +1026,9 @@
         state.deleteModal = null;
         return render();
       }
+      if (name === 'open-generate-listings')   return openGenerateListings();
+      if (name === 'close-generate-modal')     { state.generateListingsModal = null; return render(); }
+      if (name === 'confirm-generate-listings') return confirmGenerateListings();
     }
     // Option-card buttons (the wizard's radio-card UI). The selected value
     // depends on the card's data-field on its parent .fv-options container.
@@ -1259,6 +1389,52 @@
       state.settings.editingExample = null;
       render();
     } catch (e) { alert('Could not save: ' + (e.message || '')); }
+  }
+
+  // ── Generate listing-content tickets ──────────────────────────────────────
+  // The modal does a confirmation + a live preview of which channels get
+  // tickets and which listing types have templates (so the user can fix
+  // gaps in Settings before committing). The server is authoritative for
+  // template matching + substitution; this load is purely to show the
+  // user a per-channel summary before they spawn tickets.
+  async function openGenerateListings() {
+    state.generateListingsModal = { channels: [], examples: [], submitting: false, error: '', loading: true };
+    render();
+    try {
+      const [chRes, exRes] = await Promise.all([
+        fetch('/api/flavors2/settings/channels'),
+        fetch('/api/flavors2/settings/examples'),
+      ]);
+      if (!chRes.ok || !exRes.ok) throw new Error('Could not load channels / templates');
+      state.generateListingsModal.channels = await chRes.json();
+      state.generateListingsModal.examples = await exRes.json();
+      state.generateListingsModal.loading = false;
+      render();
+    } catch (e) {
+      state.generateListingsModal.error = e.message || 'Load failed';
+      state.generateListingsModal.loading = false;
+      render();
+    }
+  }
+
+  async function confirmGenerateListings() {
+    if (!state.generateListingsModal || state.generateListingsModal.submitting) return;
+    state.generateListingsModal.submitting = true;
+    state.generateListingsModal.error = '';
+    render();
+    try {
+      const r = await fetch(`/api/flavors2/${state.detailId}/generate-listings`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Generate failed');
+      state.generateListingsModal = null;
+      await loadFlavor(state.detailId);
+      render();
+      flashToast(`Created ${data.tickets.length} listing-content ticket${data.tickets.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      state.generateListingsModal.submitting = false;
+      state.generateListingsModal.error = e.message || 'Could not generate';
+      render();
+    }
   }
 
   // ── Delete flavor ─────────────────────────────────────────────────────────
