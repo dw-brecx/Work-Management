@@ -776,6 +776,37 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // Duplicate an example. Copies every field, suffixes the name with
+  // " (copy)" so the user can spot the new row in the list, and clears the
+  // primary key so a fresh INSERT runs. Returns the new row so the client
+  // can switch the editor straight to it.
+  app.post('/api/flavors2/settings/examples/:id/duplicate', requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const src = await get('SELECT * FROM flavor_listing_examples WHERE id=?', id);
+      if (!src) return res.status(404).json({ error: 'Not found' });
+      const newName = (src.name || 'Untitled') + ' (copy)';
+      const ins = await run(
+        `INSERT INTO flavor_listing_examples
+           (name, syrup_use, flavor_type, listing_type,
+            title_template, bullets_json, description_template, keywords, notes,
+            is_raw_example, source_flavor_id, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+        newName, src.syrup_use, src.flavor_type, src.listing_type,
+        src.title_template, src.bullets_json, src.description_template,
+        src.keywords, src.notes,
+        src.is_raw_example ? 1 : 0, src.source_flavor_id,
+        req.session.userId
+      );
+      const row = await get('SELECT * FROM flavor_listing_examples WHERE id=?', ins.lastInsertRowid);
+      res.status(201).json(shapeExample(row));
+    } catch (e) {
+      console.error('[flavors2] example duplicate failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   function validateExample(body) {
     const errors = [];
     const name = String(body.name || '').trim();

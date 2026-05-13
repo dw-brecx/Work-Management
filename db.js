@@ -966,6 +966,43 @@ async function init() {
     }
   }
 
+  // Seed a real Syruvia listing as the starter row in
+  // flavor_listing_examples so the admin has something to clone + edit per
+  // type combo instead of staring at an empty grid. Only fires when the
+  // table is empty — once anything is in there, never re-seed (the user
+  // may have deleted it intentionally or replaced it with their own).
+  const exampleRows = await get('SELECT COUNT(*) AS n FROM flavor_listing_examples');
+  if (!exampleRows || Number(exampleRows.n) === 0) {
+    const seedTitle = 'Syruvia Coffee Syrup, {name} Flavored Syrup for Drinks, Lattes, and Desserts – 25.4 fl oz';
+    const seedBullets = [
+      "{name} Syrup: Embrace the timeless taste of {name} with Syruvia's {name} Syrup. Let its silky, velvety sweetness create a comforting ambiance in your favorite concoctions.",
+      "Coffee Flavoring Syrup: Awaken your senses and indulge in the delightful taste of coffee flavored to your liking with the Syruvia coffee flavoring syrup! Our syrups bring savor, aroma and a sweet note that promises to pamper your senses every morning!",
+      "Quality You Can Trust: The Syruvia syrups for coffee drinks are made in the USA with the highest quality, most refined ingredients to ensure excellent freshness and the richest taste! The coffee syrups are Kosher-certified, free of any unnecessary fillers, and contain no added coloring, providing you with a pure and natural coffee experience.",
+      "Endless Possibilities: Thanks to its intense aroma and delightful taste, our coffee flavoring can be added to a wide range of beverages and desserts, including shakes, lattes, cappuccino, iced coffee, teas, smoothies, protein shakes, oatmeal, porridge and much more!",
+      "Made with Pure Cane Sugar: The coffee sauce not only adds texture, creaminess and flavor to your coffee but also rich sweetness! Made with pure cane sugar, the coffee syrup will elevate your beverages with its incomparable sweetness!",
+    ];
+    const seedNotes =
+      'Sample seeded from the existing Syruvia coffee single-bottle Amazon listing. ' +
+      'Duplicate this row from the editor to clone it for different listing types ' +
+      '(single+pump, 4-pack, 6-pack) and flavor types (natural, sugar-free).';
+    await run(
+      `INSERT INTO flavor_listing_examples
+         (name, syrup_use, flavor_type, listing_type,
+          title_template, bullets_json, description_template, keywords, notes,
+          is_raw_example, source_flavor_id)
+       VALUES (?,?,?,?,?,?,?,?,?,0,NULL)`,
+      'Syruvia coffee — single bottle (sample)',
+      'coffee',
+      'natural_and_artificial',
+      'single',
+      seedTitle,
+      JSON.stringify(seedBullets),
+      '',
+      '',
+      seedNotes
+    );
+  }
+
   // Seed default flavor-launch tasks (template). Only inserted if the table is empty.
   const flavorRows = await get('SELECT COUNT(*) AS n FROM flavor_tasks');
   if (!flavorRows || Number(flavorRows.n) === 0) {

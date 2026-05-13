@@ -796,6 +796,7 @@
           <p class="fv-muted">${headerHint}</p>
         </div>
         <div class="fv-row-actions">
+          ${ex.id ? `<button class="fv-btn fv-btn-sec" data-act="duplicate-example" data-id="${ex.id}" title="Create a copy of this template (good for cloning per type combo)">⎘ Duplicate</button>` : ''}
           <button class="fv-btn fv-btn-sec" data-act="cancel-example">Cancel</button>
           <button class="fv-btn fv-btn-primary" data-act="save-example">${ex.id ? 'Save changes' : 'Create example'}</button>
         </div>
@@ -1379,6 +1380,10 @@
         if (mode !== 'raw') state.settings.editingExample.source_flavor_id = null;
         return render();
       }
+      if (name === 'duplicate-example') {
+        const id = Number(act.getAttribute('data-id'));
+        if (id) return duplicateExample(id);
+      }
       if (name === 'copy-placeholder') {
         const val = act.getAttribute('data-value');
         if (navigator.clipboard) navigator.clipboard.writeText(val).catch(()=>{});
@@ -1735,6 +1740,43 @@
       bullets: Array.isArray(found.bullets) ? [...found.bullets] : [],
     };
     render();
+  }
+
+  // Duplicate the saved version of an example. If the user has unsaved
+  // edits in the editor, those are intentionally NOT carried over — they
+  // should hit Save first to persist, then Duplicate. We surface that
+  // expectation in a confirm dialog the first time it matters.
+  async function duplicateExample(id) {
+    const editing = state.settings.editingExample;
+    if (editing && editing.id === id) {
+      // Heuristic: if any of the rendered inputs differ from saved state,
+      // warn. Cheap — just check title / description / mode flags.
+      const saved = state.settings.examples.find(e => e.id === id);
+      const hasUnsaved = saved && (
+        saved.title_template !== editing.title_template ||
+        saved.description_template !== editing.description_template ||
+        saved.keywords !== editing.keywords ||
+        saved.name !== editing.name ||
+        saved.is_raw_example !== editing.is_raw_example
+      );
+      if (hasUnsaved && !confirm('You have unsaved edits. Duplicate will copy the SAVED version, not what you see in the editor. Continue?')) {
+        return;
+      }
+    }
+    try {
+      const r = await fetch(`/api/flavors2/settings/examples/${id}/duplicate`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Duplicate failed');
+      await loadSettings();
+      state.settings.editingExample = {
+        ...data,
+        bullets: Array.isArray(data.bullets) ? [...data.bullets] : [],
+      };
+      render();
+      flashToast('Template duplicated — change the type combo and tweak the copy.');
+    } catch (e) {
+      alert('Could not duplicate: ' + (e.message || ''));
+    }
   }
 
   async function saveExample() {
