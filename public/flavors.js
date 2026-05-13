@@ -659,19 +659,13 @@
   }
 
   function renderListingContentSection(f) {
-    const existingTickets = (f.tickets || []).filter(t => t.flavor_v2_step === 'listing_content');
     const ready = f.upc && f.sku;
-    if (existingTickets.length > 0) {
-      return `
-        <div class="fv-detail-section">
-          <div class="fv-section-label">Listing content</div>
-          <div class="fv-listing-status">
-            <span>✓ ${existingTickets.length} listing-content ticket${existingTickets.length === 1 ? '' : 's'} generated.</span>
-            <span class="fv-muted" style="margin-left:6px">Delete them to revise and regenerate.</span>
-          </div>
-        </div>
-      `;
-    }
+    // Legacy: a few flavors created before the approve-only flow have
+    // listing_content tickets attached. Surface them as a status row but
+    // don't gate the editor — the underlying flavor_listing_content is
+    // what matters for both the channel-launch tickets and the Amazon
+    // flat-file export.
+    const existingTickets = (f.tickets || []).filter(t => t.flavor_v2_step === 'listing_content');
     if (!ready) {
       return `
         <div class="fv-detail-section">
@@ -713,7 +707,7 @@
       <div class="fv-detail-section">
         <div class="fv-section-label">Listing content (all variants)</div>
         <p class="fv-muted" style="font-size:12.5px;margin:0 0 12px">
-          Single+Pump / 4-Pack / 6-Pack were auto-filled from your approved Single — bullets + description copied, titles swapped per template. Tweak any tab inline, save, then approve all to spawn the per-channel tickets.
+          Single+Pump / 4-Pack / 6-Pack were auto-filled from your approved Single — bullets + description copied, titles swapped per template. Tweak any tab inline, save, then approve. No tickets get spawned; the channel-launch tickets and the Amazon flat-file export read directly from these approved variants.
         </p>
 
         <div class="fv-lc-tabs">
@@ -727,14 +721,20 @@
 
         ${active ? renderListingVariantEditor(active) : ''}
 
+        ${allApproved ? `
+          <div class="fv-listing-status" style="margin-top:12px">
+            ✓ All 4 variants approved. The channel-launch tickets and the Amazon flat-file export use these values.
+          </div>
+        ` : ''}
+
         <div class="fv-lc-actions">
           <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="regenerate-listing-content" title="Discard all variants and start over from the product-type template">↻ Start over from template</button>
           <button class="fv-btn fv-btn-primary"
                   data-act="approve-and-spawn-listings"
                   ${state.listingSubmitting ? 'disabled' : ''}>
             ${state.listingSubmitting
-              ? 'Approving & spawning…'
-              : (allApproved ? '✓ Re-approve & generate listing tickets' : 'Approve all & generate listing tickets')}
+              ? 'Approving…'
+              : (allApproved ? '✓ Re-approve all variants' : 'Approve all variants')}
           </button>
         </div>
       </div>
@@ -2865,22 +2865,27 @@
     render();
     try {
       // Save the currently-visible tab first so its in-flight edits are
-      // included in the spawn. Other tabs were saved by the user explicitly.
+      // included in the approval. Other tabs were saved by the user
+      // explicitly via "Save this variant".
       const activeTab = state.listingTab || 'single';
       const hasUnsavedActive = !!document.querySelector(`textarea[data-lc-variant="${activeTab}"]`);
       if (hasUnsavedActive) await saveListingVariant(activeTab);
 
-      const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/approve-and-spawn`, { method: 'POST' });
+      // Approve only — no per-channel ticket spawn. Channel launch tickets
+      // (created later via Channel SKUs) reference the flavor page for
+      // content, and the Amazon flat-file export pulls the approved copy
+      // directly.
+      const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/approve-all`, { method: 'POST' });
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error || 'Spawn failed');
+      if (!r.ok) throw new Error(data.error || 'Approve failed');
       await loadFlavor(state.detailId);
       state.listingSubmitting = false;
       render();
-      flashToast(`Approved & spawned ${data.tickets.length} listing ticket${data.tickets.length === 1 ? '' : 's'}.`);
+      flashToast(`Approved ${data.approved_count} variant${data.approved_count === 1 ? '' : 's'}.`);
     } catch (e) {
       state.listingSubmitting = false;
       render();
-      alert('Could not approve & spawn: ' + (e.message || ''));
+      alert('Could not approve: ' + (e.message || ''));
     }
   }
 

@@ -1593,19 +1593,18 @@ module.exports = function attach(app, deps) {
     }
   });
 
-  // POST /api/flavors2/:id/listing-content/approve-and-spawn
-  //   Marks all 4 variants approved and spawns one per-channel listing
-  //   ticket bundling the approved content. Replaces the older
-  //   generate-listings endpoint flow.
-  app.post('/api/flavors2/:id/listing-content/approve-and-spawn', requireAuth, async (req, res) => {
+  // POST /api/flavors2/:id/listing-content/approve-all
+  //   Marks all 4 variants approved. No tickets are spawned — the channel
+  //   launch tickets (created later via /generate-channel-skus) reference
+  //   the flavor page for content, and the Amazon flat-file export reads
+  //   the approved content directly. Idempotent — safe to re-approve after
+  //   later edits.
+  app.post('/api/flavors2/:id/listing-content/approve-all', requireAuth, async (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
       const f = await get('SELECT * FROM flavors_v2 WHERE id=?', id);
       if (!f) return res.status(404).json({ error: 'Not found' });
-      if (!f.upc || !f.sku) {
-        return res.status(409).json({ error: 'Set UPC and SKU first.' });
-      }
       const variants = await all(
         'SELECT * FROM flavor_listing_content WHERE flavor_id=? ORDER BY listing_variant ASC',
         id
@@ -1613,81 +1612,20 @@ module.exports = function attach(app, deps) {
       if (variants.length !== 4) {
         return res.status(409).json({ error: 'Generate the listing-content preview first.' });
       }
-      const alreadyTickets = await get(
-        `SELECT COUNT(*) AS n FROM tickets
-          WHERE flavor_v2_id=? AND flavor_v2_step='listing_content' AND deleted_at IS NULL`,
-        id
-      );
-      if (Number(alreadyTickets?.n || 0) > 0) {
-        return res.status(409).json({ error: 'Listing-content tickets already exist. Delete them to regenerate.' });
-      }
-      const channels = await all(
-        'SELECT * FROM flavor_channels WHERE enabled=1 ORDER BY position ASC, id ASC'
-      );
-      if (!channels.length) {
-        return res.status(409).json({ error: 'No enabled channels. Add one in Settings → Channels first.' });
-      }
-
       await run(
-        'UPDATE flavor_listing_content SET approved=1 WHERE flavor_id=?',
+        `UPDATE flavor_listing_content
+            SET approved=1,
+                updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+          WHERE flavor_id=?`,
         id
       );
-
-      const shaped = variants.map(shapeListingContent);
-      const labels = {
-        single: 'Single (no pump)',
-        single_with_pump: 'Single with pump',
-        '4_pack': '4-pack',
-        '6_pack': '6-pack',
-      };
-      const created = [];
-      for (const channel of channels) {
-        const desc = buildChannelListingDescFromApproved(channel, f, shaped, labels);
-        const checklist = LISTING_VARIANTS.map(v => `${labels[v]} — content reviewed & published on ${channel.name}`);
-        const t = await insertPipelineTicket(f, {
-          step: 'listing_content',
-          title: `Listing content — ${f.name} on ${channel.name}`,
-          priority: 'Medium',
-          dept: 'Operations',
-          description: desc,
-          checklist,
-        }, req.session.userId);
-        created.push({ id: t.id, channel: channel.name });
-      }
-      res.status(201).json({ ok: true, tickets: created });
+      res.json({ ok: true, approved_count: variants.length });
     } catch (e) {
-      console.error('[flavors2] approve-and-spawn failed:', e.message);
-      res.status(500).json({ error: 'Could not spawn tickets — please retry.' });
+      console.error('[flavors2] approve-all failed:', e.message);
+      res.status(500).json({ error: 'Could not approve — please retry.' });
     }
   });
 
-  function buildChannelListingDescFromApproved(channel, f, variants, labels) {
-    const lines = [
-      `APPROVED listing content for ${channel.name} — ${f.name}`,
-      '',
-      `Flavor: ${f.name} (${f.type === 'sugar_free' ? 'Sugar-Free' : 'Regular'})`,
-      `UPC: ${f.upc}    SKU: ${f.sku}`,
-      channel.has_fba ? `Note: ${channel.name} has FBA + FBM — same content for both.` : '',
-      '',
-    ].filter(Boolean);
-    for (const v of variants) {
-      lines.push('────────────────────────────────────────────');
-      lines.push(`${(labels[v.listing_variant] || v.listing_variant).toUpperCase()}`);
-      lines.push('────────────────────────────────────────────');
-      lines.push('Title:');
-      lines.push('  ' + (v.title || '(empty)'));
-      lines.push('');
-      lines.push('Bullets:');
-      if (v.bullets.length) lines.push(...v.bullets.map(b => '  • ' + b));
-      else                  lines.push('  (none)');
-      lines.push('');
-      lines.push('Description:');
-      lines.push(v.description || '(empty)');
-      lines.push('');
-    }
-    lines.push('Tick each variant off below as it goes live on ' + channel.name + '.');
-    return lines.join('\n');
-  }
 
   // POST /api/flavors2/:id/generate-listings
   // Spawns one "listing content" ticket per enabled channel. Each ticket's
@@ -2041,23 +1979,16 @@ module.exports = function attach(app, deps) {
         });
       }
 
-      // Find the listing-content ticket for each channel so the per-channel
-      // launch ticket can point at it. Match by title suffix — they're
-      // named "Listing content — {flavor} on {channel name}".
-      function listingContentForChannel(channelName) {
-        return allFlavorTickets.find(t =>
-          t.flavor_v2_step === 'listing_content' &&
-          String(t.title || '').endsWith(' on ' + channelName)
-        );
-      }
-
+      // Listing content lives on the flavor detail page now — no separate
+      // ticket. The launch ticket description points at the flavor URL so
+      // the worker can pull title / bullets / description from the
+      // approved variants.
       const created = [];
       // Per-channel listing-launch ticket.
       for (const c of channels) {
-        const lc = listingContentForChannel(c.name);
         const desc = buildChannelLaunchDescription(
           f, c, skusByChannel.get(c.id) || [],
-          lc, imageTicket, ebcTicket
+          imageTicket, ebcTicket
         );
         const checklist = LISTING_TYPES.map(lt =>
           `${LISTING_LABEL_LOCAL[lt]} live on ${c.name}`
@@ -2103,7 +2034,7 @@ module.exports = function attach(app, deps) {
     }
   });
 
-  function buildChannelLaunchDescription(f, channel, skus, listingContent, imageTicket, ebcTicket) {
+  function buildChannelLaunchDescription(f, channel, skus, imageTicket, ebcTicket) {
     // Group SKUs by listing_type so we can show one block per variant with
     // both fulfilments together (relevant for Amazon FBA + FBM).
     const byListing = new Map();
@@ -2129,8 +2060,13 @@ module.exports = function attach(app, deps) {
       idx++;
     }
     const refs = [];
-    if (listingContent) refs.push(`  • Listing content: ${listingContent.id} (${listingContent.title})`);
-    else                refs.push(`  • Listing content: (not yet generated — run "Generate listing content" first)`);
+    // Listing content is no longer a separate ticket — it lives on the
+    // flavor detail page where the worker can copy from the approved
+    // Single / Single+Pump / 4-pack / 6-pack tabs.
+    refs.push(`  • Listing content: open /flavors.html#${f.id} — copy Title / Bullets / Description from the matching tab.`);
+    if (channel.code === 'amazon') {
+      refs.push(`  • Amazon flat file: download "📥 Export Amazon flat file" from /flavors.html#${f.id} for a pre-filled Inventory File ready for Seller Central.`);
+    }
     if (imageTicket)    refs.push(`  • Product images: ${imageTicket.id} (${imageTicket.title})`);
     else                refs.push(`  • Product images: (not yet generated — run "Create image tickets" first)`);
     if (channel.code === 'amazon') {
@@ -2145,7 +2081,7 @@ module.exports = function attach(app, deps) {
       `Base SKU: ${f.sku}    UPC: ${f.upc}\n` +
       (channel.has_fba ? `\nThis channel has FBA + FBM — each variant has two SKUs (one per fulfilment).\n` : '') +
       `\nVariants:\n${lines.join('\n')}\n` +
-      `Cross-references on this flavor:\n${refs.join('\n')}\n\n` +
+      `Content & assets:\n${refs.join('\n')}\n\n` +
       `Check each variant off below as it goes live.`
     );
   }
