@@ -747,6 +747,49 @@ body {
 }
 .fv-example-meta { font-size: 11px; color: var(--fv-text-3); }
 
+/* ── Mode toggle (template / paste) ────────────────────────────────────── */
+.fv-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.fv-mode {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--fv-panel);
+  border: 1.5px solid var(--fv-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color 0.12s, background 0.12s;
+}
+.fv-mode:hover { border-color: var(--fv-accent-2); }
+.fv-mode.active { border-color: var(--fv-accent); background: var(--fv-accent-soft); }
+.fv-mode-icon { font-size: 22px; line-height: 1; }
+.fv-mode-body { display: flex; flex-direction: column; gap: 1px; }
+.fv-mode-body b { font-size: 13.5px; font-weight: 600; color: var(--fv-text); }
+.fv-mode-body span { font-size: 11.5px; color: var(--fv-text-3); }
+
+.fv-mode-badge {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  vertical-align: 2px;
+  margin-right: 6px;
+}
+.fv-mode-badge-raw { background: #fef3c7; color: #92400e; }
+
+/* Disabled placeholder buttons (paste mode info panel) — no hover, no click. */
+.fv-placeholder:disabled { cursor: default; opacity: 0.85; }
+.fv-placeholder:disabled:hover { border-color: var(--fv-border); background: var(--fv-panel); }
+
 /* ── Listing-example editor ────────────────────────────────────────────── */
 .fv-example-grid {
   display: grid;

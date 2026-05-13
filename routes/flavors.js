@@ -709,11 +709,14 @@ module.exports = function attach(app, deps) {
       const ins = await run(
         `INSERT INTO flavor_listing_examples
           (name, syrup_use, flavor_type, listing_type,
-           title_template, bullets_json, description_template, keywords, notes, created_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+           title_template, bullets_json, description_template, keywords, notes,
+           is_raw_example, source_flavor_id, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
         clean.name, clean.syrup_use, clean.flavor_type, clean.listing_type,
         clean.title_template, JSON.stringify(clean.bullets), clean.description_template,
-        clean.keywords, clean.notes, req.session.userId
+        clean.keywords, clean.notes,
+        clean.is_raw_example ? 1 : 0, clean.source_flavor_id,
+        req.session.userId
       );
       const row = await get('SELECT * FROM flavor_listing_examples WHERE id=?', ins.lastInsertRowid);
       res.status(201).json(shapeExample(row));
@@ -740,6 +743,8 @@ module.exports = function attach(app, deps) {
         description_template: 'description_template' in req.body ? req.body.description_template : existing.description_template,
         keywords: 'keywords' in req.body ? req.body.keywords : existing.keywords,
         notes: 'notes' in req.body ? req.body.notes : existing.notes,
+        is_raw_example: 'is_raw_example' in req.body ? req.body.is_raw_example : !!existing.is_raw_example,
+        source_flavor_id: 'source_flavor_id' in req.body ? req.body.source_flavor_id : existing.source_flavor_id,
       };
       const { errors, clean } = validateExample(merged);
       if (errors.length) return res.status(400).json({ error: errors.join('; ') });
@@ -748,11 +753,14 @@ module.exports = function attach(app, deps) {
             name=?, syrup_use=?, flavor_type=?, listing_type=?,
             title_template=?, bullets_json=?, description_template=?,
             keywords=?, notes=?,
+            is_raw_example=?, source_flavor_id=?,
             updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
           WHERE id=?`,
         clean.name, clean.syrup_use, clean.flavor_type, clean.listing_type,
         clean.title_template, JSON.stringify(clean.bullets), clean.description_template,
-        clean.keywords, clean.notes, id
+        clean.keywords, clean.notes,
+        clean.is_raw_example ? 1 : 0, clean.source_flavor_id,
+        id
       );
       const row = await get('SELECT * FROM flavor_listing_examples WHERE id=?', id);
       res.json(shapeExample(row));
@@ -785,6 +793,17 @@ module.exports = function attach(app, deps) {
     if (!Array.isArray(bullets)) bullets = [];
     bullets = bullets.map(b => String(b || '').trim()).filter(Boolean).slice(0, 10);
 
+    // Raw-paste mode requires a source flavor so the swap engine knows
+    // what tokens (name / syrup color / type label) to replace at
+    // generate time. Template mode ignores both fields.
+    const is_raw_example = !!body.is_raw_example;
+    let source_flavor_id = null;
+    if (is_raw_example) {
+      const sfid = Number(body.source_flavor_id);
+      if (Number.isFinite(sfid) && sfid > 0) source_flavor_id = sfid;
+      else errors.push('source_flavor_id is required for raw-paste examples');
+    }
+
     return {
       errors,
       clean: {
@@ -794,6 +813,8 @@ module.exports = function attach(app, deps) {
         keywords:             String(body.keywords             || '').trim().slice(0, 2000),
         notes:                String(body.notes                || '').trim().slice(0, 1000),
         bullets,
+        is_raw_example,
+        source_flavor_id,
       },
     };
   }
@@ -810,6 +831,8 @@ module.exports = function attach(app, deps) {
       description_template: row.description_template,
       keywords: row.keywords,
       notes: row.notes,
+      is_raw_example: !!row.is_raw_example,
+      source_flavor_id: row.source_flavor_id || null,
       created_at: row.created_at,
       updated_at: row.updated_at,
     };
@@ -847,6 +870,55 @@ module.exports = function attach(app, deps) {
     });
   }
 
+  // Swap-based substitution for raw-paste examples. Takes the example
+  // text (which has the SOURCE flavor's data baked in) and rewrites it
+  // for the target flavor by replacing distinctive tokens — name,
+  // syrup_color, type label, full color word — with the target's values.
+  //
+  // Conservatively skips ambiguous swaps:
+  //   • color word ("natural" / "caramel") is NOT swapped automatically
+  //     because "natural" appears in "natural flavors" in the ingredient
+  //     list, and swapping it would corrupt the copy.
+  //   • use_of_syrup ("coffee" / "fruity") is NOT swapped — too common
+  //     as a regular English word.
+  // The user can edit the generated ticket description if the leftover
+  // wording doesn't suit a particular new flavor.
+  function buildSwapPairs(source, target) {
+    const pairs = [];
+    const push = (from, to) => {
+      if (from && to && from !== to) pairs.push({ from, to });
+    };
+    push(source.name, target.name);
+    if (source.syrup_color && target.syrup_color) {
+      push(source.syrup_color, target.syrup_color);
+    }
+    const sLabel = source.type === 'sugar_free' ? 'Sugar-Free' : 'Regular';
+    const tLabel = target.type === 'sugar_free' ? 'Sugar-Free' : 'Regular';
+    push(sLabel, tLabel);
+    push(sLabel.toLowerCase(), tLabel.toLowerCase());
+    // Longer strings first so "Sugar-Free" isn't half-matched as "Sugar".
+    pairs.sort((a, b) => b.from.length - a.from.length);
+    return pairs;
+  }
+
+  function swapSubstitute(text, source, target) {
+    if (!text || !source || !target) return String(text || '');
+    let result = String(text);
+    for (const { from, to } of buildSwapPairs(source, target)) {
+      // Word-boundary, case-insensitive. Preserve the leading-cap case of
+      // the original match so "Vanilla" → "Caramel" and "vanilla" → "caramel".
+      const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('\\b' + esc + '\\b', 'gi');
+      result = result.replace(re, (match) => {
+        if (match[0] === match[0].toUpperCase()) {
+          return to.charAt(0).toUpperCase() + to.slice(1);
+        }
+        return to;
+      });
+    }
+    return result;
+  }
+
   // Pick the best example for a listing type. Strictly requires the
   // listing_type to match (no fallback across pack sizes), but accepts a
   // looser match on syrup_use / flavor_type so a worker can ship templates
@@ -865,7 +937,7 @@ module.exports = function attach(app, deps) {
     return pool[0];
   }
 
-  function renderListingBlock(ex, f, listing_type, listingLabels) {
+  function renderListingBlock(ex, f, listing_type, listingLabels, sourceFlavorsById) {
     const heading = listingLabels[listing_type] || listing_type;
     if (!ex) {
       return (
@@ -876,13 +948,26 @@ module.exports = function attach(app, deps) {
         `Flavors → Settings → Listing Examples to auto-fill next time.)\n`
       );
     }
-    const title       = substitute(ex.title_template, f);
-    const bullets     = (ex.bullets || []).map(b => substitute(b, f));
-    const description = substitute(ex.description_template, f);
-    const keywords    = substitute(ex.keywords, f);
+    // Two substitution modes: placeholder ({name}, {type}, ...) for
+    // template-mode examples, or token-swap (source flavor's name →
+    // target flavor's name, etc.) for raw-paste examples.
+    let render;
+    let modeLabel;
+    if (ex.is_raw_example && ex.source_flavor_id && sourceFlavorsById.get(ex.source_flavor_id)) {
+      const src = sourceFlavorsById.get(ex.source_flavor_id);
+      render = (text) => swapSubstitute(text, src, f);
+      modeLabel = `Raw paste from "${src.name}"`;
+    } else {
+      render = (text) => substitute(text, f);
+      modeLabel = 'Template';
+    }
+    const title       = render(ex.title_template);
+    const bullets     = (ex.bullets || []).map(render);
+    const description = render(ex.description_template);
+    const keywords    = render(ex.keywords);
     return (
       `────────────────────────────────────────────\n` +
-      `${heading.toUpperCase()}  •  Template: ${ex.name}\n` +
+      `${heading.toUpperCase()}  •  ${modeLabel}: ${ex.name}\n` +
       `────────────────────────────────────────────\n` +
       `Title:\n  ${title || '(empty)'}\n\n` +
       `Bullets:\n${bullets.length ? bullets.map(b => '  • ' + b).join('\n') : '  (none in template)'}\n\n` +
@@ -891,7 +976,7 @@ module.exports = function attach(app, deps) {
     );
   }
 
-  function buildListingDescription(channel, f, examples, listingLabels) {
+  function buildListingDescription(channel, f, examples, listingLabels, sourceFlavorsById) {
     const intro =
       `Generated listing content for ${channel.name} — ${f.name}\n\n` +
       `Review each variant below and copy it into ${channel.name}'s listing form when ready. ` +
@@ -901,7 +986,7 @@ module.exports = function attach(app, deps) {
       `Color: ${f.color === 'none' ? 'None' : f.color}${f.syrup_color ? ' (' + f.syrup_color + ')' : ''}\n` +
       `UPC: ${f.upc}   SKU: ${f.sku}\n\n`;
     const blocks = LISTING_TYPES.map(lt =>
-      renderListingBlock(pickExample(examples, f, lt), f, lt, listingLabels)
+      renderListingBlock(pickExample(examples, f, lt), f, lt, listingLabels, sourceFlavorsById)
     ).join('\n');
     const footer =
       `\n────────────────────────────────────────────\n` +
@@ -947,8 +1032,21 @@ module.exports = function attach(app, deps) {
       const examplesRaw = await all('SELECT * FROM flavor_listing_examples');
       const examples = examplesRaw.map(e => ({
         ...e,
+        is_raw_example: !!e.is_raw_example,
+        source_flavor_id: e.source_flavor_id || null,
         bullets: (() => { try { return JSON.parse(e.bullets_json || '[]'); } catch { return []; } })(),
       }));
+
+      // Preload source flavors referenced by any raw-paste example so we
+      // can build the swap-pair table without an N+1 lookup per block.
+      const srcIds = Array.from(new Set(
+        examples.filter(e => e.is_raw_example && e.source_flavor_id).map(e => e.source_flavor_id)
+      ));
+      const sourceFlavorsById = new Map();
+      for (const sid of srcIds) {
+        const srcRow = await get('SELECT * FROM flavors_v2 WHERE id=?', sid);
+        if (srcRow) sourceFlavorsById.set(sid, srcRow);
+      }
 
       const listingLabels = {
         single: 'Single (no pump)',
@@ -959,7 +1057,7 @@ module.exports = function attach(app, deps) {
 
       const created = [];
       for (const channel of channels) {
-        const desc = buildListingDescription(channel, f, examples, listingLabels);
+        const desc = buildListingDescription(channel, f, examples, listingLabels, sourceFlavorsById);
         const checklist = LISTING_TYPES.map(lt =>
           `${listingLabels[lt]} — content reviewed & published on ${channel.name}`
         );

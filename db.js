@@ -868,6 +868,13 @@ async function init() {
   // routes/flavors.js's generateChannelSku() — defaults to a sensible
   // convention; admins override per channel from Flavors → Settings.
   await safeAlter("ALTER TABLE flavor_channels ADD COLUMN sku_pattern TEXT DEFAULT '{sku}-{channel}-{listing}{-fulfillment}'");
+  // Raw-paste mode for listing examples. When is_raw_example=1, the
+  // editor stores the user's literal pasted text (no {placeholder} syntax)
+  // and source_flavor_id points at the flavor it was originally written
+  // for. The generator does name / syrup-color / type-label swaps from
+  // source-flavor data into target-flavor data at substitution time.
+  await safeAlter("ALTER TABLE flavor_listing_examples ADD COLUMN is_raw_example INTEGER DEFAULT 0");
+  await safeAlter("ALTER TABLE flavor_listing_examples ADD COLUMN source_flavor_id INTEGER DEFAULT NULL");
   await safeAlter("ALTER TABLE users ADD COLUMN last_overdue_digest_at TEXT DEFAULT ''");
   // Cached Slack user id (looked up via users.lookupByEmail the first time
   // we want to DM this user). Empty string = "not yet looked up";

@@ -763,7 +763,10 @@
              ${rows.map(e => `
                <button class="fv-example-card" data-act="edit-example" data-id="${e.id}">
                  <div class="fv-example-head">
-                   <div class="fv-example-name">${escapeHtml(e.name)}</div>
+                   <div class="fv-example-name">
+                     ${e.is_raw_example ? '<span class="fv-mode-badge fv-mode-badge-raw">PASTE</span>' : ''}
+                     ${escapeHtml(e.name)}
+                   </div>
                    <div class="fv-example-tags">
                      <span class="fv-meta-pill">${escapeHtml(SYRUP_USE_LABELS[e.syrup_use] || e.syrup_use)}</span>
                      <span class="fv-meta-pill">${escapeHtml(FLAVOR_TYPE_LABELS[e.flavor_type] || e.flavor_type)}</span>
@@ -781,16 +784,38 @@
 
   function renderExampleEditor(ex) {
     const bullets = Array.isArray(ex.bullets) ? ex.bullets : [];
+    const isRaw = !!ex.is_raw_example;
+    const flavors = state.flavors || [];
+    const headerHint = isRaw
+      ? 'Paste your real listing copy as-is. Pick the source flavor so the generator knows what to swap (name, syrup colour, type label) when creating content for new flavors.'
+      : 'Use <code>{placeholders}</code> inline so the generator substitutes flavor-specific values. Click any placeholder in the sidebar to copy.';
     return `
       <div class="fv-settings-head">
         <div>
           <h2>${ex.id ? 'Edit example' : 'New example'}</h2>
-          <p class="fv-muted">Title / bullets / description support placeholders. Click one to copy it, or just type it where you want the substitution.</p>
+          <p class="fv-muted">${headerHint}</p>
         </div>
         <div class="fv-row-actions">
           <button class="fv-btn fv-btn-sec" data-act="cancel-example">Cancel</button>
           <button class="fv-btn fv-btn-primary" data-act="save-example">${ex.id ? 'Save changes' : 'Create example'}</button>
         </div>
+      </div>
+
+      <div class="fv-mode-toggle">
+        <button class="fv-mode ${!isRaw ? 'active' : ''}" data-act="set-example-mode" data-mode="template" type="button">
+          <span class="fv-mode-icon">🧩</span>
+          <span class="fv-mode-body">
+            <b>Template mode</b>
+            <span>Author with {placeholders}</span>
+          </span>
+        </button>
+        <button class="fv-mode ${isRaw ? 'active' : ''}" data-act="set-example-mode" data-mode="raw" type="button">
+          <span class="fv-mode-icon">📋</span>
+          <span class="fv-mode-body">
+            <b>Paste mode</b>
+            <span>Paste a real listing, pick source flavor</span>
+          </span>
+        </button>
       </div>
 
       <div class="fv-example-grid">
@@ -820,19 +845,32 @@
             </div>
           </div>
 
+          ${isRaw ? `
+            <div class="fv-field-row">
+              <label class="fv-label">Source flavor <span style="color:var(--fv-danger)">*</span></label>
+              <select class="fv-input" data-ex-field="source_flavor_id">
+                <option value="">— pick the flavor this example was written for —</option>
+                ${flavors.map(fl => `<option value="${fl.id}" ${Number(ex.source_flavor_id) === fl.id ? 'selected' : ''}>${escapeHtml(fl.name)} (${fl.type === 'sugar_free' ? 'SF' : 'Reg'})</option>`).join('')}
+              </select>
+              <p class="fv-muted" style="font-size:11px;margin:4px 0 0">
+                On generate, the engine swaps this flavor's name + syrup colour + type label for the target flavor's values. Other words stay as-pasted.
+              </p>
+            </div>
+          ` : ''}
+
           <div class="fv-field-row">
-            <label class="fv-label">Title template</label>
-            <input class="fv-input" data-ex-field="title_template" value="${escapeAttr(ex.title_template || '')}" placeholder="e.g. {is_natural}{name} Coffee Syrup — 25.4 fl oz"/>
+            <label class="fv-label">Title ${isRaw ? '(paste literal)' : 'template'}</label>
+            <input class="fv-input" data-ex-field="title_template" value="${escapeAttr(ex.title_template || '')}" placeholder="${isRaw ? 'Paste the exact title from your existing listing' : 'e.g. {is_natural}{name} Coffee Syrup — 25.4 fl oz'}"/>
           </div>
 
           <div class="fv-field-row">
             <label class="fv-label">Bullet points (one per line, 1-10)</label>
-            <textarea class="fv-input fv-textarea" data-ex-field="bullets" rows="6" placeholder="Each line becomes a bullet. Use {placeholders} inline.">${escapeHtml(bullets.join('\n'))}</textarea>
+            <textarea class="fv-input fv-textarea" data-ex-field="bullets" rows="6" placeholder="${isRaw ? 'Paste each bullet on its own line.' : 'Each line becomes a bullet. Use {placeholders} inline.'}">${escapeHtml(bullets.join('\n'))}</textarea>
           </div>
 
           <div class="fv-field-row">
             <label class="fv-label">Description</label>
-            <textarea class="fv-input fv-textarea" data-ex-field="description_template" rows="6" placeholder="Long description with {placeholders}.">${escapeHtml(ex.description_template || '')}</textarea>
+            <textarea class="fv-input fv-textarea" data-ex-field="description_template" rows="6" placeholder="${isRaw ? 'Paste the long description from the existing listing.' : 'Long description with {placeholders}.'}">${escapeHtml(ex.description_template || '')}</textarea>
           </div>
 
           <div class="fv-field-row">
@@ -847,13 +885,26 @@
         </div>
 
         <aside class="fv-example-side">
-          <div class="fv-preview-head">Placeholders</div>
-          <p class="fv-muted" style="font-size:11.5px;line-height:1.5">Click to copy, paste into any field.</p>
-          <ul class="fv-placeholder-list">
-            ${PLACEHOLDERS.map(([k, hint]) => `
-              <li><button class="fv-placeholder" data-act="copy-placeholder" data-value="${escapeAttr(k)}"><code>${escapeHtml(k)}</code><span>${escapeHtml(hint)}</span></button></li>
-            `).join('')}
-          </ul>
+          ${isRaw ? `
+            <div class="fv-preview-head">Auto-swapped tokens</div>
+            <p class="fv-muted" style="font-size:11.5px;line-height:1.5">When generating for a new flavor, these tokens from the source flavor are replaced with the target flavor's values:</p>
+            <ul class="fv-placeholder-list">
+              <li><button class="fv-placeholder" disabled><code>{name}</code><span>Flavor name (case-preserved)</span></button></li>
+              <li><button class="fv-placeholder" disabled><code>{syrup_color}</code><span>Syrup color hint, if set on both</span></button></li>
+              <li><button class="fv-placeholder" disabled><code>Regular ↔ Sugar-Free</code><span>Type label, both casings</span></button></li>
+            </ul>
+            <p class="fv-muted" style="font-size:11px;line-height:1.5;margin-top:8px">
+              <b>Not auto-swapped:</b> "natural" / "caramel" (color words) and "coffee" / "fruity" (use words) — they appear in ingredient lists and English prose, so swapping them would corrupt the copy. Edit the generated ticket if needed.
+            </p>
+          ` : `
+            <div class="fv-preview-head">Placeholders</div>
+            <p class="fv-muted" style="font-size:11.5px;line-height:1.5">Click to copy, paste into any field.</p>
+            <ul class="fv-placeholder-list">
+              ${PLACEHOLDERS.map(([k, hint]) => `
+                <li><button class="fv-placeholder" data-act="copy-placeholder" data-value="${escapeAttr(k)}"><code>${escapeHtml(k)}</code><span>${escapeHtml(hint)}</span></button></li>
+              `).join('')}
+            </ul>
+          `}
         </aside>
       </div>
     `;
@@ -1318,6 +1369,16 @@
       if (name === 'edit-example')    return editExample(Number(act.getAttribute('data-id')));
       if (name === 'cancel-example')  { state.settings.editingExample = null; return render(); }
       if (name === 'save-example')    return saveExample();
+      if (name === 'set-example-mode') {
+        if (!state.settings.editingExample) return;
+        const mode = act.getAttribute('data-mode');
+        state.settings.editingExample.is_raw_example = (mode === 'raw');
+        // Switching back to template mode drops the source flavor — it has
+        // no meaning without raw paste, and surfacing it on save would be
+        // confusing.
+        if (mode !== 'raw') state.settings.editingExample.source_flavor_id = null;
+        return render();
+      }
       if (name === 'copy-placeholder') {
         const val = act.getAttribute('data-value');
         if (navigator.clipboard) navigator.clipboard.writeText(val).catch(()=>{});
@@ -1570,6 +1631,7 @@
       id: null, name: '', syrup_use: 'coffee', flavor_type: 'any',
       listing_type: 'single', title_template: '', bullets: [],
       description_template: '', keywords: '', notes: '',
+      is_raw_example: false, source_flavor_id: null,
     };
   }
 
@@ -1679,6 +1741,10 @@
     const ex = state.settings.editingExample;
     if (!ex) return;
     if (!ex.name || !ex.name.trim()) { alert('Template needs a name.'); return; }
+    if (ex.is_raw_example && !Number(ex.source_flavor_id)) {
+      alert('Pick a source flavor — the engine needs to know whose name + colour + type label to swap when generating for new flavors.');
+      return;
+    }
     const body = {
       name: ex.name, syrup_use: ex.syrup_use, flavor_type: ex.flavor_type,
       listing_type: ex.listing_type,
@@ -1687,6 +1753,8 @@
       description_template: ex.description_template || '',
       keywords: ex.keywords || '',
       notes: ex.notes || '',
+      is_raw_example: !!ex.is_raw_example,
+      source_flavor_id: ex.is_raw_example ? Number(ex.source_flavor_id) : null,
     };
     try {
       const url = ex.id
