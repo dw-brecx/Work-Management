@@ -2464,34 +2464,57 @@ module.exports = function attach(app, deps) {
   // that Amazon needs preserved, including the encrypted settings metadata
   // in row 1). Returns the modified .xlsm as a download.
   app.get('/api/flavors2/:id/export/amazon', requireAuth, async (req, res) => {
+    const tag = '[flavors2 amazon-export]';
     try {
       const fid = Number(req.params.id);
       if (!Number.isFinite(fid)) return res.status(400).json({ error: 'Bad id' });
+      console.log(`${tag} start flavor=${fid}`);
+
       const flavor = await get('SELECT * FROM flavors_v2 WHERE id=?', fid);
       if (!flavor) return res.status(404).json({ error: 'Not found' });
+      console.log(`${tag} flavor=${flavor.name} sku=${flavor.sku} upc=${flavor.upc}`);
+
       const channel = await get("SELECT * FROM flavor_channels WHERE code='amazon'");
       if (!channel || !channel.enabled) {
         return res.status(409).json({ error: 'Amazon channel is missing or disabled in Settings → Channels.' });
       }
+      console.log(`${tag} channel=${channel.id} (${channel.name})`);
+
       const tplPath = templatePathFor('amazon');
       if (!fs.existsSync(tplPath)) {
         return res.status(409).json({ error: 'Amazon template not uploaded yet. Upload it in Settings → Channels → Amazon → Template.' });
       }
+      const tplStat = fs.statSync(tplPath);
+      console.log(`${tag} template=${tplPath} size=${tplStat.size}`);
 
       const rows = await buildAmazonRowsForFlavor(flavor, channel);
+      console.log(`${tag} built ${rows.length} rows`);
       if (!rows.length) {
         return res.status(409).json({ error: 'No channel SKUs for this flavor on Amazon. Generate channel SKUs first.' });
       }
 
       const buf = await injectRowsIntoTemplate(tplPath, rows);
+      console.log(`${tag} generated xlsm size=${buf ? buf.length : 0}`);
+      if (!Buffer.isBuffer(buf) || buf.length === 0) {
+        throw new Error('xlsm generation returned an empty buffer');
+      }
+
       const safeName = (flavor.name || 'flavor').replace(/[^A-Za-z0-9_-]+/g, '-');
       res.setHeader('Content-Type', 'application/vnd.ms-excel.sheet.macroEnabled.12');
       res.setHeader('Content-Disposition', `attachment; filename="amazon-${safeName}-${flavor.sku || flavor.id}.xlsm"`);
       res.setHeader('Content-Length', buf.length);
       res.end(buf);
+      console.log(`${tag} sent ${buf.length} bytes`);
     } catch (e) {
-      console.error('[flavors2] amazon export failed:', e.message, e.stack);
-      res.status(500).json({ error: 'Export failed: ' + e.message });
+      console.error(`${tag} FAILED: ${e.message}\n${e.stack}`);
+      // Don't try to write the JSON error if headers were already flushed —
+      // that triggers ERR_HTTP_HEADERS_SENT and corrupts the response. End
+      // cleanly instead so the browser sees a finished (if empty) response.
+      if (res.headersSent) {
+        try { res.end(); } catch {}
+      } else {
+        res.status(500).json({ error: 'Export failed: ' + (e.message || 'unknown') });
+      }
     }
   });
 
