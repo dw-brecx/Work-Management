@@ -6410,6 +6410,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       You're about to close <strong id="close-ticket-id" style="color:var(--accent)">#TKT-1042</strong>.
       This will mark the ticket as resolved and stop further activity. You can reopen it later if needed.
     </p>
+    <!-- Warning surfaced by openCloseTicketModal() when the current ticket
+         (or any selected ticket in a bulk close) has subtasks that are still
+         unchecked. Pure soft-block — the confirm button still works, the
+         user just sees what they're skipping over. -->
+    <div id="close-subtask-warning" style="display:none;margin-bottom:14px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#92400e;font-size:12.5px;line-height:1.5"></div>
     <div class="form-row">
       <label>Resolution / Reason <span style="color:var(--text3);font-weight:400">(optional)</span></label>
       <textarea id="close-reason" placeholder="e.g. Fixed in deployment 1.4.2, verified in staging." style="height:78px;resize:none"></textarea>
@@ -10078,10 +10083,14 @@ function registerBridgeListeners() {
 //   - 'bulk'   uses a snapshot of selectedTicketIds at the moment the modal opens
 let closeModalContext = { kind: 'single', ids: null };
 
-function openCloseTicketModal() {
+async function openCloseTicketModal() {
   const idLabel = document.getElementById('close-ticket-id');
   const reasonField = document.getElementById('close-reason');
   if (reasonField) reasonField.value = '';
+  // Reset the unchecked-subtask warning each time the modal opens —
+  // populated below once we know which ticket(s) the close applies to.
+  const warnEl = document.getElementById('close-subtask-warning');
+  if (warnEl) { warnEl.style.display = 'none'; warnEl.innerHTML = ''; }
 
   if (closeModalContext.kind === 'bulk' && closeModalContext.ids?.length) {
     const n = closeModalContext.ids.length;
@@ -10107,6 +10116,56 @@ function openCloseTicketModal() {
     }
     const confirmBtn = document.querySelector('#modal-close-ticket .btn-primary');
     if (confirmBtn) confirmBtn.textContent = 'Yes, close ticket';
+  }
+
+  // ── Unchecked-subtask warning ──────────────────────────────────────────
+  // Soft-block: surface a yellow warning panel listing any subtasks that
+  // are still unchecked so the user can decide if they really want to
+  // close. The confirm button is unchanged — this is information, not a
+  // hard gate. Cache miss falls back to a fresh fetch so a fast click
+  // right after opening the ticket still shows the warning.
+  if (!warnEl) return;
+  async function uncheckedFor(tid) {
+    if (!tid) return [];
+    if (!SUBTASKS[tid]) {
+      try { SUBTASKS[tid] = await apiGet('/api/tickets/' + encodeURIComponent(tid) + '/subtasks'); }
+      catch { SUBTASKS[tid] = []; }
+    }
+    return (SUBTASKS[tid] || []).filter(s => !s.done);
+  }
+  if (closeModalContext.kind === 'bulk' && closeModalContext.ids?.length) {
+    let totalUnchecked = 0;
+    let ticketsWithUnchecked = 0;
+    for (const tid of closeModalContext.ids) {
+      const u = await uncheckedFor(tid);
+      if (u.length) { totalUnchecked += u.length; ticketsWithUnchecked++; }
+    }
+    if (totalUnchecked > 0) {
+      warnEl.innerHTML = `
+        <div style="font-weight:600;margin-bottom:2px">⚠ ${totalUnchecked} unchecked subtask${totalUnchecked === 1 ? '' : 's'} across ${ticketsWithUnchecked} ticket${ticketsWithUnchecked === 1 ? '' : 's'}</div>
+        <div>Closing now will leave unfinished work behind. Cancel to finish them first, or proceed if you've handled them elsewhere.</div>
+      `;
+      warnEl.style.display = '';
+    }
+  } else {
+    const t = getCurrentTicket();
+    if (t) {
+      const unchecked = await uncheckedFor(t.id);
+      if (unchecked.length > 0) {
+        const list = unchecked.slice(0, 5).map(s =>
+          `<li style="margin:2px 0">${escapeHtml(s.text || '(untitled subtask)')}</li>`
+        ).join('');
+        const more = unchecked.length > 5
+          ? `<li style="margin:2px 0;font-style:italic;color:#a16207">+ ${unchecked.length - 5} more</li>`
+          : '';
+        warnEl.innerHTML = `
+          <div style="font-weight:600;margin-bottom:6px">⚠ ${unchecked.length} subtask${unchecked.length === 1 ? '' : 's'} still unchecked:</div>
+          <ul style="margin:0;padding-left:18px">${list}${more}</ul>
+          <div style="margin-top:8px">Close anyway, or cancel and finish them first?</div>
+        `;
+        warnEl.style.display = '';
+      }
+    }
   }
 }
 
