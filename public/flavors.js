@@ -1325,27 +1325,38 @@
     `;
   }
 
-  // ── Channel prices editor (per listing × fulfillment) ─────────────────────
-  // Mirrors the SKU-patterns block. One row per combo the user wants priced.
-  // Missing combo means the launch ticket shows "(no price rule set)" for
-  // that SKU so the worker knows it isn't a covered case yet.
+  // ── Channel prices editor (per flavor type × listing × fulfillment) ──────
+  // One row per combo the user wants priced. flavor_type='any' applies to
+  // both regular and sugar-free flavors; the launch ticket prefers an exact
+  // match and falls back to 'any'. Missing combo renders "(no price rule
+  // set)" in the ticket so the worker knows to ask.
+  const PRICE_FLAVOR_TYPE_OPTIONS = [
+    { value: 'regular',    label: 'Regular' },
+    { value: 'sugar_free', label: 'Sugar-Free' },
+    { value: 'any',        label: 'Any (both)' },
+  ];
   function renderChannelPricesBlock(c) {
     const prices = (state.settings.channelPrices || {})[c.id];
     return `
       <div class="fv-pt-variant" style="margin-top:8px">
         <legend>Prices</legend>
         <p class="fv-muted" style="font-size:11.5px;margin:0 0 8px">
-          One row per (listing type × fulfillment). The channel-launch ticket renders the matching price next to each SKU. No currency conversion — enter the number as it should appear in the worker's marketplace tool.
+          One row per (flavor type × listing type × fulfillment). The channel-launch ticket renders the matching price next to each SKU — exact flavor-type match wins, "Any (both)" is the fallback. Enter the number as it should appear in the worker's marketplace tool (no currency conversion).
         </p>
         ${prices === undefined
           ? `<div class="fv-muted" style="font-size:12px">Loading prices…</div>`
           : prices.length === 0
             ? `<div class="fv-muted" style="font-size:12px;padding:6px 0">No prices for this channel yet — add the first row below.</div>`
             : `<table class="fv-table">
-                <thead><tr><th>Listing type</th><th>Fulfilment</th><th>Price</th><th></th></tr></thead>
+                <thead><tr><th>Flavor type</th><th>Listing type</th><th>Fulfilment</th><th>Price</th><th></th></tr></thead>
                 <tbody>
                   ${prices.map(p => `
                     <tr>
+                      <td>
+                        <select class="fv-input fv-tinp" data-price-id="${p.id}" data-pr-field="flavor_type">
+                          ${PRICE_FLAVOR_TYPE_OPTIONS.map(o => `<option value="${o.value}" ${(p.flavor_type || 'any') === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                        </select>
+                      </td>
                       <td>
                         <select class="fv-input fv-tinp" data-price-id="${p.id}" data-pr-field="listing_type">
                           ${state.settings.listingTypes.map(lt => `<option value="${lt}" ${p.listing_type === lt ? 'selected' : ''}>${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</option>`).join('')}
@@ -1377,6 +1388,9 @@
   function renderAddPriceForm(channelId) {
     return `
       <div class="fv-add-pattern">
+        <select class="fv-input fv-tinp" id="new-price-flavortype-${channelId}">
+          ${PRICE_FLAVOR_TYPE_OPTIONS.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join('')}
+        </select>
         <select class="fv-input fv-tinp" id="new-price-listing-${channelId}">
           ${state.settings.listingTypes.map(lt => `<option value="${lt}">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</option>`).join('')}
         </select>
@@ -1838,15 +1852,20 @@
     const totalSkus = patterns.reduce((n) => n + 1, 0);
     const totalLaunchTickets = channelsWithPatterns.length;
 
-    // Compute pattern combos that have no matching price rule, so the user
-    // can fix it before generating. Keyed by `${channelId}|${listing}|${ff}`.
-    const priceKeys = new Set();
+    // Compute pattern combos that have no matching price rule for THIS flavor,
+    // so the user can fix it before generating. The lookup mirrors the server:
+    // exact flavor_type match wins, "any" is a fallback.
+    const exactKeys = new Set();
+    const anyKeys = new Set();
     for (const p of (m.prices || [])) {
-      priceKeys.add(`${p.channel_id}|${p.listing_type}|${p.fulfillment || ''}`);
+      const k = `${p.channel_id}|${p.listing_type}|${p.fulfillment || ''}`;
+      if ((p.flavor_type || 'any') === 'any') anyKeys.add(k);
+      else if (p.flavor_type === f.type)      exactKeys.add(k);
     }
-    const skusMissingPrice = patterns.filter(p =>
-      !priceKeys.has(`${p.channel_id}|${p.listing_type}|${p.fulfillment || ''}`)
-    );
+    const skusMissingPrice = patterns.filter(p => {
+      const k = `${p.channel_id}|${p.listing_type}|${p.fulfillment || ''}`;
+      return !exactKeys.has(k) && !anyKeys.has(k);
+    });
 
     function previewSku(p) {
       return String(p.template || '').replace(/\(SKU\)/g, f.sku || '');
@@ -2702,10 +2721,12 @@
   }
 
   async function createPrice(channelId) {
+    const flavorTypeEl  = document.getElementById('new-price-flavortype-' + channelId);
     const listingEl     = document.getElementById('new-price-listing-' + channelId);
     const fulfillmentEl = document.getElementById('new-price-fulfillment-' + channelId);
     const priceEl       = document.getElementById('new-price-value-' + channelId);
     const body = {
+      flavor_type: flavorTypeEl ? flavorTypeEl.value : 'any',
       listing_type: listingEl ? listingEl.value : 'single',
       fulfillment: fulfillmentEl ? fulfillmentEl.value.trim() : '',
       price: priceEl ? priceEl.value.trim() : '',
@@ -2726,10 +2747,12 @@
   }
 
   async function savePrice(channelId, priceId) {
+    const flavorTypeEl  = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="flavor_type"]`);
     const listingEl     = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="listing_type"]`);
     const fulfillmentEl = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="fulfillment"]`);
     const priceEl       = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="price"]`);
     const body = {
+      flavor_type: flavorTypeEl ? flavorTypeEl.value : undefined,
       listing_type: listingEl ? listingEl.value : undefined,
       fulfillment: fulfillmentEl ? fulfillmentEl.value.trim() : undefined,
       price: priceEl ? priceEl.value.trim() : undefined,

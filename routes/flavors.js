@@ -817,12 +817,13 @@ module.exports = function attach(app, deps) {
     };
   }
 
-  // ── Price rules: per-(channel × listing × fulfillment) CRUD ───────────────
-  // Mirrors the sku-patterns shape. The channel-launch ticket description
-  // renders the matching price next to each variant; missing combo just shows
-  // "(no price rule set)" so the worker knows to ask. Prices are scoped to
-  // the channel (not per-flavor) because the user's pricing convention is
-  // listing-shape-driven, not flavor-driven.
+  // ── Price rules: per-(channel × flavor_type × listing × fulfillment) CRUD ─
+  // Same sparse-matrix shape as sku-patterns, plus a flavor_type dimension
+  // so the user can price regular vs sugar-free flavors differently for the
+  // same listing shape on the same channel. flavor_type='any' matches both
+  // — the launch-ticket lookup prefers an exact flavor_type match and falls
+  // back to 'any'. Missing combo renders "(no price rule set)" in the ticket.
+  const PRICE_FLAVOR_TYPES = ['regular', 'sugar_free', 'any'];
   app.get('/api/flavors2/settings/channels/:id/price-rules', requireAuth, async (req, res) => {
     try {
       const cid = Number(req.params.id);
@@ -842,17 +843,17 @@ module.exports = function attach(app, deps) {
       const { errors, clean } = validatePriceRule(req.body || {});
       if (errors.length) return res.status(400).json({ error: errors.join('; ') });
       const dup = await get(
-        'SELECT id FROM flavor_channel_price_rules WHERE channel_id=? AND listing_type=? AND fulfillment=?',
-        cid, clean.listing_type, clean.fulfillment
+        'SELECT id FROM flavor_channel_price_rules WHERE channel_id=? AND flavor_type=? AND listing_type=? AND fulfillment=?',
+        cid, clean.flavor_type, clean.listing_type, clean.fulfillment
       );
-      if (dup) return res.status(409).json({ error: 'A price for that (listing, fulfillment) already exists. Edit that one.' });
+      if (dup) return res.status(409).json({ error: 'A price for that (flavor type, listing, fulfillment) already exists. Edit that one.' });
       const maxPos = await get('SELECT MAX(position) AS p FROM flavor_channel_price_rules WHERE channel_id=?', cid);
       const pos = Number(maxPos?.p || 0) + 1;
       const ins = await run(
         `INSERT INTO flavor_channel_price_rules
-           (channel_id, listing_type, fulfillment, price, position)
-         VALUES (?,?,?,?,?) RETURNING id`,
-        cid, clean.listing_type, clean.fulfillment, clean.price, pos
+           (channel_id, flavor_type, listing_type, fulfillment, price, position)
+         VALUES (?,?,?,?,?,?) RETURNING id`,
+        cid, clean.flavor_type, clean.listing_type, clean.fulfillment, clean.price, pos
       );
       const row = await get('SELECT * FROM flavor_channel_price_rules WHERE id=?', ins.lastInsertRowid);
       res.status(201).json(shapePriceRule(row));
@@ -873,25 +874,26 @@ module.exports = function attach(app, deps) {
       );
       if (!existing) return res.status(404).json({ error: 'Not found' });
       const merged = {
+        flavor_type:  'flavor_type'  in req.body ? req.body.flavor_type  : existing.flavor_type,
         listing_type: 'listing_type' in req.body ? req.body.listing_type : existing.listing_type,
         fulfillment:  'fulfillment'  in req.body ? req.body.fulfillment  : existing.fulfillment,
         price:        'price'        in req.body ? req.body.price        : existing.price,
       };
       const { errors, clean } = validatePriceRule(merged);
       if (errors.length) return res.status(400).json({ error: errors.join('; ') });
-      if (clean.listing_type !== existing.listing_type || clean.fulfillment !== existing.fulfillment) {
+      if (clean.flavor_type !== existing.flavor_type || clean.listing_type !== existing.listing_type || clean.fulfillment !== existing.fulfillment) {
         const dup = await get(
-          'SELECT id FROM flavor_channel_price_rules WHERE channel_id=? AND listing_type=? AND fulfillment=? AND id != ?',
-          cid, clean.listing_type, clean.fulfillment, rid
+          'SELECT id FROM flavor_channel_price_rules WHERE channel_id=? AND flavor_type=? AND listing_type=? AND fulfillment=? AND id != ?',
+          cid, clean.flavor_type, clean.listing_type, clean.fulfillment, rid
         );
-        if (dup) return res.status(409).json({ error: 'Another price for that (listing, fulfillment) already exists.' });
+        if (dup) return res.status(409).json({ error: 'Another price for that (flavor type, listing, fulfillment) already exists.' });
       }
       await run(
         `UPDATE flavor_channel_price_rules SET
-           listing_type=?, fulfillment=?, price=?,
+           flavor_type=?, listing_type=?, fulfillment=?, price=?,
            updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
          WHERE id=?`,
-        clean.listing_type, clean.fulfillment, clean.price, rid
+        clean.flavor_type, clean.listing_type, clean.fulfillment, clean.price, rid
       );
       const row = await get('SELECT * FROM flavor_channel_price_rules WHERE id=?', rid);
       res.json(shapePriceRule(row));
@@ -909,6 +911,8 @@ module.exports = function attach(app, deps) {
 
   function validatePriceRule(body) {
     const errors = [];
+    const flavor_type = String(body.flavor_type || 'any').trim();
+    if (!PRICE_FLAVOR_TYPES.includes(flavor_type)) errors.push('flavor_type must be one of: ' + PRICE_FLAVOR_TYPES.join(', '));
     const listing_type = String(body.listing_type || '').trim();
     if (!LISTING_TYPES.includes(listing_type)) errors.push('listing_type must be one of: ' + LISTING_TYPES.join(', '));
     const fulfillment = String(body.fulfillment || '').trim().toLowerCase().slice(0, 20);
@@ -918,13 +922,14 @@ module.exports = function attach(app, deps) {
     if (!priceRaw) errors.push('price is required');
     else if (!/^\d+(\.\d{1,2})?$/.test(priceRaw)) errors.push('price must be a positive number with up to 2 decimals (e.g. 12.99)');
     else if (parseFloat(priceRaw) <= 0) errors.push('price must be greater than 0');
-    return { errors, clean: { listing_type, fulfillment, price: priceRaw } };
+    return { errors, clean: { flavor_type, listing_type, fulfillment, price: priceRaw } };
   }
 
   function shapePriceRule(row) {
     return {
       id: row.id,
       channel_id: row.channel_id,
+      flavor_type: row.flavor_type || 'any',
       listing_type: row.listing_type,
       fulfillment: row.fulfillment || '',
       price: row.price,
@@ -2171,14 +2176,18 @@ module.exports = function attach(app, deps) {
       if (!byListing.has(s.listing_type)) byListing.set(s.listing_type, []);
       byListing.get(s.listing_type).push(s);
     }
-    // Index price rules by `${listing_type}|${fulfillment}` for O(1) lookup.
+    // Index price rules by `${flavor_type}|${listing_type}|${fulfillment}` so
+    // the lookup can prefer an exact flavor-type match (regular/sugar_free)
+    // and fall back to a row tagged 'any'.
     const priceByKey = new Map();
     for (const p of (priceRules || [])) {
-      priceByKey.set(`${p.listing_type}|${p.fulfillment || ''}`, p.price);
+      priceByKey.set(`${p.flavor_type || 'any'}|${p.listing_type}|${p.fulfillment || ''}`, p.price);
     }
     const priceLabel = (lt, ff) => {
-      const p = priceByKey.get(`${lt}|${ff || ''}`);
-      return p ? `$${p}` : '(no price rule set)';
+      const exact = priceByKey.get(`${f.type}|${lt}|${ff || ''}`);
+      const any   = priceByKey.get(`any|${lt}|${ff || ''}`);
+      const price = exact || any;
+      return price ? `$${price}` : '(no price rule set)';
     };
     const lines = [];
     let idx = 1;
