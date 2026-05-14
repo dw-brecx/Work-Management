@@ -817,6 +817,123 @@ module.exports = function attach(app, deps) {
     };
   }
 
+  // ── Price rules: per-(channel × listing × fulfillment) CRUD ───────────────
+  // Mirrors the sku-patterns shape. The channel-launch ticket description
+  // renders the matching price next to each variant; missing combo just shows
+  // "(no price rule set)" so the worker knows to ask. Prices are scoped to
+  // the channel (not per-flavor) because the user's pricing convention is
+  // listing-shape-driven, not flavor-driven.
+  app.get('/api/flavors2/settings/channels/:id/price-rules', requireAuth, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const rows = await all(
+        'SELECT * FROM flavor_channel_price_rules WHERE channel_id=? ORDER BY position ASC, id ASC',
+        cid
+      );
+      res.json(rows.map(shapePriceRule));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/flavors2/settings/channels/:id/price-rules', requireAdmin, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      if (!Number.isFinite(cid)) return res.status(400).json({ error: 'Bad channel id' });
+      const { errors, clean } = validatePriceRule(req.body || {});
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      const dup = await get(
+        'SELECT id FROM flavor_channel_price_rules WHERE channel_id=? AND listing_type=? AND fulfillment=?',
+        cid, clean.listing_type, clean.fulfillment
+      );
+      if (dup) return res.status(409).json({ error: 'A price for that (listing, fulfillment) already exists. Edit that one.' });
+      const maxPos = await get('SELECT MAX(position) AS p FROM flavor_channel_price_rules WHERE channel_id=?', cid);
+      const pos = Number(maxPos?.p || 0) + 1;
+      const ins = await run(
+        `INSERT INTO flavor_channel_price_rules
+           (channel_id, listing_type, fulfillment, price, position)
+         VALUES (?,?,?,?,?) RETURNING id`,
+        cid, clean.listing_type, clean.fulfillment, clean.price, pos
+      );
+      const row = await get('SELECT * FROM flavor_channel_price_rules WHERE id=?', ins.lastInsertRowid);
+      res.status(201).json(shapePriceRule(row));
+    } catch (e) {
+      console.error('[flavors2] price-rule create failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch('/api/flavors2/settings/channels/:id/price-rules/:ruleId', requireAdmin, async (req, res) => {
+    try {
+      const cid = Number(req.params.id);
+      const rid = Number(req.params.ruleId);
+      if (!Number.isFinite(cid) || !Number.isFinite(rid)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get(
+        'SELECT * FROM flavor_channel_price_rules WHERE id=? AND channel_id=?',
+        rid, cid
+      );
+      if (!existing) return res.status(404).json({ error: 'Not found' });
+      const merged = {
+        listing_type: 'listing_type' in req.body ? req.body.listing_type : existing.listing_type,
+        fulfillment:  'fulfillment'  in req.body ? req.body.fulfillment  : existing.fulfillment,
+        price:        'price'        in req.body ? req.body.price        : existing.price,
+      };
+      const { errors, clean } = validatePriceRule(merged);
+      if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+      if (clean.listing_type !== existing.listing_type || clean.fulfillment !== existing.fulfillment) {
+        const dup = await get(
+          'SELECT id FROM flavor_channel_price_rules WHERE channel_id=? AND listing_type=? AND fulfillment=? AND id != ?',
+          cid, clean.listing_type, clean.fulfillment, rid
+        );
+        if (dup) return res.status(409).json({ error: 'Another price for that (listing, fulfillment) already exists.' });
+      }
+      await run(
+        `UPDATE flavor_channel_price_rules SET
+           listing_type=?, fulfillment=?, price=?,
+           updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id=?`,
+        clean.listing_type, clean.fulfillment, clean.price, rid
+      );
+      const row = await get('SELECT * FROM flavor_channel_price_rules WHERE id=?', rid);
+      res.json(shapePriceRule(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/flavors2/settings/channels/:id/price-rules/:ruleId', requireAdmin, async (req, res) => {
+    try {
+      const rid = Number(req.params.ruleId);
+      if (!Number.isFinite(rid)) return res.status(400).json({ error: 'Bad id' });
+      await run('DELETE FROM flavor_channel_price_rules WHERE id=?', rid);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  function validatePriceRule(body) {
+    const errors = [];
+    const listing_type = String(body.listing_type || '').trim();
+    if (!LISTING_TYPES.includes(listing_type)) errors.push('listing_type must be one of: ' + LISTING_TYPES.join(', '));
+    const fulfillment = String(body.fulfillment || '').trim().toLowerCase().slice(0, 20);
+    if (!/^[a-z0-9_-]*$/.test(fulfillment)) errors.push('fulfillment must be alphanumeric (or blank)');
+    // Strip a leading $ for tolerance — store the bare number.
+    const priceRaw = String(body.price || '').trim().replace(/^\$/, '');
+    if (!priceRaw) errors.push('price is required');
+    else if (!/^\d+(\.\d{1,2})?$/.test(priceRaw)) errors.push('price must be a positive number with up to 2 decimals (e.g. 12.99)');
+    else if (parseFloat(priceRaw) <= 0) errors.push('price must be greater than 0');
+    return { errors, clean: { listing_type, fulfillment, price: priceRaw } };
+  }
+
+  function shapePriceRule(row) {
+    return {
+      id: row.id,
+      channel_id: row.channel_id,
+      listing_type: row.listing_type,
+      fulfillment: row.fulfillment || '',
+      price: row.price,
+      position: row.position,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
   // ── Settings: product types CRUD ──────────────────────────────────────────
   // The user's curated 10-category taxonomy (Coffee, Cocktails, Fruit,
   // Lattes, Smoothie, Tea, Unique, Coffee & Cocktails, Coffee & Fruit,
@@ -1984,10 +2101,22 @@ module.exports = function attach(app, deps) {
       // the worker can pull title / bullets / description from the
       // approved variants.
       const created = [];
+      // Pre-load every channel's price rules in one shot so each launch-ticket
+      // description can render the exact price per SKU row. The table is
+      // small (one row per channel × listing × fulfillment); grouping in
+      // JS is cheap.
+      const allPriceRules = await all('SELECT * FROM flavor_channel_price_rules');
+      const pricesByChannel = new Map();
+      for (const c of channels) pricesByChannel.set(c.id, []);
+      for (const p of allPriceRules) {
+        if (!pricesByChannel.has(p.channel_id)) pricesByChannel.set(p.channel_id, []);
+        pricesByChannel.get(p.channel_id).push(p);
+      }
       // Per-channel listing-launch ticket.
       for (const c of channels) {
         const desc = buildChannelLaunchDescription(
           f, c, skusByChannel.get(c.id) || [],
+          pricesByChannel.get(c.id) || [],
           imageTicket, ebcTicket
         );
         const checklist = LISTING_TYPES.map(lt =>
@@ -2034,7 +2163,7 @@ module.exports = function attach(app, deps) {
     }
   });
 
-  function buildChannelLaunchDescription(f, channel, skus, imageTicket, ebcTicket) {
+  function buildChannelLaunchDescription(f, channel, skus, priceRules, imageTicket, ebcTicket) {
     // Group SKUs by listing_type so we can show one block per variant with
     // both fulfilments together (relevant for Amazon FBA + FBM).
     const byListing = new Map();
@@ -2042,6 +2171,15 @@ module.exports = function attach(app, deps) {
       if (!byListing.has(s.listing_type)) byListing.set(s.listing_type, []);
       byListing.get(s.listing_type).push(s);
     }
+    // Index price rules by `${listing_type}|${fulfillment}` for O(1) lookup.
+    const priceByKey = new Map();
+    for (const p of (priceRules || [])) {
+      priceByKey.set(`${p.listing_type}|${p.fulfillment || ''}`, p.price);
+    }
+    const priceLabel = (lt, ff) => {
+      const p = priceByKey.get(`${lt}|${ff || ''}`);
+      return p ? `$${p}` : '(no price rule set)';
+    };
     const lines = [];
     let idx = 1;
     for (const lt of LISTING_TYPES) {
@@ -2049,13 +2187,13 @@ module.exports = function attach(app, deps) {
       if (!group.length) continue;
       lines.push(`${idx}. ${LISTING_LABEL_LOCAL[lt] || lt}`);
       for (const s of group) {
+        const price = priceLabel(s.listing_type, s.fulfillment);
         if (s.fulfillment) {
-          lines.push(`     • ${s.fulfillment.toUpperCase()} SKU: ${s.channel_sku}`);
+          lines.push(`     • ${s.fulfillment.toUpperCase()} SKU: ${s.channel_sku}    Price: ${price}`);
         } else {
-          lines.push(`     • SKU: ${s.channel_sku}`);
+          lines.push(`     • SKU: ${s.channel_sku}    Price: ${price}`);
         }
       }
-      lines.push(`     • Price: (per current price rules — TBD setting)`);
       lines.push('');
       idx++;
     }

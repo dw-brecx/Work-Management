@@ -33,9 +33,11 @@
       expandedProductType: null,  // id of the product type whose card is expanded
       expandedChannel: null,      // id of the channel whose patterns sub-table is open
       channelPatterns: {},        // { channelId: [...patterns] } cache
+      channelPrices: {},          // { channelId: [...priceRules] } cache
       channelDefaults: {},        // { channelId: { key: value } } cache
       channelTemplates: {},       // { channelId: { exists, size, uploaded_at } | null }
       addingPatternFor: null,     // channelId — shows the "+ Add pattern" form inline
+      addingPriceFor: null,       // channelId — shows the "+ Add price" form inline
       editingVariation: null,     // null = list view; object = new/edit form
       listingTypes: ['single', 'single_with_pump', '4_pack', '6_pack'],
       editingExample: null,   // null = list view; object = editor open
@@ -1315,9 +1317,73 @@
             }
           </div>
 
+          ${renderChannelPricesBlock(c)}
           ${renderChannelDefaultsBlock(c)}
           ${renderChannelTemplateBlock(c)}
         </div>
+      </div>
+    `;
+  }
+
+  // ── Channel prices editor (per listing × fulfillment) ─────────────────────
+  // Mirrors the SKU-patterns block. One row per combo the user wants priced.
+  // Missing combo means the launch ticket shows "(no price rule set)" for
+  // that SKU so the worker knows it isn't a covered case yet.
+  function renderChannelPricesBlock(c) {
+    const prices = (state.settings.channelPrices || {})[c.id];
+    return `
+      <div class="fv-pt-variant" style="margin-top:8px">
+        <legend>Prices</legend>
+        <p class="fv-muted" style="font-size:11.5px;margin:0 0 8px">
+          One row per (listing type × fulfillment). The channel-launch ticket renders the matching price next to each SKU. No currency conversion — enter the number as it should appear in the worker's marketplace tool.
+        </p>
+        ${prices === undefined
+          ? `<div class="fv-muted" style="font-size:12px">Loading prices…</div>`
+          : prices.length === 0
+            ? `<div class="fv-muted" style="font-size:12px;padding:6px 0">No prices for this channel yet — add the first row below.</div>`
+            : `<table class="fv-table">
+                <thead><tr><th>Listing type</th><th>Fulfilment</th><th>Price</th><th></th></tr></thead>
+                <tbody>
+                  ${prices.map(p => `
+                    <tr>
+                      <td>
+                        <select class="fv-input fv-tinp" data-price-id="${p.id}" data-pr-field="listing_type">
+                          ${state.settings.listingTypes.map(lt => `<option value="${lt}" ${p.listing_type === lt ? 'selected' : ''}>${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</option>`).join('')}
+                        </select>
+                      </td>
+                      <td>
+                        <input class="fv-input fv-tinp" data-price-id="${p.id}" data-pr-field="fulfillment" value="${escapeAttr(p.fulfillment)}" placeholder="fba / fbm / wfs / —" style="max-width:100px"/>
+                      </td>
+                      <td>
+                        <input class="fv-input fv-tinp" data-price-id="${p.id}" data-pr-field="price" value="${escapeAttr(p.price)}" placeholder="12.99" style="max-width:100px;font-family:ui-monospace,Menlo,Consolas,monospace"/>
+                      </td>
+                      <td class="fv-row-actions">
+                        <button class="fv-btn fv-btn-sec fv-btn-sm" data-act="save-price" data-channel-id="${c.id}" data-price-id="${p.id}">Save</button>
+                        <button class="fv-btn fv-btn-ghost fv-btn-sm fv-btn-danger" data-act="delete-price" data-channel-id="${c.id}" data-price-id="${p.id}">Delete</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>`
+        }
+        ${state.settings.addingPriceFor === c.id
+          ? renderAddPriceForm(c.id)
+          : `<button class="fv-btn fv-btn-sec fv-btn-sm" data-act="show-add-price" data-channel-id="${c.id}" style="margin-top:8px">+ Add price row</button>`
+        }
+      </div>
+    `;
+  }
+
+  function renderAddPriceForm(channelId) {
+    return `
+      <div class="fv-add-pattern">
+        <select class="fv-input fv-tinp" id="new-price-listing-${channelId}">
+          ${state.settings.listingTypes.map(lt => `<option value="${lt}">${escapeHtml(LISTING_TYPE_LABELS[lt] || lt)}</option>`).join('')}
+        </select>
+        <input class="fv-input fv-tinp" id="new-price-fulfillment-${channelId}" placeholder="fba / fbm / wfs / blank" style="max-width:140px"/>
+        <input class="fv-input fv-tinp" id="new-price-value-${channelId}" placeholder="12.99" style="max-width:100px;font-family:ui-monospace,Menlo,Consolas,monospace"/>
+        <button class="fv-btn fv-btn-primary fv-btn-sm" data-act="create-price" data-channel-id="${channelId}">Create</button>
+        <button class="fv-btn fv-btn-ghost fv-btn-sm" data-act="cancel-add-price">Cancel</button>
       </div>
     `;
   }
@@ -1772,6 +1838,16 @@
     const totalSkus = patterns.reduce((n) => n + 1, 0);
     const totalLaunchTickets = channelsWithPatterns.length;
 
+    // Compute pattern combos that have no matching price rule, so the user
+    // can fix it before generating. Keyed by `${channelId}|${listing}|${ff}`.
+    const priceKeys = new Set();
+    for (const p of (m.prices || [])) {
+      priceKeys.add(`${p.channel_id}|${p.listing_type}|${p.fulfillment || ''}`);
+    }
+    const skusMissingPrice = patterns.filter(p =>
+      !priceKeys.has(`${p.channel_id}|${p.listing_type}|${p.fulfillment || ''}`)
+    );
+
     function previewSku(p) {
       return String(p.template || '').replace(/\(SKU\)/g, f.sku || '');
     }
@@ -1810,6 +1886,11 @@
             ${channelsWithoutPatterns.length > 0 ? `
               <div class="fv-error" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
                 ⚠ ${channelsWithoutPatterns.length} enabled channel${channelsWithoutPatterns.length === 1 ? '' : 's'} have no SKU patterns and will be <b>skipped</b>: ${channelsWithoutPatterns.map(c => escapeHtml(c.name)).join(', ')}. Add patterns in Settings → Channels.
+              </div>
+            ` : ''}
+            ${skusMissingPrice.length > 0 ? `
+              <div class="fv-error" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
+                ⚠ ${skusMissingPrice.length} SKU${skusMissingPrice.length === 1 ? '' : 's'} will be generated without a price rule and will show "(no price rule set)" in the launch ticket. Add prices in Settings → Channels (Prices block) — you can still generate now and add prices later, but workers will need them before listings go live.
               </div>
             ` : ''}
             <div class="fv-gen-total">
@@ -2059,8 +2140,9 @@
           state.settings.expandedChannel = null;
         } else {
           state.settings.expandedChannel = id;
-          // Lazy-load patterns + defaults + template status when expanded.
+          // Lazy-load patterns + prices + defaults + template status when expanded.
           loadChannelPatterns(id);
+          loadChannelPrices(id);
           loadChannelDefaults(id);
           loadChannelTemplate(id);
         }
@@ -2079,6 +2161,17 @@
       if (name === 'create-pattern')  return createPattern(Number(act.getAttribute('data-channel-id')));
       if (name === 'save-pattern')    return savePattern(Number(act.getAttribute('data-channel-id')), Number(act.getAttribute('data-pattern-id')));
       if (name === 'delete-pattern')  return deletePattern(Number(act.getAttribute('data-channel-id')), Number(act.getAttribute('data-pattern-id')));
+      if (name === 'show-add-price') {
+        state.settings.addingPriceFor = Number(act.getAttribute('data-channel-id'));
+        return render();
+      }
+      if (name === 'cancel-add-price') {
+        state.settings.addingPriceFor = null;
+        return render();
+      }
+      if (name === 'create-price')   return createPrice(Number(act.getAttribute('data-channel-id')));
+      if (name === 'save-price')     return savePrice(Number(act.getAttribute('data-channel-id')), Number(act.getAttribute('data-price-id')));
+      if (name === 'delete-price')   return deletePrice(Number(act.getAttribute('data-channel-id')), Number(act.getAttribute('data-price-id')));
       if (name === 'new-example')     { state.settings.editingExample = blankExample(); return render(); }
       if (name === 'edit-example')    return editExample(Number(act.getAttribute('data-id')));
       if (name === 'cancel-example')  { state.settings.editingExample = null; return render(); }
@@ -2596,6 +2689,76 @@
     } catch (e) { alert('Could not delete: ' + (e.message || '')); }
   }
 
+  // ── Price rules per channel ──────────────────────────────────────────────
+  async function loadChannelPrices(channelId) {
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/price-rules`);
+      state.settings.channelPrices[channelId] = r.ok ? await r.json() : [];
+      render();
+    } catch (_) {
+      state.settings.channelPrices[channelId] = [];
+      render();
+    }
+  }
+
+  async function createPrice(channelId) {
+    const listingEl     = document.getElementById('new-price-listing-' + channelId);
+    const fulfillmentEl = document.getElementById('new-price-fulfillment-' + channelId);
+    const priceEl       = document.getElementById('new-price-value-' + channelId);
+    const body = {
+      listing_type: listingEl ? listingEl.value : 'single',
+      fulfillment: fulfillmentEl ? fulfillmentEl.value.trim() : '',
+      price: priceEl ? priceEl.value.trim() : '',
+    };
+    if (!body.price) { alert('Price is required.'); return; }
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/price-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Create failed');
+      await loadChannelPrices(channelId);
+      state.settings.addingPriceFor = null;
+      render();
+    } catch (e) { alert('Could not create price: ' + (e.message || '')); }
+  }
+
+  async function savePrice(channelId, priceId) {
+    const listingEl     = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="listing_type"]`);
+    const fulfillmentEl = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="fulfillment"]`);
+    const priceEl       = document.querySelector(`[data-price-id="${priceId}"][data-pr-field="price"]`);
+    const body = {
+      listing_type: listingEl ? listingEl.value : undefined,
+      fulfillment: fulfillmentEl ? fulfillmentEl.value.trim() : undefined,
+      price: priceEl ? priceEl.value.trim() : undefined,
+    };
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/price-rules/${priceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Save failed');
+      const list = state.settings.channelPrices[channelId] || [];
+      const idx = list.findIndex(p => p.id === priceId);
+      if (idx !== -1) list[idx] = data;
+      render();
+      flashToast('Price saved.');
+    } catch (e) { alert('Could not save price: ' + (e.message || '')); }
+  }
+
+  async function deletePrice(channelId, priceId) {
+    if (!confirm('Delete this price rule? Tickets that already reference it aren\'t edited — only future launch tickets stop showing the price.')) return;
+    try {
+      const r = await fetch(`/api/flavors2/settings/channels/${channelId}/price-rules/${priceId}`, { method: 'DELETE' });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Delete failed'); }
+      await loadChannelPrices(channelId);
+    } catch (e) { alert('Could not delete: ' + (e.message || '')); }
+  }
+
   async function deleteChannel(id) {
     const row = state.settings.channels.find(c => c.id === id);
     if (!row) return;
@@ -2996,23 +3159,29 @@
 
   // ── Generate channel SKUs + per-channel launch tickets ───────────────────
   async function openGenerateChannelSkus() {
-    state.generateChannelSkusModal = { channels: [], patterns: [], submitting: false, error: '', loading: true };
+    state.generateChannelSkusModal = { channels: [], patterns: [], prices: [], submitting: false, error: '', loading: true };
     render();
     try {
       const chRes = await fetch('/api/flavors2/settings/channels');
       if (!chRes.ok) throw new Error('Could not load channels');
       const channels = await chRes.json();
       state.generateChannelSkusModal.channels = channels;
-      // Fan out: fetch every enabled channel's patterns in parallel so the
-      // preview shows the exact SKUs the server will emit.
-      const patternResults = await Promise.all(
-        channels.filter(c => c.enabled).map(c =>
+      // Fan out: fetch every enabled channel's patterns + price rules in
+      // parallel so the preview shows the exact SKUs the server will emit
+      // and flags SKUs that won't have a price in the launch ticket.
+      const enabled = channels.filter(c => c.enabled);
+      const [patternResults, priceResults] = await Promise.all([
+        Promise.all(enabled.map(c =>
           fetch(`/api/flavors2/settings/channels/${c.id}/sku-patterns`)
-            .then(r => r.ok ? r.json() : [])
-            .catch(() => [])
-        )
-      );
+            .then(r => r.ok ? r.json() : []).catch(() => [])
+        )),
+        Promise.all(enabled.map(c =>
+          fetch(`/api/flavors2/settings/channels/${c.id}/price-rules`)
+            .then(r => r.ok ? r.json() : []).catch(() => [])
+        )),
+      ]);
       state.generateChannelSkusModal.patterns = patternResults.flat();
+      state.generateChannelSkusModal.prices = priceResults.flat();
       state.generateChannelSkusModal.loading = false;
       render();
     } catch (e) {

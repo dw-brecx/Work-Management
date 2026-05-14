@@ -453,6 +453,26 @@ async function init() {
     )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_sku_patterns_unique
        ON flavor_channel_sku_patterns (channel_id, listing_type, fulfillment)`,
+    // Per-(channel × listing_type × fulfillment) price. Used by the channel-
+    // launch ticket descriptions so the worker sees the exact price to enter
+    // in Seller Central / WFS without consulting a separate doc. Same sparse-
+    // matrix shape as flavor_channel_sku_patterns — missing combo just means
+    // no price rule yet (worker will see "(no price rule set)" in the ticket).
+    // price is text so it can hold currency-formatted values exactly as the
+    // user wants them rendered (e.g. "12.99"); validation is "looks like a
+    // positive decimal with up to 2 places".
+    `CREATE TABLE IF NOT EXISTS flavor_channel_price_rules (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL REFERENCES flavor_channels(id) ON DELETE CASCADE,
+      listing_type TEXT NOT NULL,
+      fulfillment TEXT NOT NULL DEFAULT '',
+      price TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_price_rules_unique
+       ON flavor_channel_price_rules (channel_id, listing_type, fulfillment)`,
     // Per-channel listing defaults (Brand, Manufacturer, Item Type Keyword,
     // Country of Origin, etc.). Used by the per-channel flat-file exports
     // (currently just Amazon) so the same Brand/Manufacturer values flow
