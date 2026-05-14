@@ -2634,7 +2634,13 @@ module.exports = function attach(app, deps) {
       const tplStat = fs.statSync(tplPath);
       console.log(`${tag} template=${tplPath} size=${tplStat.size}`);
 
-      const rows = await buildAmazonRowsForFlavor(flavor, channel);
+      // Resolve column letters for fields whose location can vary across
+      // Amazon template revisions (currently just standard_price). Skipped
+      // fields land as blank cells, which Amazon treats as "no change".
+      const fieldCols = await resolveAmazonFieldColumns(tplPath, ['standard_price']);
+      console.log(`${tag} resolved field cols: ${JSON.stringify(fieldCols)}`);
+
+      const rows = await buildAmazonRowsForFlavor(flavor, channel, fieldCols);
       console.log(`${tag} built ${rows.length} rows`);
       if (!rows.length) {
         return res.status(409).json({ error: 'No channel SKUs for this flavor on Amazon. Generate channel SKUs first.' });
@@ -2704,7 +2710,8 @@ module.exports = function attach(app, deps) {
     };
   }
 
-  async function buildAmazonRowsForFlavor(flavor, channel) {
+  async function buildAmazonRowsForFlavor(flavor, channel, fieldCols) {
+    fieldCols = fieldCols || {};
     const skus = await all(
       'SELECT * FROM flavor_channel_skus WHERE flavor_id=? AND channel_id=? ORDER BY listing_type, fulfillment',
       flavor.id, channel.id
@@ -2726,6 +2733,24 @@ module.exports = function attach(app, deps) {
     );
     const defaults = {};
     for (const d of defaultRows) defaults[d.key] = d.value;
+
+    // Price rules — exact (flavor_type) match wins, 'any' is the fallback.
+    // Same convention as the launch-ticket lookup so flat-file rows agree
+    // with the worker's ticket text.
+    const priceRules = await all(
+      'SELECT * FROM flavor_channel_price_rules WHERE channel_id=?', channel.id
+    );
+    function priceFor(lt, ff) {
+      const fulfillment = ff || '';
+      const exact = priceRules.find(p =>
+        p.flavor_type === flavor.type && p.listing_type === lt && (p.fulfillment || '') === fulfillment
+      );
+      if (exact) return exact.price;
+      const any = priceRules.find(p =>
+        (p.flavor_type || 'any') === 'any' && p.listing_type === lt && (p.fulfillment || '') === fulfillment
+      );
+      return any ? any.price : '';
+    }
 
     // Variation matches by listing_type so the row can fill parent SKU.
     const variations = await all(
@@ -2793,6 +2818,14 @@ module.exports = function attach(app, deps) {
         }
         if (v !== '' && v !== null && v !== undefined) row[col] = String(v);
       }
+      // Field-name-resolved columns (column letter looked up from the
+      // template's row-3 field names rather than hardcoded). Only set when
+      // the template actually contains the field — otherwise we'd risk
+      // overwriting an unrelated column.
+      if (fieldCols.standard_price) {
+        const price = priceFor(sku.listing_type, sku.fulfillment);
+        if (price) row[fieldCols.standard_price] = String(price);
+      }
       rows.push(row);
     }
     return rows;
@@ -2802,6 +2835,67 @@ module.exports = function attach(app, deps) {
     return String(s).replace(/[&<>"']/g, c =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c])
     );
+  }
+
+  // Read sheet5.xml row 3 (Amazon's "field name" row) and resolve technical
+  // field names like 'standard_price' to their column letter. Returns
+  // `{ fieldName: letter }`; missing names are simply absent from the result.
+  // Falls back to {} on any parse failure — the caller is expected to
+  // proceed without those columns (typically: blank cells, Amazon treats as
+  // "no change") rather than block the entire export.
+  async function resolveAmazonFieldColumns(templatePath, fieldNames) {
+    try {
+      const tplBuf = fs.readFileSync(templatePath);
+      const zip = await JSZip.loadAsync(tplBuf);
+      const sheetFile  = zip.file('xl/worksheets/sheet5.xml');
+      const sharedFile = zip.file('xl/sharedStrings.xml');
+      if (!sheetFile) return {};
+
+      const [sheetXml, sharedXml] = await Promise.all([
+        sheetFile.async('string'),
+        sharedFile ? sharedFile.async('string') : Promise.resolve(''),
+      ]);
+
+      // Shared strings table: ordered list of <si>…</si> with inner <t>s.
+      // We collect each <si>'s plain text so cells with t="s" can index in.
+      const sharedStrings = [];
+      const siRegex = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
+      let sm;
+      while ((sm = siRegex.exec(sharedXml)) !== null) {
+        const text = sm[1].replace(/<rPh[\s\S]*?<\/rPh>/g, '').replace(/<[^>]+>/g, '');
+        sharedStrings.push(text);
+      }
+
+      const row3Match = /<row r="3"[^>]*>([\s\S]*?)<\/row>/.exec(sheetXml);
+      if (!row3Match) return {};
+
+      const want = new Set(fieldNames);
+      const out = {};
+      const cellRegex = /<c r="([A-Z]+)3"([^>]*)>([\s\S]*?)<\/c>/g;
+      let cm;
+      while ((cm = cellRegex.exec(row3Match[1])) !== null) {
+        const col = cm[1];
+        const attrs = cm[2] || '';
+        const body = cm[3];
+        let value = '';
+        if (/t="s"/.test(attrs)) {
+          const vm = /<v>(\d+)<\/v>/.exec(body);
+          if (vm) value = sharedStrings[Number(vm[1])] || '';
+        } else if (/t="inlineStr"/.test(attrs)) {
+          const tm = /<t[^>]*>([\s\S]*?)<\/t>/.exec(body);
+          if (tm) value = tm[1];
+        } else if (/t="str"/.test(attrs)) {
+          const vm = /<v>([\s\S]*?)<\/v>/.exec(body);
+          if (vm) value = vm[1];
+        }
+        value = String(value || '').trim();
+        if (want.has(value) && !out[value]) out[value] = col;
+      }
+      return out;
+    } catch (e) {
+      console.warn('[flavors2 amazon-export] resolveAmazonFieldColumns failed:', e.message);
+      return {};
+    }
   }
 
   async function injectRowsIntoTemplate(templatePath, rows) {
