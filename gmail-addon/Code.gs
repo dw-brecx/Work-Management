@@ -286,6 +286,13 @@ function createTicket_(e) {
   try { body = JSON.parse(resp.getContentText() || '{}'); } catch (_) { body = {}; }
   if (code >= 200 && code < 300) {
     var label = body.duplicate ? ('Already created as ' + body.ticketId) : ('Ticket ' + body.ticketId + ' created');
+    // Buttons must live inside a ButtonSet — adding a TextButton directly
+    // as a section widget produces a "value cannot be used by the add-ons
+    // platform" runtime error from Card Service.
+    var openBtn = CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText('Open ticket')
+        .setOpenLink(CardService.newOpenLink().setUrl(body.url || s.appUrl)));
     var success = CardService.newCardBuilder()
       .setHeader(CardService.newCardHeader().setTitle(label))
       .addSection(CardService.newCardSection()
@@ -294,9 +301,7 @@ function createTicket_(e) {
             ? ('Note: ' + body.attachments.rejected.length + ' attachment(s) were skipped (size or type).')
             : 'Saved to your workspace.'
         ))
-        .addWidget(CardService.newTextButton()
-          .setText('Open ticket')
-          .setOpenLink(CardService.newOpenLink().setUrl(body.url || s.appUrl))));
+        .addWidget(openBtn));
     return CardService.newActionResponseBuilder()
       .setNotification(CardService.newNotification().setText(label))
       .setNavigation(CardService.newNavigation().pushCard(success.build()))
