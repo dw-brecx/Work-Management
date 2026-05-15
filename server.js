@@ -793,7 +793,10 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
       const myName = u.name;
       const myId = u.id;
       const needsMyAttention = (t) => {
-        if (t.status === 'Closed') return false;
+        // "Done"-state tickets (Closed or Archived) never count as unread,
+        // even when the current user is the assignee — they're finished
+        // and shouldn't pile back into the attention bucket.
+        if (t.status === 'Closed' || t.status === 'Archived') return false;
         if (t.assignee_user_id === myId) return true;
         if (!t.assignee_user_id && t.assignee === myName) return true;
         if (t.reporter_user_id === myId) return true;
@@ -4226,9 +4229,9 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
     // stale / completed-today. "Needs my attention" = I'm the assignee
     // (primary or additional), reporter, or requester. NOT just creator,
     // since admins create lots of tickets they aren't otherwise tied to.
-    // Also: closed tickets are done — they never count as unread.
+    // Closed/Archived tickets are done — they never count as unread.
     const attentionSql = `(
-      t.status != 'Closed'
+      t.status NOT IN ('Closed', 'Archived')
       AND (
         t.assignee_user_id = ?
         OR (t.assignee_user_id IS NULL AND t.assignee = ?)
