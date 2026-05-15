@@ -4,7 +4,7 @@ const session = require('express-session');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
-const { randomUUID } = require('crypto');
+const { randomUUID, randomBytes, createHash } = require('crypto');
 const multer = require('multer');
 const webpush = require('web-push');
 const { pool, init: initDb, get, all, run, safeAlter, withTx } = require('./db');
@@ -4967,6 +4967,327 @@ async function runOverdueDigestJob() {
 // (Catch-all SPA handler is registered at the very end of route setup so it
 //  doesn't swallow GET requests for /api/bridge/*, /api/chat/*, etc. — see
 //  the block right before "── Start ──".)
+
+// ── Per-user API tokens & Gmail email-to-ticket inbound ─────────────────────
+// Tokens authenticate as a specific user (unlike CROSS_APP_SECRET which is a
+// shared server-to-server secret). Used today by the Gmail add-on so a user
+// can turn an open email into a ticket from inside Gmail. The raw token is
+// returned exactly once on creation; we persist only its SHA-256 hash.
+const TOKEN_PREFIX = 'wm_';
+function hashToken(raw) {
+  return createHash('sha256').update(String(raw || '')).digest('hex');
+}
+function rateLimitBy(keyFn, { windowMs, max }) {
+  const buckets = new Map();
+  return (req, res, next) => {
+    const k = keyFn(req);
+    if (!k) return next();
+    const now = Date.now();
+    let b = buckets.get(k);
+    if (!b || b.resetAt < now) { b = { resetAt: now + windowMs, count: 0 }; buckets.set(k, b); }
+    b.count++;
+    if (b.count > max) {
+      res.setHeader('Retry-After', Math.ceil((b.resetAt - now) / 1000));
+      return res.status(429).json({ error: 'Too many requests' });
+    }
+    next();
+  };
+}
+
+// Look up Bearer-token auth and attach { apiUser, apiTokenId } to req on
+// success. Returns 401 with no body shape leakage when the token is missing
+// or unknown so probing can't distinguish "wrong token" from "expired".
+async function requireApiToken(req, res, next) {
+  try {
+    const h = req.headers['authorization'] || '';
+    const m = /^Bearer\s+(.+)$/i.exec(h);
+    if (!m) return res.status(401).json({ error: 'Unauthorized' });
+    const raw = m[1].trim();
+    if (!raw) return res.status(401).json({ error: 'Unauthorized' });
+    const hash = hashToken(raw);
+    const row = await get(
+      `SELECT t.id AS token_id, t.user_id, u.id, u.name, u.email, u.perm_role
+         FROM user_api_tokens t
+         JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash = ?`,
+      hash
+    );
+    if (!row) return res.status(401).json({ error: 'Unauthorized' });
+    req.apiUser = { id: row.user_id, name: row.name, email: row.email, perm_role: row.perm_role };
+    req.apiTokenId = row.token_id;
+    // Best-effort last-used stamp; never blocks the request.
+    run(
+      "UPDATE user_api_tokens SET last_used_at = TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+      row.token_id
+    ).catch(() => {});
+    next();
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}
+
+// CORS for inbound endpoints called from Apps Script (UrlFetchApp doesn't
+// send a browser Origin, but a future browser-side caller would). Wide-open
+// because the bearer token does the authentication.
+function inboundCors(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+}
+
+// List the current user's API tokens (without raw values).
+app.get('/api/api-tokens', requireAuth, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT id, token_prefix, name, source, created_at, last_used_at
+         FROM user_api_tokens WHERE user_id=? ORDER BY id DESC`,
+      req.session.userId
+    );
+    res.json(rows || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Serve the Gmail add-on source files to the setup page so users can copy
+// them without leaving the app. Reads from disk on each request so an
+// edit to gmail-addon/ shows up immediately. Cached in-memory after first
+// hit to keep this cheap.
+let _gmailAddonSnippetsCache = null;
+app.get('/api/gmail-addon-snippets', requireAuth, async (req, res) => {
+  try {
+    if (!_gmailAddonSnippetsCache) {
+      const codeGsPath = path.join(__dirname, 'gmail-addon', 'Code.gs');
+      const manifestPath = path.join(__dirname, 'gmail-addon', 'appsscript.json');
+      _gmailAddonSnippetsCache = {
+        codeGs: fs.existsSync(codeGsPath) ? fs.readFileSync(codeGsPath, 'utf8') : '',
+        manifest: fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, 'utf8') : '',
+      };
+    }
+    res.json(_gmailAddonSnippetsCache);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Create a new API token for the current user. The raw token is returned
+// ONCE and never stored — the user must copy it now.
+app.post('/api/api-tokens', requireAuth, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim().slice(0, 80) || 'API token';
+    const source = String(req.body?.source || '').trim().slice(0, 40);
+    // Cap to a sane number of live tokens per user to keep the table tidy.
+    const countRow = await get('SELECT COUNT(*) AS n FROM user_api_tokens WHERE user_id=?', req.session.userId);
+    if (Number(countRow?.n || 0) >= 20) {
+      return res.status(400).json({ error: 'Too many tokens. Revoke one before creating another.' });
+    }
+    const raw = TOKEN_PREFIX + randomBytes(24).toString('hex');
+    const prefix = raw.slice(0, 11);
+    const hash = hashToken(raw);
+    const info = await run(
+      `INSERT INTO user_api_tokens (user_id, token_hash, token_prefix, name, source) VALUES (?,?,?,?,?) RETURNING id`,
+      req.session.userId, hash, prefix, name, source
+    );
+    res.status(201).json({ id: Number(info.lastInsertRowid), token: raw, prefix, name, source });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Revoke a token (owned by the calling user).
+app.delete('/api/api-tokens/:id', requireAuth, async (req, res) => {
+  try {
+    const tid = Number(req.params.id);
+    const own = await get('SELECT id FROM user_api_tokens WHERE id=? AND user_id=?', tid, req.session.userId);
+    if (!own) return res.status(404).json({ error: 'Not found' });
+    await run('DELETE FROM user_api_tokens WHERE id=?', tid);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Same mime/extension allowlist multer uses on the regular upload route —
+// applied here so an email attachment can't smuggle in an executable.
+function attachmentMimeAllowed(name, mime) {
+  const m = String(mime || '').toLowerCase();
+  const lname = String(name || '').toLowerCase();
+  const ext = lname.includes('.') ? lname.split('.').pop() : '';
+  const safeImage = /^image\/(png|jpeg|jpg|gif|webp|bmp|heic|heif)$/.test(m)
+    || ['png','jpg','jpeg','gif','webp','bmp','heic','heif'].includes(ext);
+  const safeAudio = /^audio\//.test(m);
+  const safeVideo = /^video\/(webm|mp4|quicktime|x-matroska)\b/.test(m) || ['mp4','mov','webm'].includes(ext);
+  const safePdf   = m === 'application/pdf' || ext === 'pdf';
+  const safeOffice = [
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ].includes(m) || ['doc','docx','xls','xlsx','ppt','pptx'].includes(ext);
+  const safeText = /^text\/(plain|csv)$/.test(m) || ['txt','csv','log'].includes(ext);
+  const safeArchive = m === 'application/zip' || ext === 'zip';
+  return safeImage || safeAudio || safeVideo || safePdf || safeOffice || safeText || safeArchive;
+}
+
+// Per-attachment + total caps so a single email can't fill the disk.
+const INBOUND_MAX_PER_FILE = 20 * 1024 * 1024;  // 20 MB
+const INBOUND_MAX_TOTAL    = 40 * 1024 * 1024;  // 40 MB across all attachments
+
+// POST /api/inbound/gmail-addon — Bearer-token authenticated. Accepts a
+// parsed-email payload from the Gmail add-on and creates a ticket as the
+// token's owner. Attachments arrive as base64 in JSON; we decode + write
+// to UPLOADS_DIR like a regular upload and join via the attachments table.
+app.options('/api/inbound/gmail-addon', inboundCors);
+app.post(
+  '/api/inbound/gmail-addon',
+  inboundCors,
+  rateLimitBy(req => (req.headers['authorization'] || '').slice(-32), { windowMs: 60 * 1000, max: 30 }),
+  requireApiToken,
+  async (req, res) => {
+    try {
+      // Probe path: the add-on's Settings → "Test connection" button posts
+      // { probe: true } to verify the token resolves. Short-circuit before
+      // any DB writes so the test never creates a real ticket.
+      if (req.body && req.body.probe === true) {
+        return res.json({ ok: true, probe: true, as: req.apiUser.name });
+      }
+      const {
+        subject, from_name, from_email, body_text, body_html,
+        message_id, thread_id, received_at,
+        priority, dept, due,
+        attachments,
+      } = (req.body || {});
+
+      const cleanSubject = String(subject || '').trim().slice(0, 200) || '(no subject)';
+      const cleanFromName = String(from_name || '').trim().slice(0, 120);
+      const cleanFromEmail = String(from_email || '').trim().slice(0, 200);
+      const cleanBodyText = String(body_text || '').slice(0, 40000);
+
+      // Idempotency: if this Gmail message already produced a ticket, hand
+      // back the existing one rather than spawning a duplicate. Lets the
+      // add-on retry safely (network blip, double-click, etc.).
+      const sourceEmailId = String(message_id || '').trim().slice(0, 200) || null;
+      if (sourceEmailId) {
+        const existing = await get(
+          'SELECT id FROM tickets WHERE source_email_id=? AND deleted_at IS NULL',
+          sourceEmailId
+        );
+        if (existing) {
+          return res.status(200).json({
+            ticketId: existing.id,
+            url: `/tickets/${existing.id}`,
+            duplicate: true,
+          });
+        }
+      }
+
+      // Allocate a TKT-### id the same way the regular POST /api/tickets does.
+      let id = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+        let nextNum = 1000;
+        if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+        const candidate = 'TKT-' + (nextNum + 1);
+        if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
+      }
+      if (!id) return res.status(500).json({ error: 'Could not allocate ticket id' });
+
+      const me = req.apiUser;
+      const requesterLine = cleanFromName
+        ? (cleanFromEmail ? `${cleanFromName} <${cleanFromEmail}>` : cleanFromName)
+        : cleanFromEmail;
+      const metaLines = [];
+      if (requesterLine) metaLines.push(`From: ${requesterLine}`);
+      if (received_at)   metaLines.push(`Received: ${received_at}`);
+      const description = (metaLines.length
+        ? metaLines.join('\n') + '\n\n' + cleanBodyText
+        : cleanBodyText
+      ).trim();
+
+      console.log(`[inbound:gmail] INSERT ${id} "${cleanSubject.slice(0,80)}" by user ${me.id} from <${cleanFromEmail}>`);
+      // Semantic mapping for an email-sourced ticket:
+      //   req       = the external sender (raw "Name <email>") — no
+      //               user_id since they aren't in the workspace, so
+      //               buildTicket's name-resolution doesn't clobber it.
+      //   reporter  = the workspace user who filed it (token owner).
+      //   assignee  = same default as reporter; can be reassigned later.
+      await run(
+        `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,source_email_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
+        id, cleanSubject,
+        requesterLine || '',
+        me.name,
+        me.name,
+        (priority && ['Low','Medium','High','Critical'].includes(priority)) ? priority : 'Medium',
+        'Open',
+        String(dept || '').trim() || 'General',
+        String(due || '').trim(),
+        '',
+        0,
+        '[]',
+        me.id,                                     // created_by
+        me.id,                                     // assignee_user_id (token owner)
+        me.id,                                     // reporter_user_id (token owner)
+        null,                                      // req_user_id — external sender, keep raw text
+        sourceEmailId,
+      );
+
+      await run(
+        `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+         ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+        id, description
+      );
+
+      // Decode + persist each attachment. Failures on individual files are
+      // logged and skipped — we'd rather create the ticket with 4-of-5
+      // attachments than reject the whole submission for one bad file.
+      const accepted = [];
+      const rejected = [];
+      let totalBytes = 0;
+      if (Array.isArray(attachments)) {
+        for (const att of attachments) {
+          try {
+            const name = String(att?.name || '').slice(0, 240) || 'attachment';
+            const mime = String(att?.mimeType || 'application/octet-stream').slice(0, 120);
+            const b64  = String(att?.dataBase64 || '');
+            if (!b64) { rejected.push({ name, reason: 'empty' }); continue; }
+            if (!attachmentMimeAllowed(name, mime)) {
+              rejected.push({ name, reason: 'mime not allowed' });
+              continue;
+            }
+            const buf = Buffer.from(b64, 'base64');
+            if (!buf.length) { rejected.push({ name, reason: 'empty after decode' }); continue; }
+            if (buf.length > INBOUND_MAX_PER_FILE) {
+              rejected.push({ name, reason: `too large (${buf.length} bytes)` });
+              continue;
+            }
+            if (totalBytes + buf.length > INBOUND_MAX_TOTAL) {
+              rejected.push({ name, reason: 'total size cap reached' });
+              continue;
+            }
+            const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
+            const fname = randomUUID() + ext;
+            fs.writeFileSync(path.join(UPLOADS_DIR, fname), buf);
+            totalBytes += buf.length;
+            await run(
+              'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,doc_id,chat_message_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
+              id, null, null, null, null, null, null, null,
+              fname, name, mime, buf.length, me.name
+            );
+            accepted.push({ name, size: buf.length });
+          } catch (e) {
+            console.error('[inbound:gmail] attachment failed:', e.message);
+            rejected.push({ name: att?.name || '?', reason: e.message });
+          }
+        }
+      }
+
+      const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
+      res.status(201).json({
+        ticketId: id,
+        url: `${appUrl}/tickets/${id}`,
+        attachments: { accepted, rejected },
+      });
+    } catch (e) {
+      console.error('[inbound:gmail] error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
 
 // ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
 // Cross-app API for syncing tickets ↔ Syruvia Lab flavors.

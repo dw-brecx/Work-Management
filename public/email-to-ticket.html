@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Email → Ticket · Gmail Add-on Setup</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#4f46e5;--accent2:#7c3aed;
+  --bg:#f5f3ff;--card:#fff;--border:#e0e7ff;
+  --text:#1e1b4b;--text2:#4c4a7a;--text3:#9b99c5;
+  --red:#dc2626;--green:#16a34a;--amber:#d97706;
+  --mute-bg:#f7f7fb;
+}
+html,body{height:100%}
+body{
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  background:
+    radial-gradient(ellipse at 20% 0%,rgba(79,70,229,.18) 0%,transparent 50%),
+    radial-gradient(ellipse at 80% 100%,rgba(124,58,237,.14) 0%,transparent 50%),
+    linear-gradient(160deg,#f0eeff 0%,#fafafe 60%,#f0f4ff 100%);
+  min-height:100vh;font-size:13.5px;color:var(--text);
+  padding:40px 24px;
+}
+.wrap{max-width:820px;margin:0 auto}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.header a{color:var(--text2);text-decoration:none;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.header a:hover{color:var(--accent)}
+.title{font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:6px}
+.subtitle{color:var(--text2);font-size:13px;margin-bottom:28px}
+.card{
+  background:rgba(255,255,255,.97);
+  border:1px solid rgba(224,231,255,.8);
+  border-radius:18px;
+  box-shadow:0 6px 30px rgba(79,70,229,.08),0 1px 0 rgba(255,255,255,.8) inset;
+  padding:24px 26px;margin-bottom:18px;
+}
+.card h2{font-size:15px;font-weight:800;letter-spacing:-.01em;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.card h2 .step{
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;
+  width:22px;height:22px;border-radius:8px;font-size:11.5px;
+  display:inline-flex;align-items:center;justify-content:center;font-weight:700;
+}
+.card p.lede{color:var(--text2);font-size:12.5px;line-height:1.55;margin-bottom:14px}
+.btn{
+  padding:9px 16px;border:none;border-radius:10px;font-size:13px;font-weight:700;
+  cursor:pointer;font-family:inherit;letter-spacing:-.005em;
+  background:linear-gradient(135deg,#4f46e5,#7c3aed);
+  color:#fff;box-shadow:0 4px 16px rgba(79,70,229,.28);
+  transition:.18s ease;
+}
+.btn:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(79,70,229,.36)}
+.btn:disabled{opacity:.55;cursor:default;transform:none;box-shadow:none}
+.btn.ghost{
+  background:#fff;color:var(--text);border:1.5px solid var(--border);box-shadow:none;
+}
+.btn.ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn.danger{background:#fff;color:var(--red);border:1.5px solid #fecaca;box-shadow:none}
+.btn.danger:hover{background:#fef2f2}
+.token-box{
+  background:var(--mute-bg);border:1.5px dashed var(--border);
+  border-radius:12px;padding:14px 16px;margin-top:12px;
+  font-family:'SF Mono','Menlo','Consolas',monospace;
+  font-size:12.5px;color:var(--text);
+  display:flex;align-items:center;gap:10px;word-break:break-all;
+}
+.token-box.fresh{border-color:#bbf7d0;background:#f0fdf4}
+.token-box code{flex:1;line-height:1.4}
+.copy-btn{
+  background:#fff;border:1px solid var(--border);color:var(--text2);
+  padding:6px 10px;border-radius:8px;font-size:11.5px;font-weight:700;cursor:pointer;
+  font-family:inherit;flex-shrink:0;
+}
+.copy-btn:hover{border-color:var(--accent);color:var(--accent)}
+.warn{
+  background:#fffbeb;border:1.5px solid #fde68a;color:#92400e;
+  font-size:12px;padding:10px 13px;border-radius:10px;margin-top:10px;line-height:1.5;
+}
+.warn strong{color:#78350f}
+input.label-input{
+  padding:9px 12px;border:1.5px solid var(--border);border-radius:10px;
+  font-size:13px;color:var(--text);background:#fff;outline:none;font-family:inherit;
+  width:240px;
+}
+input.label-input:focus{border-color:var(--accent);box-shadow:0 0 0 4px rgba(79,70,229,.1)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.token-list{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.token-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  background:var(--mute-bg);border:1px solid var(--border);border-radius:10px;
+  padding:10px 14px;
+}
+.token-row .meta{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.token-row .name{font-weight:700;font-size:12.5px;color:var(--text)}
+.token-row .sub{font-size:11.5px;color:var(--text3);font-family:'SF Mono',monospace}
+.empty{color:var(--text3);font-size:12.5px;font-style:italic;padding:10px 0}
+ol.steps{margin:8px 0 0 18px;font-size:12.5px;color:var(--text2);line-height:1.7}
+ol.steps li{margin-bottom:6px}
+ol.steps code,p code,.code-pill{
+  background:#f1f5ff;border:1px solid #e0e7ff;color:#4338ca;
+  padding:1px 6px;border-radius:6px;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:11.5px;
+}
+.app-url-box{
+  background:var(--mute-bg);border:1.5px dashed var(--border);border-radius:10px;
+  padding:10px 14px;margin-top:8px;font-family:'SF Mono','Menlo','Consolas',monospace;
+  font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:10px;
+}
+.app-url-box code{flex:1;word-break:break-all}
+.copy-feedback{
+  font-size:11px;color:var(--green);font-weight:700;
+  opacity:0;transition:opacity .2s;
+}
+.copy-feedback.show{opacity:1}
+details{margin-top:10px}
+details summary{font-size:12.5px;color:var(--text2);cursor:pointer;font-weight:600;padding:4px 0}
+details summary:hover{color:var(--accent)}
+details pre{
+  background:#0f172a;color:#e2e8f0;
+  padding:14px 16px;border-radius:10px;margin-top:8px;
+  font-family:'SF Mono','Menlo','Consolas',monospace;font-size:11.5px;line-height:1.55;
+  white-space:pre-wrap;word-break:break-all;
+}
+.muted{color:var(--text3);font-size:11.5px}
+@media (max-width:560px){
+  body{padding:24px 14px}
+  .card{padding:18px 18px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <a href="/">&larr; Back to app</a>
+    <span id="who" class="muted"></span>
+  </div>
+
+  <div class="title">Email &rarr; Ticket</div>
+  <p class="subtitle">Install the Gmail add-on so you can turn any email into a ticket from inside Gmail.</p>
+
+  <!-- Step 1: API token -->
+  <div class="card">
+    <h2><span class="step">1</span> Generate an API token</h2>
+    <p class="lede">
+      The add-on uses this token to create tickets <em>as you</em>. Treat it like a password — anyone with this token can act in your account.
+    </p>
+    <div class="row">
+      <input type="text" class="label-input" id="tokenName" placeholder="e.g. Gmail (Solomon)" maxlength="80"/>
+      <button class="btn" id="genBtn">Generate token</button>
+    </div>
+
+    <div id="freshToken" style="display:none">
+      <div class="token-box fresh">
+        <code id="freshTokenVal"></code>
+        <button class="copy-btn" data-copy-target="#freshTokenVal">Copy</button>
+        <span class="copy-feedback" id="freshCopyFb">Copied</span>
+      </div>
+      <div class="warn">
+        <strong>Copy this now.</strong> For your security, we don't store the raw token — once you leave this page it can't be shown again. Lost it? Just revoke it below and generate a new one.
+      </div>
+    </div>
+
+    <div class="token-list" id="tokenList"></div>
+  </div>
+
+  <!-- Step 2: App URL -->
+  <div class="card">
+    <h2><span class="step">2</span> Copy your app URL</h2>
+    <p class="lede">You'll paste this into the add-on so it knows where to send tickets.</p>
+    <div class="app-url-box">
+      <code id="appUrl"></code>
+      <button class="copy-btn" data-copy-target="#appUrl">Copy</button>
+      <span class="copy-feedback" id="urlCopyFb">Copied</span>
+    </div>
+  </div>
+
+  <!-- Step 3: Install the add-on -->
+  <div class="card">
+    <h2><span class="step">3</span> Install the Gmail add-on</h2>
+    <p class="lede">One-time setup in Google Apps Script. Takes about 3 minutes.</p>
+    <ol class="steps">
+      <li>Open <a href="https://script.google.com/home" target="_blank" rel="noopener">script.google.com</a> and click <strong>New project</strong>.</li>
+      <li>Replace the default <code>Code.gs</code> contents with the code below, then save (<code>Ctrl/Cmd + S</code>).</li>
+      <li>Click the gear icon (<strong>Project Settings</strong>) &rarr; check <strong>Show "appsscript.json" manifest file</strong>.</li>
+      <li>Back in the editor, click <code>appsscript.json</code> and paste in the manifest below. Save again.</li>
+      <li>Click <strong>Deploy &rarr; Test deployments</strong>. Select <strong>Gmail</strong>, click <strong>Install</strong>, allow the requested permissions.</li>
+      <li>Reload Gmail. Open any email. You'll see a new icon in the right-hand sidebar &mdash; click it.</li>
+      <li>In the add-on sidebar, click <strong>Settings</strong>, paste your <strong>API token</strong> and <strong>App URL</strong>, save.</li>
+      <li>Open an email, click the add-on icon, hit <strong>Create Ticket</strong>. Done.</li>
+    </ol>
+
+    <details open>
+      <summary>Show <code>Code.gs</code></summary>
+      <pre id="codeGsSnippet">Loading…</pre>
+    </details>
+    <details>
+      <summary>Show <code>appsscript.json</code></summary>
+      <pre id="manifestSnippet">Loading…</pre>
+    </details>
+    <p class="muted" style="margin-top:14px">
+      Prefer the command line? The same files are in the repo under <code>gmail-addon/</code> — you can <code>clasp push</code> them.
+    </p>
+  </div>
+</div>
+
+<script src="/email-to-ticket.js"></script>
+</body>
+</html>
