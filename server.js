@@ -5048,21 +5048,18 @@ app.get('/api/api-tokens', requireAuth, async (req, res) => {
 });
 
 // Serve the Gmail add-on source files to the setup page so users can copy
-// them without leaving the app. Reads from disk on each request so an
-// edit to gmail-addon/ shows up immediately. Cached in-memory after first
-// hit to keep this cheap.
-let _gmailAddonSnippetsCache = null;
+// them without leaving the app. Reads fresh from disk on every request so
+// a deploy that updates gmail-addon/ shows the new code to users
+// immediately — no server restart needed.
 app.get('/api/gmail-addon-snippets', requireAuth, async (req, res) => {
   try {
-    if (!_gmailAddonSnippetsCache) {
-      const codeGsPath = path.join(__dirname, 'gmail-addon', 'Code.gs');
-      const manifestPath = path.join(__dirname, 'gmail-addon', 'appsscript.json');
-      _gmailAddonSnippetsCache = {
-        codeGs: fs.existsSync(codeGsPath) ? fs.readFileSync(codeGsPath, 'utf8') : '',
-        manifest: fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, 'utf8') : '',
-      };
-    }
-    res.json(_gmailAddonSnippetsCache);
+    const codeGsPath = path.join(__dirname, 'gmail-addon', 'Code.gs');
+    const manifestPath = path.join(__dirname, 'gmail-addon', 'appsscript.json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      codeGs: fs.existsSync(codeGsPath) ? fs.readFileSync(codeGsPath, 'utf8') : '',
+      manifest: fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, 'utf8') : '',
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
