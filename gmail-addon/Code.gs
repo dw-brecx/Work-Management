@@ -155,6 +155,14 @@ function fetchOptions_() {
   } catch (_) { return null; }
 }
 
+// Render a bold label above a widget. Avoids the CardService bug where
+// SelectionInput.setTitle() floats over the selected dropdown value and
+// reads as overlapping text.
+function labeledRow_(section, label, widget) {
+  section.addWidget(CardService.newTextParagraph().setText('<b>' + label + '</b>'));
+  section.addWidget(widget);
+}
+
 function buildMessageCard_(messageId) {
   var msg = GmailApp.getMessageById(messageId);
   var subject = msg.getSubject() || '(no subject)';
@@ -173,92 +181,86 @@ function buildMessageCard_(messageId) {
     .addWidget(CardService.newKeyValue().setTopLabel('Subject').setContent(escapeHtml_(subject)))
     .addWidget(CardService.newKeyValue().setTopLabel('From').setContent(escapeHtml_(fromRaw || '(unknown)')));
   if (atts.length) {
-    // Attachments are always included now — the old checkbox toggle was
-    // unreliable across Apps Script form-input shapes, so we drop it. Tell
-    // the user what'll be attached so there's no surprise.
     preview.addWidget(CardService.newKeyValue()
       .setTopLabel('Attachments')
       .setContent(String(atts.length) + ' file' + (atts.length === 1 ? '' : 's') + ' will be attached'));
   }
+  // Heads-up when /api/inbound/options can't be reached — usually means the
+  // app hasn't been redeployed with the latest server code, so the user can
+  // only see themselves in the dropdowns.
+  if (!opts) {
+    preview.addWidget(CardService.newTextParagraph().setText(
+      '<font color="#b45309">⚠ Couldn\'t load your workspace user list — update the app or check the API URL/token.</font>'
+    ));
+  }
   card.addSection(preview);
 
-  // ── Title + people ────────────────────────────────────────────────────────
-  var basics = CardService.newCardSection();
-  basics.addWidget(CardService.newTextInput()
-    .setFieldName('title').setTitle('Title').setValue(subject));
+  // ── Title ─────────────────────────────────────────────────────────────────
+  var titleSection = CardService.newCardSection();
+  labeledRow_(titleSection, 'Title',
+    CardService.newTextInput().setFieldName('title').setValue(subject));
+  card.addSection(titleSection);
 
-  // Requester defaults to the external email sender (raw text) — the
-  // empty value tells the server to use that fallback. Picking a
-  // workspace user overrides it.
+  // ── Requester / Reporter / Assignee ───────────────────────────────────────
+  var people = CardService.newCardSection();
+
   var reqInput = CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('requester').setTitle('Requester')
-    .addItem('Email sender (' + (fromRaw || 'unknown') + ')', '', true);
-  for (var i = 0; i < users.length; i++) {
-    reqInput.addItem(users[i].name, users[i].name, false);
-  }
-  basics.addWidget(reqInput);
+    .setFieldName('requester')
+    .addItem('Use email sender', '', true);
+  for (var i = 0; i < users.length; i++) reqInput.addItem(users[i].name, users[i].name, false);
+  labeledRow_(people, 'Requester', reqInput);
 
-  // Reporter defaults to "me" (token owner). Empty value = use that default.
   var repInput = CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('reporter').setTitle('Reporter')
+    .setFieldName('reporter')
     .addItem('Me' + (meName ? ' (' + meName + ')' : ''), '', true);
-  for (var j = 0; j < users.length; j++) {
-    repInput.addItem(users[j].name, users[j].name, false);
-  }
-  basics.addWidget(repInput);
+  for (var j = 0; j < users.length; j++) repInput.addItem(users[j].name, users[j].name, false);
+  labeledRow_(people, 'Reporter', repInput);
 
-  // Assignee defaults to "me". Empty value = use that default.
   var asgInput = CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('assignee').setTitle('Assignee')
+    .setFieldName('assignee')
     .addItem('Me' + (meName ? ' (' + meName + ')' : ''), '', true);
-  for (var k = 0; k < users.length; k++) {
-    asgInput.addItem(users[k].name, users[k].name, false);
-  }
-  basics.addWidget(asgInput);
+  for (var k = 0; k < users.length; k++) asgInput.addItem(users[k].name, users[k].name, false);
+  labeledRow_(people, 'Assignee', asgInput);
 
-  // Optional multi-select for additional assignees. One CHECK_BOX item per
-  // workspace user; nothing pre-selected. Reads back as an array via
-  // e.formInputs.additionalAssignees.
   if (users.length) {
     var multi = CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.CHECK_BOX)
-      .setFieldName('additionalAssignees').setTitle('Additional assignees');
-    for (var u = 0; u < users.length; u++) {
-      multi.addItem(users[u].name, users[u].name, false);
-    }
-    basics.addWidget(multi);
+      .setFieldName('additionalAssignees');
+    for (var u = 0; u < users.length; u++) multi.addItem(users[u].name, users[u].name, false);
+    labeledRow_(people, 'Additional assignees', multi);
   }
-  card.addSection(basics);
+  card.addSection(people);
 
-  // ── Meta ──────────────────────────────────────────────────────────────────
-  var meta = CardService.newCardSection().setHeader('Details');
-  meta.addWidget(CardService.newSelectionInput()
-    .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('priority').setTitle('Priority')
-    .addItem('Low', 'Low', false)
-    .addItem('Medium', 'Medium', true)
-    .addItem('High', 'High', false)
-    .addItem('Critical', 'Critical', false));
+  // ── Priority / Department / Due ───────────────────────────────────────────
+  var meta = CardService.newCardSection();
+  labeledRow_(meta, 'Priority',
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('priority')
+      .addItem('Low', 'Low', false)
+      .addItem('Medium', 'Medium', true)
+      .addItem('High', 'High', false)
+      .addItem('Critical', 'Critical', false));
 
   if (depts.length) {
     var deptInput = CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.DROPDOWN)
-      .setFieldName('dept').setTitle('Department')
+      .setFieldName('dept')
       .addItem('General', '', true);
     for (var d = 0; d < depts.length; d++) {
       if ((depts[d] || '').toLowerCase() === 'general') continue;
       deptInput.addItem(depts[d], depts[d], false);
     }
-    meta.addWidget(deptInput);
+    labeledRow_(meta, 'Department', deptInput);
   } else {
-    meta.addWidget(CardService.newTextInput()
-      .setFieldName('dept').setTitle('Department').setHint('e.g. Engineering, Support, General'));
+    labeledRow_(meta, 'Department',
+      CardService.newTextInput().setFieldName('dept').setHint('e.g. Engineering, Support, General'));
   }
-  meta.addWidget(CardService.newTextInput()
-    .setFieldName('due').setTitle('Due date').setHint('YYYY-MM-DD (optional)'));
+  labeledRow_(meta, 'Due date',
+    CardService.newTextInput().setFieldName('due').setHint('YYYY-MM-DD (optional)'));
   card.addSection(meta);
 
   // ── Submit ────────────────────────────────────────────────────────────────
