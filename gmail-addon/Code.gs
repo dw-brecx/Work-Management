@@ -33,7 +33,66 @@ function onGmailMessage(e) {
   if (!messageId) {
     return [ buildSimpleCard_('Open an email', 'Select an email to create a ticket from it.') ];
   }
-  return [ buildMessageCard_(messageId) ];
+  return [ buildChooserCard_(messageId) ];
+}
+
+// First card the user sees on a message. Two choices: turn into a ticket,
+// or turn into a personal reminder. Each navigates to its dedicated form.
+function buildChooserCard_(messageId) {
+  var msg = GmailApp.getMessageById(messageId);
+  var subject = msg.getSubject() || '(no subject)';
+  var fromRaw = msg.getFrom() || '';
+
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Email → Work'));
+
+  var preview = CardService.newCardSection()
+    .addWidget(CardService.newKeyValue().setTopLabel('Subject').setContent(escapeHtml_(subject)))
+    .addWidget(CardService.newKeyValue().setTopLabel('From').setContent(escapeHtml_(fromRaw || '(unknown)')));
+  card.addSection(preview);
+
+  var actions = CardService.newCardSection().setHeader('What would you like to do?');
+  actions.addWidget(CardService.newButtonSet()
+    .addButton(CardService.newTextButton()
+      .setText('Create Ticket')
+      .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+      .setOnClickAction(CardService.newAction()
+        .setFunctionName('showTicketForm_')
+        .setParameters({ messageId: messageId }))));
+  actions.addWidget(CardService.newTextParagraph().setText(
+    'Adds this email as a ticket in your workspace (with attachments) and can be assigned to teammates.'));
+
+  actions.addWidget(CardService.newButtonSet()
+    .addButton(CardService.newTextButton()
+      .setText('Set Reminder')
+      .setOnClickAction(CardService.newAction()
+        .setFunctionName('showReminderForm_')
+        .setParameters({ messageId: messageId }))));
+  actions.addWidget(CardService.newTextParagraph().setText(
+    'Adds this email to your personal reminders only — you (and nobody else) get pinged at the time you pick.'));
+
+  card.addSection(actions);
+  return card.build();
+}
+
+function showTicketForm_(e) {
+  authorizeGmail_(e);
+  var p = (e && e.parameters) || {};
+  var messageId = (e && e.gmail && e.gmail.messageId) || p.messageId;
+  if (!messageId) return notify_('No message selected.');
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(buildMessageCard_(messageId)))
+    .build();
+}
+
+function showReminderForm_(e) {
+  authorizeGmail_(e);
+  var p = (e && e.parameters) || {};
+  var messageId = (e && e.gmail && e.gmail.messageId) || p.messageId;
+  if (!messageId) return notify_('No message selected.');
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(buildReminderFormCard_(messageId)))
+    .build();
 }
 
 function authorizeGmail_(e) {
@@ -393,6 +452,189 @@ function createTicket_(e) {
   }
   if (code === 401) return notify_('Token rejected. Open Settings and re-paste it.');
   return notify_('Create failed (' + code + '): ' + (body.error || 'unknown error'));
+}
+
+// ─── Email → Personal Reminder ───────────────────────────────────────────────
+
+function buildReminderFormCard_(messageId) {
+  var msg = GmailApp.getMessageById(messageId);
+  var subject = msg.getSubject() || '(no subject)';
+  var fromRaw = msg.getFrom() || '';
+  var atts = msg.getAttachments({ includeInlineImages: false, includeAttachments: true }) || [];
+
+  // Default the picker to tomorrow at 9am local. The CardService picker
+  // wants epoch milliseconds; the timezone offset is the user's script TZ
+  // so the time shown matches what the user expects.
+  var tomorrow9 = new Date();
+  tomorrow9.setDate(tomorrow9.getDate() + 1);
+  tomorrow9.setHours(9, 0, 0, 0);
+
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Set reminder from email'));
+
+  var preview = CardService.newCardSection()
+    .addWidget(CardService.newKeyValue().setTopLabel('Subject').setContent(escapeHtml_(subject)))
+    .addWidget(CardService.newKeyValue().setTopLabel('From').setContent(escapeHtml_(fromRaw || '(unknown)')));
+  if (atts.length) {
+    preview.addWidget(CardService.newKeyValue().setTopLabel('Attachments')
+      .setContent(String(atts.length) + ' file' + (atts.length === 1 ? '' : 's') + ' will be attached'));
+  }
+  card.addSection(preview);
+
+  var form = CardService.newCardSection();
+
+  labeledRow_(form, 'Title',
+    CardService.newTextInput().setFieldName('title').setValue(subject));
+
+  labeledRow_(form, 'Notes (optional)',
+    CardService.newTextInput().setFieldName('description').setMultiline(true)
+      .setHint('Anything you want to remember about this email'));
+
+  labeledRow_(form, 'When to remind me',
+    CardService.newDateTimePicker().setFieldName('dueAt')
+      .setValueInMsSinceEpoch(tomorrow9.getTime()));
+
+  labeledRow_(form, 'Link to ticket (optional)',
+    CardService.newTextInput().setFieldName('ticketId').setHint('e.g. TKT-1042'));
+
+  // Three "how should I remind you" toggles, matching the in-app modal.
+  // Multi-select CHECK_BOX with one item each so we get a clean
+  // formInputs.<name> array per option.
+  labeledRow_(form, 'How should I remind you?',
+    CardService.newSelectionInput().setType(CardService.SelectionInputType.CHECK_BOX)
+      .setFieldName('reminderOpts')
+      .addItem('📧 Email me at the chosen time', 'email', true)
+      .addItem('🔁 Keep emailing me daily until I mark it done', 'repeat', false)
+      .addItem('📺 Show on screen once a day when I sign in', 'popup', false));
+
+  card.addSection(form);
+
+  var submit = CardService.newButtonSet()
+    .addButton(CardService.newTextButton()
+      .setText('Set Reminder')
+      .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+      .setOnClickAction(CardService.newAction()
+        .setFunctionName('createReminder_')
+        .setParameters({ messageId: messageId })));
+  card.addSection(CardService.newCardSection().addWidget(submit));
+
+  return card.build();
+}
+
+function createReminder_(e) {
+  authorizeGmail_(e);
+  var s = getSettings_();
+  if (!s.token || !s.appUrl) return notify_('Set the App URL and API token first.');
+  var p = (e && e.parameters) || {};
+  var messageId = (e && e.gmail && e.gmail.messageId) || p.messageId;
+  if (!messageId) return notify_('No message selected.');
+
+  var f = (e && e.formInput) || {};
+  var fInputs = (e && e.formInputs) || {};
+
+  // DateTimePicker returns its value via formInputs as either
+  // { msSinceEpoch, hasDate, hasTime } or an array containing that — handle
+  // both shapes since Apps Script has been inconsistent across runtime
+  // versions.
+  var dueRaw = fInputs.dueAt;
+  if (Array.isArray(dueRaw)) dueRaw = dueRaw[0];
+  var dueIso = '';
+  if (dueRaw && typeof dueRaw === 'object' && dueRaw.msSinceEpoch) {
+    dueIso = new Date(Number(dueRaw.msSinceEpoch)).toISOString();
+  } else if (typeof dueRaw === 'string' && dueRaw) {
+    dueIso = dueRaw;
+  } else if (typeof f.dueAt === 'string' && f.dueAt) {
+    dueIso = f.dueAt;
+  }
+  if (!dueIso) return notify_('Please pick a reminder date and time.');
+
+  // Read the multi-checkbox state. Anything in the array → that option is on.
+  var opts = fInputs.reminderOpts || [];
+  if (!Array.isArray(opts)) opts = [opts];
+  var emailEnabled    = opts.indexOf('email')  !== -1;
+  var repeatDaily     = opts.indexOf('repeat') !== -1;
+  var showDailyInApp  = opts.indexOf('popup')  !== -1;
+
+  var msg;
+  try { msg = GmailApp.getMessageById(messageId); }
+  catch (err) { return notify_('Could not read message: ' + err.message); }
+
+  var subject = (f.title || msg.getSubject() || '').toString().slice(0, 200);
+  var fromRaw = msg.getFrom() || '';
+  var fromName = '', fromEmail = '';
+  var mFrom = /^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/.exec(fromRaw);
+  if (mFrom) { fromName = (mFrom[1] || '').trim(); fromEmail = (mFrom[2] || '').trim(); }
+  else { fromEmail = fromRaw.trim(); }
+
+  var bodyText = msg.getPlainBody() || '';
+  if (!bodyText) bodyText = htmlToText_(msg.getBody() || '');
+
+  // Ship attachments through too — same caps as the ticket flow.
+  var attachments = [];
+  var files = msg.getAttachments({ includeInlineImages: false, includeAttachments: true }) || [];
+  var totalBytes = 0;
+  var maxTotal = 40 * 1024 * 1024;
+  var maxPer   = 20 * 1024 * 1024;
+  for (var i = 0; i < files.length; i++) {
+    var bytes = files[i].getBytes();
+    if (bytes.length > maxPer) continue;
+    if (totalBytes + bytes.length > maxTotal) break;
+    attachments.push({
+      name: files[i].getName(),
+      mimeType: files[i].getContentType(),
+      dataBase64: Utilities.base64Encode(bytes),
+    });
+    totalBytes += bytes.length;
+  }
+
+  var payload = {
+    subject: subject,
+    from_name: fromName,
+    from_email: fromEmail,
+    body_text: bodyText,
+    message_id: msg.getId(),
+    received_at: msg.getDate() ? msg.getDate().toISOString() : '',
+    title: subject,
+    description: f.description || '',
+    due_at: dueIso,
+    ticket_id: f.ticketId || '',
+    email_enabled: emailEnabled,
+    repeat_daily: repeatDaily,
+    show_daily_in_app: showDailyInApp,
+    attachments: attachments,
+  };
+
+  var resp;
+  try {
+    resp = UrlFetchApp.fetch(s.appUrl + '/api/inbound/gmail-reminder', {
+      method: 'post', contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      headers: { Authorization: 'Bearer ' + s.token },
+      muteHttpExceptions: true,
+    });
+  } catch (err) { return notify_('Network error: ' + err.message); }
+
+  var code = resp.getResponseCode(), body;
+  try { body = JSON.parse(resp.getContentText() || '{}'); } catch (_) { body = {}; }
+  if (code >= 200 && code < 300) {
+    var label = 'Reminder set';
+    var openBtn = CardService.newButtonSet()
+      .addButton(CardService.newTextButton().setText('Open My Reminders')
+        .setOpenLink(CardService.newOpenLink().setUrl(body.url || s.appUrl)));
+    var success = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle(label))
+      .addSection(CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph().setText(
+          body.attachments && body.attachments.rejected && body.attachments.rejected.length
+            ? ('Note: ' + body.attachments.rejected.length + ' attachment(s) were skipped (size or type).')
+            : 'Saved to your personal reminders.'))
+        .addWidget(openBtn));
+    return CardService.newActionResponseBuilder()
+      .setNotification(CardService.newNotification().setText(label))
+      .setNavigation(CardService.newNavigation().pushCard(success.build())).build();
+  }
+  if (code === 401) return notify_('Token rejected. Open Settings and re-paste it.');
+  return notify_('Set-reminder failed (' + code + '): ' + (body.error || 'unknown error'));
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
