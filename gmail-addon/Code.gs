@@ -19,9 +19,12 @@ function onOpenSettings(e) {
 }
 
 function onGmailMessage(e) {
-  // Contextual trigger: e.gmail.messageId is the message currently open
-  // in Gmail. We don't fetch the full message here (cheap render); we
-  // only do that when the user clicks "Create Ticket".
+  // Gmail add-ons need an explicit per-message access token before
+  // GmailApp.getMessageById() will let us read the current message —
+  // without this, the call throws "Missing access token for
+  // authorization. Request: MailboxService.GetMessage". The token is
+  // short-lived and scoped to just this message.
+  authorizeGmail_(e);
   var settings = getSettings_();
   if (!settings.token || !settings.appUrl) {
     return [ buildSettingsCard_('Add your API token to start creating tickets.') ];
@@ -31,6 +34,11 @@ function onGmailMessage(e) {
     return [ buildSimpleCard_('Open an email', 'Select an email to create a ticket from it.') ];
   }
   return [ buildMessageCard_(messageId) ];
+}
+
+function authorizeGmail_(e) {
+  var token = e && e.gmail && e.gmail.accessToken;
+  if (token) GmailApp.setCurrentMessageAccessToken(token);
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -187,12 +195,17 @@ function buildMessageCard_(messageId) {
 }
 
 function createTicket_(e) {
+  // Action callbacks carry a fresh per-message access token too — set it
+  // before any GmailApp call, same reason as in onGmailMessage.
+  authorizeGmail_(e);
   var s = getSettings_();
   if (!s.token || !s.appUrl) {
     return notify_('Set the App URL and API token first.');
   }
   var p = (e && e.parameters) || {};
-  var messageId = p.messageId;
+  // Prefer the messageId from the live event over the stashed parameter
+  // so we follow whatever message the user is currently looking at.
+  var messageId = (e && e.gmail && e.gmail.messageId) || p.messageId;
   if (!messageId) return notify_('No message selected.');
 
   var f = (e && e.formInput) || {};
