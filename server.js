@@ -739,6 +739,7 @@ async function buildTicket(row) {
     isProject: !!row.is_project,
     childCount: parseInt(childRow?.n || 0, 10),
     closeReason: row.close_reason || '',
+    sourceEmailUrl: row.source_email_url || null,
   };
 }
 
@@ -1668,6 +1669,7 @@ function _serializeReminder(r, attachments = []) {
     lastInAppShownAt: r.last_in_app_shown_at || null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    sourceEmailUrl: r.source_email_url || null,
     attachments: attachments.map(a => ({
       id: a.id, filename: a.filename, originalName: a.original_name,
       mimeType: a.mime_type, size: a.size, createdAt: a.created_at,
@@ -5167,7 +5169,7 @@ app.post(
       }
       const {
         subject, from_name, from_email, body_text, body_html,
-        message_id, thread_id, received_at,
+        message_id, thread_id, received_at, email_url,
         priority, dept, due,
         // Optional overrides from the add-on form. When empty/null we fall
         // back to the defaults documented further down (token owner for
@@ -5235,10 +5237,12 @@ app.post(
       const assigneeUid  = await resolveUserIdByName(assigneeName);
       const reporterUid  = await resolveUserIdByName(reporterName);
 
+      const cleanEmailUrl = String(email_url || '').trim().slice(0, 500) || null;
+
       console.log(`[inbound:gmail] INSERT ${id} "${cleanSubject.slice(0,80)}" by user ${me.id} from <${cleanFromEmail}> assignee=${assigneeName} reporter=${reporterName}`);
       await run(
-        `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,source_email_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
+        `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,source_email_id,source_email_url)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)`,
         id, cleanSubject,
         requesterText,
         assigneeName,
@@ -5255,6 +5259,7 @@ app.post(
         reporterUid,
         requesterUid,
         sourceEmailId,
+        cleanEmailUrl,
       );
 
       // Persist any extra assignees (multi-assign). Mirrors the regular
@@ -5352,7 +5357,7 @@ app.post(
       }
       const {
         subject, from_name, from_email, body_text,
-        message_id, received_at,
+        message_id, received_at, email_url,
         title, description, due_at,
         ticket_id,
         email_enabled, repeat_daily, show_daily_in_app,
@@ -5400,11 +5405,15 @@ app.post(
         }
       }
 
+      const cleanSourceEmailId  = String(message_id || '').trim().slice(0, 200) || null;
+      const cleanSourceEmailUrl = String(email_url  || '').trim().slice(0, 500) || null;
+
       const info = await run(
         `INSERT INTO personal_reminders
            (user_id, ticket_id, title, description, due_at,
-            email_enabled, repeat_daily, show_daily_in_app)
-         VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+            email_enabled, repeat_daily, show_daily_in_app,
+            source_email_id, source_email_url)
+         VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
         me.id,
         cleanTicketId,
         cleanTitle,
@@ -5413,6 +5422,8 @@ app.post(
         email_enabled === false ? 0 : 1,
         repeat_daily ? 1 : 0,
         show_daily_in_app ? 1 : 0,
+        cleanSourceEmailId,
+        cleanSourceEmailUrl,
       );
       const reminderId = Number(info.lastInsertRowid);
       console.log(`[inbound:reminder] INSERT #${reminderId} "${cleanTitle.slice(0,80)}" for user ${me.id} due ${stored}`);

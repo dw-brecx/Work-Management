@@ -8181,6 +8181,19 @@ function renderTicketDetail() {
       <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Closed: ${escapeHtml(t.closeReason)}</span>
     </span>
   ` : '';
+  // "Open email" chip — only present when the ticket was created from a
+  // Gmail message (via the Email→Ticket add-on). Clicking opens the
+  // source thread in a new tab.
+  const emailChip = t.sourceEmailUrl ? `
+    <a href="${escapeAttr(t.sourceEmailUrl)}" target="_blank" rel="noopener"
+       class="badge-status"
+       style="background:#fff7ed;color:#9a3412;text-decoration:none;display:inline-flex;align-items:center;gap:5px;border:1px solid #fed7aa"
+       title="Open the original email in Gmail">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+      Open email
+    </a>
+  ` : '';
+
   document.getElementById('det-badges').innerHTML = `
     ${statusBadge(t.status)}
     ${priorityBadge(t.priority)}
@@ -8189,6 +8202,7 @@ function renderTicketDetail() {
     ${reopenedPill}
     ${closeReasonPill}
     ${wtChip}
+    ${emailChip}
   `;
 
   // Compute SLA from due date relative to "today" (mock = May 21, 2024)
@@ -17540,6 +17554,7 @@ function _remCardHtml(r) {
     r.repeatDaily     ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#fef3c7;color:#92400e">🔁 Daily</span>' : '',
     r.showDailyInApp  ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#ecfeff;color:#0e7490">📺 In-app</span>' : '',
     r.ticketId        ? `<a onclick="openTicketDetailById('${_esc(r.ticketId)}')" style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155;cursor:pointer">🎫 ${_esc(r.ticketId)}</a>` : '',
+    r.sourceEmailUrl  ? `<a href="${_esc(r.sourceEmailUrl)}" target="_blank" rel="noopener" style="font-size:10px;padding:2px 7px;border-radius:10px;background:#fff7ed;color:#9a3412;text-decoration:none">📧 Open email</a>` : '',
     overdue           ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#fee2e2;color:#991b1b">Overdue</span>' : '',
     r.completed       ? '<span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#dcfce7;color:#166534">✓ Done</span>' : '',
   ].filter(Boolean).join(' ');
