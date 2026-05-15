@@ -5048,21 +5048,18 @@ app.get('/api/api-tokens', requireAuth, async (req, res) => {
 });
 
 // Serve the Gmail add-on source files to the setup page so users can copy
-// them without leaving the app. Reads from disk on each request so an
-// edit to gmail-addon/ shows up immediately. Cached in-memory after first
-// hit to keep this cheap.
-let _gmailAddonSnippetsCache = null;
+// them without leaving the app. Reads fresh from disk on every request so
+// a deploy that updates gmail-addon/ shows the new code to users
+// immediately — no server restart needed.
 app.get('/api/gmail-addon-snippets', requireAuth, async (req, res) => {
   try {
-    if (!_gmailAddonSnippetsCache) {
-      const codeGsPath = path.join(__dirname, 'gmail-addon', 'Code.gs');
-      const manifestPath = path.join(__dirname, 'gmail-addon', 'appsscript.json');
-      _gmailAddonSnippetsCache = {
-        codeGs: fs.existsSync(codeGsPath) ? fs.readFileSync(codeGsPath, 'utf8') : '',
-        manifest: fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, 'utf8') : '',
-      };
-    }
-    res.json(_gmailAddonSnippetsCache);
+    const codeGsPath = path.join(__dirname, 'gmail-addon', 'Code.gs');
+    const manifestPath = path.join(__dirname, 'gmail-addon', 'appsscript.json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      codeGs: fs.existsSync(codeGsPath) ? fs.readFileSync(codeGsPath, 'utf8') : '',
+      manifest: fs.existsSync(manifestPath) ? fs.readFileSync(manifestPath, 'utf8') : '',
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -5333,6 +5330,144 @@ app.post(
       });
     } catch (e) {
       console.error('[inbound:gmail] error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// POST /api/inbound/gmail-reminder — Bearer-token authenticated. Creates a
+// personal reminder for the token's owner from a Gmail message. Mirrors
+// POST /api/my-reminders (same column write) plus the email-source niceties:
+// the description is composed from the user's notes + From: header + body.
+app.options('/api/inbound/gmail-reminder', inboundCors);
+app.post(
+  '/api/inbound/gmail-reminder',
+  inboundCors,
+  rateLimitBy(req => (req.headers['authorization'] || '').slice(-32), { windowMs: 60 * 1000, max: 30 }),
+  requireApiToken,
+  async (req, res) => {
+    try {
+      if (req.body && req.body.probe === true) {
+        return res.json({ ok: true, probe: true, as: req.apiUser.name });
+      }
+      const {
+        subject, from_name, from_email, body_text,
+        message_id, received_at,
+        title, description, due_at,
+        ticket_id,
+        email_enabled, repeat_daily, show_daily_in_app,
+        attachments,
+      } = (req.body || {});
+
+      const me = req.apiUser;
+      const cleanFromName = String(from_name || '').trim().slice(0, 120);
+      const cleanFromEmail = String(from_email || '').trim().slice(0, 200);
+      const requesterLine = cleanFromName
+        ? (cleanFromEmail ? `${cleanFromName} <${cleanFromEmail}>` : cleanFromName)
+        : cleanFromEmail;
+
+      const cleanTitle = (String(title || '').trim() || String(subject || '').trim()).slice(0, 200);
+      if (!cleanTitle) return res.status(400).json({ error: 'title required' });
+
+      const stored = _normalizeDueAt(due_at);
+      if (!stored) return res.status(400).json({ error: 'due_at required (YYYY-MM-DD or ISO datetime)' });
+
+      // Compose description: user's notes first, then From + body so the
+      // reminder shows the email context inline.
+      const userNotes = String(description || '').trim();
+      const cleanBody = String(body_text || '').slice(0, 4000);
+      const meta = [];
+      if (requesterLine) meta.push(`From: ${requesterLine}`);
+      if (received_at) meta.push(`Received: ${received_at}`);
+      const parts = [];
+      if (userNotes) parts.push(userNotes);
+      if (meta.length) parts.push((parts.length ? '\n' : '') + meta.join('\n'));
+      if (cleanBody) parts.push((parts.length ? '\n' : '') + cleanBody);
+      const fullDesc = parts.join('\n').slice(0, 5000);
+
+      // Optional ticket link. Same UX as the in-app modal — accept any TKT-###
+      // that exists. We don't reuse canAccessTicket here because that function
+      // reads req.session.userId which doesn't exist on bearer-token requests;
+      // verifying existence is enough since the reminder is private to the
+      // owner anyway.
+      let cleanTicketId = null;
+      if (ticket_id) {
+        const tid = String(ticket_id).trim().toUpperCase();
+        if (tid) {
+          const tk = await get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', tid);
+          if (!tk) return res.status(400).json({ error: 'Linked ticket not found' });
+          cleanTicketId = tid;
+        }
+      }
+
+      const info = await run(
+        `INSERT INTO personal_reminders
+           (user_id, ticket_id, title, description, due_at,
+            email_enabled, repeat_daily, show_daily_in_app)
+         VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+        me.id,
+        cleanTicketId,
+        cleanTitle,
+        fullDesc,
+        stored,
+        email_enabled === false ? 0 : 1,
+        repeat_daily ? 1 : 0,
+        show_daily_in_app ? 1 : 0,
+      );
+      const reminderId = Number(info.lastInsertRowid);
+      console.log(`[inbound:reminder] INSERT #${reminderId} "${cleanTitle.slice(0,80)}" for user ${me.id} due ${stored}`);
+
+      // Attach files — same caps + mime allow-list as the ticket flow, just
+      // linked to the new reminder row instead of a ticket.
+      const accepted = [];
+      const rejected = [];
+      let totalBytes = 0;
+      if (Array.isArray(attachments)) {
+        for (const att of attachments) {
+          try {
+            const name = String(att?.name || '').slice(0, 240) || 'attachment';
+            const mime = String(att?.mimeType || 'application/octet-stream').slice(0, 120);
+            const b64  = String(att?.dataBase64 || '');
+            if (!b64) { rejected.push({ name, reason: 'empty' }); continue; }
+            if (!attachmentMimeAllowed(name, mime)) {
+              rejected.push({ name, reason: 'mime not allowed' });
+              continue;
+            }
+            const buf = Buffer.from(b64, 'base64');
+            if (!buf.length) { rejected.push({ name, reason: 'empty after decode' }); continue; }
+            if (buf.length > INBOUND_MAX_PER_FILE) {
+              rejected.push({ name, reason: `too large (${buf.length} bytes)` });
+              continue;
+            }
+            if (totalBytes + buf.length > INBOUND_MAX_TOTAL) {
+              rejected.push({ name, reason: 'total size cap reached' });
+              continue;
+            }
+            const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
+            const fname = randomUUID() + ext;
+            fs.writeFileSync(path.join(UPLOADS_DIR, fname), buf);
+            totalBytes += buf.length;
+            await run(
+              'INSERT INTO attachments (ticket_id,comment_id,subtask_id,feedback_id,announcement_id,reminder_id,doc_id,chat_message_id,filename,original_name,mime_type,size,uploader) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id',
+              null, null, null, null, null, reminderId, null, null,
+              fname, name, mime, buf.length, me.name
+            );
+            accepted.push({ name, size: buf.length });
+          } catch (e) {
+            console.error('[inbound:reminder] attachment failed:', e.message);
+            rejected.push({ name: att?.name || '?', reason: e.message });
+          }
+        }
+      }
+
+      const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
+      res.status(201).json({
+        reminderId,
+        url: `${appUrl}/my-reminders`,
+        attachments: { accepted, rejected },
+      });
+    } catch (e) {
+      console.error('[inbound:reminder] error:', e.message);
       res.status(500).json({ error: e.message });
     }
   }
