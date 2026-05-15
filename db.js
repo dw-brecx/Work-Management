@@ -1026,6 +1026,32 @@ async function init() {
        WHERE status = 'Closed' AND closed_at IS NULL`
   );
 
+  // Per-user API tokens for the Gmail-add-on (and any future integration
+  // that needs to authenticate as a specific user without the session
+  // cookie). We store a SHA-256 hash of the token, never the raw value;
+  // a short prefix is kept for the UI so users can identify which token
+  // is which. Tokens grant the same access level as the owning user.
+  await run(
+    `CREATE TABLE IF NOT EXISTS user_api_tokens (
+       id SERIAL PRIMARY KEY,
+       user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+       token_hash TEXT NOT NULL UNIQUE,
+       token_prefix TEXT NOT NULL,
+       name TEXT DEFAULT '',
+       source TEXT DEFAULT '',
+       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+       last_used_at TEXT DEFAULT NULL
+     )`
+  );
+  await run('CREATE INDEX IF NOT EXISTS idx_user_api_tokens_hash ON user_api_tokens (token_hash)');
+
+  // Provenance: when a ticket originated from a Gmail message via the
+  // add-on, we stamp the Gmail message id here so a duplicate submission
+  // (e.g. user clicks "Create Ticket" twice) returns the existing ticket
+  // instead of spawning another. Null for tickets created any other way.
+  await safeAlter('ALTER TABLE tickets ADD COLUMN source_email_id TEXT DEFAULT NULL');
+  await run('CREATE INDEX IF NOT EXISTS idx_tickets_source_email ON tickets (source_email_id)');
+
   // Consolidate roles to the canonical three: Admin / Manager / Member.
   // Old installs may have Owner / User / Viewer values; map them onto the
   // new set so every user falls into one of the three buckets.
