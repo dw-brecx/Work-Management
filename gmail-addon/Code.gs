@@ -19,9 +19,12 @@ function onOpenSettings(e) {
 }
 
 function onGmailMessage(e) {
-  // Contextual trigger: e.gmail.messageId is the message currently open
-  // in Gmail. We don't fetch the full message here (cheap render); we
-  // only do that when the user clicks "Create Ticket".
+  // Gmail add-ons need an explicit per-message access token before
+  // GmailApp.getMessageById() will let us read the current message —
+  // without this, the call throws "Missing access token for
+  // authorization. Request: MailboxService.GetMessage". The token is
+  // short-lived and scoped to just this message.
+  authorizeGmail_(e);
   var settings = getSettings_();
   if (!settings.token || !settings.appUrl) {
     return [ buildSettingsCard_('Add your API token to start creating tickets.') ];
@@ -31,6 +34,11 @@ function onGmailMessage(e) {
     return [ buildSimpleCard_('Open an email', 'Select an email to create a ticket from it.') ];
   }
   return [ buildMessageCard_(messageId) ];
+}
+
+function authorizeGmail_(e) {
+  var token = e && e.gmail && e.gmail.accessToken;
+  if (token) GmailApp.setCurrentMessageAccessToken(token);
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -129,16 +137,42 @@ function testConnection_() {
 
 // ─── Message → ticket ────────────────────────────────────────────────────────
 
+// Fetch the workspace's user list + departments via the app's
+// /api/inbound/options endpoint so the create-ticket form can show real
+// dropdowns instead of free-text inputs. Returns null if the call fails;
+// the card falls back to text inputs in that case.
+function fetchOptions_() {
+  var s = getSettings_();
+  if (!s.token || !s.appUrl) return null;
+  try {
+    var resp = UrlFetchApp.fetch(s.appUrl + '/api/inbound/options', {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + s.token },
+      muteHttpExceptions: true,
+    });
+    if (resp.getResponseCode() !== 200) return null;
+    return JSON.parse(resp.getContentText() || '{}');
+  } catch (_) { return null; }
+}
+
+// Render a bold label above a widget. Avoids the CardService bug where
+// SelectionInput.setTitle() floats over the selected dropdown value and
+// reads as overlapping text.
+function labeledRow_(section, label, widget) {
+  section.addWidget(CardService.newTextParagraph().setText('<b>' + label + '</b>'));
+  section.addWidget(widget);
+}
+
 function buildMessageCard_(messageId) {
   var msg = GmailApp.getMessageById(messageId);
   var subject = msg.getSubject() || '(no subject)';
   var fromRaw = msg.getFrom() || '';
-  var fromName = '', fromEmail = '';
-  // Gmail-style "Name <email@host>" parser. Falls back to a bare address.
-  var m = /^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/.exec(fromRaw);
-  if (m) { fromName = (m[1] || '').trim(); fromEmail = (m[2] || '').trim(); }
-  else { fromEmail = fromRaw.trim(); }
   var atts = msg.getAttachments({ includeInlineImages: false, includeAttachments: true }) || [];
+
+  var opts = fetchOptions_();
+  var users = (opts && opts.users) || [];
+  var depts = (opts && opts.departments) || [];
+  var meName = (opts && opts.me && opts.me.name) || '';
 
   var card = CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle('Create ticket from email'));
@@ -147,52 +181,113 @@ function buildMessageCard_(messageId) {
     .addWidget(CardService.newKeyValue().setTopLabel('Subject').setContent(escapeHtml_(subject)))
     .addWidget(CardService.newKeyValue().setTopLabel('From').setContent(escapeHtml_(fromRaw || '(unknown)')));
   if (atts.length) {
-    preview.addWidget(CardService.newKeyValue().setTopLabel('Attachments').setContent(String(atts.length) + ' file' + (atts.length === 1 ? '' : 's')));
+    preview.addWidget(CardService.newKeyValue()
+      .setTopLabel('Attachments')
+      .setContent(String(atts.length) + ' file' + (atts.length === 1 ? '' : 's') + ' will be attached'));
+  }
+  // Heads-up when /api/inbound/options can't be reached — usually means the
+  // app hasn't been redeployed with the latest server code, so the user can
+  // only see themselves in the dropdowns.
+  if (!opts) {
+    preview.addWidget(CardService.newTextParagraph().setText(
+      '<font color="#b45309">⚠ Couldn\'t load your workspace user list — update the app or check the API URL/token.</font>'
+    ));
   }
   card.addSection(preview);
 
-  // Optional overrides — the user can leave these blank and let the app
-  // apply its defaults. Title pre-fills with the subject; priority and
-  // due are blank by default.
-  var form = CardService.newCardSection().setHeader('Optional');
-  form.addWidget(CardService.newTextInput()
-    .setFieldName('title').setTitle('Title').setValue(subject));
-  form.addWidget(CardService.newSelectionInput()
-    .setType(CardService.SelectionInputType.DROPDOWN)
-    .setFieldName('priority').setTitle('Priority')
-    .addItem('Low', 'Low', false)
-    .addItem('Medium', 'Medium', true)
-    .addItem('High', 'High', false)
-    .addItem('Critical', 'Critical', false));
-  form.addWidget(CardService.newTextInput()
-    .setFieldName('dept').setTitle('Department').setHint('e.g. Engineering, Support, General'));
-  form.addWidget(CardService.newTextInput()
-    .setFieldName('due').setTitle('Due date').setHint('YYYY-MM-DD (optional)'));
-  form.addWidget(CardService.newSelectionInput()
-    .setType(CardService.SelectionInputType.CHECK_BOX)
-    .setFieldName('includeAttachments')
-    .addItem('Include attachments (' + atts.length + ')', 'yes', atts.length > 0));
-  card.addSection(form);
+  // ── Title ─────────────────────────────────────────────────────────────────
+  var titleSection = CardService.newCardSection();
+  labeledRow_(titleSection, 'Title',
+    CardService.newTextInput().setFieldName('title').setValue(subject));
+  card.addSection(titleSection);
 
-  var go = CardService.newCardSection()
-    .addWidget(CardService.newTextButton()
+  // ── Requester / Reporter / Assignee ───────────────────────────────────────
+  var people = CardService.newCardSection();
+
+  var reqInput = CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('requester')
+    .addItem('Use email sender', '', true);
+  for (var i = 0; i < users.length; i++) reqInput.addItem(users[i].name, users[i].name, false);
+  labeledRow_(people, 'Requester', reqInput);
+
+  var repInput = CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('reporter')
+    .addItem('Me' + (meName ? ' (' + meName + ')' : ''), '', true);
+  for (var j = 0; j < users.length; j++) repInput.addItem(users[j].name, users[j].name, false);
+  labeledRow_(people, 'Reporter', repInput);
+
+  var asgInput = CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('assignee')
+    .addItem('Me' + (meName ? ' (' + meName + ')' : ''), '', true);
+  for (var k = 0; k < users.length; k++) asgInput.addItem(users[k].name, users[k].name, false);
+  labeledRow_(people, 'Assignee', asgInput);
+
+  if (users.length) {
+    var multi = CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.CHECK_BOX)
+      .setFieldName('additionalAssignees');
+    for (var u = 0; u < users.length; u++) multi.addItem(users[u].name, users[u].name, false);
+    labeledRow_(people, 'Additional assignees', multi);
+  }
+  card.addSection(people);
+
+  // ── Priority / Department / Due ───────────────────────────────────────────
+  var meta = CardService.newCardSection();
+  labeledRow_(meta, 'Priority',
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('priority')
+      .addItem('Low', 'Low', false)
+      .addItem('Medium', 'Medium', true)
+      .addItem('High', 'High', false)
+      .addItem('Critical', 'Critical', false));
+
+  if (depts.length) {
+    var deptInput = CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('dept')
+      .addItem('General', '', true);
+    for (var d = 0; d < depts.length; d++) {
+      if ((depts[d] || '').toLowerCase() === 'general') continue;
+      deptInput.addItem(depts[d], depts[d], false);
+    }
+    labeledRow_(meta, 'Department', deptInput);
+  } else {
+    labeledRow_(meta, 'Department',
+      CardService.newTextInput().setFieldName('dept').setHint('e.g. Engineering, Support, General'));
+  }
+  labeledRow_(meta, 'Due date',
+    CardService.newTextInput().setFieldName('due').setHint('YYYY-MM-DD (optional)'));
+  card.addSection(meta);
+
+  // ── Submit ────────────────────────────────────────────────────────────────
+  var submit = CardService.newButtonSet()
+    .addButton(CardService.newTextButton()
       .setText('Create Ticket')
       .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
       .setOnClickAction(CardService.newAction()
         .setFunctionName('createTicket_')
         .setParameters({ messageId: messageId })));
-  card.addSection(go);
+  card.addSection(CardService.newCardSection().addWidget(submit));
 
   return card.build();
 }
 
 function createTicket_(e) {
+  // Action callbacks carry a fresh per-message access token too — set it
+  // before any GmailApp call, same reason as in onGmailMessage.
+  authorizeGmail_(e);
   var s = getSettings_();
   if (!s.token || !s.appUrl) {
     return notify_('Set the App URL and API token first.');
   }
   var p = (e && e.parameters) || {};
-  var messageId = p.messageId;
+  // Prefer the messageId from the live event over the stashed parameter
+  // so we follow whatever message the user is currently looking at.
+  var messageId = (e && e.gmail && e.gmail.messageId) || p.messageId;
   if (!messageId) return notify_('No message selected.');
 
   var f = (e && e.formInput) || {};
@@ -212,34 +307,30 @@ function createTicket_(e) {
   var bodyText = msg.getPlainBody() || '';
   if (!bodyText) bodyText = htmlToText_(msg.getBody() || '');
 
-  // Decide whether to ship attachments. The checkbox returns either an
-  // array (multi-select) or a single string; treat both as "checked = include".
-  var includeAtt = (function () {
-    var v = f.includeAttachments;
-    if (v == null) return false;
-    if (typeof v === 'string') return v === 'yes';
-    if (Array.isArray(v)) return v.indexOf('yes') !== -1;
-    return Boolean(v);
-  })();
-
+  // Attachments are always shipped now (no more checkbox). Caps protect
+  // against an oversized JSON body — anything over the per-file or total
+  // limit is silently dropped on the add-on side and won't reach the app.
   var attachments = [];
-  if (includeAtt) {
-    var files = msg.getAttachments({ includeInlineImages: false, includeAttachments: true }) || [];
-    var totalBytes = 0;
-    var maxTotal = 40 * 1024 * 1024;
-    var maxPer   = 20 * 1024 * 1024;
-    for (var i = 0; i < files.length; i++) {
-      var bytes = files[i].getBytes();
-      if (bytes.length > maxPer) { continue; }
-      if (totalBytes + bytes.length > maxTotal) { break; }
-      attachments.push({
-        name: files[i].getName(),
-        mimeType: files[i].getContentType(),
-        dataBase64: Utilities.base64Encode(bytes),
-      });
-      totalBytes += bytes.length;
-    }
+  var files = msg.getAttachments({ includeInlineImages: false, includeAttachments: true }) || [];
+  var totalBytes = 0;
+  var maxTotal = 40 * 1024 * 1024;
+  var maxPer   = 20 * 1024 * 1024;
+  for (var i = 0; i < files.length; i++) {
+    var bytes = files[i].getBytes();
+    if (bytes.length > maxPer) { continue; }
+    if (totalBytes + bytes.length > maxTotal) { break; }
+    attachments.push({
+      name: files[i].getName(),
+      mimeType: files[i].getContentType(),
+      dataBase64: Utilities.base64Encode(bytes),
+    });
+    totalBytes += bytes.length;
   }
+
+  // Multi-select widgets land in formInputs (plural), not formInput.
+  var formInputs = (e && e.formInputs) || {};
+  var additionalAssignees = formInputs.additionalAssignees || [];
+  if (!Array.isArray(additionalAssignees)) additionalAssignees = [additionalAssignees];
 
   var payload = {
     subject: subject,
@@ -252,6 +343,12 @@ function createTicket_(e) {
     priority: f.priority || 'Medium',
     dept: f.dept || '',
     due: f.due || '',
+    // Empty string for any of these = "server uses the default" (email
+    // sender for requester, token owner for reporter/assignee).
+    requester: f.requester || '',
+    reporter: f.reporter || '',
+    assignee: f.assignee || '',
+    additional_assignees: additionalAssignees,
     attachments: attachments,
   };
 
@@ -273,6 +370,13 @@ function createTicket_(e) {
   try { body = JSON.parse(resp.getContentText() || '{}'); } catch (_) { body = {}; }
   if (code >= 200 && code < 300) {
     var label = body.duplicate ? ('Already created as ' + body.ticketId) : ('Ticket ' + body.ticketId + ' created');
+    // Buttons must live inside a ButtonSet — adding a TextButton directly
+    // as a section widget produces a "value cannot be used by the add-ons
+    // platform" runtime error from Card Service.
+    var openBtn = CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText('Open ticket')
+        .setOpenLink(CardService.newOpenLink().setUrl(body.url || s.appUrl)));
     var success = CardService.newCardBuilder()
       .setHeader(CardService.newCardHeader().setTitle(label))
       .addSection(CardService.newCardSection()
@@ -281,9 +385,7 @@ function createTicket_(e) {
             ? ('Note: ' + body.attachments.rejected.length + ' attachment(s) were skipped (size or type).')
             : 'Saved to your workspace.'
         ))
-        .addWidget(CardService.newTextButton()
-          .setText('Open ticket')
-          .setOpenLink(CardService.newOpenLink().setUrl(body.url || s.appUrl))));
+        .addWidget(openBtn));
     return CardService.newActionResponseBuilder()
       .setNotification(CardService.newNotification().setText(label))
       .setNavigation(CardService.newNavigation().pushCard(success.build()))

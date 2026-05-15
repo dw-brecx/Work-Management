@@ -5131,6 +5131,29 @@ const INBOUND_MAX_TOTAL    = 40 * 1024 * 1024;  // 40 MB across all attachments
 // parsed-email payload from the Gmail add-on and creates a ticket as the
 // token's owner. Attachments arrive as base64 in JSON; we decode + write
 // to UPLOADS_DIR like a regular upload and join via the attachments table.
+// GET /api/inbound/options — Bearer-token authenticated. Returns the
+// workspace shape the Gmail add-on needs to populate its dropdowns
+// (user list for assignee/reporter/requester, departments, priorities).
+app.options('/api/inbound/options', inboundCors);
+app.get(
+  '/api/inbound/options',
+  inboundCors,
+  rateLimitBy(req => (req.headers['authorization'] || '').slice(-32), { windowMs: 60 * 1000, max: 60 }),
+  requireApiToken,
+  async (req, res) => {
+    try {
+      const users = await all('SELECT id, name, email FROM users ORDER BY LOWER(name) ASC');
+      const depts = await all('SELECT name FROM departments ORDER BY name ASC');
+      res.json({
+        users: (users || []).map(u => ({ id: u.id, name: u.name, email: u.email })),
+        departments: (depts || []).map(d => d.name),
+        priorities: ['Low', 'Medium', 'High', 'Critical'],
+        me: { id: req.apiUser.id, name: req.apiUser.name, email: req.apiUser.email },
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  }
+);
+
 app.options('/api/inbound/gmail-addon', inboundCors);
 app.post(
   '/api/inbound/gmail-addon',
@@ -5149,6 +5172,10 @@ app.post(
         subject, from_name, from_email, body_text, body_html,
         message_id, thread_id, received_at,
         priority, dept, due,
+        // Optional overrides from the add-on form. When empty/null we fall
+        // back to the defaults documented further down (token owner for
+        // assignee/reporter, raw email sender for requester).
+        requester, assignee, additional_assignees, reporter,
         attachments,
       } = (req.body || {});
 
@@ -5198,20 +5225,27 @@ app.post(
         : cleanBodyText
       ).trim();
 
-      console.log(`[inbound:gmail] INSERT ${id} "${cleanSubject.slice(0,80)}" by user ${me.id} from <${cleanFromEmail}>`);
-      // Semantic mapping for an email-sourced ticket:
-      //   req       = the external sender (raw "Name <email>") — no
-      //               user_id since they aren't in the workspace, so
-      //               buildTicket's name-resolution doesn't clobber it.
-      //   reporter  = the workspace user who filed it (token owner).
-      //   assignee  = same default as reporter; can be reassigned later.
+      // Resolve the optional people fields. The add-on sends a workspace
+      // user's display name (from a dropdown populated via /options) or an
+      // empty string to mean "use the default". Names that don't match a
+      // user (e.g. requester left as an external "Name <email>") keep the
+      // raw text and leave user_id null so buildTicket doesn't override it.
+      const requesterText = String(requester || '').trim() || requesterLine || '';
+      const assigneeName  = String(assignee  || '').trim() || me.name;
+      const reporterName  = String(reporter  || '').trim() || me.name;
+
+      const requesterUid = requesterText ? await resolveUserIdByName(requesterText) : null;
+      const assigneeUid  = await resolveUserIdByName(assigneeName);
+      const reporterUid  = await resolveUserIdByName(reporterName);
+
+      console.log(`[inbound:gmail] INSERT ${id} "${cleanSubject.slice(0,80)}" by user ${me.id} from <${cleanFromEmail}> assignee=${assigneeName} reporter=${reporterName}`);
       await run(
         `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,source_email_id)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
         id, cleanSubject,
-        requesterLine || '',
-        me.name,
-        me.name,
+        requesterText,
+        assigneeName,
+        reporterName,
         (priority && ['Low','Medium','High','Critical'].includes(priority)) ? priority : 'Medium',
         'Open',
         String(dept || '').trim() || 'General',
@@ -5219,12 +5253,27 @@ app.post(
         '',
         0,
         '[]',
-        me.id,                                     // created_by
-        me.id,                                     // assignee_user_id (token owner)
-        me.id,                                     // reporter_user_id (token owner)
-        null,                                      // req_user_id — external sender, keep raw text
+        me.id,
+        assigneeUid,
+        reporterUid,
+        requesterUid,
         sourceEmailId,
       );
+
+      // Persist any extra assignees (multi-assign). Mirrors the regular
+      // POST /api/tickets behaviour: one row per name in ticket_assignees,
+      // with user_id resolved when the name maps to a real user.
+      if (Array.isArray(additional_assignees)) {
+        for (const raw of additional_assignees) {
+          const nm = String(raw || '').trim();
+          if (!nm) continue;
+          const uid = await resolveUserIdByName(nm);
+          await run(
+            'INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING',
+            id, nm, uid
+          );
+        }
+      }
 
       await run(
         `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
