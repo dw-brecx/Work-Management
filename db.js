@@ -1051,6 +1051,15 @@ async function init() {
   // instead of spawning another. Null for tickets created any other way.
   await safeAlter('ALTER TABLE tickets ADD COLUMN source_email_id TEXT DEFAULT NULL');
   await run('CREATE INDEX IF NOT EXISTS idx_tickets_source_email ON tickets (source_email_id)');
+  // Direct URL back to the source email (msg.getThread().getPermalink()).
+  // Surfaced as an "Open email" link on the ticket detail header so the
+  // user can jump straight to the original conversation in Gmail.
+  await safeAlter('ALTER TABLE tickets ADD COLUMN source_email_url TEXT DEFAULT NULL');
+  // Personal reminders that originated from a Gmail message get the same
+  // pair of columns so the "📧 Open email" pill on the reminder card
+  // works the same way.
+  await safeAlter('ALTER TABLE personal_reminders ADD COLUMN source_email_id TEXT DEFAULT NULL');
+  await safeAlter('ALTER TABLE personal_reminders ADD COLUMN source_email_url TEXT DEFAULT NULL');
 
   // Consolidate roles to the canonical three: Admin / Manager / Member.
   // Old installs may have Owner / User / Viewer values; map them onto the

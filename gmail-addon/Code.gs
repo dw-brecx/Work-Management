@@ -391,19 +391,25 @@ function createTicket_(e) {
   var additionalAssignees = formInputs.additionalAssignees || [];
   if (!Array.isArray(additionalAssignees)) additionalAssignees = [additionalAssignees];
 
+  // Permalink back to the open conversation in Gmail. Persisted with the
+  // ticket so the user can click "Open email" from the ticket detail and
+  // jump straight back to the source thread.
+  var thread = msg.getThread();
+  var emailUrl = '';
+  try { emailUrl = thread ? thread.getPermalink() : ''; } catch (_) { emailUrl = ''; }
+
   var payload = {
     subject: subject,
     from_name: fromName,
     from_email: fromEmail,
     body_text: bodyText,
     message_id: msg.getId(),
-    thread_id: msg.getThread() ? msg.getThread().getId() : '',
+    thread_id: thread ? thread.getId() : '',
+    email_url: emailUrl,
     received_at: msg.getDate() ? msg.getDate().toISOString() : '',
     priority: f.priority || 'Medium',
     dept: f.dept || '',
     due: f.due || '',
-    // Empty string for any of these = "server uses the default" (email
-    // sender for requester, token owner for reporter/assignee).
     requester: f.requester || '',
     reporter: f.reporter || '',
     assignee: f.assignee || '',
@@ -587,12 +593,18 @@ function createReminder_(e) {
     totalBytes += bytes.length;
   }
 
+  // Same permalink-back-to-Gmail capture as createTicket_ does.
+  var thread2 = msg.getThread();
+  var emailUrl2 = '';
+  try { emailUrl2 = thread2 ? thread2.getPermalink() : ''; } catch (_) { emailUrl2 = ''; }
+
   var payload = {
     subject: subject,
     from_name: fromName,
     from_email: fromEmail,
     body_text: bodyText,
     message_id: msg.getId(),
+    email_url: emailUrl2,
     received_at: msg.getDate() ? msg.getDate().toISOString() : '',
     title: subject,
     description: f.description || '',
