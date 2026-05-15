@@ -4564,6 +4564,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
                 Tag
               </button>
               <span class="bulk-divider"></span>
+              <button class="bulk-action-btn" onclick="bulkMarkRead()" title="Mark every selected ticket as read">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                Mark read
+              </button>
               <button class="bulk-action-btn" onclick="bulkRemindMe()" title="Set the same reminder on every selected ticket">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
                 Remind me
@@ -7834,6 +7838,34 @@ function bulkRemindMe() {
   const ids = Array.from(typeof selectedTicketIds !== 'undefined' ? selectedTicketIds : []);
   if (!ids.length) { alert('Pick at least one ticket first.'); return; }
   if (typeof openTicketReminderModal === 'function') openTicketReminderModal(ids);
+}
+
+// Bulk mark-as-read: stamps a ticket_views row for every selected ticket so
+// the unread pill clears immediately. Optimistically updates the local
+// TICKETS_DATA and re-renders, then re-loads the dashboard insights so the
+// "unread" count card stays in sync.
+async function bulkMarkRead() {
+  const ids = Array.from(typeof selectedTicketIds !== 'undefined' ? selectedTicketIds : []);
+  if (!ids.length) { alert('Pick at least one ticket first.'); return; }
+  try {
+    const r = await fetch('/api/tickets/bulk-mark-viewed', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!r.ok) throw new Error('Request failed');
+    if (Array.isArray(window.TICKETS_DATA)) {
+      for (const t of TICKETS_DATA) if (ids.includes(t.id)) t.unread = false;
+    }
+    const n = ids.length;
+    if (typeof clearSelection === 'function') clearSelection();
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof loadDashboardInsights === 'function') loadDashboardInsights();
+    if (typeof settingsToast === 'function') settingsToast(`Marked ${n} ticket${n === 1 ? '' : 's'} as read`);
+  } catch (e) {
+    alert('Could not mark tickets as read: ' + e.message);
+  }
 }
 
 function bulkClose() {

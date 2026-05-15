@@ -771,11 +771,14 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
       );
     }
     const tickets = await Promise.all(rows.map(buildTicket));
-    // Per-user unread flag: a ticket is unread when the user has never
-    // viewed it OR something has happened on it since their last view.
-    // "Activity" = ticket created_at and the newest comment created_at.
-    // (Status changes write a comment + a timeline entry; the comment
-    // already counts, so we don't need to join the timeline table too.)
+    // Per-user unread flag. A ticket is unread when:
+    //   1. The user is personally involved (assignee, additional assignee,
+    //      reporter, or requester) — admins seeing every ticket should NOT
+    //      get an unread pill on rows that don't need their attention.
+    //   2. The ticket isn't already Closed — closed tickets are done; they
+    //      don't pile up in "things I need to look at" even if assigned.
+    //   3. There's been activity (creation or a comment) since their last
+    //      view (or they've never viewed it).
     if (tickets.length) {
       const ids = tickets.map(t => t.id);
       const placeholders = ids.map(() => '?').join(',');
@@ -787,6 +790,19 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
       ]);
       const viewMap = new Map(views.map(v => [v.ticket_id, v.last_viewed_at]));
       const commentMap = new Map(lastComments.map(c => [c.ticket_id, c.latest_at]));
+      const myName = u.name;
+      const myId = u.id;
+      const needsMyAttention = (t) => {
+        if (t.status === 'Closed') return false;
+        if (t.assignee_user_id === myId) return true;
+        if (!t.assignee_user_id && t.assignee === myName) return true;
+        if (t.reporter_user_id === myId) return true;
+        if (!t.reporter_user_id && t.reporter === myName) return true;
+        if (t.req_user_id === myId) return true;
+        if (!t.req_user_id && t.req === myName) return true;
+        if (Array.isArray(t.assignees) && t.assignees.includes(myName)) return true;
+        return false;
+      };
       for (const t of tickets) {
         const lastViewed = viewMap.get(t.id) || null;
         const latestActivity = (() => {
@@ -795,7 +811,8 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
           if (!t.created_at) return c;
           return c > t.created_at ? c : t.created_at;
         })();
-        t.unread = !lastViewed || (latestActivity && lastViewed < latestActivity);
+        const hasNewActivity = !lastViewed || (latestActivity && lastViewed < latestActivity);
+        t.unread = hasNewActivity && needsMyAttention(t);
         t.lastViewedAt = lastViewed;
       }
     }
@@ -816,6 +833,29 @@ app.post('/api/tickets/:id/mark-viewed', requireAuth, requireTicketAccess, async
       req.session.userId, req.params.id
     );
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Bulk mark-viewed. Accepts { ids: [...] } and upserts a ticket_views row
+// for every id the caller can actually access — silently skipping any
+// id they can't see, so admins and members can both call this safely.
+app.post('/api/tickets/bulk-mark-viewed', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) return res.json({ ok: true, marked: 0 });
+    let marked = 0;
+    for (const id of ids) {
+      if (!await canAccessTicket(req, id)) continue;
+      await run(
+        `INSERT INTO ticket_views (user_id, ticket_id, last_viewed_at)
+         VALUES (?, ?, TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+         ON CONFLICT (user_id, ticket_id)
+         DO UPDATE SET last_viewed_at = EXCLUDED.last_viewed_at`,
+        req.session.userId, id
+      );
+      marked++;
+    }
+    res.json({ ok: true, marked });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -4182,10 +4222,34 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
 
     // Today's UTC date prefix for the closed_at LIKE comparison below.
     const todayUtcKey = new Date().toISOString().slice(0, 10);
+    // Unread is a stricter filter than the broader involvement used for
+    // stale / completed-today. "Needs my attention" = I'm the assignee
+    // (primary or additional), reporter, or requester. NOT just creator,
+    // since admins create lots of tickets they aren't otherwise tied to.
+    // Also: closed tickets are done — they never count as unread.
+    const attentionSql = `(
+      t.status != 'Closed'
+      AND (
+        t.assignee_user_id = ?
+        OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+        OR EXISTS (
+             SELECT 1 FROM ticket_assignees ta
+              WHERE ta.ticket_id = t.id
+                AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+           )
+        OR t.reporter_user_id = ?
+        OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+        OR t.req_user_id = ?
+        OR (t.req_user_id IS NULL AND t.req = ?)
+      )
+    )`;
+    const attentionArgs = [u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name];
+
     const [unreadRows, staleRows, mentionRows, completedTodayRows] = await Promise.all([
-      // Unread: ticket the user is involved in, deleted_at IS NULL, AND
-      // either no ticket_views row OR the row is older than the latest
-      // activity. Latest activity = MAX(created_at, latest comment).
+      // Unread: ticket the user needs to attend to (see attentionSql),
+      // deleted_at IS NULL, AND either no ticket_views row OR the row is
+      // older than the latest activity. Latest activity = MAX(created_at,
+      // latest comment).
       all(
         `SELECT ${SELECT_LIST_COLS} FROM tickets t
            LEFT JOIN ticket_views v ON v.ticket_id = t.id AND v.user_id = ?
@@ -4193,14 +4257,14 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
                         FROM ticket_comments GROUP BY ticket_id) lc
                 ON lc.ticket_id = t.id
           WHERE t.deleted_at IS NULL
-            AND ${involvementSql}
+            AND ${attentionSql}
             AND (
                   v.last_viewed_at IS NULL
                OR v.last_viewed_at < COALESCE(lc.latest_at, t.created_at)
             )
           ORDER BY COALESCE(lc.latest_at, t.created_at) DESC
           LIMIT 50`,
-        u.id, ...involvementArgs
+        u.id, ...attentionArgs
       ),
       // Stale: open (not Closed/Archived) tickets where the latest activity
       // is more than 2 days ago. Order by oldest activity first — those
