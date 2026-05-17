@@ -7143,8 +7143,11 @@ require('./routes/spaces')(app, { get, all, run, requireAuth });
 // ── Apps (design-to-dev handoff for Claude-built apps) ──────────────────────
 // Lives in routes/apps.js and is served on /apps.html (standalone page
 // outside the SPA shell). Reads ANTHROPIC_API_KEY directly from env for
-// the optional blueprint-generation endpoint.
-require('./routes/apps')(app, { get, all, run, requireAuth });
+// the optional blueprint-generation endpoint. UPLOADS_DIR + upload are
+// passed so pin annotations can carry pasted images, voice notes, and
+// screen recordings via the same /uploads static route everything else
+// in the app uses.
+require('./routes/apps')(app, { get, all, run, requireAuth, upload, UPLOADS_DIR });
 
 // ── Flavors v2 ────────────────────────────────────────────────────────────────
 // Guided flavor-launch wizard + linked-ticket pipeline. Lives in routes/flavors.js

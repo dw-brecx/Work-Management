@@ -20,8 +20,11 @@
 // the design from stealing session cookies or hitting the parent origin.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const fs = require('fs');
+const path = require('path');
+
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth } = deps;
+  const { get, all, run, requireAuth, upload, UPLOADS_DIR } = deps;
 
   // Read Anthropic key from env directly — same source as the /api/polish
   // route in server.js. If unset the AI-blueprint endpoint returns 503 and
@@ -676,7 +679,25 @@ module.exports = function attach(app, deps) {
           ORDER BY id ASC`,
         result.page.id
       );
-      res.json(rows);
+      // Pull attachments in one shot, then group by annotation_id so the
+      // client can render thumbnails / players inline with the pin row.
+      const ids = rows.map(r => r.id);
+      let byAnn = new Map();
+      if (ids.length) {
+        const placeholders = ids.map(() => '?').join(',');
+        const atts = await all(
+          `SELECT id, annotation_id, filename, original_name, mime_type, size FROM attachments WHERE annotation_id IN (${placeholders}) ORDER BY id ASC`,
+          ...ids
+        );
+        for (const a of atts) {
+          if (!byAnn.has(a.annotation_id)) byAnn.set(a.annotation_id, []);
+          byAnn.get(a.annotation_id).push({
+            id: a.id, name: a.original_name || a.filename, url: '/uploads/' + a.filename,
+            mime_type: a.mime_type, size: a.size,
+          });
+        }
+      }
+      res.json(rows.map(r => ({ ...r, attachments: byAnn.get(r.id) || [] })));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -967,13 +988,354 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Annotation attachments ─────────────────────────────────────────────
+  // POST /api/apps/:id/pages/:pageId/annotations/:annId/attachments
+  // Accepts a single multipart file (image, voice note, screen recording).
+  // We reuse the global multer instance from server.js — same disk
+  // storage, MIME whitelist, and 100MB cap. The attachment row links
+  // back via the new annotation_id column so /uploads/<filename> serves
+  // it through the existing static route with the same security headers
+  // as ticket attachments.
+  app.post(
+    '/api/apps/:id/pages/:pageId/annotations/:annId/attachments',
+    requireAuth,
+    upload.single('file'),
+    async (req, res) => {
+      try {
+        // multer's fileFilter signals rejection via this stash on the req.
+        if (req._uploadRejected) {
+          const r = req._uploadRejected;
+          return res.status(400).json({ error: `Unsupported file type: ${r.name} (${r.mime || 'unknown'})` });
+        }
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+        const result = await loadPageForUser(req.params.pageId, req.session.userId);
+        if (result.error) {
+          // Best-effort cleanup so a failed access check doesn't leave
+          // orphan files on disk.
+          tryUnlink(req.file.path);
+          return res.status(result.error.status).json({ error: result.error.message });
+        }
+        if (result.page.app_id !== Number(req.params.id)) {
+          tryUnlink(req.file.path);
+          return res.status(404).json({ error: 'Page not in this app' });
+        }
+        const ann = await get(
+          'SELECT id FROM app_page_annotations WHERE id=? AND page_id=?',
+          Number(req.params.annId), result.page.id
+        );
+        if (!ann) {
+          tryUnlink(req.file.path);
+          return res.status(404).json({ error: 'Annotation not found' });
+        }
+
+        const me = await get('SELECT name FROM users WHERE id=?', req.session.userId);
+        const ins = await run(
+          `INSERT INTO attachments (annotation_id, filename, original_name, mime_type, size, uploader)
+           VALUES (?,?,?,?,?,?) RETURNING id`,
+          ann.id, req.file.filename, req.file.originalname, req.file.mimetype, req.file.size, (me && me.name) || ''
+        );
+        await touchApp(result.app.id);
+        res.status(201).json({
+          id: ins.lastInsertRowid,
+          name: req.file.originalname,
+          url: '/uploads/' + req.file.filename,
+          mime_type: req.file.mimetype,
+          size: req.file.size,
+        });
+      } catch (e) {
+        if (req.file && req.file.path) tryUnlink(req.file.path);
+        res.status(500).json({ error: e.message });
+      }
+    }
+  );
+
+  app.delete('/api/apps/:id/pages/:pageId/annotations/:annId/attachments/:attId', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const att = await get(
+        'SELECT * FROM attachments WHERE id=? AND annotation_id=?',
+        Number(req.params.attId), Number(req.params.annId)
+      );
+      if (!att) return res.status(404).json({ error: 'Attachment not found' });
+      // Only the uploader or an admin can delete. Mirrors how
+      // ticket-comment attachments work elsewhere.
+      const me = await get('SELECT name, perm_role FROM users WHERE id=?', req.session.userId);
+      const isAdmin = me && me.perm_role === 'Admin';
+      if (att.uploader !== (me && me.name) && !isAdmin) {
+        return res.status(403).json({ error: 'Only the uploader or an admin can delete this attachment' });
+      }
+      await run('DELETE FROM attachments WHERE id=?', att.id);
+      tryUnlink(path.join(UPLOADS_DIR, att.filename));
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Per-app tickets ────────────────────────────────────────────────────
+  // Lightweight, isolated ticket system scoped to an app. Modelled on the
+  // global /api/tickets but with its own table so app dev chatter stays
+  // out of the main work queue (per the original feature brief). Anyone
+  // with access to the app can create / comment / change status; the
+  // closer is recorded for the audit trail.
+  app.get('/api/apps/:id/tickets', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      // Optional ?status=open|closed|all filter.
+      const filter = String(req.query.status || 'all');
+      let where = 't.app_id=?';
+      const args = [result.app.id];
+      if (filter === 'open') where += " AND t.status NOT IN ('closed', 'resolved')";
+      else if (filter === 'closed') where += " AND t.status IN ('closed', 'resolved')";
+      const rows = await all(
+        `SELECT t.*,
+                u.name AS assignee_name,
+                c.name AS created_by_name,
+                p.name AS page_name,
+                (SELECT COUNT(*) FROM app_ticket_comments ac WHERE ac.ticket_id = t.id) AS comment_count
+           FROM app_tickets t
+           LEFT JOIN users u ON u.id = t.assignee_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+           LEFT JOIN app_pages p ON p.id = t.page_id
+          WHERE ${where}
+          ORDER BY
+            CASE WHEN t.status IN ('closed','resolved') THEN 1 ELSE 0 END,
+            t.id DESC`,
+        ...args
+      );
+      res.json(rows.map(shapeTicket));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/apps/:id/tickets', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const title = String((req.body && req.body.title) || '').trim();
+      if (!title) return res.status(400).json({ error: 'Title required' });
+      const description = String((req.body && req.body.description) || '').trim();
+      const priority = TICKET_PRIORITIES.has(String(req.body && req.body.priority)) ? String(req.body.priority) : 'normal';
+      const status = TICKET_STATUSES.has(String(req.body && req.body.status)) ? String(req.body.status) : 'open';
+      const assignee = normaliseUserId(req.body && req.body.assignee_id);
+      const pageId = normaliseUserId(req.body && req.body.page_id); // reuse helper — same Number-or-null shape
+      const ins = await run(
+        `INSERT INTO app_tickets (app_id, page_id, title, description, status, priority, assignee_id, created_by_id)
+         VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+        result.app.id, pageId, title, description, status, priority, assignee, req.session.userId
+      );
+      await touchApp(result.app.id);
+      const row = await get(
+        `SELECT t.*, u.name AS assignee_name, c.name AS created_by_name, p.name AS page_name,
+                (SELECT COUNT(*) FROM app_ticket_comments ac WHERE ac.ticket_id = t.id) AS comment_count
+           FROM app_tickets t
+           LEFT JOIN users u ON u.id = t.assignee_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+           LEFT JOIN app_pages p ON p.id = t.page_id
+          WHERE t.id=?`,
+        ins.lastInsertRowid
+      );
+      res.status(201).json(shapeTicket(row));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/apps/:id/tickets/:ticketId', requireAuth, async (req, res) => {
+    try {
+      const t = await loadTicketForUser(req.params.id, req.params.ticketId, req.session.userId);
+      if (t.error) return res.status(t.error.status).json({ error: t.error.message });
+      const comments = await all(
+        `SELECT c.id, c.ticket_id, c.author_id, c.author_name, c.text, c.kind, c.created_at
+           FROM app_ticket_comments c
+          WHERE c.ticket_id=?
+          ORDER BY c.id ASC`,
+        t.ticket.id
+      );
+      const full = await get(
+        `SELECT t.*, u.name AS assignee_name, c.name AS created_by_name, p.name AS page_name, cu.name AS closed_by_name,
+                (SELECT COUNT(*) FROM app_ticket_comments ac WHERE ac.ticket_id = t.id) AS comment_count
+           FROM app_tickets t
+           LEFT JOIN users u ON u.id = t.assignee_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+           LEFT JOIN users cu ON cu.id = t.closed_by_id
+           LEFT JOIN app_pages p ON p.id = t.page_id
+          WHERE t.id=?`,
+        t.ticket.id
+      );
+      res.json({ ...shapeTicket(full), comments });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/apps/:id/tickets/:ticketId', requireAuth, async (req, res) => {
+    try {
+      const t = await loadTicketForUser(req.params.id, req.params.ticketId, req.session.userId);
+      if (t.error) return res.status(t.error.status).json({ error: t.error.message });
+      const cols = []; const args = [];
+      const { title, description, status, priority, assignee_id, page_id } = req.body || {};
+      if (title !== undefined) {
+        const clean = String(title).trim();
+        if (!clean) return res.status(400).json({ error: 'Title cannot be empty' });
+        cols.push('title=?'); args.push(clean);
+      }
+      if (description !== undefined) { cols.push('description=?'); args.push(String(description || '').trim()); }
+      if (priority !== undefined) {
+        if (!TICKET_PRIORITIES.has(String(priority))) return res.status(400).json({ error: 'Invalid priority' });
+        cols.push('priority=?'); args.push(String(priority));
+      }
+      if (assignee_id !== undefined) { cols.push('assignee_id=?'); args.push(normaliseUserId(assignee_id)); }
+      if (page_id !== undefined) { cols.push('page_id=?'); args.push(normaliseUserId(page_id)); }
+      let logKind = null, logText = null;
+      if (status !== undefined) {
+        if (!TICKET_STATUSES.has(String(status))) return res.status(400).json({ error: 'Invalid status' });
+        const newStatus = String(status);
+        cols.push('status=?'); args.push(newStatus);
+        if (t.ticket.status !== newStatus) {
+          logKind = 'status'; logText = `Status: ${t.ticket.status} → ${newStatus}`;
+          // Closing or re-opening — track who/when on the ticket row.
+          if ((newStatus === 'closed' || newStatus === 'resolved') && t.ticket.status !== 'closed' && t.ticket.status !== 'resolved') {
+            cols.push('closed_by_id=?'); args.push(req.session.userId);
+            cols.push("closed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+          } else if (newStatus !== 'closed' && newStatus !== 'resolved' && (t.ticket.status === 'closed' || t.ticket.status === 'resolved')) {
+            cols.push('closed_by_id=?'); args.push(null);
+            cols.push('closed_at=?'); args.push(null);
+          }
+        }
+      }
+      if (cols.length) {
+        cols.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+        await run(`UPDATE app_tickets SET ${cols.join(',')} WHERE id=?`, ...args, t.ticket.id);
+        await touchApp(t.app.id);
+        // Drop a system comment on status changes so the timeline stays
+        // self-documenting — same pattern as the global tickets module.
+        if (logKind === 'status') {
+          const me = await get('SELECT name FROM users WHERE id=?', req.session.userId);
+          await run(
+            `INSERT INTO app_ticket_comments (ticket_id, author_id, author_name, text, kind) VALUES (?,?,?,?,?)`,
+            t.ticket.id, req.session.userId, (me && me.name) || '', logText, 'status'
+          );
+        }
+      }
+      const updated = await get(
+        `SELECT t.*, u.name AS assignee_name, c.name AS created_by_name, p.name AS page_name, cu.name AS closed_by_name,
+                (SELECT COUNT(*) FROM app_ticket_comments ac WHERE ac.ticket_id = t.id) AS comment_count
+           FROM app_tickets t
+           LEFT JOIN users u ON u.id = t.assignee_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+           LEFT JOIN users cu ON cu.id = t.closed_by_id
+           LEFT JOIN app_pages p ON p.id = t.page_id
+          WHERE t.id=?`,
+        t.ticket.id
+      );
+      res.json(shapeTicket(updated));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/apps/:id/tickets/:ticketId', requireAuth, async (req, res) => {
+    try {
+      const t = await loadTicketForUser(req.params.id, req.params.ticketId, req.session.userId);
+      if (t.error) return res.status(t.error.status).json({ error: t.error.message });
+      // Only the creator or an admin can delete; everyone else closes via status.
+      const isCreator = t.ticket.created_by_id === req.session.userId;
+      if (!isCreator && !t.isAdmin) {
+        return res.status(403).json({ error: 'Only the creator or an admin can delete this ticket' });
+      }
+      await run('DELETE FROM app_tickets WHERE id=?', t.ticket.id);
+      await touchApp(t.app.id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/apps/:id/tickets/:ticketId/comments', requireAuth, async (req, res) => {
+    try {
+      const t = await loadTicketForUser(req.params.id, req.params.ticketId, req.session.userId);
+      if (t.error) return res.status(t.error.status).json({ error: t.error.message });
+      const text = String((req.body && req.body.text) || '').trim();
+      if (!text) return res.status(400).json({ error: 'Comment text required' });
+      if (text.length > 4000) return res.status(400).json({ error: 'Comment too long (max 4000 chars)' });
+      const me = await get('SELECT name FROM users WHERE id=?', req.session.userId);
+      const ins = await run(
+        `INSERT INTO app_ticket_comments (ticket_id, author_id, author_name, text)
+         VALUES (?,?,?,?) RETURNING id`,
+        t.ticket.id, req.session.userId, (me && me.name) || '', text
+      );
+      await touchApp(t.app.id);
+      const row = await get(
+        'SELECT id, ticket_id, author_id, author_name, text, kind, created_at FROM app_ticket_comments WHERE id=?',
+        ins.lastInsertRowid
+      );
+      res.status(201).json(row);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/apps/:id/tickets/:ticketId/comments/:commentId', requireAuth, async (req, res) => {
+    try {
+      const t = await loadTicketForUser(req.params.id, req.params.ticketId, req.session.userId);
+      if (t.error) return res.status(t.error.status).json({ error: t.error.message });
+      const c = await get('SELECT * FROM app_ticket_comments WHERE id=? AND ticket_id=?', Number(req.params.commentId), t.ticket.id);
+      if (!c) return res.status(404).json({ error: 'Comment not found' });
+      if (c.kind === 'status') {
+        return res.status(403).json({ error: 'System status events cannot be deleted' });
+      }
+      if (c.author_id !== req.session.userId && !t.isAdmin) {
+        return res.status(403).json({ error: 'Only the author or an admin can delete this comment' });
+      }
+      await run('DELETE FROM app_ticket_comments WHERE id=?', c.id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Helpers ────────────────────────────────────────────────────────────
   const ANNOTATION_TYPES = new Set(['question', 'issue', 'broken', 'note']);
+  const TICKET_STATUSES = new Set(['open', 'in_progress', 'review', 'resolved', 'closed']);
+  const TICKET_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
 
   function normaliseUserId(v) {
     if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+  }
+
+  function tryUnlink(p) {
+    try { fs.unlinkSync(p); } catch { /* already gone */ }
+  }
+
+  function shapeTicket(r) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      app_id: r.app_id,
+      page_id: r.page_id,
+      page_name: r.page_name,
+      title: r.title,
+      description: r.description,
+      status: r.status,
+      priority: r.priority,
+      assignee_id: r.assignee_id,
+      assignee_name: r.assignee_name,
+      created_by_id: r.created_by_id,
+      created_by_name: r.created_by_name,
+      closed_by_id: r.closed_by_id,
+      closed_by_name: r.closed_by_name,
+      closed_at: r.closed_at,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      comment_count: Number(r.comment_count || 0),
+    };
+  }
+
+  // Load a ticket + its app + the caller's access. Same pattern as
+  // loadAppForUser / loadPageForUser — single point that returns either
+  // { error: { status, message } } or { app, ticket, isAdmin } so route
+  // handlers stay flat.
+  async function loadTicketForUser(appId, ticketId, userId) {
+    const tid = Number(ticketId);
+    if (!Number.isFinite(tid) || tid < 1) return { error: { status: 400, message: 'Invalid ticket id' } };
+    const t = await get('SELECT * FROM app_tickets WHERE id=?', tid);
+    if (!t) return { error: { status: 404, message: 'Ticket not found' } };
+    if (t.app_id !== Number(appId)) return { error: { status: 404, message: 'Ticket not in this app' } };
+    const check = await loadAppForUser(t.app_id, userId);
+    if (check.error) return check;
+    return { app: check.app, ticket: t, isAdmin: check.isAdmin };
   }
 
   function clampPct(v) {
