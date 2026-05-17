@@ -368,11 +368,11 @@ async function requireAdmin(req, res, next) {
 }
 
 // Returns true when the current session can read/write the given ticket id.
-// Admin and Manager can touch every live ticket; Members can touch tickets
-// they're assigned to (primary or via ticket_assignees), tickets they
-// requested, tickets they're the reporter on, or tickets they created.
-// Soft-deleted tickets (deleted_at IS NOT NULL) are off-limits to everyone
-// via this path — recovery goes through the admin dump/restore endpoints.
+// Only Admin has blanket access to every ticket — Manager keeps admin
+// powers elsewhere (settings, user management, etc.) but on TICKET views
+// they're scoped to their own involvement (assignee/reporter/requester/
+// creator), same rule as a Member. Soft-deleted tickets are off-limits
+// here either way — recovery goes through the admin dump/restore endpoints.
 async function canAccessTicket(req, ticketId) {
   if (!req.session.userId) return false;
   const me = await getUser(req.session.userId);
@@ -380,7 +380,7 @@ async function canAccessTicket(req, ticketId) {
   // Confirm the ticket exists and isn't soft-deleted.
   const exists = await get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', ticketId);
   if (!exists) return false;
-  if (['Admin','Manager'].includes(me.perm_role)) return true;
+  if (me.perm_role === 'Admin') return true;
   const t = await get(
     `SELECT 1 FROM tickets t
        WHERE t.id = ?
@@ -761,7 +761,10 @@ async function buildTicket(row) {
 app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
-    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    // Cross-workspace view: Admin only. Manager is scoped to their own
+    // involvement on tickets (assignee / reporter / requester / creator)
+    // — they keep admin powers everywhere else.
+    const isAdmin = u && u.perm_role === 'Admin';
     // Snoozed tickets are hidden from the main list to keep it focused on
     // what currently needs attention. EXCEPT: the requester always sees
     // their snoozed ticket (with a "Snoozed until …" pill) so they know
@@ -983,7 +986,9 @@ app.post('/api/tickets/:id/unsnooze', requireAuth, requireTicketAccess, async (r
 app.get('/api/my-snoozed', requireAuth, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
-    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    // Admin-only sees the workspace-wide snooze list; Manager is scoped
+    // to their own involvement (matches the rule on /api/tickets).
+    const isAdmin = u && u.perm_role === 'Admin';
     const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
     let rows;
     if (isAdmin) {
@@ -1225,7 +1230,9 @@ app.get('/api/projects', requireAdmin, async (req, res) => {
 app.get('/api/tickets/:id/children', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
-    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    // Admin-only sees every child; Manager only sees children they're
+    // involved in (same rule as the main /api/tickets list).
+    const isAdmin = u && u.perm_role === 'Admin';
     let rows;
     if (isAdmin) {
       rows = await all('SELECT * FROM tickets WHERE parent_ticket_id=? AND deleted_at IS NULL ORDER BY id ASC', req.params.id);

@@ -15895,9 +15895,15 @@ window.logoutUser = async function() {
 let _adminViewAll = false;
 try { _adminViewAll = localStorage.getItem('wn_admin_view_all') === '1'; } catch {}
 
+// Cross-workspace ticket views (Mine/All toggle, "View all tickets" mode)
+// are Admin-only now. Manager keeps every other admin power — settings,
+// user management, etc. — but on ticket lists they're scoped to their
+// own involvement, same as a Member. This function used to include
+// Manager; keeping the name for backwards-compat with existing callers
+// while tightening the body.
 function _isAdminOrManager() {
   const u = window.CURRENT_USER || {};
-  return ['Admin', 'Manager'].includes(u.permRole || u.role || '');
+  return (u.permRole || u.role || '') === 'Admin';
 }
 
 function isPersonalScope() {
@@ -20270,10 +20276,18 @@ initApp();
     window.showAdminTabsIfAllowed = function() {
       var u = window.CURRENT_USER;
       var isAdmin = !!(u && ['Admin','Manager'].includes(u.permRole));
-      // Toggle every admin-only element
+      var isStrictAdmin = !!(u && u.permRole === 'Admin');
+      // Toggle every admin-only element (Manager + Admin both see these —
+      // they're for general admin powers like settings, user mgmt, etc.)
       document.querySelectorAll('.admin-only').forEach(function(el) {
         el.style.display = isAdmin ? '' : 'none';
       });
+      // The Mine/All scope toggle on /tickets shows tickets across the
+      // whole workspace when set to "All" — that's Admin-only territory.
+      // Manager keeps everything else admin-like but is scoped to their
+      // own ticket involvement, so hide the toggle entirely for them.
+      var scopeWrap = document.getElementById('admin-scope-wrap');
+      if (scopeWrap) scopeWrap.style.display = isStrictAdmin ? '' : 'none';
       // Always-hidden Admin tab reveals only for admins
       var at = document.getElementById('admin-settings-tab');
       if (at) at.style.display = isAdmin ? '' : 'none';
