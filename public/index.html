@@ -4166,6 +4166,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
       My Reminders <span class="badge" id="nav-reminders-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" data-page="notifications">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+      Notifications <span class="badge" id="nav-notifications-badge" style="display:none"></span>
+    </div>
     <div class="nav-item" data-page="snoozed">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
       Snoozed <span class="badge" id="nav-snoozed-badge" style="display:none"></span>
@@ -5324,6 +5328,23 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
       <div id="my-reminders-list" style="display:flex;flex-direction:column;gap:10px;max-width:820px"></div>
       <div id="my-reminders-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No reminders yet — click "+ New Reminder" to add one.</div>
+    </div>
+
+    <!-- ========== NOTIFICATIONS (full-page version of the topbar bell panel) ========== -->
+    <div id="page-notifications" class="page">
+      <div style="max-width:820px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:4px;flex-wrap:wrap">
+          <h1 style="font-size:20px;font-weight:600;margin:0">Notifications</h1>
+          <button class="btn-primary" id="notif-page-mark-all"
+                  style="font-size:12px;padding:7px 14px"
+                  onclick="markAllNotifsRead()">Mark all as read</button>
+        </div>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Mentions, ticket assignments, and due reminders. Click any one to jump straight to the ticket.</p>
+        <!-- Reuses the same .notif-* CSS as the topbar bell popup so the
+             list looks identical; renderNotifPage() fills it. -->
+        <div id="notif-page-tabs" class="notif-tabs" style="margin-bottom:8px"></div>
+        <div id="notif-page-list" class="notif-list" style="background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden"></div>
+      </div>
     </div>
 
     <!-- ========== SNOOZED (tickets parked for up to 7 days) ========== -->
@@ -7109,6 +7130,7 @@ window.PAGE_PATHS = {
   'tickets':     '/tickets',
   'my-tickets':  '/my-tickets',
   'my-reminders':'/my-reminders',
+  'notifications':'/notifications',
   'snoozed':     '/snoozed',
   'docs':         '/docs',
   'chat':        '/chat',
@@ -7175,6 +7197,7 @@ function navigate(page, opts) {
     const titles = {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
       'my-reminders': 'My Reminders',
+      'notifications': 'Notifications',
       'snoozed': 'Snoozed',
       'docs': 'Docs',
       'chat': 'Chat',
@@ -7193,6 +7216,7 @@ function navigate(page, opts) {
   if (page === 'calendar') buildCalendar();
   if (page === 'planning') renderPlans();
   if (page === 'snoozed' && typeof loadSnoozedPage === 'function') loadSnoozedPage();
+  if (page === 'notifications' && typeof renderNotifPage === 'function') renderNotifPage();
   if (page === 'flavors') renderFlavors();
   // Dashboard always defaults to "Mine" — admin's All/Mine toggle resets
   // every time you land on the dashboard. They can still flip it to All
@@ -14395,15 +14419,14 @@ function unreadCount() {
 
 function syncNotifBadge() {
   const dot = document.getElementById('notif-count');
-  if (!dot) return;
-  const n = unreadCount();
-  if (n === 0) {
-    dot.textContent = '';
-    dot.classList.add('zero');
-  } else {
-    dot.textContent = n > 99 ? '99+' : String(n);
-    dot.classList.remove('zero');
+  if (dot) {
+    const n = unreadCount();
+    if (n === 0) { dot.textContent = ''; dot.classList.add('zero'); }
+    else         { dot.textContent = n > 99 ? '99+' : String(n); dot.classList.remove('zero'); }
   }
+  // Sidebar nav badge mirrors the topbar bell so the count is visible
+  // wherever the user is looking.
+  if (typeof updateNotifNavBadge === 'function') updateNotifNavBadge();
 }
 
 function filteredNotifs() {
@@ -14481,6 +14504,54 @@ function toggleNotifPanel(e) {
 function setNotifTab(key) {
   notifActiveTab = key;
   renderNotifPanel();
+  // The page-version of the list shares the active-tab state with the
+  // popup so switching tabs in one place updates the other too.
+  if (typeof renderNotifPage === 'function') renderNotifPage();
+}
+
+// ── Full-page notifications view ────────────────────────────────────────────
+// Renders the same list the topbar bell popup shows, just inside the
+// /notifications page. Uses identical markup + .notif-* CSS classes for
+// visual parity. Also updates the sidebar "Notifications" badge count.
+function renderNotifPage() {
+  const tabsEl  = document.getElementById('notif-page-tabs');
+  const listEl  = document.getElementById('notif-page-list');
+  const markBtn = document.getElementById('notif-page-mark-all');
+  if (!tabsEl || !listEl) { updateNotifNavBadge(); return; }
+  const list = filteredNotifs();
+  tabsEl.innerHTML = NOTIF_TABS.map(tab => {
+    const count = tab.key === 'all'
+      ? NOTIFICATIONS.filter(n => n.unread).length
+      : NOTIFICATIONS.filter(n => n.type === tab.key && n.unread).length;
+    return `<button class="notif-tab ${notifActiveTab === tab.key ? 'active' : ''}"
+              onclick="setNotifTab('${tab.key}')">
+              ${tab.label}${count > 0 ? `<span class="notif-tab-count">${count}</span>` : ''}
+            </button>`;
+  }).join('');
+  listEl.innerHTML = list.length ? list.map(n => `
+    <div class="notif-item ${n.unread ? 'unread' : ''}" onclick="openNotif(${n.id})">
+      <div class="notif-icon-wrap ${n.type}">${window.getNotifIcon ? window.getNotifIcon(n.type) : ''}</div>
+      <div class="notif-body">
+        <div class="notif-text">${n.text}</div>
+        <div class="notif-time">${n.time}</div>
+      </div>
+    </div>
+  `).join('') : `
+    <div class="notif-empty" style="padding:32px 16px">
+      <div class="notif-empty-icon" style="font-size:0"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.4"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg></div>
+      <div>You're all caught up.</div>
+    </div>
+  `;
+  if (markBtn) markBtn.disabled = unreadCount() === 0;
+  updateNotifNavBadge();
+}
+
+function updateNotifNavBadge() {
+  const badge = document.getElementById('nav-notifications-badge');
+  if (!badge) return;
+  const n = unreadCount();
+  if (n > 0) { badge.textContent = n > 99 ? '99+' : String(n); badge.style.display = ''; }
+  else       { badge.style.display = 'none'; }
 }
 
 function openNotif(id) {
@@ -14489,6 +14560,9 @@ function openNotif(id) {
   if (n.unread) {
     n.unread = false;
     syncNotifBadge();
+    // Page version doesn't auto-close, so re-render so the unread dot
+    // clears on the item the user just tapped before navigation kicks in.
+    if (typeof renderNotifPage === 'function') renderNotifPage();
   }
   closeNotifPanel();
   if (n.planId) openPlanDetail(n.planId);
@@ -14499,6 +14573,7 @@ function markAllNotifsRead() {
   NOTIFICATIONS.forEach(n => n.unread = false);
   syncNotifBadge();
   renderNotifPanel();
+  if (typeof renderNotifPage === 'function') renderNotifPage();
 }
 
 // Outside click closes the panel
@@ -16222,9 +16297,11 @@ async function loadRealNotifications() {
       });
     });
     syncNotifBadge();
-    // Re-render if panel is currently open
+    // Re-render the topbar bell popup (if open) AND the full-page view
+    // (if it's the active page) so they both reflect the fresh list.
     var panel = document.getElementById('notif-panel');
     if (panel && panel.classList.contains('open')) renderNotifPanel();
+    if (typeof renderNotifPage === 'function') renderNotifPage();
   } catch(e) {
     if (e.message !== 'unauth') console.warn('[notif] fetch failed', e);
   }
@@ -20410,6 +20487,7 @@ window.refreshPageData = refreshPageData;
     'tickets':     '/tickets',
     'my-tickets':  '/my-tickets',
     'my-reminders':'/my-reminders',
+    'notifications':'/notifications',
     'snoozed':     '/snoozed',
   'docs':         '/docs',
   'chat':        '/chat',
