@@ -30,7 +30,8 @@
     view: 'list',     // 'list' | 'detail'
     apps: [],
     app: null,        // currently loaded app (with .pages)
-    pageView: 'dashboard', // 'dashboard' (app overview) | 'page' (specific page detail)
+    pageView: 'dashboard', // 'dashboard' (app overview) | 'page' | 'ticket'
+    sidebarSection: 'pages', // 'pages' | 'tickets'  — which list is shown on the left
     selectedPageId: null,
     pageDetail: null, // currently loaded page with html_content
     tab: 'preview',   // 'preview' | 'blueprint' | 'qa' | 'todos' | 'functions'
@@ -39,14 +40,30 @@
     todos: [],
     annotations: [],
     annotateMode: false,
-    pendingPin: null, // { x_pct, y_pct } while the new-annotation popover is open
+    penMode: false,        // pen tool active (overrides click-to-pin)
+    penStrokes: [],        // [[{x,y},...], ...] currently-drawn strokes
+    penColor: '#ef4444',
+    penWidth: 3,
+    pendingPin: null, // { x_pct, y_pct, snippetBlob? } while the new-annotation popover is open
+    pendingAttachments: [], // [{ name, blob, mime, kind: 'image'|'audio'|'video'|'file' }] queued for upload after save
     blueprintLang: 'en', // 'en' | 'bn'
     blueprintBn: '', // cached BN translation, fetched on demand
     dashboard: null,  // loaded by loadDashboard
-    dashAllTab: 'comments', // which "all items" sub-tab on the dashboard
+    dashAllTab: 'comments',
+    // Tickets — per-app ticket system, surfaced on the sidebar.
+    tickets: [],
+    ticketFilter: 'all', // 'all' | 'open' | 'closed'
+    selectedTicketId: null,
+    ticketDetail: null, // loaded ticket with comments
     loading: false,
     error: null,
   };
+
+  // Active recordings keyed by kind ('audio' | 'screen') so the UI can
+  // surface a running timer + stop button. Each entry holds the
+  // MediaRecorder, the destination stream, accumulated chunks, and the
+  // started-at timestamp.
+  const activeRecorders = { audio: null, screen: null };
 
   // ── API helpers ────────────────────────────────────────────────────────
   async function api(method, path, body) {
@@ -88,12 +105,13 @@
     if (parts.length === 0) return { view: 'list' };
     const appId = Number(parts[0]);
     if (!Number.isFinite(appId)) return { view: 'list' };
-    let pageId = null;
+    let pageId = null, ticketId = null;
     if (parts[1] === 'p' && parts[2]) {
-      const n = Number(parts[2]);
-      if (Number.isFinite(n)) pageId = n;
+      const n = Number(parts[2]); if (Number.isFinite(n)) pageId = n;
+    } else if (parts[1] === 't' && parts[2]) {
+      const n = Number(parts[2]); if (Number.isFinite(n)) ticketId = n;
     }
-    return { view: 'detail', appId, pageId };
+    return { view: 'detail', appId, pageId, ticketId };
   }
   function navigate(hash) { window.location.hash = hash; }
 
@@ -113,19 +131,33 @@
       state.pageDetail = null;
       state.selectedPageId = null;
       state.dashboard = null;
+      state.tickets = [];
+      state.ticketDetail = null;
+      state.selectedTicketId = null;
       render();
       try {
         await loadApp(route.appId);
+        // Eager-load tickets so the sidebar count badge is accurate even
+        // before the user flips to the Tickets section.
+        loadTickets().catch(() => {});
       } catch (e) {
         state.error = e.message;
         render();
         return;
       }
     }
-    // Dashboard is the default landing when no specific page is in the
-    // hash. The user clicks a page in the sidebar to drop into page mode.
-    if (route.pageId) {
+    // Route precedence: ticket > page > dashboard.
+    if (route.ticketId) {
+      state.pageView = 'ticket';
+      state.sidebarSection = 'tickets';
+      if (route.ticketId !== state.selectedTicketId) {
+        await selectTicket(route.ticketId);
+        return;
+      }
+      render();
+    } else if (route.pageId) {
       state.pageView = 'page';
+      state.sidebarSection = 'pages';
       if (route.pageId !== state.selectedPageId) {
         await selectPage(route.pageId);
         return;
@@ -134,6 +166,7 @@
     } else {
       state.pageView = 'dashboard';
       state.selectedPageId = null;
+      state.selectedTicketId = null;
       render();
       loadDashboard().catch(e => toast(e.message, 'err'));
     }
@@ -212,6 +245,32 @@
     try {
       const d = await api('GET', '/api/apps/' + state.app.id + '/dashboard');
       state.dashboard = d;
+      render();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  async function loadTickets() {
+    if (!state.app) return;
+    try {
+      const qs = state.ticketFilter && state.ticketFilter !== 'all' ? ('?status=' + state.ticketFilter) : '';
+      state.tickets = await api('GET', '/api/apps/' + state.app.id + '/tickets' + qs) || [];
+      render();
+    } catch (e) { /* sidebar quietly shows empty list */ }
+  }
+
+  async function selectTicket(ticketId) {
+    state.pageView = 'ticket';
+    state.selectedTicketId = ticketId;
+    state.ticketDetail = null;
+    state.sidebarSection = 'tickets';
+    render();
+    try {
+      const t = await api('GET', '/api/apps/' + state.app.id + '/tickets/' + ticketId);
+      state.ticketDetail = t;
+      // Make sure the list entry is in sync.
+      const idx = state.tickets.findIndex(x => x.id === ticketId);
+      if (idx >= 0) state.tickets[idx] = Object.assign({}, state.tickets[idx], t);
+      else state.tickets.unshift(t);
       render();
     } catch (e) { toast(e.message, 'err'); }
   }
@@ -379,8 +438,9 @@
               ${assigneeRow('Manager', a.manager_name)}
               ${assigneeRow('Developer', a.developer_name)}
             </div>
-            <div class="ap-pages-list-head">
-              <h4>Pages (${a.pages ? a.pages.length : 0})</h4>
+            <div class="ap-sb-toggle">
+              <button class="ap-sb-toggle-btn ${state.sidebarSection === 'pages' ? 'active' : ''}" data-section="pages">Pages (${a.pages ? a.pages.length : 0})</button>
+              <button class="ap-sb-toggle-btn ${state.sidebarSection === 'tickets' ? 'active' : ''}" data-section="tickets">Tickets (${state.tickets.length})</button>
             </div>
             <div class="ap-pages-list">
               <div class="ap-page-item ${dashActive ? 'active' : ''}" data-dash="1">
@@ -390,12 +450,16 @@
                   <div class="ap-page-item-meta">Overview &amp; all items</div>
                 </div>
               </div>
-              ${pageList || '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No pages yet</div>'}
-              <div class="ap-add-page-btn" id="ap-add-page">+ Add page</div>
+              ${state.sidebarSection === 'pages' ? (pageList || '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No pages yet</div>') : renderTicketsSidebar()}
+              ${state.sidebarSection === 'pages'
+                ? '<div class="ap-add-page-btn" id="ap-add-page">+ Add page</div>'
+                : '<div class="ap-add-page-btn" id="ap-add-ticket">+ New ticket</div>'}
             </div>
           </aside>
           <section class="ap-page-pane">
-            ${state.pageView === 'dashboard' ? renderDashboardPane() : renderPagePane()}
+            ${state.pageView === 'dashboard' ? renderDashboardPane()
+              : state.pageView === 'ticket' ? renderTicketPane()
+              : renderPagePane()}
           </section>
         </div>
       </div>
@@ -483,16 +547,20 @@
           <button class="btn ${state.annotateMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-annotate-toggle" title="Click on the design to drop a pin">
             ${state.annotateMode ? '✓ Annotating' : 'Annotate'}
           </button>
+          <button class="btn ${state.penMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-pen-toggle" title="Draw on the design. Save the markup as a snippet attached to a new pin. Also visible during screen recording.">
+            ${state.penMode ? '✓ Pen' : '🖊 Pen'}
+          </button>
           <a href="${previewUrl}" target="_blank" rel="noopener" class="btn btn-ghost btn-small">Open in new tab ↗</a>
         </div>
       </div>
       <div class="ap-preview-layout">
         <div class="ap-preview-wrap" id="ap-preview-wrap">
           <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="allow-same-origin" title="Page preview"></iframe>
-          <div class="ap-pin-overlay ${state.annotateMode ? 'active' : ''}" id="ap-pin-overlay">
+          <div class="ap-pin-overlay ${state.annotateMode && !state.penMode ? 'active' : ''}" id="ap-pin-overlay">
             ${pins}
             ${state.pendingPin ? `<div class="ap-pin ap-pin-pending" style="left:${state.pendingPin.x_pct}%;top:${state.pendingPin.y_pct}%">+</div>` : ''}
           </div>
+          ${state.penMode ? renderPenLayer() : ''}
           ${state.pendingPin ? renderNewPinPopup() : ''}
         </div>
         <aside class="ap-pins-panel">
@@ -511,6 +579,7 @@
   }
 
   function renderPinRow(a, i) {
+    const atts = (a.attachments || []).map(att => renderAttachmentThumb(a.id, att, state.me && a.author_id === state.me.id)).join('');
     return `
       <div class="ap-pin-row ${a.status === 'resolved' ? 'resolved' : ''}" data-aid="${a.id}">
         <div class="ap-pin-row-head">
@@ -520,10 +589,29 @@
           <span class="ap-pin-row-time">${escapeHtml(formatTime(a.created_at))}</span>
         </div>
         <div class="ap-pin-row-body">${escapeHtml(a.text)}</div>
+        ${atts}
         <div class="ap-pin-row-actions">
+          <span class="ap-comment-action-btn" data-act="add-att" data-aid="${a.id}">+ Attach</span>
           <span class="ap-comment-action-btn resolve-btn" data-act="toggle-pin-resolve" data-aid="${a.id}">${a.status === 'resolved' ? 'Reopen' : 'Resolve'}</span>
           ${(state.me && a.author_id === state.me.id) ? `<span class="ap-comment-action-btn" data-act="delete-pin" data-aid="${a.id}">Delete</span>` : ''}
         </div>
+      </div>
+    `;
+  }
+
+  function renderAttachmentThumb(annId, att, canDelete) {
+    const m = att.mime_type || '';
+    const isImg = m.startsWith('image/');
+    const isAud = m.startsWith('audio/');
+    const isVid = m.startsWith('video/');
+    const inner = isImg ? `<a href="${escapeHtml(att.url)}" target="_blank" rel="noopener"><img src="${escapeHtml(att.url)}" alt="${escapeHtml(att.name)}"/></a>`
+      : isAud ? `<audio controls preload="metadata" src="${escapeHtml(att.url)}"></audio>`
+      : isVid ? `<video controls preload="metadata" src="${escapeHtml(att.url)}" style="max-height:160px;width:100%"></video>`
+      : `<a href="${escapeHtml(att.url)}" target="_blank" rel="noopener">📎 ${escapeHtml(att.name)}</a>`;
+    return `
+      <div class="ap-att-thumb">
+        ${inner}
+        ${canDelete ? `<div style="text-align:right;padding:2px 6px"><span class="ap-comment-action-btn" data-act="rm-att" data-aid="${annId}" data-att="${att.id}">Remove</span></div>` : ''}
       </div>
     `;
   }
@@ -532,11 +620,28 @@
     return ({ question: 'Question', issue: 'Issue', broken: 'Broken', note: 'Note' })[t] || t;
   }
 
+  function renderPenLayer() {
+    const colors = ['#ef4444', '#2563eb', '#16a34a', '#facc15', '#0f172a'];
+    return `
+      <canvas class="ap-pen-canvas" id="ap-pen-canvas"></canvas>
+      <div class="ap-pen-controls">
+        <span style="opacity:.7;font-size:11px">Pen</span>
+        ${colors.map(c => `<span class="ap-pen-color ${c === state.penColor ? 'active' : ''}" data-pen-color="${c}" style="background:${c}"></span>`).join('')}
+        <input type="range" id="ap-pen-width" min="1" max="20" value="${state.penWidth}" style="width:80px"/>
+        <button id="ap-pen-clear">Clear</button>
+        <button id="ap-pen-cancel">Cancel</button>
+        <button class="primary" id="ap-pen-save">💾 Save snippet</button>
+      </div>
+    `;
+  }
+
   function renderNewPinPopup() {
     const pp = state.pendingPin;
     // Position the popup near the pin — use percentages so it scales.
     const left = pp.x_pct > 60 ? 'right:5%' : `left:${Math.min(pp.x_pct + 3, 70)}%`;
     const top = `top:${Math.min(pp.y_pct + 2, 75)}%`;
+    const audioRec = activeRecorders.audio;
+    const screenRec = activeRecorders.screen;
     return `
       <div class="ap-pin-popup" style="${left};${top}">
         <div class="ap-pin-popup-head">New pin</div>
@@ -546,13 +651,52 @@
           <option value="broken">✗ Not working / broken</option>
           <option value="note">✎ Note</option>
         </select>
-        <textarea id="ap-pin-text" placeholder="What's this? Describe the question or issue…" rows="3"></textarea>
+        <textarea id="ap-pin-text" placeholder="What's this? Describe — or paste an image directly here." rows="3"></textarea>
+        <div class="ap-att-bar">
+          <button class="ap-att-btn" data-att-act="file" title="Attach a file">📎 File</button>
+          <button class="ap-att-btn" data-att-act="paste" title="Paste from clipboard (or just paste into the text box)">📋 Paste</button>
+          <button class="ap-att-btn ${audioRec ? 'recording' : ''}" data-att-act="voice" title="Record a voice note">
+            ${audioRec ? `⏹ Stop (${recDuration(audioRec)})` : '🎤 Voice'}
+          </button>
+          <button class="ap-att-btn ${screenRec ? 'recording' : ''}" data-att-act="screen" title="Record your screen">
+            ${screenRec ? `⏹ Stop (${recDuration(screenRec)})` : '🎥 Screen'}
+          </button>
+        </div>
+        <div class="ap-att-list" id="ap-att-list">
+          ${state.pendingAttachments.map((a, i) => `
+            <div class="ap-att-item">
+              ${a.kind === 'image' ? `<img src="${a.previewUrl}" alt=""/>` : ''}
+              ${a.kind === 'audio' ? `<span style="font-size:14px">🎤</span>` : ''}
+              ${a.kind === 'video' ? `<span style="font-size:14px">🎥</span>` : ''}
+              ${a.kind === 'file' ? `<span style="font-size:14px">📎</span>` : ''}
+              <span class="ap-att-name">${escapeHtml(a.name)} · ${humanSize(a.blob.size)}</span>
+              <span class="ap-att-del" data-att-rm="${i}">✕</span>
+            </div>
+          `).join('')}
+        </div>
         <div class="ap-pin-popup-foot">
           <button class="btn btn-ghost btn-small" id="ap-pin-cancel">Cancel</button>
           <button class="btn btn-primary btn-small" id="ap-pin-save">Drop pin</button>
         </div>
+        <input type="file" id="ap-pin-file" style="display:none"/>
       </div>
     `;
+  }
+
+  function humanSize(b) {
+    if (!b && b !== 0) return '';
+    if (b < 1024) return b + ' B';
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  // Live timer for the recording label. Returns mm:ss since the recorder
+  // started; called from the popup HTML on each refresh.
+  function recDuration(rec) {
+    if (!rec || !rec.startedAt) return '0:00';
+    const s = Math.max(0, Math.floor((Date.now() - rec.startedAt) / 1000));
+    const m = Math.floor(s / 60);
+    return m + ':' + String(s % 60).padStart(2, '0');
   }
 
   function renderBlueprintTab(p) {
@@ -827,6 +971,118 @@
     `;
   }
 
+  // ── Tickets sidebar list ─────────────────────────────────────────────
+  function renderTicketsSidebar() {
+    if (state.tickets.length === 0) {
+      return '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No tickets yet</div>';
+    }
+    return state.tickets.map(t => {
+      const isActive = state.pageView === 'ticket' && t.id === state.selectedTicketId;
+      const closed = (t.status === 'closed' || t.status === 'resolved');
+      const dot = closed ? '#10b981' : (t.status === 'in_progress' ? '#f59e0b' : (t.status === 'review' ? '#8b5cf6' : '#64748b'));
+      const prio = t.priority && t.priority !== 'normal'
+        ? `<span class="ap-prio-pill ap-prio-${escapeHtml(t.priority)}">${escapeHtml(t.priority)}</span>` : '';
+      return `
+        <div class="ap-page-item ${isActive ? 'active' : ''} ${closed ? 'closed' : ''}" data-ticket-id="${t.id}">
+          <span class="ap-page-item-dot" style="background:${dot}" title="${escapeHtml(t.status)}"></span>
+          <div class="ap-page-item-text">
+            <div class="ap-page-item-title">#${t.id} ${escapeHtml(t.title)}</div>
+            <div class="ap-page-item-meta">
+              ${escapeHtml(prettyTicketStatus(t.status))}${t.comment_count ? ` · 💬 ${t.comment_count}` : ''}${t.page_name ? ` · ${escapeHtml(t.page_name)}` : ''}
+              ${prio}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function prettyTicketStatus(s) {
+    return ({ open: 'Open', in_progress: 'In progress', review: 'In review', resolved: 'Resolved', closed: 'Closed' })[s] || s;
+  }
+
+  // ── Ticket detail pane ────────────────────────────────────────────────
+  function renderTicketPane() {
+    const t = state.ticketDetail;
+    if (!t) {
+      return '<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:13px">Loading ticket…</div>';
+    }
+    const closed = (t.status === 'closed' || t.status === 'resolved');
+    const assigneeOpts = `<option value="">— Unassigned —</option>` +
+      (state.team || []).map(u => `<option value="${u.id}"${u.id === t.assignee_id ? ' selected' : ''}>${escapeHtml(u.name)}</option>`).join('');
+    const pageOpts = `<option value="">— No page —</option>` +
+      ((state.app.pages || []).map(p => `<option value="${p.id}"${p.id === t.page_id ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join(''));
+    const commentRows = (t.comments || []).map(c => {
+      if (c.kind === 'status') {
+        return `<div class="ap-ticket-event"><span>${escapeHtml(c.author_name || 'System')}</span> · ${escapeHtml(c.text)} · ${escapeHtml(formatTime(c.created_at))}</div>`;
+      }
+      return `
+        <div class="ap-comment" data-cid="${c.id}">
+          <div class="ap-comment-head">
+            <span class="ap-comment-author">${escapeHtml(c.author_name || 'Unknown')}</span>
+            <span class="ap-comment-time">${escapeHtml(formatTime(c.created_at))}</span>
+            <div class="ap-comment-actions">
+              ${(state.me && c.author_id === state.me.id) ? `<span class="ap-comment-action-btn" data-act="del-tc" data-cid="${c.id}">Delete</span>` : ''}
+            </div>
+          </div>
+          <div class="ap-comment-body">${escapeHtml(c.text)}</div>
+        </div>
+      `;
+    }).join('');
+    return `
+      <div class="ap-page-head">
+        <input class="ap-page-title-input" id="ap-ticket-title" value="${escapeHtml(t.title)}" placeholder="Ticket title"/>
+        <select class="ap-page-status-select" id="ap-ticket-status">
+          ${['open', 'in_progress', 'review', 'resolved', 'closed'].map(s =>
+            `<option value="${s}"${t.status === s ? ' selected' : ''}>${prettyTicketStatus(s)}</option>`).join('')}
+        </select>
+        <select class="ap-page-status-select" id="ap-ticket-priority">
+          ${['low', 'normal', 'high', 'urgent'].map(p =>
+            `<option value="${p}"${t.priority === p ? ' selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+        </select>
+        ${closed
+          ? '<button class="btn btn-secondary btn-small" id="ap-ticket-reopen">Re-open</button>'
+          : '<button class="btn btn-secondary btn-small" id="ap-ticket-close">Close ticket</button>'}
+        <button class="btn btn-danger btn-small" id="ap-ticket-delete">Delete</button>
+      </div>
+      <div class="ap-tab-body">
+        <div style="max-width:780px">
+          <div class="ap-fn-summary" style="margin-bottom:14px">
+            <span>
+              <strong>#${t.id}</strong>
+              · ${escapeHtml(prettyTicketStatus(t.status))}
+              · by ${escapeHtml(t.created_by_name || '?')}
+              · ${escapeHtml(formatTime(t.created_at))}
+              ${t.closed_at ? ` · closed by ${escapeHtml(t.closed_by_name || '?')} ${escapeHtml(formatTime(t.closed_at))}` : ''}
+            </span>
+          </div>
+          <div class="ap-field-row">
+            <div class="ap-field"><label>Assignee</label><select id="ap-ticket-assignee">${assigneeOpts}</select></div>
+            <div class="ap-field"><label>Linked page</label><select id="ap-ticket-page">${pageOpts}</select></div>
+          </div>
+          <div class="ap-field">
+            <label>Description</label>
+            <textarea id="ap-ticket-desc" rows="5" placeholder="Describe the issue, request, or note…">${escapeHtml(t.description || '')}</textarea>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button class="btn btn-primary btn-small" id="ap-ticket-save">Save changes</button>
+            <span class="ap-blueprint-saved" id="ap-ticket-saved">Saved ✓</span>
+          </div>
+
+          <h3 style="margin:24px 0 12px;font-size:14px;color:#0f172a">Activity</h3>
+          ${commentRows || '<div class="ap-qa-empty" style="padding:14px 0">No activity yet</div>'}
+
+          <div class="ap-qa-composer">
+            <textarea id="ap-ticket-comment-input" placeholder="Add a comment…"></textarea>
+            <div class="ap-qa-composer-actions">
+              <button class="btn btn-primary btn-small" id="ap-ticket-comment-send">Comment</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function formatTime(ts) {
     if (!ts) return '';
     // ts is "YYYY-MM-DD HH:MM:SS" UTC string from the server.
@@ -847,17 +1103,37 @@
     if (editBtn) editBtn.onclick = () => openAppModal(state.app);
     const addBtn = document.getElementById('ap-add-page');
     if (addBtn) addBtn.onclick = () => openAddPageModal();
+    const addTicketBtn = document.getElementById('ap-add-ticket');
+    if (addTicketBtn) addTicketBtn.onclick = () => openTicketModal(null);
+
+    // Sidebar section toggle (Pages | Tickets).
+    root.querySelectorAll('[data-section]').forEach(el => {
+      el.onclick = () => {
+        state.sidebarSection = el.getAttribute('data-section');
+        // Lazy-load tickets the first time the user flips to Tickets.
+        if (state.sidebarSection === 'tickets' && (state.tickets.length === 0 || !state.tickets._loaded)) {
+          loadTickets();
+        } else {
+          render();
+        }
+      };
+    });
 
     root.querySelectorAll('.ap-page-item').forEach(el => {
       el.onclick = () => {
         if (el.getAttribute('data-dash')) navigate('/' + state.app.id);
+        else if (el.getAttribute('data-ticket-id')) navigate('/' + state.app.id + '/t/' + el.getAttribute('data-ticket-id'));
         else navigate('/' + state.app.id + '/p/' + el.getAttribute('data-page-id'));
       };
     });
 
-    // Dashboard pane interactions — only present when pageView is dashboard.
+    // Dashboard / ticket panes have their own event binders.
     if (state.pageView === 'dashboard') {
       bindDashboardEvents();
+      return;
+    }
+    if (state.pageView === 'ticket') {
+      bindTicketEvents();
       return;
     }
 
@@ -952,7 +1228,7 @@
     const wrap = document.getElementById('ap-preview-wrap');
     if (!overlay || !panel || !wrap) { render(); return; }
     // Toggle overlay active state without re-fetching the iframe.
-    overlay.classList.toggle('active', !!state.annotateMode);
+    overlay.classList.toggle('active', !!state.annotateMode && !state.penMode);
     const toggleBtn = document.getElementById('ap-annotate-toggle');
     if (toggleBtn) {
       toggleBtn.textContent = state.annotateMode ? '✓ Annotating' : 'Annotate';
@@ -988,6 +1264,123 @@
     bindPreviewEvents();
   }
 
+  // Pen-mode wiring. Canvas captures pointer events, strokes accumulate
+  // in state.penStrokes (so the canvas can be redrawn on resize / cancel),
+  // and "Save snippet" composes the canvas into a PNG that gets queued as
+  // the new pin's first attachment.
+  function bindPenEvents() {
+    const canvas = document.getElementById('ap-pen-canvas');
+    if (!canvas) return;
+    const wrap = document.getElementById('ap-preview-wrap');
+    // Size the canvas to the wrap, accounting for devicePixelRatio so
+    // strokes render crisp at native pixel density.
+    const dpr = window.devicePixelRatio || 1;
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    function redraw() {
+      ctx.clearRect(0, 0, w, h);
+      for (const stroke of state.penStrokes) {
+        if (!stroke.points || stroke.points.length === 0) continue;
+        ctx.strokeStyle = stroke.color;
+        ctx.lineWidth = stroke.width;
+        ctx.beginPath();
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (let i = 1; i < stroke.points.length; i++) {
+          ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+        ctx.stroke();
+      }
+    }
+    redraw();
+
+    let active = null;
+    const point = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      active = { color: state.penColor, width: state.penWidth, points: [point(e)] };
+      state.penStrokes.push(active);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!active) return;
+      const p = point(e);
+      active.points.push(p);
+      // Draw the new segment incrementally so the line keeps up with the
+      // pointer without a full redraw each frame.
+      ctx.strokeStyle = active.color;
+      ctx.lineWidth = active.width;
+      const prev = active.points[active.points.length - 2];
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    });
+    const endStroke = () => { active = null; };
+    canvas.addEventListener('pointerup', endStroke);
+    canvas.addEventListener('pointercancel', endStroke);
+    canvas.addEventListener('pointerleave', () => { /* allow drag back in */ });
+
+    // Toolbar controls.
+    root.querySelectorAll('[data-pen-color]').forEach(el => {
+      el.onclick = () => {
+        state.penColor = el.getAttribute('data-pen-color');
+        root.querySelectorAll('[data-pen-color]').forEach(x => x.classList.toggle('active', x === el));
+      };
+    });
+    const widthEl = document.getElementById('ap-pen-width');
+    if (widthEl) widthEl.oninput = () => { state.penWidth = Number(widthEl.value) || 3; };
+    const clearBtn = document.getElementById('ap-pen-clear');
+    if (clearBtn) clearBtn.onclick = () => { state.penStrokes = []; redraw(); };
+    const cancelBtn = document.getElementById('ap-pen-cancel');
+    if (cancelBtn) cancelBtn.onclick = () => {
+      state.penMode = false;
+      state.penStrokes = [];
+      render();
+    };
+    const saveBtn = document.getElementById('ap-pen-save');
+    if (saveBtn) saveBtn.onclick = () => savePenSnippet(canvas, w, h);
+  }
+
+  // Convert the current pen drawing into a PNG, compute the centroid of
+  // strokes (used as the pin coordinate), then drop into the new-pin
+  // flow with the snippet pre-attached. Pen mode exits afterwards.
+  function savePenSnippet(canvas, displayW, displayH) {
+    if (state.penStrokes.length === 0) { toast('Draw something first', 'err'); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { toast('Snippet save failed', 'err'); return; }
+      // Centroid of all stroke points (in % of the canvas).
+      let sx = 0, sy = 0, n = 0;
+      for (const stroke of state.penStrokes) {
+        for (const p of stroke.points) {
+          sx += p.x; sy += p.y; n++;
+        }
+      }
+      const cx = n > 0 ? (sx / n) / displayW * 100 : 50;
+      const cy = n > 0 ? (sy / n) / displayH * 100 : 50;
+      const file = new File([blob], 'snippet-' + Date.now() + '.png', { type: 'image/png' });
+      state.pendingPin = { x_pct: cx, y_pct: cy };
+      state.pendingAttachments.push({
+        name: file.name, blob: file, mime: 'image/png', kind: 'image',
+        previewUrl: URL.createObjectURL(file),
+      });
+      state.penMode = false;
+      state.penStrokes = [];
+      render();
+    }, 'image/png');
+  }
+
   // Preview tab — annotation overlay, pin clicks, new-pin popup.
   function bindPreviewEvents() {
     const toggleBtn = document.getElementById('ap-annotate-toggle');
@@ -995,9 +1388,24 @@
       toggleBtn.onclick = () => {
         state.annotateMode = !state.annotateMode;
         state.pendingPin = null;
+        // Pen + Annotate are mutually exclusive — enabling one clears the other.
+        if (state.annotateMode) state.penMode = false;
         refreshAnnotationOverlay();
       };
     }
+    const penToggle = document.getElementById('ap-pen-toggle');
+    if (penToggle) {
+      penToggle.onclick = () => {
+        state.penMode = !state.penMode;
+        if (state.penMode) {
+          state.annotateMode = false;
+          state.pendingPin = null;
+          state.penStrokes = [];
+        }
+        render();
+      };
+    }
+    if (state.penMode) bindPenEvents();
     const overlay = document.getElementById('ap-pin-overlay');
     if (overlay) {
       // Click anywhere on the overlay (when annotate mode is on) to drop a
@@ -1050,6 +1458,27 @@
         } catch (e) { toast(e.message, 'err'); }
       };
     });
+    // Attach a file/voice/video to an existing pin via a small floating
+    // file picker — keeps the per-row UI tight.
+    root.querySelectorAll('[data-act="add-att"]').forEach(el => {
+      el.onclick = () => {
+        const aid = Number(el.getAttribute('data-aid'));
+        openAttachMenu(el, aid);
+      };
+    });
+    root.querySelectorAll('[data-act="rm-att"]').forEach(el => {
+      el.onclick = async () => {
+        const aid = Number(el.getAttribute('data-aid'));
+        const att = Number(el.getAttribute('data-att'));
+        if (!confirm('Remove this attachment?')) return;
+        try {
+          await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations/' + aid + '/attachments/' + att);
+          const ann = state.annotations.find(x => x.id === aid);
+          if (ann) ann.attachments = (ann.attachments || []).filter(x => x.id !== att);
+          refreshAnnotationOverlay();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
     // New-pin popup
     const cancelBtn = document.getElementById('ap-pin-cancel');
     const saveBtn = document.getElementById('ap-pin-save');
@@ -1060,19 +1489,289 @@
       saveBtn.onclick = async () => {
         const type = document.getElementById('ap-pin-type').value;
         const text = document.getElementById('ap-pin-text').value.trim();
-        if (!text) { toast('Describe the pin first', 'err'); return; }
+        if (!text && state.pendingAttachments.length === 0) {
+          toast('Describe the pin or attach something', 'err');
+          return;
+        }
+        saveBtn.disabled = true;
         try {
           const created = await api('POST', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations', {
             x_pct: state.pendingPin.x_pct,
             y_pct: state.pendingPin.y_pct,
-            type, text,
+            type, text: text || '(see attached)',
           });
+          // Upload each queued attachment in series — small count, simpler
+          // than juggling parallel uploads + error aggregation.
+          for (const a of state.pendingAttachments) {
+            try {
+              const att = await uploadAttachment(created.id, a);
+              created.attachments = (created.attachments || []).concat([att]);
+            } catch (err) {
+              toast('Attachment "' + a.name + '" failed: ' + err.message, 'err');
+            }
+          }
           state.annotations.push(created);
           state.pendingPin = null;
+          state.pendingAttachments = [];
           refreshAnnotationOverlay();
         } catch (e) { toast(e.message, 'err'); }
+        saveBtn.disabled = false;
       };
     }
+
+    // Attachment buttons inside the new-pin popup.
+    const popup = root.querySelector('.ap-pin-popup');
+    if (popup) {
+      // File picker (hidden input).
+      popup.querySelector('#ap-pin-file').onchange = (e) => {
+        const f = (e.target.files || [])[0];
+        if (f) queuePendingAttachment(f, kindForMime(f.type));
+        e.target.value = '';
+      };
+      // Paste image directly into the textarea (or anywhere on the popup).
+      const textArea = popup.querySelector('#ap-pin-text');
+      const handlePaste = (e) => {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        for (const it of items) {
+          if (it.kind === 'file' && it.type.startsWith('image/')) {
+            e.preventDefault();
+            const blob = it.getAsFile();
+            const ext = blob.type.split('/')[1] || 'png';
+            const file = new File([blob], 'pasted-' + Date.now() + '.' + ext, { type: blob.type });
+            queuePendingAttachment(file, 'image');
+            return;
+          }
+        }
+      };
+      if (textArea) textArea.addEventListener('paste', handlePaste);
+      popup.addEventListener('paste', handlePaste);
+
+      popup.querySelectorAll('[data-att-act]').forEach(btn => {
+        btn.onclick = async () => {
+          const act = btn.getAttribute('data-att-act');
+          if (act === 'file') popup.querySelector('#ap-pin-file').click();
+          else if (act === 'paste') toast('Paste an image with ⌘V / Ctrl+V into the text box', 'ok');
+          else if (act === 'voice') toggleRecording('audio');
+          else if (act === 'screen') toggleRecording('screen');
+        };
+      });
+      popup.querySelectorAll('[data-att-rm]').forEach(btn => {
+        btn.onclick = () => {
+          const i = Number(btn.getAttribute('data-att-rm'));
+          const a = state.pendingAttachments[i];
+          if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+          state.pendingAttachments.splice(i, 1);
+          refreshAnnotationOverlay();
+        };
+      });
+    }
+  }
+
+  // ── Recording lifecycle ────────────────────────────────────────────────
+  // Voice & screen recordings share the same flow: getUserMedia (or
+  // getDisplayMedia) → MediaRecorder → on stop, concat the chunks into a
+  // Blob and push it onto the pending-attachments list. A 1Hz ticker
+  // keeps the running timer label in sync.
+  async function toggleRecording(kind) {
+    const existing = activeRecorders[kind];
+    if (existing) {
+      try { existing.recorder.stop(); } catch {}
+      return;
+    }
+    try {
+      let stream, mime;
+      if (kind === 'audio') {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mime = pickMimeType(['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']);
+      } else {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 24 },
+          audio: true,
+        });
+        mime = pickMimeType(['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']);
+      }
+      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType || (kind === 'audio' ? 'audio/webm' : 'video/webm') });
+        // getDisplayMedia leaves the share indicator running until we
+        // explicitly stop every track on the stream.
+        try { stream.getTracks().forEach(tr => tr.stop()); } catch {}
+        activeRecorders[kind] = null;
+        if (recTimer) { clearInterval(recTimer); recTimer = null; }
+        const ext = (recorder.mimeType || '').includes('mp4') ? (kind === 'audio' ? 'm4a' : 'mp4') : 'webm';
+        const file = new File([blob], (kind === 'audio' ? 'voice-' : 'screen-') + Date.now() + '.' + ext, { type: recorder.mimeType || blob.type });
+        queuePendingAttachment(file, kind === 'audio' ? 'audio' : 'video');
+      };
+      // If the user clicks the browser's "Stop sharing" button (screen
+      // capture) rather than ours, the video track ends — mirror that to
+      // a clean recorder.stop().
+      stream.getTracks().forEach(tr => {
+        tr.addEventListener('ended', () => { try { recorder.stop(); } catch {} });
+      });
+      recorder.start();
+      activeRecorders[kind] = { recorder, stream, chunks, startedAt: Date.now() };
+      // Refresh the popup every second so the running timer updates.
+      if (recTimer) clearInterval(recTimer);
+      recTimer = setInterval(() => {
+        if (!activeRecorders.audio && !activeRecorders.screen) {
+          clearInterval(recTimer); recTimer = null; return;
+        }
+        // Only update the buttons' labels, not the whole DOM.
+        const popup = root.querySelector('.ap-pin-popup');
+        if (!popup) return;
+        popup.querySelectorAll('[data-att-act]').forEach(b => {
+          const a = b.getAttribute('data-att-act');
+          if (a === 'voice' && activeRecorders.audio) b.innerHTML = `⏹ Stop (${recDuration(activeRecorders.audio)})`;
+          if (a === 'screen' && activeRecorders.screen) b.innerHTML = `⏹ Stop (${recDuration(activeRecorders.screen)})`;
+        });
+      }, 1000);
+      refreshAnnotationOverlay();
+    } catch (e) {
+      toast(e.message || 'Recording failed', 'err');
+    }
+  }
+  let recTimer = null;
+
+  function pickMimeType(candidates) {
+    for (const c of candidates) {
+      try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+    }
+    return null;
+  }
+
+  function kindForMime(m) {
+    if (!m) return 'file';
+    if (m.startsWith('image/')) return 'image';
+    if (m.startsWith('audio/')) return 'audio';
+    if (m.startsWith('video/')) return 'video';
+    return 'file';
+  }
+
+  function queuePendingAttachment(fileOrBlob, kind) {
+    // Generate an object URL for image previews so we can show a thumbnail
+    // immediately. Revoked when the attachment is removed or saved.
+    const name = fileOrBlob.name || ('attachment-' + Date.now());
+    const entry = {
+      name,
+      blob: fileOrBlob,
+      mime: fileOrBlob.type,
+      kind: kind || kindForMime(fileOrBlob.type),
+      previewUrl: kind === 'image' ? URL.createObjectURL(fileOrBlob) : null,
+    };
+    state.pendingAttachments.push(entry);
+    refreshAnnotationOverlay();
+  }
+
+  // Small floating menu for adding attachments to an *existing* pin. The
+  // new-pin popup has its own inline attachment bar; this is for pins
+  // that were already created. Triggered from the "+ Attach" link in
+  // the side-panel pin row.
+  function openAttachMenu(anchor, annotationId) {
+    const existing = document.getElementById('ap-att-menu');
+    if (existing) existing.remove();
+    const rect = anchor.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = 'ap-att-menu';
+    Object.assign(menu.style, {
+      position: 'fixed', top: (rect.bottom + 4) + 'px', left: (rect.left - 40) + 'px',
+      background: '#fff', border: '1px solid #dbe5ef', borderRadius: '8px',
+      boxShadow: '0 12px 28px rgba(15,23,42,.18)', padding: '6px', zIndex: 50,
+      display: 'flex', flexDirection: 'column', gap: '2px', minWidth: '160px',
+    });
+    menu.innerHTML = `
+      <button class="ap-att-btn" data-do="file">📎 File…</button>
+      <button class="ap-att-btn" data-do="voice">🎤 Voice note</button>
+      <button class="ap-att-btn" data-do="screen">🎥 Screen recording</button>
+      <input type="file" id="ap-att-file" style="display:none"/>
+    `;
+    document.body.appendChild(menu);
+    // Click-outside closes the menu.
+    setTimeout(() => {
+      const off = (e) => {
+        if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', off); }
+      };
+      document.addEventListener('click', off);
+    }, 0);
+    const fileIn = menu.querySelector('#ap-att-file');
+    fileIn.onchange = async (e) => {
+      const f = (e.target.files || [])[0];
+      menu.remove();
+      if (!f) return;
+      try {
+        const att = await uploadAttachment(annotationId, { name: f.name, blob: f, mime: f.type, kind: kindForMime(f.type) });
+        const ann = state.annotations.find(x => x.id === annotationId);
+        if (ann) ann.attachments = (ann.attachments || []).concat([att]);
+        refreshAnnotationOverlay();
+      } catch (err) { toast(err.message, 'err'); }
+    };
+    menu.querySelectorAll('[data-do]').forEach(b => {
+      b.onclick = async () => {
+        const act = b.getAttribute('data-do');
+        if (act === 'file') { fileIn.click(); return; }
+        menu.remove();
+        try {
+          let stream, mime;
+          if (act === 'voice') {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mime = pickMimeType(['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']);
+          } else {
+            stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 24 }, audio: true });
+            mime = pickMimeType(['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']);
+          }
+          await recordAndAttachToExistingPin(annotationId, stream, mime, act === 'voice' ? 'audio' : 'video');
+        } catch (e) { toast(e.message || 'Recording failed', 'err'); }
+      };
+    });
+  }
+
+  // Record straight into an existing pin — uses a tiny floating Stop bar
+  // so the user can end the recording without juggling the pin popup.
+  async function recordAndAttachToExistingPin(annotationId, stream, mime, kind) {
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    const bar = document.createElement('div');
+    bar.className = 'ap-pen-controls';
+    bar.style.top = '14px';
+    bar.innerHTML = `<span style="color:#fca5a5">● REC</span> <span id="ap-rec-time">0:00</span> <button class="primary" id="ap-rec-stop">⏹ Stop</button>`;
+    document.body.appendChild(bar);
+    const startedAt = Date.now();
+    const timeEl = bar.querySelector('#ap-rec-time');
+    const interval = setInterval(() => {
+      timeEl.textContent = recDuration({ startedAt });
+    }, 1000);
+    bar.querySelector('#ap-rec-stop').onclick = () => recorder.stop();
+    stream.getTracks().forEach(tr => tr.addEventListener('ended', () => { try { recorder.stop(); } catch {} }));
+    recorder.onstop = async () => {
+      clearInterval(interval);
+      bar.remove();
+      try { stream.getTracks().forEach(tr => tr.stop()); } catch {}
+      const blob = new Blob(chunks, { type: recorder.mimeType || (kind === 'audio' ? 'audio/webm' : 'video/webm') });
+      const ext = (recorder.mimeType || '').includes('mp4') ? (kind === 'audio' ? 'm4a' : 'mp4') : 'webm';
+      const file = new File([blob], (kind === 'audio' ? 'voice-' : 'screen-') + Date.now() + '.' + ext, { type: recorder.mimeType || blob.type });
+      try {
+        const att = await uploadAttachment(annotationId, { name: file.name, blob: file, mime: file.type, kind });
+        const ann = state.annotations.find(x => x.id === annotationId);
+        if (ann) ann.attachments = (ann.attachments || []).concat([att]);
+        refreshAnnotationOverlay();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    recorder.start();
+  }
+
+  async function uploadAttachment(annotationId, entry) {
+    const fd = new FormData();
+    fd.append('file', entry.blob, entry.name);
+    const r = await fetch('/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations/' + annotationId + '/attachments', {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    return data;
   }
 
   function bindTodosEvents() {
@@ -1117,6 +1816,155 @@
         } catch (e) { toast(e.message, 'err'); }
       };
     });
+  }
+
+  function bindTicketEvents() {
+    const t = state.ticketDetail;
+    if (!t) return;
+    const patch = async (body) => {
+      try {
+        const updated = await api('PATCH', '/api/apps/' + state.app.id + '/tickets/' + t.id, body);
+        // Server may have appended a system comment for status changes —
+        // re-fetch the full ticket to grab the updated comment list.
+        const full = await api('GET', '/api/apps/' + state.app.id + '/tickets/' + t.id);
+        state.ticketDetail = full;
+        const idx = state.tickets.findIndex(x => x.id === t.id);
+        if (idx >= 0) state.tickets[idx] = Object.assign({}, state.tickets[idx], updated);
+        render();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    const titleIn = document.getElementById('ap-ticket-title');
+    if (titleIn) {
+      titleIn.onblur = () => {
+        const v = titleIn.value.trim();
+        if (v && v !== t.title) patch({ title: v });
+      };
+    }
+    const statusSel = document.getElementById('ap-ticket-status');
+    if (statusSel) statusSel.onchange = () => patch({ status: statusSel.value });
+    const prioSel = document.getElementById('ap-ticket-priority');
+    if (prioSel) prioSel.onchange = () => patch({ priority: prioSel.value });
+    const assignSel = document.getElementById('ap-ticket-assignee');
+    if (assignSel) assignSel.onchange = () => patch({ assignee_id: assignSel.value || null });
+    const pageSel = document.getElementById('ap-ticket-page');
+    if (pageSel) pageSel.onchange = () => patch({ page_id: pageSel.value || null });
+    const closeBtn = document.getElementById('ap-ticket-close');
+    if (closeBtn) closeBtn.onclick = () => patch({ status: 'closed' });
+    const reopenBtn = document.getElementById('ap-ticket-reopen');
+    if (reopenBtn) reopenBtn.onclick = () => patch({ status: 'open' });
+    const delBtn = document.getElementById('ap-ticket-delete');
+    if (delBtn) {
+      delBtn.onclick = async () => {
+        if (!confirm('Delete this ticket? All comments will be removed too.')) return;
+        try {
+          await api('DELETE', '/api/apps/' + state.app.id + '/tickets/' + t.id);
+          state.tickets = state.tickets.filter(x => x.id !== t.id);
+          state.ticketDetail = null;
+          state.selectedTicketId = null;
+          navigate('/' + state.app.id);
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+    const saveBtn = document.getElementById('ap-ticket-save');
+    const savedFlag = document.getElementById('ap-ticket-saved');
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const desc = document.getElementById('ap-ticket-desc').value;
+        try {
+          await api('PATCH', '/api/apps/' + state.app.id + '/tickets/' + t.id, { description: desc });
+          t.description = desc;
+          if (savedFlag) {
+            savedFlag.classList.add('visible');
+            setTimeout(() => savedFlag.classList.remove('visible'), 1600);
+          }
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+    const sendBtn = document.getElementById('ap-ticket-comment-send');
+    const commentInput = document.getElementById('ap-ticket-comment-input');
+    if (sendBtn && commentInput) {
+      sendBtn.onclick = async () => {
+        const text = commentInput.value.trim();
+        if (!text) return;
+        try {
+          const c = await api('POST', '/api/apps/' + state.app.id + '/tickets/' + t.id + '/comments', { text });
+          state.ticketDetail.comments = (state.ticketDetail.comments || []).concat([c]);
+          state.ticketDetail.comment_count = (state.ticketDetail.comment_count || 0) + 1;
+          const idx = state.tickets.findIndex(x => x.id === t.id);
+          if (idx >= 0) state.tickets[idx].comment_count = state.ticketDetail.comment_count;
+          commentInput.value = '';
+          render();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+    root.querySelectorAll('[data-act="del-tc"]').forEach(el => {
+      el.onclick = async () => {
+        const cid = Number(el.getAttribute('data-cid'));
+        if (!confirm('Delete this comment?')) return;
+        try {
+          await api('DELETE', '/api/apps/' + state.app.id + '/tickets/' + t.id + '/comments/' + cid);
+          state.ticketDetail.comments = state.ticketDetail.comments.filter(x => x.id !== cid);
+          state.ticketDetail.comment_count = Math.max(0, (state.ticketDetail.comment_count || 1) - 1);
+          render();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+  }
+
+  function openTicketModal(prefill) {
+    const initial = prefill || { title: '', description: '', priority: 'normal', assignee_id: '', page_id: '' };
+    const userOpts = '<option value="">— Unassigned —</option>' +
+      (state.team || []).map(u => `<option value="${u.id}"${u.id === initial.assignee_id ? ' selected' : ''}>${escapeHtml(u.name)}</option>`).join('');
+    const pageOpts = '<option value="">— No page —</option>' +
+      ((state.app.pages || []).map(p => `<option value="${p.id}"${p.id === initial.page_id ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join(''));
+    const modal = document.createElement('div');
+    modal.id = 'ap-modal-back';
+    modal.className = 'ap-modal-back';
+    modal.innerHTML = `
+      <div class="ap-modal">
+        <div class="ap-modal-head"><h3>New ticket</h3><span class="ap-modal-close" id="ap-modal-close">×</span></div>
+        <div class="ap-modal-body">
+          <div class="ap-field"><label>Title</label><input id="t-title" value="${escapeHtml(initial.title || '')}" placeholder="Short summary"/></div>
+          <div class="ap-field"><label>Description</label><textarea id="t-desc" rows="4" placeholder="Details, repro steps, screenshots, etc.">${escapeHtml(initial.description || '')}</textarea></div>
+          <div class="ap-field-row">
+            <div class="ap-field"><label>Priority</label>
+              <select id="t-priority">
+                ${['low', 'normal', 'high', 'urgent'].map(p => `<option value="${p}"${p === (initial.priority || 'normal') ? ' selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="ap-field"><label>Assignee</label><select id="t-assignee">${userOpts}</select></div>
+          </div>
+          <div class="ap-field"><label>Linked page (optional)</label><select id="t-page">${pageOpts}</select></div>
+        </div>
+        <div class="ap-modal-foot">
+          <button class="btn btn-ghost" id="t-cancel">Cancel</button>
+          <button class="btn btn-primary" id="t-save">Create ticket</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const close = () => modal.remove();
+    document.getElementById('ap-modal-close').onclick = close;
+    document.getElementById('t-cancel').onclick = close;
+    modal.onclick = (e) => { if (e.target === modal) close(); };
+    document.getElementById('t-save').onclick = async () => {
+      const title = document.getElementById('t-title').value.trim();
+      if (!title) { toast('Title is required', 'err'); return; }
+      const body = {
+        title,
+        description: document.getElementById('t-desc').value.trim(),
+        priority: document.getElementById('t-priority').value,
+        assignee_id: document.getElementById('t-assignee').value || null,
+        page_id: document.getElementById('t-page').value || null,
+      };
+      try {
+        const created = await api('POST', '/api/apps/' + state.app.id + '/tickets', body);
+        state.tickets.unshift(created);
+        state.sidebarSection = 'tickets';
+        close();
+        navigate('/' + state.app.id + '/t/' + created.id);
+      } catch (e) { toast(e.message, 'err'); }
+    };
   }
 
   function bindBlueprintEvents() {

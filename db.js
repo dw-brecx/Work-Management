@@ -961,6 +961,43 @@ async function init() {
   // safeAlter so existing installs pick it up without recreating the table.
   await safeAlter("ALTER TABLE app_pages ADD COLUMN blueprint_bn TEXT DEFAULT ''");
 
+  // Apps: attachments parent for pin annotations. Lets the attachments
+  // table carry the same {filename, mime_type, uploader} payload as
+  // ticket / feedback attachments and reuse the /uploads static route.
+  await safeAlter('ALTER TABLE attachments ADD COLUMN annotation_id INTEGER');
+
+  // Apps: per-app ticket system, separate from the global /api/tickets so
+  // app-development chatter stays out of the main work queue. Each ticket
+  // belongs to one app, has a status flow (open → in_progress → resolved
+  // → closed) and a comment thread modelled on ticket_comments.
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_tickets (
+    id SERIAL PRIMARY KEY,
+    app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    page_id INTEGER REFERENCES app_pages(id) ON DELETE SET NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    closed_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    closed_at TEXT,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_tickets_app ON app_tickets (app_id, id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_tickets_status ON app_tickets (app_id, status)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_ticket_comments (
+    id SERIAL PRIMARY KEY,
+    ticket_id INTEGER NOT NULL REFERENCES app_tickets(id) ON DELETE CASCADE,
+    author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    author_name TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'comment',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_ticket_comments_ticket ON app_ticket_comments (ticket_id, id)`);
+
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
   // Same for the new feedback / announcement parents — voice notes, screen
