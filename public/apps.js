@@ -42,6 +42,8 @@
     annotateMode: false,
     penMode: false,        // pen tool active (overrides click-to-pin)
     penStrokes: [],        // [[{x,y},...], ...] currently-drawn strokes
+    penBgImage: null,      // HTMLCanvasElement returned by html2canvas — the design snapshot taken when pen mode activates. Drawn as the bottom layer so the canvas can be exported as a single image (no SVG-foreignObject taint).
+    penSnapshotInflight: false,
     penColor: '#ef4444',
     penWidth: 3,
     pendingPin: null, // { x_pct, y_pct, snippetBlob? } while the new-annotation popover is open
@@ -1364,10 +1366,19 @@
     bindPreviewEvents();
   }
 
-  // Pen-mode wiring. Canvas captures pointer events, strokes accumulate
-  // in state.penStrokes (so the canvas can be redrawn on resize / cancel),
-  // and "Save snippet" composes the canvas into a PNG that gets queued as
-  // the new pin's first attachment.
+  // Pen-mode wiring.
+  //
+  // Approach: when pen mode activates we use html2canvas to snapshot the
+  // current iframe content into an HTMLCanvasElement (state.penBgImage).
+  // That snapshot is drawn as the bottom layer of the pen canvas; strokes
+  // accumulate on top. The final canvas can be exported via toBlob with
+  // no taint issues — html2canvas renders directly to canvas without
+  // going through SVG/foreignObject, which is what caused the previous
+  // version to silently fail on export.
+  //
+  // If html2canvas isn't available, or snapshotting fails (cross-origin
+  // assets in the design, unusual CSS, etc.), we toast a warning and the
+  // user draws on a transparent canvas as the fallback.
   function bindPenEvents() {
     const canvas = document.getElementById('ap-pen-canvas');
     if (!canvas) return;
@@ -1388,6 +1399,14 @@
 
     function redraw() {
       ctx.clearRect(0, 0, w, h);
+      // White base — covers the iframe behind so cancel/redraw doesn't
+      // briefly show a transparent flash through to the live design.
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      // Background snapshot (if we have it) sits below the strokes.
+      if (state.penBgImage) {
+        try { ctx.drawImage(state.penBgImage, 0, 0, w, h); } catch {}
+      }
       for (const stroke of state.penStrokes) {
         if (!stroke.points || stroke.points.length === 0) continue;
         ctx.strokeStyle = stroke.color;
@@ -1401,6 +1420,12 @@
       }
     }
     redraw();
+
+    // Kick off (or skip) the design snapshot. Async — strokes work
+    // immediately on the transparent canvas; the bg fills in when ready.
+    if (!state.penBgImage && !state.penSnapshotInflight) {
+      capturePenBackground(redraw);
+    }
 
     let active = null;
     const point = (e) => {
@@ -1453,63 +1478,74 @@
     if (saveBtn) saveBtn.onclick = () => savePenSnippet(canvas, w, h);
   }
 
-  // Convert the current pen drawing into a PNG that *includes* a snapshot
-  // of the iframe behind the strokes, then drop into the new-pin flow
-  // with the snippet pre-attached. Pen mode exits afterwards.
-  //
-  // Two things go wrong often enough that we handle them defensively:
-  //   1. snapshotIframe fails — most commonly because the design has
-  //      cross-origin assets or a CSS feature SVG/foreignObject can't
-  //      render. We just fall back to strokes-only.
-  //   2. The composite canvas is *tainted* by drawing the SVG image —
-  //      some browsers (Safari especially) flag the canvas as cross-
-  //      origin even for same-origin SVG with HTML inside. In that
-  //      case `composed.toBlob` returns null, so we re-try with the
-  //      pen canvas alone (which is never tainted).
-  //
-  // The button is always reset on any failure path so it can't get
-  // stuck on "Capturing…".
+  // Snapshot the iframe contents into state.penBgImage using html2canvas.
+  // Runs in the background after pen mode activates so the user can
+  // start drawing immediately on a transparent canvas — the bg fills in
+  // when ready. We swap an inline "⏳ Capturing…" indicator into the pen
+  // toolbar so it's clear something's happening.
+  async function capturePenBackground(redrawFn) {
+    state.penSnapshotInflight = true;
+    const ctrls = root.querySelector('.ap-pen-controls');
+    let statusEl = null;
+    if (ctrls) {
+      statusEl = document.createElement('span');
+      statusEl.className = 'ap-pen-status';
+      statusEl.style.cssText = 'color:#fde68a;font-size:11px;margin-right:4px';
+      statusEl.textContent = '⏳ Capturing design…';
+      ctrls.insertBefore(statusEl, ctrls.firstChild);
+    }
+    try {
+      const iframe = root.querySelector('.ap-preview-frame');
+      if (!iframe) throw new Error('Preview iframe not found');
+      if (!window.html2canvas) throw new Error('html2canvas not loaded');
+      const doc = iframe.contentDocument;
+      if (!doc || !doc.body) throw new Error('Cannot access iframe content');
+      const captured = await window.html2canvas(doc.body, {
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        allowTaint: false,
+        scale: window.devicePixelRatio || 1,
+        width: iframe.clientWidth,
+        height: iframe.clientHeight,
+        // Honour the iframe's current scroll position so the snapshot
+        // matches what the user sees on screen.
+        scrollX: -(iframe.contentWindow.scrollX || doc.documentElement.scrollLeft || 0),
+        scrollY: -(iframe.contentWindow.scrollY || doc.documentElement.scrollTop || 0),
+        logging: false,
+        // Force the painter renderer — foreignObject rendering would
+        // re-introduce the SVG taint we just got rid of.
+        foreignObjectRendering: false,
+        // Skip <script> and <iframe> elements in the clone. Scripts
+        // can't run in the offscreen context anyway, and nested iframes
+        // would need their own clone pipeline.
+        ignoreElements: (el) => el.tagName === 'SCRIPT' || el.tagName === 'IFRAME',
+      });
+      state.penBgImage = captured;
+      if (typeof redrawFn === 'function') redrawFn();
+    } catch (e) {
+      console.warn('[apps] pen background snapshot failed:', e && e.message);
+      toast('Could not capture the design — drawing on transparent overlay', 'err');
+    } finally {
+      state.penSnapshotInflight = false;
+      if (statusEl && statusEl.parentNode) statusEl.parentNode.removeChild(statusEl);
+    }
+  }
+
+  // The pen canvas already has the bg snapshot + strokes baked in — no
+  // post-compositing needed. We just toBlob and queue the result as a
+  // new-pin attachment. The button always resets on failure so it can't
+  // get stuck.
   async function savePenSnippet(canvas, displayW, displayH) {
     if (state.penStrokes.length === 0) { toast('Draw something first', 'err'); return; }
     const saveBtn = document.getElementById('ap-pen-save');
     const setBtnState = (text, disabled) => {
       if (saveBtn) { saveBtn.disabled = disabled; saveBtn.textContent = text; }
     };
-    setBtnState('Capturing…', true);
+    setBtnState('Saving…', true);
 
     try {
-      // First try: composite the design behind the strokes.
-      let blob = null;
-      try {
-        const iframe = root.querySelector('.ap-preview-frame');
-        if (iframe) {
-          const bg = await snapshotIframe(iframe);
-          const composed = document.createElement('canvas');
-          composed.width = canvas.width;
-          composed.height = canvas.height;
-          const ctx = composed.getContext('2d');
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, composed.width, composed.height);
-          ctx.drawImage(bg, 0, 0, composed.width, composed.height);
-          ctx.drawImage(canvas, 0, 0, composed.width, composed.height);
-          blob = await canvasToBlob(composed);
-        }
-      } catch (e) {
-        console.warn('[apps] composite snapshot failed:', e && e.message);
-      }
-
-      // Fallback: strokes-only. Pen canvas is never tainted, so this
-      // should always succeed.
-      if (!blob) {
-        try {
-          blob = await canvasToBlob(canvas);
-          toast('Design background couldn\'t be captured — saved strokes only', 'err');
-        } catch (e) {
-          throw new Error('Could not create snippet image: ' + (e && e.message || 'unknown'));
-        }
-      }
-
-      // Centroid of strokes (% of on-screen canvas) → pin position.
+      const blob = await canvasToBlob(canvas);
+      // Centroid of strokes → pin position (% of on-screen canvas).
       let sx = 0, sy = 0, n = 0;
       for (const stroke of state.penStrokes) {
         for (const p of stroke.points) { sx += p.x; sy += p.y; n++; }
@@ -1525,6 +1561,7 @@
       });
       state.penMode = false;
       state.penStrokes = [];
+      state.penBgImage = null;
       // render() replaces the pen controls with the new-pin popup —
       // no need to manually reset the button text on this success path.
       render();
@@ -1665,6 +1702,9 @@
           state.annotateMode = false;
           state.pendingPin = null;
           state.penStrokes = [];
+          // Force a fresh snapshot — the user may have scrolled the
+          // design since the last activation.
+          state.penBgImage = null;
         }
         render();
       };
