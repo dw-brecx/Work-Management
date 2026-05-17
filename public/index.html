@@ -4166,6 +4166,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
       My Reminders <span class="badge" id="nav-reminders-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" data-page="snoozed">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
+      Snoozed <span class="badge" id="nav-snoozed-badge" style="display:none"></span>
+    </div>
     <div class="nav-item" data-page="docs">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
       Docs
@@ -4714,6 +4718,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <button class="td-action-btn" id="remind-trigger" onclick="openTicketReminderModal()" title="Email me a reminder to check on this ticket">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
               Remind me
+            </button>
+            <button class="td-action-btn" id="snooze-trigger" onclick="openSnoozeModal()" title="Park this ticket for up to 7 days">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
+              Snooze
             </button>
             <button class="td-action-btn" id="request-update-trigger" onclick="requestUpdateOnCurrentTicket()" title="Email the assignees and ask for an update on this ticket">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M9 10h.01M12 10h.01M15 10h.01"/></svg>
@@ -5318,6 +5326,19 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <div id="my-reminders-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No reminders yet — click "+ New Reminder" to add one.</div>
     </div>
 
+    <!-- ========== SNOOZED (tickets parked for up to 7 days) ========== -->
+    <div id="page-snoozed" class="page">
+      <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Snoozed Tickets</h1>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:14px">
+        Tickets you've parked. They'll return to your main list automatically when the snooze ends.
+        Click <strong>Wake up now</strong> to bring one back early.
+      </p>
+      <div id="snoozed-list" style="display:flex;flex-direction:column;gap:10px;max-width:820px"></div>
+      <div id="snoozed-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">
+        Nothing snoozed. Open any ticket and click "Snooze" to park it for up to a week.
+      </div>
+    </div>
+
     <!-- ========== DOCS (workspace document store) ========== -->
     <!-- Two states share the same page id: list view and editor view.
          loadDocsPage() and openDoc() flip between them via display. -->
@@ -5376,6 +5397,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <div id="doc-edit-meta" style="font-size:11px;color:var(--text3);margin:4px 0 14px">—</div>
         <textarea id="doc-edit-body" placeholder="Start writing… (Markdown supported — # heading, **bold**, - bullets, [link](https://…))" oninput="onDocBodyInput()" style="width:100%;min-height:60vh;font-size:14px;line-height:1.6;padding:12px 14px;border:1px solid var(--border);border-radius:8px;background:#fff;resize:vertical;font-family:inherit;outline:none"></textarea>
         <div id="doc-preview" style="display:none;min-height:60vh;font-size:14px;line-height:1.6;padding:14px;border:1px solid var(--border);border-radius:8px;background:#fff"></div>
+      </div>
+    </div>
+
+    <!-- ========== SNOOZE TICKET MODAL ========== -->
+    <div id="modal-snooze" class="modal" style="display:none">
+      <div class="modal-overlay" onclick="closeSnoozeModal()"></div>
+      <div class="modal-content" style="max-width:440px;padding:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h2 style="font-size:16px;font-weight:600;margin:0">Snooze ticket</h2>
+          <button onclick="closeSnoozeModal()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0;line-height:1">×</button>
+        </div>
+        <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.5">
+          The ticket disappears from your main list until the snooze ends, then returns automatically.
+          Max 7 days. The requester is notified and still sees it in their list with a "Snoozed until" pill.
+        </p>
+        <div id="snooze-preset-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+        <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Custom wake-up time</label>
+        <input id="snooze-until-input" type="datetime-local" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px"/>
+        <div id="snooze-error" style="display:none;color:var(--red);font-size:11.5px;margin-top:8px"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+          <button onclick="closeSnoozeModal()" style="font-size:12px;padding:7px 14px;background:#fff;border:1px solid var(--border);border-radius:5px;cursor:pointer">Cancel</button>
+          <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="submitSnooze()">Snooze</button>
+        </div>
       </div>
     </div>
 
@@ -7062,6 +7106,7 @@ window.PAGE_PATHS = {
   'tickets':     '/tickets',
   'my-tickets':  '/my-tickets',
   'my-reminders':'/my-reminders',
+  'snoozed':     '/snoozed',
   'docs':         '/docs',
   'chat':        '/chat',
   'planning':    '/planning',
@@ -7127,6 +7172,7 @@ function navigate(page, opts) {
     const titles = {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
       'my-reminders': 'My Reminders',
+      'snoozed': 'Snoozed',
       'docs': 'Docs',
       'chat': 'Chat',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
@@ -7143,6 +7189,7 @@ function navigate(page, opts) {
   if (page === 'teams') renderTeams();
   if (page === 'calendar') buildCalendar();
   if (page === 'planning') renderPlans();
+  if (page === 'snoozed' && typeof loadSnoozedPage === 'function') loadSnoozedPage();
   if (page === 'flavors') renderFlavors();
   // Dashboard always defaults to "Mine" — admin's All/Mine toggle resets
   // every time you land on the dashboard. They can still flip it to All
@@ -8082,6 +8129,213 @@ async function ticketSwipeAction(ticketId, action) {
   }
 }
 
+// ── Snooze ───────────────────────────────────────────────────────────────────
+// Park a ticket for up to 7 days. Modal offers a few presets (3h, tomorrow
+// 9am, in 2 days, end of week, in 1 week) plus a custom datetime-local
+// input. The ticket disappears from the main list of everyone EXCEPT the
+// requester (who keeps seeing it with a "Snoozed until …" pill).
+
+let _snoozeTargetId = null;
+
+function _pad2(n) { return String(n).padStart(2, '0'); }
+function _localDtValue(d) {
+  return d.getFullYear() + '-' + _pad2(d.getMonth()+1) + '-' + _pad2(d.getDate())
+       + 'T' + _pad2(d.getHours()) + ':' + _pad2(d.getMinutes());
+}
+function _fmtLocal(s) {
+  if (!s) return '';
+  try {
+    const d = new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z');
+    if (isNaN(d)) return s;
+    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  } catch (_) { return s; }
+}
+function _snoozePresets() {
+  const out = [];
+  const in3h = new Date(Date.now() + 3 * 60 * 60 * 1000);
+  out.push({ label: 'In 3 hours', date: in3h });
+  const tomorrow9 = new Date(); tomorrow9.setDate(tomorrow9.getDate() + 1); tomorrow9.setHours(9, 0, 0, 0);
+  out.push({ label: 'Tomorrow 9am', date: tomorrow9 });
+  const in2d = new Date(); in2d.setDate(in2d.getDate() + 2); in2d.setHours(9, 0, 0, 0);
+  out.push({ label: 'In 2 days', date: in2d });
+  // End of work week (Friday 5pm). If we're already past Friday this week,
+  // pick next Friday instead so the preset is always in the future.
+  const eow = new Date();
+  const daysToFri = (5 - eow.getDay() + 7) % 7;
+  eow.setDate(eow.getDate() + (daysToFri === 0 && eow.getHours() >= 17 ? 7 : daysToFri));
+  eow.setHours(17, 0, 0, 0);
+  out.push({ label: 'End of week', date: eow });
+  const in7 = new Date(Date.now() + 6.9 * 24 * 60 * 60 * 1000);
+  // 6.9 days keeps us safely under the 7-day server cap once round-trip latency is factored in.
+  out.push({ label: 'In 1 week', date: in7 });
+  return out;
+}
+
+function openSnoozeModal(ticketId) {
+  _snoozeTargetId = ticketId || (typeof currentTicketId !== 'undefined' ? currentTicketId : null);
+  if (!_snoozeTargetId) { alert('No ticket selected.'); return; }
+  // Default the picker to tomorrow 9am — the most common single-day snooze.
+  const def = new Date(); def.setDate(def.getDate() + 1); def.setHours(9, 0, 0, 0);
+  const input = document.getElementById('snooze-until-input');
+  if (input) input.value = _localDtValue(def);
+  // Build preset chips.
+  const row = document.getElementById('snooze-preset-row');
+  if (row) {
+    row.innerHTML = _snoozePresets().map((p, i) => `
+      <button class="snooze-preset" data-iso="${p.date.toISOString()}"
+        onclick="document.getElementById('snooze-until-input').value='${_localDtValue(p.date)}';this.parentElement.querySelectorAll('button').forEach(b=>b.style.background='#fff');this.style.background='#eef2ff'"
+        style="font-size:11px;padding:5px 11px;border-radius:14px;border:1px solid var(--border);background:#fff;cursor:pointer">
+        ${p.label}
+      </button>
+    `).join('');
+  }
+  const err = document.getElementById('snooze-error');
+  if (err) { err.textContent = ''; err.style.display = 'none'; }
+  if (typeof openModal === 'function') openModal('snooze');
+  else { const m = document.getElementById('modal-snooze'); if (m) m.style.display = 'flex'; }
+}
+
+function closeSnoozeModal() {
+  _snoozeTargetId = null;
+  if (typeof closeModal === 'function') closeModal('snooze');
+  else { const m = document.getElementById('modal-snooze'); if (m) m.style.display = 'none'; }
+}
+
+async function submitSnooze() {
+  if (!_snoozeTargetId) return;
+  const input = document.getElementById('snooze-until-input');
+  const err = document.getElementById('snooze-error');
+  const val = input && input.value;
+  if (!val) { if (err) { err.textContent = 'Pick a wake-up time first.'; err.style.display = 'block'; } return; }
+  const d = new Date(val);
+  if (isNaN(d) || d.getTime() <= Date.now() + 60_000) {
+    if (err) { err.textContent = 'Wake-up time must be in the future.'; err.style.display = 'block'; }
+    return;
+  }
+  if (d.getTime() > Date.now() + 7 * 24 * 60 * 60 * 1000) {
+    if (err) { err.textContent = 'Snooze max is 7 days.'; err.style.display = 'block'; }
+    return;
+  }
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(_snoozeTargetId) + '/snooze', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ until: d.toISOString() }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error || 'Snooze failed');
+    }
+    const fresh = await r.json();
+    // Update local mirror so the UI updates instantly.
+    if (Array.isArray(window.TICKETS_DATA)) {
+      const i = TICKETS_DATA.findIndex(t => t.id === fresh.id);
+      if (i >= 0) TICKETS_DATA[i] = fresh;
+    }
+    closeSnoozeModal();
+    // If we were on the ticket detail, hop back to the list — the ticket is
+    // now hidden for the non-requester. (Requester still sees it.)
+    if (typeof currentPage !== 'undefined' && currentPage === 'ticket-detail') {
+      if (typeof navigate === 'function') navigate('tickets');
+    } else if (typeof renderTickets === 'function') {
+      renderTickets();
+    }
+    if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge();
+    if (typeof settingsToast === 'function') settingsToast('Ticket snoozed');
+  } catch (e) {
+    if (err) { err.textContent = e.message; err.style.display = 'block'; }
+  }
+}
+
+async function unsnoozeTicket(ticketId) {
+  if (!ticketId) return;
+  try {
+    const r = await fetch('/api/tickets/' + encodeURIComponent(ticketId) + '/unsnooze', {
+      method: 'POST', credentials: 'same-origin',
+    });
+    if (!r.ok) throw new Error('Unsnooze failed');
+    if (typeof loadSnoozedPage === 'function') loadSnoozedPage();
+    if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge();
+    if (Array.isArray(window.TICKETS_DATA)) {
+      const t = TICKETS_DATA.find(x => x.id === ticketId);
+      if (t) { t.snoozedUntil = null; t.snoozedBy = null; t.snoozedByName = null; t.snoozedAt = null; }
+    }
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof settingsToast === 'function') settingsToast('Ticket is back in your list');
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+let SNOOZED_TICKETS = [];
+async function loadSnoozedPage() {
+  const wrap = document.getElementById('snoozed-list');
+  const empty = document.getElementById('snoozed-empty');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
+  try {
+    const items = await apiGet('/api/my-snoozed');
+    SNOOZED_TICKETS = Array.isArray(items) ? items : [];
+    if (!SNOOZED_TICKETS.length) {
+      wrap.innerHTML = '';
+      if (empty) empty.style.display = '';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    wrap.innerHTML = SNOOZED_TICKETS.map(t => `
+      <div class="card" style="padding:14px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;color:var(--accent);font-weight:700;margin-bottom:2px">
+              <a onclick="openTicketDetail('${escapeAttr(t.id)}')" style="cursor:pointer;color:inherit;text-decoration:none">${escapeHtml(t.id)}</a>
+            </div>
+            <div style="font-size:13.5px;font-weight:600;margin-bottom:4px">${escapeHtml(t.title)}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--text2);margin-top:6px">
+              <span style="padding:2px 7px;border-radius:10px;background:#eef2ff;color:#4338ca">💤 Until ${_fmtLocal(t.snoozedUntil)}</span>
+              <span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">by ${escapeHtml(t.snoozedByName || '—')}</span>
+              <span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">Assignee: ${escapeHtml(t.assignee || '—')}</span>
+              ${t.req ? `<span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">Requester: ${escapeHtml(t.req)}</span>` : ''}
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
+            <button onclick="unsnoozeTicket('${escapeAttr(t.id)}')"
+              style="font-size:11px;padding:6px 12px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:6px;cursor:pointer">
+              ✓ Wake up now
+            </button>
+            <button onclick="openTicketDetail('${escapeAttr(t.id)}')"
+              style="font-size:11px;padding:6px 12px;background:#fff;border:1px solid var(--border);border-radius:6px;cursor:pointer">
+              Open
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    wrap.innerHTML = '<div style="color:#dc2626;font-size:12px;padding:10px">Failed to load: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function updateSnoozedBadge() {
+  try {
+    // Reuse the cached count if we've loaded the page; otherwise refresh
+    // quietly. The badge in the sidebar shows the total currently-snoozed.
+    const badge = document.getElementById('nav-snoozed-badge');
+    if (!badge) return;
+    const set = (n) => {
+      if (n > 0) { badge.textContent = String(n); badge.style.display = ''; }
+      else       { badge.style.display = 'none'; }
+    };
+    if (SNOOZED_TICKETS.length || _snoozedBadgeCold === false) { set(SNOOZED_TICKETS.length); return; }
+    _snoozedBadgeCold = false;
+    apiGet('/api/my-snoozed').then(items => {
+      SNOOZED_TICKETS = Array.isArray(items) ? items : [];
+      set(SNOOZED_TICKETS.length);
+    }).catch(() => set(0));
+  } catch {}
+}
+let _snoozedBadgeCold = true;
+
 function bulkArchive() {
   if (!selectedTicketIds.size) return;
   if (!confirm(`Archive ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'}?`)) return;
@@ -8192,10 +8446,16 @@ function renderTickets() {
     const unreadDot = isUnread
       ? '<span title="Unread" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4f46e5;margin-right:6px;vertical-align:middle"></span>'
       : '';
+    // Snoozed pill on the title — only renders for tickets the caller still
+    // sees (typically the requester, since everyone else gets snoozed-out
+    // of the list). Tooltip shows who snoozed it; click opens the detail.
+    const snoozedPill = t.snoozedUntil
+      ? `<span title="Snoozed by ${escapeAttr(t.snoozedByName || 'someone')}" style="display:inline-block;background:#eef2ff;color:#4338ca;font-size:9.5px;font-weight:700;letter-spacing:.03em;padding:1px 6px;border-radius:8px;margin-right:6px;vertical-align:middle">💤 SNOOZED · ${escapeHtml(_fmtLocal(t.snoozedUntil))}</span>`
+      : '';
     return `<tr class="${isSel ? 'selected' : ''}${isUnread ? ' unread' : ''}" data-tid="${t.id}" style="${rowStyle}" onclick="openTicketDetail('${t.id}')">
     <td onclick="event.stopPropagation()" style="cursor:default"><input type="checkbox" class="row-cb" data-tid="${t.id}" ${isSel ? 'checked' : ''} onchange="toggleRowSelection('${t.id}', this.checked)"/></td>
     <td style="color:var(--accent);white-space:nowrap;font-weight:${titleWeight}">${t.id}</td>
-    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:${titleWeight};${titleColor}">${unreadDot}${projectPill}${escapeHtml(t.title)}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:${titleWeight};${titleColor}">${unreadDot}${projectPill}${snoozedPill}${escapeHtml(t.title)}</td>
     <td>${statusBadge(t.status)}</td>
     <td>${priorityBadge(t.priority)}</td>
     <td>${stackedAvatars(getAssignees(t))}</td>
@@ -19760,10 +20020,12 @@ initApp();
   window.renderTickets = function() {
     var r = _origRenderTickets2 ? _origRenderTickets2.apply(this, arguments) : undefined;
     updateNavBadge();
+    if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge();
     return r;
   };
   // Also update after app init loads tickets
   setTimeout(updateNavBadge, 1000);
+  setTimeout(function(){ if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge(); }, 1100);
 
   /* ── Settings: always show profile tab when navigating to settings ── */
   (function patchSettingsNav() {
@@ -20093,6 +20355,7 @@ window.refreshPageData = refreshPageData;
     'tickets':     '/tickets',
     'my-tickets':  '/my-tickets',
     'my-reminders':'/my-reminders',
+    'snoozed':     '/snoozed',
   'docs':         '/docs',
   'chat':        '/chat',
     'planning':    '/planning',

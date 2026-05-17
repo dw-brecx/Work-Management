@@ -368,10 +368,11 @@ async function requireAdmin(req, res, next) {
 }
 
 // Returns true when the current session can read/write the given ticket id.
-// Admin and Manager can touch every live ticket; Members can only touch tickets
-// they're assigned to (primary or via ticket_assignees) or that they created.
-// Soft-deleted tickets (deleted_at IS NOT NULL) are off-limits to everyone via
-// this path — recovery goes through the admin dump/restore endpoints.
+// Admin and Manager can touch every live ticket; Members can touch tickets
+// they're assigned to (primary or via ticket_assignees), tickets they
+// requested, tickets they're the reporter on, or tickets they created.
+// Soft-deleted tickets (deleted_at IS NOT NULL) are off-limits to everyone
+// via this path — recovery goes through the admin dump/restore endpoints.
 async function canAccessTicket(req, ticketId) {
   if (!req.session.userId) return false;
   const me = await getUser(req.session.userId);
@@ -391,8 +392,12 @@ async function canAccessTicket(req, ticketId) {
                     WHERE ta.ticket_id = t.id
                       AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
                  )
+              OR t.reporter_user_id = ?
+              OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+              OR t.req_user_id = ?
+              OR (t.req_user_id IS NULL AND t.req = ?)
               OR t.created_by = ?)`,
-    ticketId, me.id, me.name, me.id, me.name, me.id
+    ticketId, me.id, me.name, me.id, me.name, me.id, me.name, me.id, me.name, me.id
   );
   return !!t;
 }
@@ -726,6 +731,12 @@ async function buildTicket(row) {
     'SELECT COUNT(*)::int AS n FROM tickets WHERE parent_ticket_id = ? AND deleted_at IS NULL',
     row.id
   );
+  // A snooze is "active" only if snoozed_until is still in the future.
+  // Past that we expose null so the client treats it as a normal ticket
+  // (no auto-clear is needed at the DB level — filtering is lazy).
+  const nowUtcText = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const snoozeActive = row.snoozed_until && row.snoozed_until > nowUtcText;
+  const snoozedByName = snoozeActive ? await nameForUserId(row.snoozed_by, '') : null;
   return {
     ...row,
     tags: JSON.parse(row.tags_json || '[]'),
@@ -740,6 +751,10 @@ async function buildTicket(row) {
     childCount: parseInt(childRow?.n || 0, 10),
     closeReason: row.close_reason || '',
     sourceEmailUrl: row.source_email_url || null,
+    snoozedUntil: snoozeActive ? row.snoozed_until : null,
+    snoozedBy:    snoozeActive ? row.snoozed_by    : null,
+    snoozedByName,
+    snoozedAt:    snoozeActive ? row.snoozed_at    : null,
   };
 }
 
@@ -747,14 +762,37 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
     const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    // Snoozed tickets are hidden from the main list to keep it focused on
+    // what currently needs attention. EXCEPT: the requester always sees
+    // their snoozed ticket (with a "Snoozed until …" pill) so they know
+    // it's been deferred — otherwise it'd silently vanish from their
+    // "Requested by me" view. Comparing TO_CHAR'd UTC text via lexico-
+    // graphic > works correctly given the canonical YYYY-MM-DD HH24:MI:SS
+    // format we use everywhere.
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
     let rows;
     if (isAdmin) {
-      rows = await all('SELECT * FROM tickets WHERE deleted_at IS NULL ORDER BY id DESC');
+      rows = await all(
+        `SELECT * FROM tickets
+           WHERE deleted_at IS NULL
+             AND (
+                   snoozed_until IS NULL
+                OR snoozed_until <= ?
+                OR req_user_id = ?
+                OR (req_user_id IS NULL AND req = ?)
+             )
+           ORDER BY id DESC`,
+        nowUtc, u.id, u.name
+      );
     } else {
-      // Members see tickets they are assigned to (primary or via ticket_assignees)
-      // OR tickets they created. Match by user_id first (renames don't break
-      // anything) and fall back to name match for any legacy rows that
-      // never got a user_id back-filled.
+      // Members see tickets they're personally involved in: assignee
+      // (primary or additional), reporter, requester, or creator.
+      // Match by user_id first (renames don't break anything) with a
+      // name-match fallback for legacy rows that never got a user_id
+      // back-filled. Snoozed tickets are filtered out unless the caller
+      // is the requester — they keep seeing their ticket with a
+      // "Snoozed until …" pill so it doesn't silently vanish from their
+      // "Requested by me" view.
       rows = await all(
         `SELECT t.* FROM tickets t
            WHERE t.deleted_at IS NULL
@@ -765,9 +803,20 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
                         WHERE ta.ticket_id = t.id
                           AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
                      )
+                  OR t.reporter_user_id = ?
+                  OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+                  OR t.req_user_id = ?
+                  OR (t.req_user_id IS NULL AND t.req = ?)
                   OR t.created_by = ?)
+             AND (
+                   t.snoozed_until IS NULL
+                OR t.snoozed_until <= ?
+                OR t.req_user_id = ?
+                OR (t.req_user_id IS NULL AND t.req = ?)
+             )
            ORDER BY t.id DESC`,
-        u.id, u.name, u.id, u.name, u.id
+        u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id,
+        nowUtc, u.id, u.name
       );
     }
     const tickets = await Promise.all(rows.map(buildTicket));
@@ -795,8 +844,10 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
       const needsMyAttention = (t) => {
         // "Done"-state tickets (Closed or Archived) never count as unread,
         // even when the current user is the assignee — they're finished
-        // and shouldn't pile back into the attention bucket.
+        // and shouldn't pile back into the attention bucket. Same for
+        // currently-snoozed tickets: they're explicitly deferred.
         if (t.status === 'Closed' || t.status === 'Archived') return false;
+        if (t.snoozedUntil) return false;
         if (t.assignee_user_id === myId) return true;
         if (!t.assignee_user_id && t.assignee === myName) return true;
         if (t.reporter_user_id === myId) return true;
@@ -859,6 +910,116 @@ app.post('/api/tickets/bulk-mark-viewed', requireAuth, async (req, res) => {
       marked++;
     }
     res.json({ ok: true, marked });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Snooze ──────────────────────────────────────────────────────────────────
+// Snoozing temporarily hides a ticket from the main list (capped at 7
+// days) so it doesn't clutter what's currently actionable. Anyone with
+// access to the ticket can snooze it — but the requester always gets a
+// notification + still sees the ticket in their own list (with a
+// "Snoozed until …" pill on the row), so nothing silently disappears
+// on the person who asked for the work.
+const SNOOZE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+app.post('/api/tickets/:id/snooze', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { until } = req.body || {};
+    if (!until) return res.status(400).json({ error: 'until required' });
+    const wake = new Date(until);
+    if (isNaN(wake)) return res.status(400).json({ error: 'Invalid date' });
+    const now = Date.now();
+    if (wake.getTime() <= now + 60_000) {
+      // Require at least a minute in the future to avoid races where the
+      // ticket wakes up before the response returns.
+      return res.status(400).json({ error: 'Snooze date must be in the future' });
+    }
+    if (wake.getTime() > now + SNOOZE_MAX_MS) {
+      return res.status(400).json({ error: 'Snooze max is 7 days' });
+    }
+    const ticket = await get('SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL', id);
+    if (!ticket) return res.status(404).json({ error: 'Not found' });
+    if (ticket.status === 'Closed' || ticket.status === 'Archived') {
+      return res.status(400).json({ error: "Can't snooze a closed or archived ticket" });
+    }
+    const wakeUtc = wake.toISOString().replace('T', ' ').slice(0, 19);
+    const nowUtc  = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
+    await run(
+      `UPDATE tickets SET snoozed_until=?, snoozed_by=?, snoozed_at=? WHERE id=?`,
+      wakeUtc, req.session.userId, nowUtc, id
+    );
+    // Notify the requester (unless they snoozed it themselves).
+    if (ticket.req_user_id && ticket.req_user_id !== req.session.userId) {
+      const me = await getUser(req.session.userId);
+      const niceDate = wake.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+      await run(
+        'INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        ticket.req_user_id, 'snoozed', '💤',
+        `${me?.name || 'Someone'} snoozed "${ticket.title}" until ${niceDate}`,
+        id
+      );
+    }
+    const fresh = await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id));
+    res.json(fresh);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Wake a snoozed ticket up immediately. Anyone with access can do it —
+// the requester might want to bring it back early, the assignee might
+// be ready sooner than expected, etc.
+app.post('/api/tickets/:id/unsnooze', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const id = req.params.id;
+    await run('UPDATE tickets SET snoozed_until=NULL, snoozed_by=NULL, snoozed_at=NULL WHERE id=?', id);
+    const fresh = await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id));
+    res.json(fresh);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// List of currently-snoozed tickets the caller can see. Powers the new
+// sidebar "Snoozed" page. Same access rules as the main list, plus a
+// snoozer-sees-their-own clause so admins who snoozed a ticket they're
+// otherwise unrelated to still find it here.
+app.get('/api/my-snoozed', requireAuth, async (req, res) => {
+  try {
+    const u = await getUser(req.session.userId);
+    const isAdmin = u && ['Admin','Manager'].includes(u.perm_role);
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    let rows;
+    if (isAdmin) {
+      rows = await all(
+        `SELECT * FROM tickets
+           WHERE deleted_at IS NULL
+             AND snoozed_until IS NOT NULL
+             AND snoozed_until > ?
+           ORDER BY snoozed_until ASC`,
+        nowUtc
+      );
+    } else {
+      rows = await all(
+        `SELECT t.* FROM tickets t
+           WHERE t.deleted_at IS NULL
+             AND t.snoozed_until IS NOT NULL
+             AND t.snoozed_until > ?
+             AND (t.assignee_user_id = ?
+                  OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+                  OR EXISTS (
+                       SELECT 1 FROM ticket_assignees ta
+                        WHERE ta.ticket_id = t.id
+                          AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+                     )
+                  OR t.reporter_user_id = ?
+                  OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+                  OR t.req_user_id = ?
+                  OR (t.req_user_id IS NULL AND t.req = ?)
+                  OR t.created_by = ?
+                  OR t.snoozed_by = ?)
+           ORDER BY t.snoozed_until ASC`,
+        nowUtc, u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.id
+      );
+    }
+    const tickets = await Promise.all(rows.map(buildTicket));
+    res.json(tickets);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

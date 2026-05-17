@@ -1026,6 +1026,17 @@ async function init() {
        WHERE status = 'Closed' AND closed_at IS NULL`
   );
 
+  // Snooze: temporarily hide a ticket from the main list (capped at 7
+  // days). snoozed_until is the UTC wake-up time; null = not snoozed.
+  // snoozed_by/at let us show "who snoozed and when" + notify the
+  // requester when the snooze starts. A snooze is "active" when
+  // snoozed_until > NOW(); past that the ticket naturally returns to
+  // the list (no cron needed — filtering is lazy on read).
+  await safeAlter("ALTER TABLE tickets ADD COLUMN snoozed_until TEXT DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN snoozed_by INTEGER DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN snoozed_at TEXT DEFAULT NULL");
+  await run('CREATE INDEX IF NOT EXISTS idx_tickets_snoozed_until ON tickets (snoozed_until)');
+
   // Per-user API tokens for the Gmail-add-on (and any future integration
   // that needs to authenticate as a specific user without the session
   // cookie). We store a SHA-256 hash of the token, never the raw value;
