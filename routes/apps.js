@@ -100,6 +100,9 @@ module.exports = function attach(app, deps) {
       name: row.name,
       file_name: row.file_name,
       blueprint: row.blueprint,
+      // blueprint_bn is the cached Bengali translation. Empty until the
+      // translate endpoint runs (or invalidated on English edit).
+      has_blueprint_bn: !!(row.blueprint_bn && row.blueprint_bn.trim()),
       status: row.status,
       position: row.position,
       created_by: row.created_by,
@@ -286,6 +289,14 @@ module.exports = function attach(app, deps) {
       await touchApp(result.app.id);
       const row = await get('SELECT * FROM app_pages WHERE id=?', ins.lastInsertRowid);
       res.status(201).json(shapePage(row, { comment_count: 0, fn_total: 0, fn_working: 0 }));
+      // Fire-and-forget: kick off the AI blueprint generation in the
+      // background so the user sees a draft on their next view without
+      // waiting on the upload response. Failures are logged, not surfaced;
+      // the user can always click "AI assist" or write the blueprint by
+      // hand. Guarded so we don't trample a user-provided blueprint.
+      if (ANTHROPIC_API_KEY && !String(blueprint || '').trim()) {
+        autoGenerateBlueprint(row.id).catch(e => console.warn('[apps] auto-blueprint failed for page ' + row.id + ':', e.message));
+      }
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -323,7 +334,12 @@ module.exports = function attach(app, deps) {
         if (html.length > 2 * 1024 * 1024) return res.status(400).json({ error: 'HTML too large (max 2MB per page)' });
         cols.push('html_content=?'); args.push(html);
       }
-      if (blueprint !== undefined) { cols.push('blueprint=?'); args.push(String(blueprint || '').trim()); }
+      if (blueprint !== undefined) {
+        cols.push('blueprint=?'); args.push(String(blueprint || '').trim());
+        // English source changed — invalidate the cached Bengali so the
+        // next view triggers a fresh translation.
+        cols.push('blueprint_bn=?'); args.push('');
+      }
       if (status !== undefined) {
         if (!PAGE_STATUSES.has(String(status))) return res.status(400).json({ error: 'Invalid status' });
         cols.push('status=?'); args.push(String(status));
@@ -393,7 +409,9 @@ module.exports = function attach(app, deps) {
 
   // POST /api/apps/:id/pages/:pageId/blueprint/generate — ask Claude Haiku
   // to summarise the HTML into a blueprint description. Same Anthropic
-  // wiring as /api/polish; degrades to 503 if no key is configured.
+  // wiring as /api/polish; degrades to 503 if no key is configured. The
+  // POST page route also kicks this off automatically in the background,
+  // so most users never hit this manually — it's the "regenerate" button.
   app.post('/api/apps/:id/pages/:pageId/blueprint/generate', requireAuth, async (req, res) => {
     if (!ANTHROPIC_API_KEY) {
       return res.status(503).json({ error: 'AI assist disabled — ANTHROPIC_API_KEY not set on server.' });
@@ -402,42 +420,54 @@ module.exports = function attach(app, deps) {
       const result = await loadPageForUser(req.params.pageId, req.session.userId);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
       if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
-      const html = String(result.page.html_content || '').slice(0, 60000);
-      if (!html.trim()) return res.status(400).json({ error: 'No HTML to analyse' });
-
-      const systemPrompt =
-        "You analyse a single HTML page from an app design and write a clear, concise blueprint description for the developer who will build it. " +
-        "Cover (1) the purpose of the page, (2) the main sections / regions visible, (3) the interactive elements (forms, buttons, links) and what each should do, and (4) any data that needs to load or save. " +
-        "Use short paragraphs and bullets where helpful. Write directly — no preamble, no 'here is', no meta-commentary. " +
-        "Stay under 250 words. Return ONLY the blueprint text.";
-
-      const r = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 1024,
-          system: systemPrompt,
-          messages: [{
-            role: 'user',
-            content: `Page title: ${result.page.name}\nFile: ${result.page.file_name || '(pasted)'}\n\nHTML:\n${html}`,
-          }],
-        }),
-      });
-      if (!r.ok) {
-        const errBody = await r.text().catch(() => '');
-        console.warn('[apps blueprint] Anthropic error:', r.status, errBody.slice(0, 300));
-        return res.status(502).json({ error: 'AI service returned ' + r.status });
-      }
-      const data = await r.json();
-      const draft = (data.content?.[0]?.text || '').trim();
+      const draft = await generateBlueprintFromPage(result.page);
       if (!draft) return res.status(502).json({ error: 'AI returned empty response' });
       res.json({ draft });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      console.warn('[apps blueprint] generate failed:', e.message);
+      res.status(e.statusCode || 500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/apps/:id/pages/:pageId/blueprint/translate — translate the
+  // current blueprint into the requested target language (defaults to bn /
+  // Bengali). Cached in app_pages.blueprint_bn so repeat reads are free;
+  // invalidated automatically when the English source is edited.
+  app.post('/api/apps/:id/pages/:pageId/blueprint/translate', requireAuth, async (req, res) => {
+    if (!ANTHROPIC_API_KEY) {
+      return res.status(503).json({ error: 'Translation disabled — ANTHROPIC_API_KEY not set on server.' });
+    }
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const lang = String((req.body && req.body.lang) || 'bn').toLowerCase();
+      // Only Bengali is wired up for now — the toggle in the UI is EN ↔ BN.
+      // Other languages would need their own cache column or a generic
+      // translations table; out of scope for this round.
+      if (lang !== 'bn') return res.status(400).json({ error: 'Unsupported language (only bn supported)' });
+      const source = String(result.page.blueprint || '').trim();
+      if (!source) return res.status(400).json({ error: 'Blueprint is empty — nothing to translate' });
+
+      // Return the cache if we have one. The cache is cleared whenever the
+      // English blueprint changes (see the PATCH page handler), so a non-
+      // empty value here is guaranteed to match the current source.
+      if (result.page.blueprint_bn && result.page.blueprint_bn.trim()) {
+        return res.json({ translated: result.page.blueprint_bn, cached: true });
+      }
+
+      const translated = await callAnthropic(
+        "You translate text into Bengali (Bangla, বাংলা). Preserve formatting (line breaks, bullets, paragraphs) exactly. Translate naturally — favour clarity for a developer reading the result over literal word-for-word mapping. Keep technical terms (URLs, API names, HTTP methods, file names, code identifiers) in English. Return ONLY the translated text — no preamble, no quotes, no commentary.",
+        source,
+        2048
+      );
+      if (!translated) return res.status(502).json({ error: 'AI returned empty translation' });
+      await run('UPDATE app_pages SET blueprint_bn=? WHERE id=?', translated, result.page.id);
+      res.json({ translated, cached: false });
+    } catch (e) {
+      console.warn('[apps blueprint] translate failed:', e.message);
+      res.status(e.statusCode || 500).json({ error: e.message });
+    }
   });
 
   // ── Page comments (Q&A thread) ─────────────────────────────────────────
@@ -629,11 +659,329 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Pin annotations on the design preview ─────────────────────────────
+  // Each annotation is a single typed pin at (x_pct, y_pct) on the page —
+  // dropped via right-click on the iframe overlay. type narrows the icon
+  // (question / issue / broken / note); status flips when the thread is
+  // resolved.
+  app.get('/api/apps/:id/pages/:pageId/annotations', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const rows = await all(
+        `SELECT id, page_id, x_pct, y_pct, type, text, status, author_id, author_name, created_at, updated_at
+           FROM app_page_annotations
+          WHERE page_id=?
+          ORDER BY id ASC`,
+        result.page.id
+      );
+      res.json(rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/apps/:id/pages/:pageId/annotations', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const { x_pct, y_pct, type, text } = req.body || {};
+      const x = clampPct(x_pct);
+      const y = clampPct(y_pct);
+      const safeType = ANNOTATION_TYPES.has(String(type)) ? String(type) : 'question';
+      const clean = String(text || '').trim();
+      if (!clean) return res.status(400).json({ error: 'Annotation text required' });
+      if (clean.length > 2000) return res.status(400).json({ error: 'Annotation too long (max 2000 chars)' });
+      const me = await get('SELECT name FROM users WHERE id=?', req.session.userId);
+      const ins = await run(
+        `INSERT INTO app_page_annotations (page_id, x_pct, y_pct, type, text, author_id, author_name)
+         VALUES (?,?,?,?,?,?,?) RETURNING id`,
+        result.page.id, x, y, safeType, clean, req.session.userId, (me && me.name) || ''
+      );
+      await touchApp(result.app.id);
+      const row = await get(
+        'SELECT id, page_id, x_pct, y_pct, type, text, status, author_id, author_name, created_at, updated_at FROM app_page_annotations WHERE id=?',
+        ins.lastInsertRowid
+      );
+      res.status(201).json(row);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/apps/:id/pages/:pageId/annotations/:annId', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const ann = await get('SELECT * FROM app_page_annotations WHERE id=? AND page_id=?', Number(req.params.annId), result.page.id);
+      if (!ann) return res.status(404).json({ error: 'Annotation not found' });
+      const cols = []; const args = [];
+      if (req.body && 'text' in req.body) {
+        if (ann.author_id !== req.session.userId && !result.isAdmin) {
+          return res.status(403).json({ error: 'Only the author can edit this annotation' });
+        }
+        const clean = String(req.body.text || '').trim();
+        if (!clean) return res.status(400).json({ error: 'Annotation text required' });
+        if (clean.length > 2000) return res.status(400).json({ error: 'Annotation too long (max 2000 chars)' });
+        cols.push('text=?'); args.push(clean);
+      }
+      if (req.body && 'type' in req.body) {
+        if (!ANNOTATION_TYPES.has(String(req.body.type))) return res.status(400).json({ error: 'Invalid annotation type' });
+        cols.push('type=?'); args.push(String(req.body.type));
+      }
+      if (req.body && 'status' in req.body) {
+        const s = String(req.body.status);
+        if (s !== 'open' && s !== 'resolved') return res.status(400).json({ error: 'Invalid status' });
+        cols.push('status=?'); args.push(s);
+      }
+      if (req.body && 'x_pct' in req.body) { cols.push('x_pct=?'); args.push(clampPct(req.body.x_pct)); }
+      if (req.body && 'y_pct' in req.body) { cols.push('y_pct=?'); args.push(clampPct(req.body.y_pct)); }
+      if (cols.length) {
+        cols.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+        await run(`UPDATE app_page_annotations SET ${cols.join(',')} WHERE id=?`, ...args, ann.id);
+      }
+      const updated = await get(
+        'SELECT id, page_id, x_pct, y_pct, type, text, status, author_id, author_name, created_at, updated_at FROM app_page_annotations WHERE id=?',
+        ann.id
+      );
+      res.json(updated);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/apps/:id/pages/:pageId/annotations/:annId', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const ann = await get('SELECT * FROM app_page_annotations WHERE id=? AND page_id=?', Number(req.params.annId), result.page.id);
+      if (!ann) return res.status(404).json({ error: 'Annotation not found' });
+      if (ann.author_id !== req.session.userId && !result.isAdmin) {
+        return res.status(403).json({ error: 'Only the author or an admin can delete this annotation' });
+      }
+      await run('DELETE FROM app_page_annotations WHERE id=?', ann.id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Per-page todos (manager writes, developer ticks) ───────────────────
+  // Simpler shape than functions: one text field + a checkbox. Functions
+  // describe behaviour status with a 4-state chip; todos are the punch
+  // list of "things still to do" that the manager hands the developer.
+  app.get('/api/apps/:id/pages/:pageId/todos', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const rows = await all(
+        `SELECT t.*, u.name AS done_by_name, c.name AS created_by_name
+           FROM app_page_todos t
+           LEFT JOIN users u ON u.id = t.done_by_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+          WHERE t.page_id=?
+          ORDER BY t.position ASC, t.id ASC`,
+        result.page.id
+      );
+      res.json(rows.map(r => ({ ...r, done: !!r.done })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/apps/:id/pages/:pageId/todos', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const text = String((req.body && req.body.text) || '').trim();
+      if (!text) return res.status(400).json({ error: 'Todo text required' });
+      if (text.length > 1000) return res.status(400).json({ error: 'Todo too long (max 1000 chars)' });
+      const next = await get('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM app_page_todos WHERE page_id=?', result.page.id);
+      const ins = await run(
+        `INSERT INTO app_page_todos (page_id, text, position, created_by_id)
+         VALUES (?,?,?,?) RETURNING id`,
+        result.page.id, text, Number(next?.next || 0), req.session.userId
+      );
+      await touchApp(result.app.id);
+      const row = await get(
+        `SELECT t.*, u.name AS done_by_name, c.name AS created_by_name
+           FROM app_page_todos t
+           LEFT JOIN users u ON u.id = t.done_by_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+          WHERE t.id=?`,
+        ins.lastInsertRowid
+      );
+      res.status(201).json({ ...row, done: !!row.done });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/apps/:id/pages/:pageId/todos/:todoId', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      const todo = await get('SELECT * FROM app_page_todos WHERE id=? AND page_id=?', Number(req.params.todoId), result.page.id);
+      if (!todo) return res.status(404).json({ error: 'Todo not found' });
+      const cols = []; const args = [];
+      if (req.body && 'text' in req.body) {
+        const clean = String(req.body.text || '').trim();
+        if (!clean) return res.status(400).json({ error: 'Todo text required' });
+        if (clean.length > 1000) return res.status(400).json({ error: 'Todo too long (max 1000 chars)' });
+        cols.push('text=?'); args.push(clean);
+      }
+      if (req.body && 'done' in req.body) {
+        const isDone = !!req.body.done;
+        cols.push('done=?'); args.push(isDone ? 1 : 0);
+        if (isDone) {
+          cols.push('done_by_id=?'); args.push(req.session.userId);
+          cols.push("done_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+        } else {
+          cols.push('done_by_id=?'); args.push(null);
+          cols.push('done_at=?'); args.push(null);
+        }
+      }
+      if (req.body && 'position' in req.body) {
+        const n = Number(req.body.position);
+        if (Number.isFinite(n)) { cols.push('position=?'); args.push(Math.trunc(n)); }
+      }
+      if (cols.length) {
+        cols.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
+        await run(`UPDATE app_page_todos SET ${cols.join(',')} WHERE id=?`, ...args, todo.id);
+        await touchApp(result.app.id);
+      }
+      const updated = await get(
+        `SELECT t.*, u.name AS done_by_name, c.name AS created_by_name
+           FROM app_page_todos t
+           LEFT JOIN users u ON u.id = t.done_by_id
+           LEFT JOIN users c ON c.id = t.created_by_id
+          WHERE t.id=?`,
+        todo.id
+      );
+      res.json({ ...updated, done: !!updated.done });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/apps/:id/pages/:pageId/todos/:todoId', requireAuth, async (req, res) => {
+    try {
+      const result = await loadPageForUser(req.params.pageId, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
+      await run('DELETE FROM app_page_todos WHERE id=? AND page_id=?', Number(req.params.todoId), result.page.id);
+      await touchApp(result.app.id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Per-app dashboard ──────────────────────────────────────────────────
+  // Single endpoint that returns the rolled-up numbers + a flat activity
+  // feed across every page in the app. Powers the Dashboard tab — far
+  // cheaper than the client making N+1 calls per page.
+  app.get('/api/apps/:id/dashboard', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const appId = result.app.id;
+
+      const pages = await all(
+        `SELECT id, name, status, blueprint, created_at FROM app_pages WHERE app_id=? ORDER BY position ASC, id ASC`,
+        appId
+      );
+      const pageIds = pages.map(p => p.id);
+      const inClause = pageIds.length ? '(' + pageIds.map(() => '?').join(',') + ')' : '(NULL)';
+
+      // Stats: one query per kind. Tiny dataset (a handful of pages); no
+      // perf concern. Group counts in the application layer.
+      const [fns, todos, comments, annotations] = await Promise.all([
+        pageIds.length ? all(`SELECT page_id, status, title FROM app_page_functions WHERE page_id IN ${inClause}`, ...pageIds) : [],
+        pageIds.length ? all(`SELECT page_id, done, text FROM app_page_todos WHERE page_id IN ${inClause}`, ...pageIds) : [],
+        pageIds.length ? all(`SELECT page_id, text, author_name, resolved, created_at FROM app_page_comments WHERE page_id IN ${inClause}`, ...pageIds) : [],
+        pageIds.length ? all(`SELECT page_id, text, type, status, author_name, created_at FROM app_page_annotations WHERE page_id IN ${inClause}`, ...pageIds) : [],
+      ]);
+
+      const statsByPage = new Map();
+      for (const p of pages) statsByPage.set(p.id, {
+        fn_total: 0, fn_working: 0, fn_broken: 0,
+        todo_total: 0, todo_done: 0,
+        comments_total: 0, comments_open: 0,
+        annotations_total: 0, annotations_open: 0,
+      });
+      for (const f of fns) {
+        const s = statsByPage.get(f.page_id); if (!s) continue;
+        s.fn_total++;
+        if (f.status === 'working') s.fn_working++;
+        if (f.status === 'broken') s.fn_broken++;
+      }
+      for (const t of todos) {
+        const s = statsByPage.get(t.page_id); if (!s) continue;
+        s.todo_total++;
+        if (t.done) s.todo_done++;
+      }
+      for (const c of comments) {
+        const s = statsByPage.get(c.page_id); if (!s) continue;
+        s.comments_total++;
+        if (!c.resolved) s.comments_open++;
+      }
+      for (const an of annotations) {
+        const s = statsByPage.get(an.page_id); if (!s) continue;
+        s.annotations_total++;
+        if (an.status === 'open') s.annotations_open++;
+      }
+
+      // Flat activity feed: most recent of everything, capped. Each entry
+      // carries a `kind` so the UI can render the right icon. Sorted by
+      // created_at descending in the application layer for simplicity.
+      const pageNameById = new Map(pages.map(p => [p.id, p.name]));
+      const activity = [];
+      for (const c of comments) activity.push({
+        kind: 'comment', page_id: c.page_id, page_name: pageNameById.get(c.page_id),
+        author: c.author_name, text: c.text, at: c.created_at, resolved: !!c.resolved
+      });
+      for (const an of annotations) activity.push({
+        kind: 'annotation', page_id: an.page_id, page_name: pageNameById.get(an.page_id),
+        author: an.author_name, text: an.text, at: an.created_at, type: an.type, status: an.status
+      });
+      activity.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+
+      // Aggregate roll-ups: totals over the whole app.
+      const totals = { pages: pages.length, fn_total: 0, fn_working: 0, todo_total: 0, todo_done: 0, comments_total: 0, comments_open: 0, annotations_total: 0, annotations_open: 0 };
+      for (const s of statsByPage.values()) {
+        totals.fn_total += s.fn_total; totals.fn_working += s.fn_working;
+        totals.todo_total += s.todo_total; totals.todo_done += s.todo_done;
+        totals.comments_total += s.comments_total; totals.comments_open += s.comments_open;
+        totals.annotations_total += s.annotations_total; totals.annotations_open += s.annotations_open;
+      }
+
+      res.json({
+        app: await shapeApp(result.app),
+        totals,
+        per_page: pages.map(p => ({
+          id: p.id,
+          name: p.name,
+          status: p.status,
+          has_blueprint: !!(p.blueprint && p.blueprint.trim()),
+          ...statsByPage.get(p.id),
+        })),
+        recent_activity: activity.slice(0, 50),
+        // Flat lists for the "All items under this app" view. Each
+        // includes page_name so the UI can render without follow-ups.
+        all_comments: comments.map(c => ({ ...c, page_name: pageNameById.get(c.page_id), resolved: !!c.resolved })),
+        all_annotations: annotations.map(a => ({ ...a, page_name: pageNameById.get(a.page_id) })),
+        all_todos: todos.map(t => ({ ...t, page_name: pageNameById.get(t.page_id), done: !!t.done })),
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Helpers ────────────────────────────────────────────────────────────
+  const ANNOTATION_TYPES = new Set(['question', 'issue', 'broken', 'note']);
+
   function normaliseUserId(v) {
     if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+  }
+
+  function clampPct(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    if (n < 0) return 0;
+    if (n > 100) return 100;
+    return n;
   }
 
   // Bump the parent app's updated_at so the list re-orders after activity.
@@ -641,6 +989,75 @@ module.exports = function attach(app, deps) {
     await run(
       "UPDATE apps SET updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
       appId
+    );
+  }
+
+  // Single point where we talk to the Anthropic API. Returns the text body
+  // or throws an Error with statusCode set on it for the caller to map to
+  // an HTTP response. Used by the blueprint generate, translate, and
+  // background auto-generate flows.
+  async function callAnthropic(systemPrompt, userMessage, maxTokens) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: maxTokens || 1024,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+    });
+    if (!r.ok) {
+      const errBody = await r.text().catch(() => '');
+      console.warn('[apps anthropic]', r.status, errBody.slice(0, 300));
+      const err = new Error('AI service returned ' + r.status);
+      err.statusCode = 502;
+      throw err;
+    }
+    const data = await r.json();
+    return (data.content?.[0]?.text || '').trim();
+  }
+
+  // Build the user prompt + run the Anthropic call for a blueprint. The
+  // page row is the only input; the HTML is truncated to 60k chars to
+  // stay well under context limits and keep latency predictable.
+  async function generateBlueprintFromPage(page) {
+    const html = String(page.html_content || '').slice(0, 60000);
+    if (!html.trim()) {
+      const err = new Error('No HTML to analyse');
+      err.statusCode = 400;
+      throw err;
+    }
+    const systemPrompt =
+      "You analyse a single HTML page from an app design and write a clear, concise blueprint description for the developer who will build it. " +
+      "Cover (1) the purpose of the page, (2) the main sections / regions visible, (3) the interactive elements (forms, buttons, links) and what each should do, and (4) any data that needs to load or save. " +
+      "Use short paragraphs and bullets where helpful. Write directly — no preamble, no 'here is', no meta-commentary. " +
+      "Stay under 250 words. Return ONLY the blueprint text.";
+    return await callAnthropic(
+      systemPrompt,
+      `Page title: ${page.name}\nFile: ${page.file_name || '(pasted)'}\n\nHTML:\n${html}`,
+      1024
+    );
+  }
+
+  // Background blueprint generation kicked off after page creation. Only
+  // writes the result if the blueprint is still empty — guards against a
+  // race where the user typed something between create + completion.
+  async function autoGenerateBlueprint(pageId) {
+    const page = await get('SELECT * FROM app_pages WHERE id=?', pageId);
+    if (!page) return;
+    if (page.blueprint && page.blueprint.trim()) return;
+    const draft = await generateBlueprintFromPage(page);
+    if (!draft) return;
+    // Conditional UPDATE — only set if still blank. If someone wrote one
+    // by hand while we were waiting, theirs wins.
+    await run(
+      "UPDATE app_pages SET blueprint=?, blueprint_bn='', updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=? AND COALESCE(blueprint, '') = ''",
+      draft, pageId
     );
   }
 };
