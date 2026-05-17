@@ -27,14 +27,23 @@
   const state = {
     me: null,
     team: [],
-    view: 'list',   // 'list' | 'detail'
+    view: 'list',     // 'list' | 'detail'
     apps: [],
     app: null,        // currently loaded app (with .pages)
+    pageView: 'dashboard', // 'dashboard' (app overview) | 'page' (specific page detail)
     selectedPageId: null,
     pageDetail: null, // currently loaded page with html_content
-    tab: 'preview',   // 'preview' | 'blueprint' | 'qa' | 'functions'
+    tab: 'preview',   // 'preview' | 'blueprint' | 'qa' | 'todos' | 'functions'
     comments: [],
     functions: [],
+    todos: [],
+    annotations: [],
+    annotateMode: false,
+    pendingPin: null, // { x_pct, y_pct } while the new-annotation popover is open
+    blueprintLang: 'en', // 'en' | 'bn'
+    blueprintBn: '', // cached BN translation, fetched on demand
+    dashboard: null,  // loaded by loadDashboard
+    dashAllTab: 'comments', // which "all items" sub-tab on the dashboard
     loading: false,
     error: null,
   };
@@ -103,6 +112,7 @@
       state.app = null;
       state.pageDetail = null;
       state.selectedPageId = null;
+      state.dashboard = null;
       render();
       try {
         await loadApp(route.appId);
@@ -112,14 +122,20 @@
         return;
       }
     }
-    // Choose page: explicit hash > first page > none
-    const pickPageId = route.pageId
-      || (state.app.pages && state.app.pages[0] && state.app.pages[0].id)
-      || null;
-    if (pickPageId && pickPageId !== state.selectedPageId) {
-      await selectPage(pickPageId);
-    } else {
+    // Dashboard is the default landing when no specific page is in the
+    // hash. The user clicks a page in the sidebar to drop into page mode.
+    if (route.pageId) {
+      state.pageView = 'page';
+      if (route.pageId !== state.selectedPageId) {
+        await selectPage(route.pageId);
+        return;
+      }
       render();
+    } else {
+      state.pageView = 'dashboard';
+      state.selectedPageId = null;
+      render();
+      loadDashboard().catch(e => toast(e.message, 'err'));
     }
   }
 
@@ -155,24 +171,81 @@
     state.loading = false;
   }
   async function selectPage(pageId) {
+    state.pageView = 'page';
     state.selectedPageId = pageId;
     state.pageDetail = null;
     state.comments = [];
     state.functions = [];
+    state.todos = [];
+    state.annotations = [];
+    state.blueprintBn = '';
+    state.blueprintLang = 'en';
+    state.annotateMode = false;
+    state.pendingPin = null;
     render();
     try {
-      const [page, comments, fns] = await Promise.all([
+      const [page, comments, fns, todos, annotations] = await Promise.all([
         api('GET', '/api/apps/' + state.app.id + '/pages/' + pageId),
         api('GET', '/api/apps/' + state.app.id + '/pages/' + pageId + '/comments'),
         api('GET', '/api/apps/' + state.app.id + '/pages/' + pageId + '/functions'),
+        api('GET', '/api/apps/' + state.app.id + '/pages/' + pageId + '/todos'),
+        api('GET', '/api/apps/' + state.app.id + '/pages/' + pageId + '/annotations'),
       ]);
       state.pageDetail = page;
       state.comments = comments || [];
       state.functions = fns || [];
+      state.todos = todos || [];
+      state.annotations = annotations || [];
       render();
+      // If the blueprint is empty and the page was just created, the
+      // server is likely still drafting one in the background. Poll up to
+      // 6 times (every 5s = 30s total) so the draft appears without a
+      // manual refresh. Stops as soon as we get something.
+      maybePollForBlueprint(page);
     } catch (e) {
       toast(e.message, 'err');
     }
+  }
+
+  async function loadDashboard() {
+    if (!state.app) return;
+    try {
+      const d = await api('GET', '/api/apps/' + state.app.id + '/dashboard');
+      state.dashboard = d;
+      render();
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  // Poll for the auto-generated blueprint after page creation. Only runs
+  // when the page is new (created within the last 90 seconds) and the
+  // blueprint is still blank — anything older is assumed to have already
+  // been handled (or the AI is disabled).
+  let blueprintPollTimer = null;
+  function maybePollForBlueprint(page) {
+    if (blueprintPollTimer) { clearTimeout(blueprintPollTimer); blueprintPollTimer = null; }
+    if (!page || (page.blueprint && page.blueprint.trim())) return;
+    const created = new Date((page.created_at || '').replace(' ', 'T') + 'Z');
+    if (isNaN(created.getTime())) return;
+    if (Date.now() - created.getTime() > 90 * 1000) return;
+    let tries = 0;
+    const tick = async () => {
+      tries++;
+      if (!state.pageDetail || state.pageDetail.id !== page.id) return;
+      if (state.pageDetail.blueprint && state.pageDetail.blueprint.trim()) return;
+      try {
+        const fresh = await api('GET', '/api/apps/' + state.app.id + '/pages/' + page.id);
+        if (fresh.blueprint && fresh.blueprint.trim()) {
+          state.pageDetail.blueprint = fresh.blueprint;
+          // Refresh the sidebar list entry too so the indicator clears.
+          const p = state.app.pages && state.app.pages.find(x => x.id === page.id);
+          if (p) p.has_blueprint = true;
+          render();
+          return;
+        }
+      } catch (e) { /* ignore — keep polling */ }
+      if (tries < 6) blueprintPollTimer = setTimeout(tick, 5000);
+    };
+    blueprintPollTimer = setTimeout(tick, 5000);
   }
 
   // ── Render ─────────────────────────────────────────────────────────────
@@ -266,8 +339,9 @@
     }
     if (!state.app) return;
     const a = state.app;
+    const dashActive = state.pageView === 'dashboard';
     const pageList = (a.pages || []).map(p => {
-      const isActive = p.id === state.selectedPageId;
+      const isActive = state.pageView === 'page' && p.id === state.selectedPageId;
       const meta = [];
       if (p.fn_total) meta.push(`${p.fn_working}/${p.fn_total} fn`);
       if (p.comment_count) meta.push(`${p.comment_count} 💬`);
@@ -309,12 +383,19 @@
               <h4>Pages (${a.pages ? a.pages.length : 0})</h4>
             </div>
             <div class="ap-pages-list">
+              <div class="ap-page-item ${dashActive ? 'active' : ''}" data-dash="1">
+                <span class="ap-page-item-dot" style="background:#0ea5e9"></span>
+                <div class="ap-page-item-text">
+                  <div class="ap-page-item-title">📊 Dashboard</div>
+                  <div class="ap-page-item-meta">Overview &amp; all items</div>
+                </div>
+              </div>
               ${pageList || '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No pages yet</div>'}
               <div class="ap-add-page-btn" id="ap-add-page">+ Add page</div>
             </div>
           </aside>
           <section class="ap-page-pane">
-            ${renderPagePane()}
+            ${state.pageView === 'dashboard' ? renderDashboardPane() : renderPagePane()}
           </section>
         </div>
       </div>
@@ -356,15 +437,17 @@
         <button class="btn btn-danger btn-small" id="ap-page-delete" title="Delete page">Delete</button>
       </div>
       <div class="ap-tabs">
-        <div class="ap-tab ${t === 'preview' ? 'active' : ''}" data-tab="preview">Preview</div>
+        <div class="ap-tab ${t === 'preview' ? 'active' : ''}" data-tab="preview">Preview ${state.annotations.length ? `<span class="ap-tab-count">${state.annotations.length}</span>` : ''}</div>
         <div class="ap-tab ${t === 'blueprint' ? 'active' : ''}" data-tab="blueprint">Blueprint</div>
         <div class="ap-tab ${t === 'qa' ? 'active' : ''}" data-tab="qa">Q&amp;A <span class="ap-tab-count">${state.comments.length}</span></div>
+        <div class="ap-tab ${t === 'todos' ? 'active' : ''}" data-tab="todos">To-dos <span class="ap-tab-count">${state.todos.filter(x => !x.done).length}/${state.todos.length}</span></div>
         <div class="ap-tab ${t === 'functions' ? 'active' : ''}" data-tab="functions">Functions <span class="ap-tab-count">${state.functions.length}</span></div>
       </div>
       <div class="ap-tab-body">
         ${t === 'preview' ? renderPreviewTab(p) : ''}
         ${t === 'blueprint' ? renderBlueprintTab(p) : ''}
         ${t === 'qa' ? renderQATab() : ''}
+        ${t === 'todos' ? renderTodosTab() : ''}
         ${t === 'functions' ? renderFunctionsTab() : ''}
       </div>
     `;
@@ -383,18 +466,106 @@
 
   function renderPreviewTab(p) {
     const previewUrl = '/api/apps/' + state.app.id + '/pages/' + p.id + '/preview?ts=' + (p.updated_at || '');
+    const pins = state.annotations.map((a, i) => {
+      return `
+        <div class="ap-pin ap-pin-${escapeHtml(a.type)} ${a.status === 'resolved' ? 'resolved' : ''}"
+             style="left:${a.x_pct}%;top:${a.y_pct}%"
+             data-act="open-pin" data-aid="${a.id}"
+             title="${escapeHtml(a.text)}">
+          ${i + 1}
+        </div>
+      `;
+    }).join('');
     return `
       <div class="ap-preview-toolbar">
         <span>Sandboxed preview of <strong>${escapeHtml(p.file_name || p.name)}</strong>${p.html_content ? ` · ${(p.html_content.length / 1024).toFixed(1)} KB` : ''}</span>
-        <a href="${previewUrl}" target="_blank" rel="noopener" class="btn btn-ghost btn-small">Open in new tab ↗</a>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn ${state.annotateMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-annotate-toggle" title="Click on the design to drop a pin">
+            ${state.annotateMode ? '✓ Annotating' : 'Annotate'}
+          </button>
+          <a href="${previewUrl}" target="_blank" rel="noopener" class="btn btn-ghost btn-small">Open in new tab ↗</a>
+        </div>
       </div>
-      <div class="ap-preview-wrap">
-        <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="allow-same-origin" title="Page preview"></iframe>
+      <div class="ap-preview-layout">
+        <div class="ap-preview-wrap" id="ap-preview-wrap">
+          <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="allow-same-origin" title="Page preview"></iframe>
+          <div class="ap-pin-overlay ${state.annotateMode ? 'active' : ''}" id="ap-pin-overlay">
+            ${pins}
+            ${state.pendingPin ? `<div class="ap-pin ap-pin-pending" style="left:${state.pendingPin.x_pct}%;top:${state.pendingPin.y_pct}%">+</div>` : ''}
+          </div>
+          ${state.pendingPin ? renderNewPinPopup() : ''}
+        </div>
+        <aside class="ap-pins-panel">
+          <div class="ap-pins-panel-head">
+            Pins (${state.annotations.length})
+            <span style="color:#94a3b8;font-weight:400;font-size:11px;margin-left:6px">Click "Annotate" then click the design</span>
+          </div>
+          <div class="ap-pins-list">
+            ${state.annotations.length === 0
+              ? '<div class="ap-qa-empty" style="padding:16px 8px">No pins yet. Toggle <strong>Annotate</strong> and click any spot on the design to drop a question, issue, or note.</div>'
+              : state.annotations.map((a, i) => renderPinRow(a, i)).join('')}
+          </div>
+        </aside>
+      </div>
+    `;
+  }
+
+  function renderPinRow(a, i) {
+    return `
+      <div class="ap-pin-row ${a.status === 'resolved' ? 'resolved' : ''}" data-aid="${a.id}">
+        <div class="ap-pin-row-head">
+          <span class="ap-pin-dot ap-pin-${escapeHtml(a.type)}">${i + 1}</span>
+          <span class="ap-pin-row-type">${escapeHtml(prettyAnnotationType(a.type))}</span>
+          <span class="ap-pin-row-author">${escapeHtml(a.author_name || '')}</span>
+          <span class="ap-pin-row-time">${escapeHtml(formatTime(a.created_at))}</span>
+        </div>
+        <div class="ap-pin-row-body">${escapeHtml(a.text)}</div>
+        <div class="ap-pin-row-actions">
+          <span class="ap-comment-action-btn resolve-btn" data-act="toggle-pin-resolve" data-aid="${a.id}">${a.status === 'resolved' ? 'Reopen' : 'Resolve'}</span>
+          ${(state.me && a.author_id === state.me.id) ? `<span class="ap-comment-action-btn" data-act="delete-pin" data-aid="${a.id}">Delete</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function prettyAnnotationType(t) {
+    return ({ question: 'Question', issue: 'Issue', broken: 'Broken', note: 'Note' })[t] || t;
+  }
+
+  function renderNewPinPopup() {
+    const pp = state.pendingPin;
+    // Position the popup near the pin — use percentages so it scales.
+    const left = pp.x_pct > 60 ? 'right:5%' : `left:${Math.min(pp.x_pct + 3, 70)}%`;
+    const top = `top:${Math.min(pp.y_pct + 2, 75)}%`;
+    return `
+      <div class="ap-pin-popup" style="${left};${top}">
+        <div class="ap-pin-popup-head">New pin</div>
+        <select id="ap-pin-type">
+          <option value="question">❔ Question</option>
+          <option value="issue">⚠️ Issue</option>
+          <option value="broken">✗ Not working / broken</option>
+          <option value="note">✎ Note</option>
+        </select>
+        <textarea id="ap-pin-text" placeholder="What's this? Describe the question or issue…" rows="3"></textarea>
+        <div class="ap-pin-popup-foot">
+          <button class="btn btn-ghost btn-small" id="ap-pin-cancel">Cancel</button>
+          <button class="btn btn-primary btn-small" id="ap-pin-save">Drop pin</button>
+        </div>
       </div>
     `;
   }
 
   function renderBlueprintTab(p) {
+    const isBn = state.blueprintLang === 'bn';
+    const isEmpty = !(p.blueprint && p.blueprint.trim());
+    const draftingHint = isEmpty
+      ? '<div class="ap-blueprint-pending">AI is drafting a blueprint from the HTML… this usually takes 5–15 seconds after upload. <button class="btn btn-ghost btn-small" id="ap-blueprint-refresh">Refresh</button></div>'
+      : '';
+    const bnView = isBn
+      ? (state.blueprintBn
+        ? `<div class="ap-blueprint-readonly" lang="bn">${escapeHtml(state.blueprintBn).replace(/\n/g, '<br/>')}</div>`
+        : '<div class="ap-blueprint-readonly ap-blueprint-loading">Translating to বাংলা…</div>')
+      : '';
     return `
       <div class="ap-blueprint-wrap">
         <div class="ap-blueprint-label">
@@ -402,15 +573,22 @@
             <h3>Page blueprint</h3>
             <p>Plain-English description for the developer: what the page does, the main sections, the interactions, and the data it needs.</p>
           </div>
+          <div class="ap-lang-toggle">
+            <button class="ap-lang-btn ${!isBn ? 'active' : ''}" data-lang="en">EN</button>
+            <button class="ap-lang-btn ${isBn ? 'active' : ''}" data-lang="bn">বাংলা</button>
+          </div>
         </div>
-        <textarea class="ap-blueprint-textarea" id="ap-blueprint-textarea" placeholder="Describe what this page does, the regions, interactions, and data needs.">${escapeHtml(p.blueprint || '')}</textarea>
+        ${draftingHint}
+        ${isBn ? bnView : `<textarea class="ap-blueprint-textarea" id="ap-blueprint-textarea" placeholder="Describe what this page does, the regions, interactions, and data needs.">${escapeHtml(p.blueprint || '')}</textarea>`}
         <div class="ap-blueprint-actions">
-          <button class="btn btn-primary btn-small" id="ap-blueprint-save">Save</button>
-          <button class="btn btn-secondary btn-small" id="ap-blueprint-ai">
-            <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>
-            AI assist
-          </button>
-          <span class="ap-blueprint-saved" id="ap-blueprint-saved">Saved ✓</span>
+          ${isBn
+            ? `<span style="font-size:12px;color:#64748b">Switch to <strong>EN</strong> to edit. Bengali is auto-translated from your English source.</span>`
+            : `<button class="btn btn-primary btn-small" id="ap-blueprint-save">Save</button>
+               <button class="btn btn-secondary btn-small" id="ap-blueprint-ai">
+                 <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg>
+                 ${isEmpty ? 'Generate with AI' : 'Re-generate with AI'}
+               </button>
+               <span class="ap-blueprint-saved" id="ap-blueprint-saved">Saved ✓</span>`}
         </div>
       </div>
     `;
@@ -493,6 +671,162 @@
     })[s] || '○';
   }
 
+  function renderTodosTab() {
+    const total = state.todos.length;
+    const done = state.todos.filter(t => t.done).length;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const rows = state.todos.map(t => `
+      <div class="ap-todo-row ${t.done ? 'done' : ''}" data-tid="${t.id}">
+        <input type="checkbox" class="ap-todo-check" data-act="toggle-todo" data-tid="${t.id}" ${t.done ? 'checked' : ''}/>
+        <div class="ap-todo-body">
+          <div class="ap-todo-text">${escapeHtml(t.text)}</div>
+          <div class="ap-todo-meta">
+            ${t.created_by_name ? `by ${escapeHtml(t.created_by_name)}` : ''}
+            ${t.done && t.done_by_name ? ` · done by ${escapeHtml(t.done_by_name)} ${escapeHtml(formatTime(t.done_at))}` : ''}
+          </div>
+        </div>
+        <span class="ap-fn-delete" data-act="delete-todo" data-tid="${t.id}" title="Delete">✕</span>
+      </div>
+    `).join('');
+    return `
+      <div class="ap-fn-wrap">
+        <div class="ap-fn-summary">
+          <span><strong>${done}</strong> of <strong>${total}</strong> to-dos done</span>
+          <div class="ap-fn-progress"><div class="ap-fn-progress-bar" style="width:${pct}%"></div></div>
+          <span>${pct}%</span>
+        </div>
+        <div style="font-size:12px;color:#64748b;margin-bottom:10px">Manager adds the list; developer ticks each off as it's built.</div>
+        ${rows || '<div class="ap-qa-empty" style="padding:18px 0">No to-dos yet. Add the first one below.</div>'}
+        <div class="ap-fn-add-form">
+          <input id="ap-todo-new-text" placeholder="New to-do (e.g. 'Wire login button to /api/auth/login')"/>
+          <button class="btn btn-primary btn-small" id="ap-todo-add">Add</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // Dashboard view — replaces the page detail pane when no page is
+  // selected. Renders rolled-up stats, per-page progress, recent activity,
+  // and a flat list of every comment / annotation / todo across the app.
+  function renderDashboardPane() {
+    if (!state.dashboard) {
+      return '<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:13px">Loading dashboard…</div>';
+    }
+    const d = state.dashboard;
+    const t = d.totals || {};
+    const stats = [
+      { label: 'Pages',       value: t.pages || 0 },
+      { label: 'Functions',   value: `${t.fn_working || 0}/${t.fn_total || 0}`, hint: 'working' },
+      { label: 'To-dos',      value: `${t.todo_done || 0}/${t.todo_total || 0}`, hint: 'done' },
+      { label: 'Q&A',         value: `${t.comments_open || 0}/${t.comments_total || 0}`, hint: 'open' },
+      { label: 'Pins',        value: `${t.annotations_open || 0}/${t.annotations_total || 0}`, hint: 'open' },
+    ];
+    const statCards = stats.map(s => `
+      <div class="ap-stat-card">
+        <div class="ap-stat-value">${escapeHtml(String(s.value))}</div>
+        <div class="ap-stat-label">${escapeHtml(s.label)}${s.hint ? ` <span class="ap-stat-hint">${escapeHtml(s.hint)}</span>` : ''}</div>
+      </div>
+    `).join('');
+    const perPage = (d.per_page || []).map(p => {
+      const fnPct = p.fn_total > 0 ? Math.round((p.fn_working / p.fn_total) * 100) : 0;
+      const todoPct = p.todo_total > 0 ? Math.round((p.todo_done / p.todo_total) * 100) : 0;
+      return `
+        <div class="ap-perpage-row" data-page-id="${p.id}">
+          <div class="ap-perpage-head">
+            <span class="ap-page-item-dot ${escapeHtml(p.status || 'pending')}"></span>
+            <strong>${escapeHtml(p.name)}</strong>
+            <span class="ap-status-pill ap-status-${escapeHtml(p.status || 'pending')}" style="margin-left:8px;font-size:9.5px">${escapeHtml(p.status || 'pending')}</span>
+            ${p.has_blueprint ? '<span class="ap-stat-hint" style="margin-left:6px">✓ blueprint</span>' : '<span class="ap-stat-hint" style="margin-left:6px;color:#f59e0b">blueprint pending</span>'}
+          </div>
+          <div class="ap-perpage-bars">
+            <div class="ap-perpage-bar" title="Functions working / total">
+              <span>FN ${p.fn_working || 0}/${p.fn_total || 0}</span>
+              <div class="ap-perpage-track"><div class="ap-perpage-fill" style="width:${fnPct}%;background:#22c55e"></div></div>
+            </div>
+            <div class="ap-perpage-bar" title="To-dos done / total">
+              <span>TD ${p.todo_done || 0}/${p.todo_total || 0}</span>
+              <div class="ap-perpage-track"><div class="ap-perpage-fill" style="width:${todoPct}%;background:#2563eb"></div></div>
+            </div>
+            <div class="ap-perpage-bar"><span>Q&amp;A ${p.comments_open || 0}/${p.comments_total || 0}</span></div>
+            <div class="ap-perpage-bar"><span>Pins ${p.annotations_open || 0}/${p.annotations_total || 0}</span></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    const recent = (d.recent_activity || []).slice(0, 12).map(ev => {
+      const icon = ev.kind === 'comment' ? '💬' : (ev.type === 'broken' ? '✗' : ev.type === 'issue' ? '⚠️' : '📍');
+      return `
+        <div class="ap-activity-row" data-page-id="${ev.page_id}">
+          <span class="ap-activity-icon">${icon}</span>
+          <div class="ap-activity-body">
+            <div class="ap-activity-text"><strong>${escapeHtml(ev.author || '?')}</strong> on <em>${escapeHtml(ev.page_name || '?')}</em>: ${escapeHtml((ev.text || '').slice(0, 140))}</div>
+            <div class="ap-activity-meta">${escapeHtml(ev.kind === 'comment' ? 'Q&A' : prettyAnnotationType(ev.type || 'note'))} · ${escapeHtml(formatTime(ev.at))}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    const allTab = state.dashAllTab;
+    const allBody = allTab === 'comments'
+      ? renderAllItems(d.all_comments, 'comment')
+      : allTab === 'annotations'
+        ? renderAllItems(d.all_annotations, 'annotation')
+        : renderAllItems(d.all_todos, 'todo');
+    return `
+      <div class="ap-dash-head">
+        <h2>${escapeHtml(state.app.name)}</h2>
+        <span style="color:#64748b;font-size:13px">${escapeHtml(state.app.description || 'No description')}</span>
+      </div>
+      <div class="ap-dash-body">
+        <div class="ap-stat-grid">${statCards}</div>
+
+        <div class="ap-section">
+          <h3>Per-page progress</h3>
+          ${perPage || '<div class="ap-qa-empty">No pages yet</div>'}
+        </div>
+
+        <div class="ap-section">
+          <h3>Recent activity</h3>
+          <div class="ap-activity-list">
+            ${recent || '<div class="ap-qa-empty">No activity yet</div>'}
+          </div>
+        </div>
+
+        <div class="ap-section">
+          <div style="display:flex;justify-content:space-between;align-items:flex-end">
+            <h3>All items under this app</h3>
+            <div class="ap-source-tabs" style="margin-bottom:0">
+              <div class="ap-source-tab ${allTab === 'comments' ? 'active' : ''}" data-all-tab="comments">Q&amp;A (${(d.all_comments || []).length})</div>
+              <div class="ap-source-tab ${allTab === 'annotations' ? 'active' : ''}" data-all-tab="annotations">Pins (${(d.all_annotations || []).length})</div>
+              <div class="ap-source-tab ${allTab === 'todos' ? 'active' : ''}" data-all-tab="todos">To-dos (${(d.all_todos || []).length})</div>
+            </div>
+          </div>
+          ${allBody}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAllItems(items, kind) {
+    if (!items || items.length === 0) return '<div class="ap-qa-empty">Nothing here yet</div>';
+    return `
+      <div class="ap-all-list">
+        ${items.map(it => `
+          <div class="ap-all-row" data-page-id="${it.page_id}">
+            <div class="ap-all-row-head">
+              <span class="ap-all-row-page">${escapeHtml(it.page_name || '?')}</span>
+              ${kind === 'annotation' ? `<span class="ap-all-row-type ap-pin-${escapeHtml(it.type)}">${escapeHtml(prettyAnnotationType(it.type))}</span>` : ''}
+              ${kind === 'todo' ? `<span class="ap-all-row-type" style="background:${it.done ? '#dcfce7' : '#f1f5f9'};color:${it.done ? '#166534' : '#475569'}">${it.done ? 'Done' : 'Open'}</span>` : ''}
+              ${kind === 'comment' ? `<span class="ap-all-row-type" style="background:${it.resolved ? '#dcfce7' : '#fee2e2'};color:${it.resolved ? '#166534' : '#991b1b'}">${it.resolved ? 'Resolved' : 'Open'}</span>` : ''}
+              <span class="ap-all-row-author">${escapeHtml(it.author_name || '')}</span>
+              <span class="ap-all-row-time">${escapeHtml(formatTime(it.created_at || it.at))}</span>
+            </div>
+            <div class="ap-all-row-body">${escapeHtml(it.text || '')}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
   function formatTime(ts) {
     if (!ts) return '';
     // ts is "YYYY-MM-DD HH:MM:SS" UTC string from the server.
@@ -515,8 +849,17 @@
     if (addBtn) addBtn.onclick = () => openAddPageModal();
 
     root.querySelectorAll('.ap-page-item').forEach(el => {
-      el.onclick = () => navigate('/' + state.app.id + '/p/' + el.getAttribute('data-page-id'));
+      el.onclick = () => {
+        if (el.getAttribute('data-dash')) navigate('/' + state.app.id);
+        else navigate('/' + state.app.id + '/p/' + el.getAttribute('data-page-id'));
+      };
     });
+
+    // Dashboard pane interactions — only present when pageView is dashboard.
+    if (state.pageView === 'dashboard') {
+      bindDashboardEvents();
+      return;
+    }
 
     // Page header
     const titleInput = document.getElementById('ap-page-title');
@@ -573,18 +916,263 @@
     bindBlueprintEvents();
     bindQAEvents();
     bindFunctionsEvents();
+    bindTodosEvents();
+    bindPreviewEvents();
+  }
+
+  function bindDashboardEvents() {
+    // Scope to the dashboard pane so we don't re-bind sidebar entries
+    // (those use the same data-page-id attribute but were already bound
+    // by the parent bindDetailEvents).
+    const pane = root.querySelector('.ap-page-pane');
+    if (!pane) return;
+    pane.querySelectorAll('[data-page-id]').forEach(el => {
+      el.onclick = () => {
+        const pid = el.getAttribute('data-page-id');
+        if (pid) navigate('/' + state.app.id + '/p/' + pid);
+      };
+    });
+    pane.querySelectorAll('[data-all-tab]').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        state.dashAllTab = el.getAttribute('data-all-tab');
+        render();
+      };
+    });
+  }
+
+  // Targeted refresh: only updates the overlay + side panel + popup so the
+  // iframe element is preserved across annotation state changes. Calling
+  // render() instead would replace root.innerHTML and force the iframe to
+  // re-fetch — losing the user's scroll position inside the design.
+  function refreshAnnotationOverlay() {
+    if (state.pageView !== 'page' || state.tab !== 'preview' || !state.pageDetail) return;
+    const overlay = document.getElementById('ap-pin-overlay');
+    const panel = root.querySelector('.ap-pins-list');
+    const wrap = document.getElementById('ap-preview-wrap');
+    if (!overlay || !panel || !wrap) { render(); return; }
+    // Toggle overlay active state without re-fetching the iframe.
+    overlay.classList.toggle('active', !!state.annotateMode);
+    const toggleBtn = document.getElementById('ap-annotate-toggle');
+    if (toggleBtn) {
+      toggleBtn.textContent = state.annotateMode ? '✓ Annotating' : 'Annotate';
+      toggleBtn.classList.toggle('btn-primary', !!state.annotateMode);
+      toggleBtn.classList.toggle('btn-secondary', !state.annotateMode);
+    }
+    // Rebuild the pin markers from current state.
+    const pinsHtml = state.annotations.map((a, i) => `
+      <div class="ap-pin ap-pin-${escapeHtml(a.type)} ${a.status === 'resolved' ? 'resolved' : ''}"
+           style="left:${a.x_pct}%;top:${a.y_pct}%"
+           data-act="open-pin" data-aid="${a.id}"
+           title="${escapeHtml(a.text)}">${i + 1}</div>
+    `).join('') + (state.pendingPin ? `<div class="ap-pin ap-pin-pending" style="left:${state.pendingPin.x_pct}%;top:${state.pendingPin.y_pct}%">+</div>` : '');
+    overlay.innerHTML = pinsHtml;
+    // Side panel.
+    panel.innerHTML = state.annotations.length === 0
+      ? '<div class="ap-qa-empty" style="padding:16px 8px">No pins yet. Toggle <strong>Annotate</strong> and click any spot on the design to drop a question, issue, or note.</div>'
+      : state.annotations.map((a, i) => renderPinRow(a, i)).join('');
+    // Replace any existing pin popup (or remove it).
+    const oldPopup = wrap.querySelector('.ap-pin-popup');
+    if (oldPopup) oldPopup.remove();
+    if (state.pendingPin) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = renderNewPinPopup();
+      wrap.appendChild(wrapper.firstElementChild);
+    }
+    // Update the Preview tab count badge.
+    const previewTab = root.querySelector('.ap-tab[data-tab="preview"]');
+    if (previewTab) {
+      previewTab.innerHTML = 'Preview ' + (state.annotations.length ? `<span class="ap-tab-count">${state.annotations.length}</span>` : '');
+    }
+    // Re-bind handlers since the DOM nodes were replaced.
+    bindPreviewEvents();
+  }
+
+  // Preview tab — annotation overlay, pin clicks, new-pin popup.
+  function bindPreviewEvents() {
+    const toggleBtn = document.getElementById('ap-annotate-toggle');
+    if (toggleBtn) {
+      toggleBtn.onclick = () => {
+        state.annotateMode = !state.annotateMode;
+        state.pendingPin = null;
+        refreshAnnotationOverlay();
+      };
+    }
+    const overlay = document.getElementById('ap-pin-overlay');
+    if (overlay) {
+      // Click anywhere on the overlay (when annotate mode is on) to drop a
+      // pin. Clicks on existing pins are handled separately below via
+      // data-act; we stop propagation there so this generic handler
+      // doesn't fire too.
+      overlay.onclick = (e) => {
+        if (!state.annotateMode) return;
+        if (e.target !== overlay) return; // pin clicks bubble up; we'd already handle them
+        const rect = overlay.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        state.pendingPin = { x_pct: x, y_pct: y };
+        refreshAnnotationOverlay();
+      };
+    }
+    root.querySelectorAll('[data-act="open-pin"]').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const aid = Number(el.getAttribute('data-aid'));
+        // Scroll the matching row into view in the side panel.
+        const row = root.querySelector('.ap-pin-row[data-aid="' + aid + '"]');
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.add('highlight');
+          setTimeout(() => row.classList.remove('highlight'), 1400);
+        }
+      };
+    });
+    root.querySelectorAll('[data-act="toggle-pin-resolve"]').forEach(el => {
+      el.onclick = async () => {
+        const aid = Number(el.getAttribute('data-aid'));
+        const a = state.annotations.find(x => x.id === aid);
+        if (!a) return;
+        try {
+          const r = await api('PATCH', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations/' + aid, { status: a.status === 'resolved' ? 'open' : 'resolved' });
+          Object.assign(a, r);
+          refreshAnnotationOverlay();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    root.querySelectorAll('[data-act="delete-pin"]').forEach(el => {
+      el.onclick = async () => {
+        const aid = Number(el.getAttribute('data-aid'));
+        if (!confirm('Delete this pin?')) return;
+        try {
+          await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations/' + aid);
+          state.annotations = state.annotations.filter(x => x.id !== aid);
+          refreshAnnotationOverlay();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
+    // New-pin popup
+    const cancelBtn = document.getElementById('ap-pin-cancel');
+    const saveBtn = document.getElementById('ap-pin-save');
+    if (cancelBtn) {
+      cancelBtn.onclick = () => { state.pendingPin = null; refreshAnnotationOverlay(); };
+    }
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const type = document.getElementById('ap-pin-type').value;
+        const text = document.getElementById('ap-pin-text').value.trim();
+        if (!text) { toast('Describe the pin first', 'err'); return; }
+        try {
+          const created = await api('POST', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations', {
+            x_pct: state.pendingPin.x_pct,
+            y_pct: state.pendingPin.y_pct,
+            type, text,
+          });
+          state.annotations.push(created);
+          state.pendingPin = null;
+          refreshAnnotationOverlay();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+  }
+
+  function bindTodosEvents() {
+    const addBtn = document.getElementById('ap-todo-add');
+    const titleIn = document.getElementById('ap-todo-new-text');
+    if (addBtn && titleIn) {
+      const submit = async () => {
+        const v = titleIn.value.trim();
+        if (!v) return;
+        try {
+          const t = await api('POST', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/todos', { text: v });
+          state.todos.push(t);
+          titleIn.value = '';
+          render();
+          const newIn = document.getElementById('ap-todo-new-text');
+          if (newIn) newIn.focus();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+      addBtn.onclick = submit;
+      titleIn.onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+    }
+    root.querySelectorAll('[data-act="toggle-todo"]').forEach(el => {
+      el.onchange = async () => {
+        const tid = Number(el.getAttribute('data-tid'));
+        const t = state.todos.find(x => x.id === tid);
+        if (!t) return;
+        try {
+          const r = await api('PATCH', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/todos/' + tid, { done: el.checked });
+          Object.assign(t, r);
+          render();
+        } catch (e) { toast(e.message, 'err'); el.checked = !el.checked; }
+      };
+    });
+    root.querySelectorAll('[data-act="delete-todo"]').forEach(el => {
+      el.onclick = async () => {
+        const tid = Number(el.getAttribute('data-tid'));
+        if (!confirm('Delete this to-do?')) return;
+        try {
+          await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/todos/' + tid);
+          state.todos = state.todos.filter(x => x.id !== tid);
+          render();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
   }
 
   function bindBlueprintEvents() {
     const ta = document.getElementById('ap-blueprint-textarea');
     const saveBtn = document.getElementById('ap-blueprint-save');
     const aiBtn = document.getElementById('ap-blueprint-ai');
+    const refreshBtn = document.getElementById('ap-blueprint-refresh');
     const savedFlag = document.getElementById('ap-blueprint-saved');
+
+    // Language toggle — EN edits the source, BN shows a cached translation.
+    root.querySelectorAll('[data-lang]').forEach(btn => {
+      btn.onclick = async () => {
+        const lang = btn.getAttribute('data-lang');
+        if (lang === state.blueprintLang) return;
+        state.blueprintLang = lang;
+        if (lang === 'bn') {
+          state.blueprintBn = '';
+          render();
+          // Skip the call if source is empty — nothing to translate.
+          if (!state.pageDetail.blueprint || !state.pageDetail.blueprint.trim()) {
+            toast('Blueprint is empty — nothing to translate yet', 'err');
+            state.blueprintLang = 'en';
+            render();
+            return;
+          }
+          try {
+            const r = await api('POST', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/blueprint/translate', { lang: 'bn' });
+            state.blueprintBn = r.translated || '';
+            render();
+          } catch (e) {
+            toast(e.message, 'err');
+            state.blueprintLang = 'en';
+            render();
+          }
+        } else {
+          render();
+        }
+      };
+    });
+
+    if (refreshBtn) {
+      refreshBtn.onclick = async () => {
+        try {
+          const fresh = await api('GET', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id);
+          state.pageDetail = fresh;
+          render();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    }
     if (saveBtn) {
       saveBtn.onclick = async () => {
         try {
           await api('PATCH', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id, { blueprint: ta.value });
           state.pageDetail.blueprint = ta.value;
+          // English changed — invalidate any cached BN translation client-side too.
+          state.blueprintBn = '';
           if (savedFlag) {
             savedFlag.classList.add('visible');
             setTimeout(() => savedFlag.classList.remove('visible'), 2000);
@@ -600,11 +1188,9 @@
         try {
           const r = await api('POST', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/blueprint/generate');
           if (r && r.draft) {
-            // If the box already has content, append the AI draft so the
-            // user's existing notes aren't destroyed. Otherwise just set.
             const cur = ta.value.trim();
             ta.value = cur ? (cur + '\n\n— AI draft —\n' + r.draft) : r.draft;
-            toast('AI draft generated', 'ok');
+            toast('AI draft generated — click Save to keep it', 'ok');
           }
         } catch (e) { toast(e.message, 'err'); }
         aiBtn.disabled = false;

@@ -911,6 +911,40 @@ async function init() {
       updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_app_page_functions_page ON app_page_functions (page_id, position)`,
+    // Pin annotations dropped directly on the page preview. x_pct / y_pct
+    // are 0-100 % of the iframe's rendered size so pins survive resize.
+    // type narrows the icon + colour: question (blue), issue (amber),
+    // broken (red), note (grey). status flips when the thread is resolved.
+    `CREATE TABLE IF NOT EXISTS app_page_annotations (
+      id SERIAL PRIMARY KEY,
+      page_id INTEGER NOT NULL REFERENCES app_pages(id) ON DELETE CASCADE,
+      x_pct REAL NOT NULL DEFAULT 0,
+      y_pct REAL NOT NULL DEFAULT 0,
+      type TEXT NOT NULL DEFAULT 'question',
+      text TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open',
+      author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      author_name TEXT NOT NULL DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_page_annotations_page ON app_page_annotations (page_id, id)`,
+    // Manager-authored todos that the developer ticks off. Distinct from
+    // app_page_functions (which tracks behaviour status with a 4-state
+    // chip); this is a plain checkbox list of "things to do on this page".
+    `CREATE TABLE IF NOT EXISTS app_page_todos (
+      id SERIAL PRIMARY KEY,
+      page_id INTEGER NOT NULL REFERENCES app_pages(id) ON DELETE CASCADE,
+      text TEXT NOT NULL DEFAULT '',
+      done INTEGER NOT NULL DEFAULT 0,
+      done_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      done_at TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_page_todos_page ON app_page_todos (page_id, position)`,
   ];
 
   for (const sql of tables) {
@@ -921,6 +955,11 @@ async function init() {
   // objects ({color,width,points:[[x,y],…]}). Added via safeAlter so it
   // lands cleanly on existing installs without re-creating the spaces table.
   await safeAlter("ALTER TABLE spaces ADD COLUMN whiteboard_strokes TEXT DEFAULT '[]'");
+
+  // Apps: cached Bengali translation of the blueprint. Cleared on every
+  // English edit so the cache never drifts from the source. Added via
+  // safeAlter so existing installs pick it up without recreating the table.
+  await safeAlter("ALTER TABLE app_pages ADD COLUMN blueprint_bn TEXT DEFAULT ''");
 
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
