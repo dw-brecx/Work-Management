@@ -1,0 +1,213 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Apps — design-to-dev handoff UI
+   Standalone styles for /apps.html. Mirrors the lab/cool aesthetic of
+   the main SPA shell (deep blue gradient sidebar, light content area)
+   without importing any of its CSS so this page stays self-contained.
+   ────────────────────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#f4f7fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#1f2a37}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer;border:none;background:none}
+
+.ap-boot{display:flex;align-items:center;justify-content:center;height:100vh;color:#64748b;font-size:14px}
+
+#ap-app{height:100vh;display:flex;flex-direction:column}
+
+/* ── Topbar ──────────────────────────────────────────────────────────── */
+.ap-topbar{height:56px;background:#fff;border-bottom:1px solid #e3ebf3;display:flex;align-items:center;gap:12px;padding:0 18px;flex-shrink:0}
+.ap-topbar .ap-back{display:inline-flex;align-items:center;gap:6px;color:#475569;font-size:13px;padding:7px 11px;border-radius:8px;transition:background .15s}
+.ap-topbar .ap-back:hover{background:#eef2f8}
+.ap-topbar h1{font-size:16px;font-weight:600;color:#0f172a;margin:0}
+.ap-topbar .ap-crumb{color:#94a3b8;font-size:13px}
+.ap-topbar .ap-spacer{flex:1}
+.ap-topbar .ap-me{font-size:12px;color:#64748b;padding:6px 10px;background:#f1f5f9;border-radius:7px}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:500;transition:all .15s;border:1px solid transparent}
+.btn-primary{background:#2563eb;color:#fff}
+.btn-primary:hover{background:#1d4ed8}
+.btn-secondary{background:#fff;color:#334155;border-color:#dbe5ef}
+.btn-secondary:hover{background:#f1f5f9;border-color:#c8d4e3}
+.btn-ghost{background:transparent;color:#64748b}
+.btn-ghost:hover{background:#eef2f8;color:#1e293b}
+.btn-danger{background:#fff;color:#dc2626;border-color:#fecaca}
+.btn-danger:hover{background:#fef2f2}
+.btn-small{padding:5px 10px;font-size:12px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* ── Content area ────────────────────────────────────────────────────── */
+.ap-main{flex:1;overflow:auto;padding:24px 28px 60px}
+
+/* ── List view (cards) ───────────────────────────────────────────────── */
+.ap-list-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.ap-list-header h2{font-size:22px;font-weight:600;color:#0f172a}
+.ap-list-header p{color:#64748b;font-size:13px;margin-top:4px}
+.ap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.ap-card{background:#fff;border:1px solid #e3ebf3;border-radius:12px;padding:0;overflow:hidden;cursor:pointer;transition:all .18s}
+.ap-card:hover{transform:translateY(-2px);box-shadow:0 12px 32px rgba(15,23,42,.08);border-color:#c8d4e3}
+.ap-card-cover{height:60px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:600;letter-spacing:.5px}
+.ap-card-body{padding:14px 16px 16px}
+.ap-card-title{font-size:15px;font-weight:600;color:#0f172a;margin-bottom:5px;line-height:1.3}
+.ap-card-desc{color:#64748b;font-size:12.5px;line-height:1.45;min-height:34px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ap-card-meta{margin-top:11px;display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:#94a3b8}
+.ap-card-meta-chip{display:inline-flex;align-items:center;gap:4px;background:#f1f5f9;padding:3px 8px;border-radius:6px;color:#475569;font-weight:500}
+.ap-card-empty{grid-column:1/-1;background:#fff;border:1px dashed #cbd5e1;border-radius:12px;padding:48px 24px;text-align:center;color:#64748b}
+.ap-card-empty h3{font-size:16px;color:#334155;margin-bottom:6px;font-weight:600}
+
+.ap-status-pill{display:inline-block;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;padding:3px 8px;border-radius:6px;font-weight:600}
+.ap-status-design{background:#fef3c7;color:#92400e}
+.ap-status-dev{background:#dbeafe;color:#1e40af}
+.ap-status-review{background:#ede9fe;color:#5b21b6}
+.ap-status-live{background:#d1fae5;color:#065f46}
+.ap-status-archived{background:#e2e8f0;color:#475569}
+
+/* ── Detail view (two-pane) ──────────────────────────────────────────── */
+.ap-detail{display:grid;grid-template-columns:300px 1fr;gap:22px;height:100%}
+.ap-sidebar{background:#fff;border:1px solid #e3ebf3;border-radius:12px;padding:0;display:flex;flex-direction:column;overflow:hidden}
+.ap-sidebar-head{padding:18px 16px 14px;border-bottom:1px solid #eef2f8}
+.ap-sidebar-head h3{font-size:15px;font-weight:600;color:#0f172a;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.ap-color-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.ap-sidebar-head p{font-size:11.5px;color:#64748b;line-height:1.4}
+.ap-assignees{padding:12px 16px;border-bottom:1px solid #eef2f8;display:flex;flex-direction:column;gap:8px}
+.ap-assignee-row{display:flex;align-items:center;justify-content:space-between;font-size:12px}
+.ap-assignee-role{color:#64748b;font-weight:500;text-transform:uppercase;font-size:10.5px;letter-spacing:.4px}
+.ap-assignee-name{color:#1f2a37;font-weight:500}
+.ap-assignee-name.unassigned{color:#94a3b8;font-style:italic;font-weight:400}
+.ap-pages-list{flex:1;overflow:auto;padding:8px 8px}
+.ap-pages-list-head{display:flex;align-items:center;justify-content:space-between;padding:6px 10px 10px}
+.ap-pages-list-head h4{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:#94a3b8;font-weight:600}
+.ap-page-item{padding:10px 12px;border-radius:8px;cursor:pointer;display:flex;align-items:flex-start;gap:9px;margin-bottom:2px;transition:background .15s}
+.ap-page-item:hover{background:#f1f5f9}
+.ap-page-item.active{background:#e0ecff}
+.ap-page-item-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0}
+.ap-page-item-dot.pending{background:#cbd5e1}
+.ap-page-item-dot.in_review{background:#a78bfa}
+.ap-page-item-dot.working{background:#22c55e}
+.ap-page-item-dot.broken{background:#ef4444}
+.ap-page-item-dot.done{background:#0ea5e9}
+.ap-page-item-text{flex:1;min-width:0}
+.ap-page-item-title{font-size:12.5px;font-weight:500;color:#1e293b;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+.ap-page-item-meta{font-size:10.5px;color:#94a3b8;margin-top:2px}
+.ap-add-page-btn{margin:8px;padding:10px;border:1.5px dashed #cbd5e1;border-radius:8px;color:#64748b;font-size:12.5px;text-align:center;cursor:pointer;transition:all .15s}
+.ap-add-page-btn:hover{border-color:#94a3b8;color:#334155;background:#f8fafc}
+
+/* ── Page detail (right pane) ────────────────────────────────────────── */
+.ap-page-pane{background:#fff;border:1px solid #e3ebf3;border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.ap-page-head{padding:18px 22px;border-bottom:1px solid #eef2f8;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ap-page-title-input{font-size:18px;font-weight:600;color:#0f172a;border:none;outline:none;background:transparent;flex:1;min-width:200px;padding:4px 0}
+.ap-page-title-input:focus{border-bottom:2px solid #2563eb}
+.ap-page-status-select{padding:6px 10px;border:1px solid #dbe5ef;border-radius:7px;font-size:12px;background:#fff;color:#334155;cursor:pointer}
+.ap-tabs{display:flex;gap:0;padding:0 22px;border-bottom:1px solid #eef2f8;background:#f8fafc}
+.ap-tab{padding:11px 14px;font-size:13px;color:#64748b;border-bottom:2px solid transparent;cursor:pointer;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.ap-tab:hover{color:#1e293b}
+.ap-tab.active{color:#2563eb;border-bottom-color:#2563eb}
+.ap-tab-count{background:#e2e8f0;color:#475569;padding:1px 7px;border-radius:9px;font-size:10.5px;font-weight:600}
+.ap-tab.active .ap-tab-count{background:#dbeafe;color:#1e40af}
+.ap-tab-body{flex:1;overflow:auto;padding:22px 24px}
+
+/* ── Preview tab ─────────────────────────────────────────────────────── */
+.ap-preview-frame{width:100%;height:100%;min-height:500px;border:1px solid #e3ebf3;border-radius:8px;background:#fff}
+.ap-preview-wrap{height:calc(100vh - 270px);min-height:400px}
+.ap-preview-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:12px;color:#64748b}
+
+/* ── Blueprint tab ───────────────────────────────────────────────────── */
+.ap-blueprint-wrap{max-width:780px}
+.ap-blueprint-label{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.ap-blueprint-label h3{font-size:14px;font-weight:600;color:#0f172a}
+.ap-blueprint-label p{font-size:12px;color:#64748b;margin-top:3px}
+.ap-blueprint-textarea{width:100%;min-height:280px;padding:14px 16px;border:1px solid #dbe5ef;border-radius:8px;font-size:13.5px;color:#1f2a37;font-family:inherit;line-height:1.6;resize:vertical;outline:none}
+.ap-blueprint-textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.ap-blueprint-actions{display:flex;gap:8px;margin-top:12px;align-items:center}
+.ap-blueprint-saved{font-size:12px;color:#16a34a;opacity:0;transition:opacity .3s}
+.ap-blueprint-saved.visible{opacity:1}
+
+/* ── Comments / Q&A tab ──────────────────────────────────────────────── */
+.ap-qa-wrap{max-width:760px}
+.ap-qa-empty{text-align:center;color:#94a3b8;padding:32px 20px;font-size:13px}
+.ap-comment{background:#f8fafc;border:1px solid #eef2f8;border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.ap-comment.resolved{opacity:.6;background:#f0fdf4;border-color:#bbf7d0}
+.ap-comment-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.ap-comment-author{font-weight:600;font-size:12.5px;color:#1e293b}
+.ap-comment-time{font-size:11px;color:#94a3b8}
+.ap-comment-actions{margin-left:auto;display:flex;gap:4px}
+.ap-comment-action-btn{font-size:11px;padding:3px 8px;border-radius:5px;color:#64748b;cursor:pointer}
+.ap-comment-action-btn:hover{background:#e2e8f0;color:#1e293b}
+.ap-comment-action-btn.resolve-btn{color:#16a34a}
+.ap-comment-body{font-size:13px;color:#1f2a37;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ap-comment-replies{margin-top:8px;margin-left:16px;padding-left:14px;border-left:2px solid #e2e8f0}
+.ap-qa-composer{margin-top:18px;padding-top:18px;border-top:1px solid #eef2f8}
+.ap-qa-composer textarea{width:100%;min-height:80px;padding:11px 13px;border:1px solid #dbe5ef;border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;outline:none}
+.ap-qa-composer textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.ap-qa-composer-actions{display:flex;justify-content:flex-end;margin-top:8px;gap:8px}
+
+/* ── Functions tab ───────────────────────────────────────────────────── */
+.ap-fn-wrap{max-width:780px}
+.ap-fn-summary{padding:13px 15px;background:#f8fafc;border:1px solid #eef2f8;border-radius:9px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;font-size:12.5px;color:#475569}
+.ap-fn-progress{flex:1;height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin:0 14px}
+.ap-fn-progress-bar{height:100%;background:#22c55e;transition:width .3s}
+.ap-fn-row{display:flex;align-items:center;gap:11px;padding:11px 13px;background:#fff;border:1px solid #eef2f8;border-radius:8px;margin-bottom:6px}
+.ap-fn-row:hover{border-color:#dbe5ef}
+.ap-fn-status-chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:4px 9px;border-radius:6px;cursor:pointer;font-weight:500;border:1px solid transparent}
+.ap-fn-status-chip.pending{background:#f1f5f9;color:#475569}
+.ap-fn-status-chip.working{background:#dcfce7;color:#166534}
+.ap-fn-status-chip.broken{background:#fee2e2;color:#991b1b}
+.ap-fn-status-chip.na{background:#e0e7ff;color:#3730a3}
+.ap-fn-title{flex:1;font-size:13.5px;color:#1e293b;min-width:0}
+.ap-fn-title-input{background:transparent;border:none;outline:none;width:100%;font-size:13.5px;color:#1e293b;font-family:inherit;padding:2px 0}
+.ap-fn-title-input:focus{border-bottom:1px solid #2563eb}
+.ap-fn-delete{font-size:11px;color:#94a3b8;cursor:pointer;padding:4px 8px;border-radius:5px}
+.ap-fn-delete:hover{background:#fee2e2;color:#dc2626}
+.ap-fn-add-form{display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid #eef2f8}
+.ap-fn-add-form input{flex:1;padding:9px 12px;border:1px solid #dbe5ef;border-radius:7px;font-size:13px;outline:none;font-family:inherit}
+.ap-fn-add-form input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+
+/* ── Modal ───────────────────────────────────────────────────────────── */
+.ap-modal-back{position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;z-index:100;backdrop-filter:blur(2px)}
+.ap-modal{background:#fff;border-radius:14px;padding:0;width:540px;max-width:calc(100vw - 40px);max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(15,23,42,.3)}
+.ap-modal-head{padding:18px 22px;border-bottom:1px solid #eef2f8;display:flex;align-items:center;justify-content:space-between}
+.ap-modal-head h3{font-size:16px;font-weight:600;color:#0f172a}
+.ap-modal-close{font-size:22px;color:#94a3b8;cursor:pointer;line-height:1;padding:0 6px}
+.ap-modal-close:hover{color:#1e293b}
+.ap-modal-body{padding:20px 22px;overflow:auto;flex:1}
+.ap-modal-foot{padding:14px 22px;border-top:1px solid #eef2f8;display:flex;justify-content:flex-end;gap:8px;background:#f8fafc}
+
+.ap-field{margin-bottom:14px}
+.ap-field label{display:block;font-size:12px;color:#475569;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+.ap-field input,.ap-field select,.ap-field textarea{width:100%;padding:9px 12px;border:1px solid #dbe5ef;border-radius:7px;font-size:13px;color:#1f2a37;font-family:inherit;outline:none;background:#fff}
+.ap-field input:focus,.ap-field select:focus,.ap-field textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.ap-field textarea{resize:vertical;min-height:80px}
+.ap-field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ap-color-swatches{display:flex;gap:7px;flex-wrap:wrap}
+.ap-color-swatch{width:26px;height:26px;border-radius:6px;cursor:pointer;border:2px solid transparent;transition:transform .12s}
+.ap-color-swatch:hover{transform:scale(1.1)}
+.ap-color-swatch.active{border-color:#0f172a}
+
+/* ── Add page modal: tabs ────────────────────────────────────────────── */
+.ap-source-tabs{display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid #eef2f8}
+.ap-source-tab{padding:9px 14px;font-size:13px;color:#64748b;border-bottom:2px solid transparent;cursor:pointer;font-weight:500}
+.ap-source-tab:hover{color:#1e293b}
+.ap-source-tab.active{color:#2563eb;border-bottom-color:#2563eb}
+.ap-file-drop{border:2px dashed #cbd5e1;border-radius:10px;padding:32px 20px;text-align:center;color:#64748b;cursor:pointer;transition:all .18s;background:#f8fafc}
+.ap-file-drop:hover,.ap-file-drop.drag{border-color:#2563eb;background:#eff6ff;color:#1e40af}
+.ap-file-drop strong{display:block;font-size:14px;color:#1e293b;margin-bottom:5px;font-weight:600}
+.ap-file-drop .ap-file-hint{font-size:12px;margin-top:6px}
+.ap-file-list{margin-top:12px;max-height:240px;overflow:auto}
+.ap-file-row{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f1f5f9;border-radius:7px;margin-bottom:5px;font-size:12.5px}
+.ap-file-row .ap-file-name{color:#1e293b;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ap-file-row .ap-file-status{font-size:11px;color:#64748b;margin-left:10px}
+.ap-file-row.ok .ap-file-status{color:#16a34a}
+.ap-file-row.err .ap-file-status{color:#dc2626}
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+#ap-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:#0f172a;color:#fff;padding:11px 18px;border-radius:9px;font-size:13px;z-index:200;opacity:0;transition:all .3s;pointer-events:none}
+#ap-toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+#ap-toast.err{background:#dc2626}
+#ap-toast.ok{background:#16a34a}
+
+@media (max-width:900px){
+  .ap-detail{grid-template-columns:1fr;gap:16px;height:auto}
+  .ap-sidebar{max-height:380px}
+  .ap-main{padding:16px}
+  .ap-preview-wrap{height:60vh}
+  .ap-field-row{grid-template-columns:1fr}
+}

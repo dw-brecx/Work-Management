@@ -7140,6 +7140,12 @@ app.locals.chatAutoJoinGeneral = chatAutoJoinGeneral;
 // /api/spaces/public/:token endpoint used by the public share viewer.
 require('./routes/spaces')(app, { get, all, run, requireAuth });
 
+// ── Apps (design-to-dev handoff for Claude-built apps) ──────────────────────
+// Lives in routes/apps.js and is served on /apps.html (standalone page
+// outside the SPA shell). Reads ANTHROPIC_API_KEY directly from env for
+// the optional blueprint-generation endpoint.
+require('./routes/apps')(app, { get, all, run, requireAuth });
+
 // ── Flavors v2 ────────────────────────────────────────────────────────────────
 // Guided flavor-launch wizard + linked-ticket pipeline. Lives in routes/flavors.js
 // and is served on /flavors.html (standalone page outside the SPA shell).
