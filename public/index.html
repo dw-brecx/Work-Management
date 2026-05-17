@@ -4547,18 +4547,23 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <table class="tbl" id="dash-ticket-table"></table>
       </div>
 
-      <!-- Bottom row (Admin only — Team Workload + Recent Activity both
-           pull data across every ticket in the workspace, including ones
-           a Manager isn't on. Manager keeps every other admin power but
-           loses these cross-workspace views, same as the tickets list). -->
-      <div class="admin-strict-only">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          <!-- Team workload -->
-          <div class="card">
+      <!-- Bottom row.
+           Team Workload is workspace-wide assignee load → Admin only.
+           Recent Activity is shown to admin/manager, but server-side
+           the timeline returned is filtered to tickets the caller can
+           access — a Manager sees activity on their own tickets, not
+           the whole workspace. The wrapper grid stays a single grid for
+           Admin (two cards) and collapses to one column for Manager
+           since Team Workload is hidden. -->
+      <div class="admin-only">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="dash-bottom-grid">
+          <!-- Team workload (Admin only) -->
+          <div class="card admin-strict-only">
             <div style="font-size:13px;font-weight:500;margin-bottom:14px">Team Workload</div>
             <div id="workload-list"></div>
           </div>
-          <!-- Activity -->
+          <!-- Activity (Admin sees all; Manager sees only activity on
+               tickets they can access — the server enforces both cases). -->
           <div class="card">
             <div style="font-size:13px;font-weight:500;margin-bottom:14px">Recent Activity</div>
             <div class="timeline" id="dash-activity"></div>
@@ -7681,10 +7686,16 @@ function initDashboard() {
     }
   }
 
-  // Ticket table — show 5 most recent (TICKETS_DATA.unshift puts new ones first)
+  // Ticket table — 5 most recent of the user's scoped list. Using
+  // visibleTickets() keeps this consistent with the Status Overview donut:
+  // a Manager (or admin in "Mine" mode) sees only tickets they're directly
+  // involved in, not every workspace ticket — including the ones where
+  // they're only a mention-watcher, which would otherwise leak in via
+  // TICKETS_DATA.
   const tbody = document.getElementById('dash-ticket-table');
   tbody.innerHTML = `<thead><tr style="background:var(--bg2)"><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">ID</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Title</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Assignee</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Priority</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Status</th><th style="padding:8px 10px;font-size:10px;font-weight:500;color:var(--text3)">Due</th></tr></thead>`;
-  const rows = TICKETS_DATA.slice(0,5).map(t => `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="openTicketDetail('${escapeAttr(t.id)}')"><td style="padding:8px 10px;font-size:11px;color:var(--accent)">${escapeHtml(t.id)}</td><td style="padding:8px 10px;font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.title)}</td><td style="padding:8px 10px">${miniAvatar(t.assignee)}</td><td style="padding:8px 10px">${priorityBadge(t.priority)}</td><td style="padding:8px 10px">${statusBadge(t.status)}</td><td style="padding:8px 10px;font-size:11px;color:${t.overdue?'var(--red)':'var(--text3)'}">${escapeHtml(t.due || '')}</td></tr>`).join('');
+  const scopedForRecent = (typeof visibleTickets === 'function') ? visibleTickets() : TICKETS_DATA;
+  const rows = scopedForRecent.slice(0,5).map(t => `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="openTicketDetail('${escapeAttr(t.id)}')"><td style="padding:8px 10px;font-size:11px;color:var(--accent)">${escapeHtml(t.id)}</td><td style="padding:8px 10px;font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.title)}</td><td style="padding:8px 10px">${miniAvatar(t.assignee)}</td><td style="padding:8px 10px">${priorityBadge(t.priority)}</td><td style="padding:8px 10px">${statusBadge(t.status)}</td><td style="padding:8px 10px;font-size:11px;color:${t.overdue?'var(--red)':'var(--text3)'}">${escapeHtml(t.due || '')}</td></tr>`).join('');
   tbody.innerHTML += `<tbody>${rows}</tbody>`;
 
   // Workload
@@ -20514,12 +20525,16 @@ initApp();
         el.style.display = isAdmin ? '' : 'none';
       });
       // .admin-strict-only is for surfaces that expose data across every
-      // ticket in the workspace (Team Workload, Recent Activity feed,
-      // the Mine/All scope toggle). Manager would see info about
-      // tickets they can't open, so these hide for Manager — Admin only.
+      // ticket in the workspace (Team Workload card, the Mine/All scope
+      // toggle). Manager would see info about tickets they can't open,
+      // so these hide for Manager — Admin only.
       document.querySelectorAll('.admin-strict-only').forEach(function(el) {
         el.style.display = isStrictAdmin ? '' : 'none';
       });
+      // When Team Workload hides (Manager view), let Recent Activity span
+      // the row so we don't leave dead whitespace on the right.
+      var bottomGrid = document.getElementById('dash-bottom-grid');
+      if (bottomGrid) bottomGrid.style.gridTemplateColumns = isStrictAdmin ? '1fr 1fr' : '1fr';
       // Scope toggle on /tickets is admin-strict too. Kept the explicit
       // by-id handling so future renames don't silently break it.
       var scopeWrap = document.getElementById('admin-scope-wrap');

@@ -4242,20 +4242,48 @@ app.put('/api/notifications/:id/read', requireAuth, async (req, res) => {
 // ── Activity feed ─────────────────────────────────────────────────────────────
 app.get('/api/activity', requireAuth, async (req, res) => {
   try {
-    // Workspace-wide activity is Admin-only. Manager could see timeline
-    // entries from tickets they can't open via the main list, so we
-    // return an empty list for them — the UI hides the card anyway,
-    // this is defense in depth against a direct API call.
     const u = await getUser(req.session.userId);
-    if (!u || u.perm_role !== 'Admin') return res.json([]);
-    // Skip activity tied to soft-deleted tickets
-    const rows = await all(`
-      SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
-             t.title as ticket_title
-      FROM ticket_timelines tt
-      JOIN tickets t ON t.id = tt.ticket_id AND t.deleted_at IS NULL
-      ORDER BY tt.created_at DESC LIMIT 20
-    `);
+    if (!u) return res.json([]);
+    // Admin sees workspace-wide activity. Manager (and Member, though
+    // the dashboard card itself is admin/manager-gated) sees activity
+    // only on tickets they can access — assignee / reporter / requester
+    // / creator / mention-watcher. Same predicate as the member SELECT
+    // in /api/tickets so the two surfaces line up.
+    const isAdmin = u.perm_role === 'Admin';
+    let rows;
+    if (isAdmin) {
+      rows = await all(`
+        SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
+               t.title as ticket_title
+          FROM ticket_timelines tt
+          JOIN tickets t ON t.id = tt.ticket_id AND t.deleted_at IS NULL
+         ORDER BY tt.created_at DESC LIMIT 20
+      `);
+    } else {
+      rows = await all(`
+        SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
+               t.title as ticket_title
+          FROM ticket_timelines tt
+          JOIN tickets t ON t.id = tt.ticket_id AND t.deleted_at IS NULL
+         WHERE (t.assignee_user_id = ?
+                OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+                OR EXISTS (
+                     SELECT 1 FROM ticket_assignees ta
+                      WHERE ta.ticket_id = t.id
+                        AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+                   )
+                OR t.reporter_user_id = ?
+                OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+                OR t.req_user_id = ?
+                OR (t.req_user_id IS NULL AND t.req = ?)
+                OR t.created_by = ?
+                OR EXISTS (
+                     SELECT 1 FROM ticket_watchers tw
+                      WHERE tw.ticket_id = t.id AND tw.user_id = ?
+                   ))
+         ORDER BY tt.created_at DESC LIMIT 20
+      `, u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.id);
+    }
     res.json(rows.map(r => ({
       id: r.id, ticketId: r.ticket_id, ticketTitle: r.ticket_title || '',
       text: r.text, dot: r.dot, timeAgo: timeAgo(r.created_at)
