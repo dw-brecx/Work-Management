@@ -861,6 +861,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
   /* Selected row styling */
   #tickets-tbody tr.selected td{background:rgba(0,72,116,.06)}
+  /* Swipe-to-reveal action panels are mobile-only — the row template
+     emits them but desktop hides them as table cells. The mobile @media
+     block below re-shows + positions them absolutely. */
+  #tickets-tbody td.swipe-actions{display:none}
   .cmt-count-cell{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text3);font-weight:500;padding:3px 8px;border-radius:999px;background:transparent}
   .cmt-count-cell.has{color:var(--accent);background:rgba(0,72,116,.07)}
 
@@ -3483,10 +3487,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
          Hide thead. Each <tr> becomes a flexbox grid; per-cell `order`
          + display:none on the columns that aren't useful on a phone
          keeps the layout legible without changing renderTickets() JS. */
-      #tickets-tbody { display: block !important; width: 100% !important; }
+      /* Tbody clips the off-screen swipe action panels until a row is
+         swiped, so they only become visible when the user reveals them. */
+      #tickets-tbody { display: block !important; width: 100% !important; overflow: hidden !important; }
       #tickets-tbody tr {
         display: grid !important;
-        grid-template-columns: minmax(0, auto) minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+        grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
         grid-template-rows: auto auto auto;
         gap: 4px 10px;
         align-items: center;
@@ -3499,21 +3505,24 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         border: 1px solid rgba(0,0,0,.06) !important;
         box-shadow: 0 1px 3px rgba(0,0,0,.05) !important;
         box-sizing: border-box;
+        position: relative;
+        transform: translateX(var(--swipe-x, 0));
+        transition: transform .26s cubic-bezier(.22,.61,.36,1);
+        touch-action: pan-y;
       }
+      #tickets-tbody tr.swiping { transition: none !important; }
       #tickets-tbody tr:hover td,
       #tickets-tbody tr.selected td { background: transparent !important; }
-      #tickets-tbody tr.selected {
-        background: #eef4ff !important;
-        box-shadow: inset 3px 0 0 #0a78b3, 0 1px 3px rgba(0,0,0,.05) !important;
-      }
       #tickets-tbody tr.unread {
         background: #eef2ff !important;
         box-shadow: inset 3px 0 0 #4f46e5, 0 1px 3px rgba(0,0,0,.05) !important;
       }
       /* Hide the table header AND the columns that aren't useful on mobile.
          Order: checkbox(1) ID(2) Title(3) Status(4) Priority(5) Assignee(6)
-         Requester(7) Dept(8) Created(9) Due(10) Comments(11) Actions(12). */
+         Requester(7) Dept(8) Created(9) Due(10) Comments(11) Actions(12).
+         The swipe action panels are 13 + 14. */
       #page-tickets .tbl thead { display: none !important; }
+      #tickets-tbody td:nth-child(1),  /* checkbox — hidden, swipe replaces bulk-select */
       #tickets-tbody td:nth-child(7),  /* requester */
       #tickets-tbody td:nth-child(8),  /* department */
       #tickets-tbody td:nth-child(9),  /* created */
@@ -3525,29 +3534,19 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         background: transparent !important;
         max-width: none !important;
       }
-      /* Checkbox stays visible on mobile so bulk actions (Mark read, Close
-         etc.) are reachable from the same UI. Larger tap target than the
-         default browser size. */
-      #tickets-tbody td:nth-child(1) {
-        grid-row: 1; grid-column: 1;
-        display: flex !important; align-items: center; justify-content: center;
-      }
-      #tickets-tbody td:nth-child(1) input[type="checkbox"] {
-        width: 18px; height: 18px;
-      }
       #tickets-tbody td:nth-child(2) { /* ID */
-        grid-row: 1; grid-column: 2;
+        grid-row: 1; grid-column: 1;
         font-size: 11px !important; color: var(--accent) !important; font-weight: 700;
       }
       #tickets-tbody td:nth-child(4) { /* Status */
-        grid-row: 1; grid-column: 3;
+        grid-row: 1; grid-column: 2;
         justify-self: start;
       }
       #tickets-tbody td:nth-child(12) { /* Actions (⋯) */
-        grid-row: 1; grid-column: 4;
+        grid-row: 1; grid-column: 3;
       }
       #tickets-tbody td:nth-child(3) { /* Title — wraps under id+status */
-        grid-row: 2; grid-column: 1 / span 4;
+        grid-row: 2; grid-column: 1 / span 3;
         font-size: 14px !important; font-weight: 500;
         line-height: 1.4 !important;
         white-space: normal !important;
@@ -3560,9 +3559,53 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         grid-row: 3;
         font-size: 11.5px !important;
       }
-      #tickets-tbody td:nth-child(5) { grid-column: 1 / span 2; }
-      #tickets-tbody td:nth-child(6) { grid-column: 3; }
-      #tickets-tbody td:nth-child(10) { grid-column: 4; justify-self: end; color: var(--text2) !important; }
+      #tickets-tbody td:nth-child(5) { grid-column: 1; }
+      #tickets-tbody td:nth-child(6) { grid-column: 2; }
+      #tickets-tbody td:nth-child(10) { grid-column: 3; justify-self: end; color: var(--text2) !important; }
+      /* Swipe-to-reveal action panels. Two TD cells appended at the end
+         of every row template. Position absolute, sitting *outside* the
+         row's bounding box on either side — when the row translates, they
+         move with it INTO view. Clipped by #tickets-tbody overflow:hidden
+         until that translation happens. */
+      #tickets-tbody td.swipe-actions {
+        position: absolute !important;
+        top: 0; bottom: 0;
+        display: flex !important;
+        align-items: stretch;
+        z-index: 0;
+        gap: 0;
+      }
+      #tickets-tbody td.swipe-actions.left  { left: -160px;  width: 160px; }
+      #tickets-tbody td.swipe-actions.right { right: -160px; width: 160px; }
+      #tickets-tbody td.swipe-actions button {
+        flex: 1 1 0;
+        border: 0; margin: 0; padding: 0;
+        font-family: inherit;
+        color: #fff;
+        font-size: 11px; font-weight: 700;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        gap: 4px;
+        cursor: pointer;
+        line-height: 1.2;
+      }
+      #tickets-tbody td.swipe-actions button svg { width: 18px; height: 18px; }
+      /* Left panel — constructive actions. Border-radius matches the card. */
+      #tickets-tbody td.swipe-actions.left {
+        border-top-left-radius: 14px;
+        border-bottom-left-radius: 14px;
+        overflow: hidden;
+      }
+      #tickets-tbody td.swipe-actions.left .swipe-btn-read   { background: #4f46e5; }
+      #tickets-tbody td.swipe-actions.left .swipe-btn-remind { background: #d97706; }
+      /* Right panel — destructive-ish actions. */
+      #tickets-tbody td.swipe-actions.right {
+        border-top-right-radius: 14px;
+        border-bottom-right-radius: 14px;
+        overflow: hidden;
+      }
+      #tickets-tbody td.swipe-actions.right .swipe-btn-close  { background: #16a34a; }
+      #tickets-tbody td.swipe-actions.right .swipe-btn-delete { background: #dc2626; }
 
       /* Pagination row: center + larger taps. */
       #page-tickets .card > div[style*="padding-top:12px"] {
@@ -7888,6 +7931,157 @@ function bulkClose() {
   openModal('close-ticket');
 }
 
+// ── Mobile swipe-to-reveal actions on ticket rows ────────────────────────────
+// Touch-only iOS-style swipe. The renderTickets template emits two
+// position:absolute action panels on every <tr> (left + right, off-screen
+// by default). When the user swipes, we translate the row via --swipe-x
+// so the panels slide into view from underneath the bounding box.
+(function setupTicketSwipe() {
+  const REVEAL = 160;          // total panel width in px
+  const THRESHOLD = 50;        // how far the user must drag to commit
+  const DECIDE_PX = 8;         // movement before we decide horizontal vs vertical
+  let openRow = null;          // currently-revealed row (only one at a time)
+  let active = null;           // { row, startX, startY, dx, axis }
+
+  function ready(fn) {
+    if (document.readyState !== 'loading') fn();
+    else document.addEventListener('DOMContentLoaded', fn);
+  }
+  function getRow(target) {
+    const tr = target && target.closest && target.closest('#tickets-tbody tr');
+    if (!tr || tr.querySelector('.swipe-actions') === null) return null;
+    return tr;
+  }
+  function closeRow(row) {
+    if (!row) return;
+    row.classList.remove('swiping');
+    row.style.removeProperty('--swipe-x');
+    if (openRow === row) openRow = null;
+  }
+  function setSwipe(row, px) {
+    row.style.setProperty('--swipe-x', px + 'px');
+  }
+
+  ready(() => {
+    const tbody = document.getElementById('tickets-tbody');
+    if (!tbody) return;
+
+    tbody.addEventListener('touchstart', (e) => {
+      // Don't start a swipe when the touch begins on an action button
+      // inside the panel — that's a tap on the action itself.
+      if (e.target.closest('.swipe-actions button')) return;
+      const row = getRow(e.target);
+      if (!row) return;
+      // Close any other row first so two never sit open.
+      if (openRow && openRow !== row) closeRow(openRow);
+      const t = e.touches[0];
+      active = { row, startX: t.clientX, startY: t.clientY, dx: 0, axis: null };
+    }, { passive: true });
+
+    tbody.addEventListener('touchmove', (e) => {
+      if (!active) return;
+      const t = e.touches[0];
+      const dx = t.clientX - active.startX;
+      const dy = t.clientY - active.startY;
+      if (!active.axis) {
+        if (Math.abs(dx) < DECIDE_PX && Math.abs(dy) < DECIDE_PX) return;
+        active.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+        if (active.axis === 'x') {
+          active.row.classList.add('swiping');
+        } else {
+          // Vertical scroll wins — drop the gesture.
+          active = null;
+          return;
+        }
+      }
+      if (active.axis === 'x') {
+        e.preventDefault();
+        // Resistance past the reveal limit so it can't run off forever.
+        let clamped = dx;
+        if (clamped >  REVEAL) clamped =  REVEAL + (dx - REVEAL) * 0.25;
+        if (clamped < -REVEAL) clamped = -REVEAL + (dx + REVEAL) * 0.25;
+        active.dx = clamped;
+        setSwipe(active.row, clamped);
+      }
+    }, { passive: false });
+
+    tbody.addEventListener('touchend', () => {
+      if (!active) return;
+      const { row, dx, axis } = active;
+      active = null;
+      if (axis !== 'x') { row.classList.remove('swiping'); return; }
+      row.classList.remove('swiping');
+      if (dx >  THRESHOLD) { setSwipe(row,  REVEAL); openRow = row; }
+      else if (dx < -THRESHOLD) { setSwipe(row, -REVEAL); openRow = row; }
+      else { row.style.removeProperty('--swipe-x'); if (openRow === row) openRow = null; }
+    }, { passive: true });
+
+    // Tap or scroll anywhere outside the open row → snap closed.
+    function dismissIfOutside(ev) {
+      if (!openRow) return;
+      if (openRow.contains(ev.target)) return;
+      closeRow(openRow);
+    }
+    document.addEventListener('touchstart', dismissIfOutside, { passive: true, capture: true });
+    document.addEventListener('scroll', () => { if (openRow) closeRow(openRow); }, { passive: true, capture: true });
+  });
+})();
+
+// Action handlers for the swipe-revealed buttons. Mirror the single-
+// ticket variants of the existing bulk actions so behaviour matches.
+async function ticketSwipeAction(ticketId, action) {
+  // Always snap the row closed first so the UI doesn't get stuck.
+  const row = document.querySelector('#tickets-tbody tr[data-tid="' + ticketId.replace(/"/g, '\\"') + '"]');
+  if (row) row.style.removeProperty('--swipe-x');
+  try {
+    switch (action) {
+      case 'mark-read': {
+        const r = await fetch('/api/tickets/bulk-mark-viewed', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [ticketId] }),
+        });
+        if (!r.ok) throw new Error('Request failed');
+        if (Array.isArray(window.TICKETS_DATA)) {
+          const t = TICKETS_DATA.find(x => x.id === ticketId);
+          if (t) t.unread = false;
+        }
+        if (typeof renderTickets === 'function') renderTickets();
+        if (typeof loadDashboardInsights === 'function') loadDashboardInsights();
+        break;
+      }
+      case 'remind': {
+        if (typeof openTicketReminderModal === 'function') openTicketReminderModal([ticketId]);
+        break;
+      }
+      case 'close': {
+        // Route through the existing close-ticket confirmation modal in
+        // bulk mode (kind:'bulk', ids:[one]) so the same comment-on-close
+        // prompt and status mutation logic runs.
+        if (typeof closeModalContext !== 'undefined') {
+          closeModalContext = { kind: 'bulk', ids: [ticketId] };
+        }
+        if (typeof openModal === 'function') openModal('close-ticket');
+        break;
+      }
+      case 'delete': {
+        if (!confirm('Move this ticket to trash? It can be restored from Admin → Trash for 30 days.')) return;
+        const r = await fetch('/api/tickets/' + encodeURIComponent(ticketId), {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (!r.ok) throw new Error('Delete failed');
+        if (Array.isArray(window.TICKETS_DATA)) {
+          window.TICKETS_DATA = TICKETS_DATA.filter(x => x.id !== ticketId);
+        }
+        if (typeof renderTickets === 'function') renderTickets();
+        break;
+      }
+    }
+  } catch (e) {
+    alert('Action failed: ' + e.message);
+  }
+}
+
 function bulkArchive() {
   if (!selectedTicketIds.size) return;
   if (!confirm(`Archive ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'}?`)) return;
@@ -8017,6 +8211,26 @@ function renderTickets() {
                 onclick="event.stopPropagation();openRowActionsMenu(this, '${t.id}')"
                 onmouseenter="this.style.background='#f1f5f9'" onmouseleave="this.style.background=''"
                 title="More actions">⋯</button></td>
+    <td class="swipe-actions left" onclick="event.stopPropagation()">
+      <button class="swipe-btn-read" onclick="event.stopPropagation();ticketSwipeAction('${t.id}','mark-read')" title="Mark read">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Read
+      </button>
+      <button class="swipe-btn-remind" onclick="event.stopPropagation();ticketSwipeAction('${t.id}','remind')" title="Remind me">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        Remind
+      </button>
+    </td>
+    <td class="swipe-actions right" onclick="event.stopPropagation()">
+      <button class="swipe-btn-close" onclick="event.stopPropagation();ticketSwipeAction('${t.id}','close')" title="Close ticket">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 11 12 14 16 9"/></svg>
+        Close
+      </button>
+      <button class="swipe-btn-delete" onclick="event.stopPropagation();ticketSwipeAction('${t.id}','delete')" title="Move to trash">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>
+        Delete
+      </button>
+    </td>
   </tr>`;
   }).join('');
   const cnt = document.getElementById('tkt-count');

@@ -1684,6 +1684,21 @@ app.post('/api/tickets/:id/request-update', requireAuth, requireTicketAccess, as
 // can carry voice notes / screen recordings / files (attachments table,
 // reminder_id column). Privacy: ALL routes filter by user_id = current user.
 // No admin override — these are personal notes, not workspace data.
+// Returns a Date that is `n` business days before now (UTC). Walks
+// backwards one calendar day at a time, decrementing the counter only
+// on weekdays (Mon–Fri). Used by the dashboard's "stale" cutoff so
+// tickets aren't flagged as stale just because a weekend passed.
+function nBusinessDaysAgo(n) {
+  const d = new Date();
+  let remaining = n;
+  while (remaining > 0) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const dow = d.getUTCDay(); // 0 = Sun, 6 = Sat
+    if (dow !== 0 && dow !== 6) remaining--;
+  }
+  return d;
+}
+
 function _normalizeDueAt(raw) {
   // Accept ISO datetime, 'YYYY-MM-DD HH:MM' (browser datetime-local), or
   // 'YYYY-MM-DD' (date-only, treated as 09:00 UTC). Returns a UTC string in
@@ -4197,11 +4212,11 @@ app.get('/api/dashboard/stats', requireAuth, async (req, res) => {
   try {
     const u = await getUser(req.session.userId);
     if (!u) return res.status(401).json({ error: 'Not signed in' });
-    // Cutoff for "stale" — anything older than 2 days from now (UTC).
-    // Stored timestamps are TO_CHAR'd 'YYYY-MM-DD HH24:MI:SS' UTC text;
-    // lexicographic compare with another such string works correctly.
-    const cutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
-      .toISOString().replace('T', ' ').slice(0, 19);
+    // Cutoff for "stale" — anything older than 2 BUSINESS days from now
+    // (UTC, weekends skipped). Stored timestamps are TO_CHAR'd
+    // 'YYYY-MM-DD HH24:MI:SS' UTC text; lexicographic compare with
+    // another such string works correctly.
+    const cutoff = nBusinessDaysAgo(2).toISOString().replace('T', ' ').slice(0, 19);
     // Shared "user is involved" filter — same shape as /api/tickets list.
     const involvementSql = `(
       t.assignee_user_id = ?
