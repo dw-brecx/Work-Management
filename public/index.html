@@ -5401,19 +5401,22 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     </div>
 
     <!-- ========== SNOOZE TICKET MODAL ========== -->
-    <div id="modal-snooze" class="modal" style="display:none">
-      <div class="modal-overlay" onclick="closeSnoozeModal()"></div>
-      <div class="modal-content" style="max-width:440px;padding:24px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <h2 style="font-size:16px;font-weight:600;margin:0">Snooze ticket</h2>
-          <button onclick="closeSnoozeModal()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0;line-height:1">×</button>
+    <!-- Pattern A overlay (outer = .modal-overlay with the dim + center logic,
+         inner = .modal card). openModal('snooze') / closeModal('snooze')
+         add/remove .open to make the overlay show. -->
+    <div id="modal-snooze" class="modal-overlay" onclick="if(event.target===this)closeSnoozeModal()">
+      <div class="modal" style="width:460px">
+        <div class="modal-header">
+          <span class="modal-title">Snooze ticket</span>
+          <button class="modal-close" onclick="closeSnoozeModal()">×</button>
         </div>
         <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.5">
-          The ticket disappears from your main list until the snooze ends, then returns automatically.
-          Max 7 days. The requester is notified and still sees it in their list with a "Snoozed until" pill.
+          The ticket disappears from your main list until it wakes up, then comes back automatically.
+          Max 7 days. The requester is notified and keeps seeing it in their list with a "Snoozed until" pill.
         </p>
-        <div id="snooze-preset-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
-        <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Custom wake-up time</label>
+        <div style="font-size:11px;color:var(--text3);font-weight:600;margin-bottom:6px">Quick picks</div>
+        <div id="snooze-preset-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <label style="font-size:11px;color:var(--text3);font-weight:600;display:block;margin-bottom:4px">Or pick a custom date &amp; time</label>
         <input id="snooze-until-input" type="datetime-local" style="width:100%;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px"/>
         <div id="snooze-error" style="display:none;color:var(--red);font-size:11.5px;margin-top:8px"></div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
@@ -8191,14 +8194,14 @@ function openSnoozeModal(ticketId) {
   }
   const err = document.getElementById('snooze-error');
   if (err) { err.textContent = ''; err.style.display = 'none'; }
+  // Pattern A overlay: openModal() toggles .open on .modal-overlay, which
+  // flips it to display:flex and reveals the centered .modal card inside.
   if (typeof openModal === 'function') openModal('snooze');
-  else { const m = document.getElementById('modal-snooze'); if (m) m.style.display = 'flex'; }
 }
 
 function closeSnoozeModal() {
   _snoozeTargetId = null;
   if (typeof closeModal === 'function') closeModal('snooze');
-  else { const m = document.getElementById('modal-snooze'); if (m) m.style.display = 'none'; }
 }
 
 async function submitSnooze() {
