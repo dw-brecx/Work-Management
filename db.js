@@ -835,6 +835,82 @@ async function init() {
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_space_chat_messages_space ON space_chat_messages (space_id, id)`,
+    // ── Apps (design-to-dev handoff for Claude-built apps) ───────────────
+    // Tracks an app project from design (HTML files pasted/uploaded by the
+    // designer) through dev handoff (manager + developer review each page,
+    // ask questions in a per-page Q&A thread, and tick off a functionality
+    // checklist before going live). Access is restricted to the three
+    // assignees + creator + admins — page-level Q&A intentionally lives
+    // outside the main ticket system so design noise doesn't drown work.
+    `CREATE TABLE IF NOT EXISTS apps (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'design',
+      cover_color TEXT NOT NULL DEFAULT '#3b82f6',
+      designer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      manager_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      developer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      repo_url TEXT NOT NULL DEFAULT '',
+      deploy_url TEXT NOT NULL DEFAULT '',
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      deleted_at TEXT,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_apps_created_by ON apps (created_by)`,
+    `CREATE INDEX IF NOT EXISTS idx_apps_designer ON apps (designer_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_apps_manager ON apps (manager_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_apps_developer ON apps (developer_id)`,
+    // One row per HTML page of an app. html_content is the full HTML body
+    // pasted or uploaded by the designer — served back via a sandboxed
+    // /preview endpoint so the developer can see the design without
+    // navigating away. blueprint is the human-written (optionally
+    // AI-assisted) one-paragraph description of what the page does.
+    `CREATE TABLE IF NOT EXISTS app_pages (
+      id SERIAL PRIMARY KEY,
+      app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+      name TEXT NOT NULL DEFAULT '',
+      file_name TEXT NOT NULL DEFAULT '',
+      html_content TEXT NOT NULL DEFAULT '',
+      blueprint TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_pages_app ON app_pages (app_id, position)`,
+    // Per-page Q&A thread. Anyone with access to the app (designer, manager,
+    // developer, creator, admin) can post; threading via parent_id mirrors
+    // ticket_comments. resolved flips when a thread is acknowledged.
+    `CREATE TABLE IF NOT EXISTS app_page_comments (
+      id SERIAL PRIMARY KEY,
+      page_id INTEGER NOT NULL REFERENCES app_pages(id) ON DELETE CASCADE,
+      parent_id INTEGER REFERENCES app_page_comments(id) ON DELETE CASCADE,
+      author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      author_name TEXT NOT NULL DEFAULT '',
+      text TEXT NOT NULL DEFAULT '',
+      resolved INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_page_comments_page ON app_page_comments (page_id, id)`,
+    // Per-page function checklist. Developer (or designer) lists each piece
+    // of behaviour that needs to work on the live page, and ticks status as
+    // they verify. Drives the "ready to ship" signal on the app row.
+    `CREATE TABLE IF NOT EXISTS app_page_functions (
+      id SERIAL PRIMARY KEY,
+      page_id INTEGER NOT NULL REFERENCES app_pages(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      position INTEGER NOT NULL DEFAULT 0,
+      assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_app_page_functions_page ON app_page_functions (page_id, position)`,
   ];
 
   for (const sql of tables) {
