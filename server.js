@@ -2243,16 +2243,30 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       if (parent) safeParentId = parent.id;
     }
 
-    // Auto-mention the requester when the commenter didn't explicitly
-    // @-mention anyone in the workspace. Keeps the requester in the
-    // notification loop on every reply, even when people forget to type
-    // @them. We append "@<requesterName>" to the saved text so the
-    // mention chip renders in the UI exactly like a manual @-mention,
-    // and the existing mention-fan-out further below picks them up
-    // through the same code path.
+    // Auto-mention when the commenter didn't explicitly @-mention anyone
+    // in the workspace. Who we mention depends on context:
+    //   - reply (parent comment present)  → the parent comment's author
+    //   - top-level comment               → the ticket's requester
+    // The mention chip is prepended to the saved text so it reads like
+    // an explicit "@Name —" reply, and the existing mention-fan-out
+    // further below picks the target up through the same code path
+    // (notification, email, push, slack DM, ticket_watcher row).
     let commentText = text.trim();
-    const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
-    if (tkt && tkt.req_user_id && tkt.req_user_id !== u.id) {
+    let autoMentionUserId = null;
+    let tkt = null;
+    if (safeParentId) {
+      const parent = await get(
+        `SELECT COALESCE(tc.author_user_id,
+                         (SELECT id FROM users WHERE name = tc.author ORDER BY id ASC LIMIT 1)) AS author_id
+           FROM ticket_comments tc WHERE tc.id = ?`,
+        safeParentId
+      );
+      if (parent && parent.author_id) autoMentionUserId = parent.author_id;
+    } else {
+      tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+      if (tkt && tkt.req_user_id) autoMentionUserId = tkt.req_user_id;
+    }
+    if (autoMentionUserId && autoMentionUserId !== u.id) {
       const rawCaptures = (commentText.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
       let alreadyMentions = false;
       for (const captured of rawCaptures) {
@@ -2266,12 +2280,15 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         if (alreadyMentions) break;
       }
       if (!alreadyMentions) {
-        const requesterName = await nameForUserId(tkt.req_user_id, '');
-        if (requesterName) {
-          commentText = commentText + (commentText.endsWith(' ') ? '' : ' ') + '@' + requesterName;
+        const targetName = await nameForUserId(autoMentionUserId, '');
+        if (targetName) {
+          commentText = '@' + targetName + (commentText ? ' ' + commentText : '');
         }
       }
     }
+    // Ensure tkt is loaded for the fan-out logic below (we may have only
+    // queried for the parent comment above).
+    if (!tkt) tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
 
     const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_user_id,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
       req.params.id, u.name, u.id, init, bg, col, commentText, safeParentId);
