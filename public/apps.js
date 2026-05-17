@@ -1455,48 +1455,68 @@
 
   // Convert the current pen drawing into a PNG that *includes* a snapshot
   // of the iframe behind the strokes, then drop into the new-pin flow
-  // with the snippet pre-attached. Pen mode exits afterwards. The design
-  // capture goes through snapshotIframe; if that fails (rare HTML feature
-  // SVG/foreignObject can't render, cross-origin asset, etc.) we fall
-  // back to strokes-only and warn the user.
+  // with the snippet pre-attached. Pen mode exits afterwards.
+  //
+  // Two things go wrong often enough that we handle them defensively:
+  //   1. snapshotIframe fails — most commonly because the design has
+  //      cross-origin assets or a CSS feature SVG/foreignObject can't
+  //      render. We just fall back to strokes-only.
+  //   2. The composite canvas is *tainted* by drawing the SVG image —
+  //      some browsers (Safari especially) flag the canvas as cross-
+  //      origin even for same-origin SVG with HTML inside. In that
+  //      case `composed.toBlob` returns null, so we re-try with the
+  //      pen canvas alone (which is never tainted).
+  //
+  // The button is always reset on any failure path so it can't get
+  // stuck on "Capturing…".
   async function savePenSnippet(canvas, displayW, displayH) {
     if (state.penStrokes.length === 0) { toast('Draw something first', 'err'); return; }
-
     const saveBtn = document.getElementById('ap-pen-save');
-    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Capturing…'; }
+    const setBtnState = (text, disabled) => {
+      if (saveBtn) { saveBtn.disabled = disabled; saveBtn.textContent = text; }
+    };
+    setBtnState('Capturing…', true);
 
-    let finalCanvas = canvas;
     try {
-      const iframe = root.querySelector('.ap-preview-frame');
-      if (iframe) {
-        const bg = await snapshotIframe(iframe);
-        // Compose: design first, strokes on top, both sized to canvas px.
-        const composed = document.createElement('canvas');
-        composed.width = canvas.width;
-        composed.height = canvas.height;
-        const ctx = composed.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, composed.width, composed.height);
-        ctx.drawImage(bg, 0, 0, composed.width, composed.height);
-        ctx.drawImage(canvas, 0, 0, composed.width, composed.height);
-        finalCanvas = composed;
+      // First try: composite the design behind the strokes.
+      let blob = null;
+      try {
+        const iframe = root.querySelector('.ap-preview-frame');
+        if (iframe) {
+          const bg = await snapshotIframe(iframe);
+          const composed = document.createElement('canvas');
+          composed.width = canvas.width;
+          composed.height = canvas.height;
+          const ctx = composed.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, composed.width, composed.height);
+          ctx.drawImage(bg, 0, 0, composed.width, composed.height);
+          ctx.drawImage(canvas, 0, 0, composed.width, composed.height);
+          blob = await canvasToBlob(composed);
+        }
+      } catch (e) {
+        console.warn('[apps] composite snapshot failed:', e && e.message);
       }
-    } catch (e) {
-      console.warn('[apps] snippet bg capture failed:', e);
-      toast('Could not capture the design background — saved strokes only', 'err');
-    }
 
-    finalCanvas.toBlob((blob) => {
-      if (!blob) { toast('Snippet save failed', 'err'); return; }
-      // Centroid of all stroke points (in % of the on-screen canvas).
+      // Fallback: strokes-only. Pen canvas is never tainted, so this
+      // should always succeed.
+      if (!blob) {
+        try {
+          blob = await canvasToBlob(canvas);
+          toast('Design background couldn\'t be captured — saved strokes only', 'err');
+        } catch (e) {
+          throw new Error('Could not create snippet image: ' + (e && e.message || 'unknown'));
+        }
+      }
+
+      // Centroid of strokes (% of on-screen canvas) → pin position.
       let sx = 0, sy = 0, n = 0;
       for (const stroke of state.penStrokes) {
-        for (const p of stroke.points) {
-          sx += p.x; sy += p.y; n++;
-        }
+        for (const p of stroke.points) { sx += p.x; sy += p.y; n++; }
       }
       const cx = n > 0 ? (sx / n) / displayW * 100 : 50;
       const cy = n > 0 ? (sy / n) / displayH * 100 : 50;
+
       const file = new File([blob], 'snippet-' + Date.now() + '.png', { type: 'image/png' });
       state.pendingPin = { x_pct: cx, y_pct: cy };
       state.pendingAttachments.push({
@@ -1505,8 +1525,28 @@
       });
       state.penMode = false;
       state.penStrokes = [];
+      // render() replaces the pen controls with the new-pin popup —
+      // no need to manually reset the button text on this success path.
       render();
-    }, 'image/png');
+    } catch (e) {
+      console.warn('[apps] snippet save error:', e);
+      toast('Snippet save failed: ' + (e && e.message || 'unknown'), 'err');
+      setBtnState('💾 Save snippet', false);
+    }
+  }
+
+  // Promise wrapper around canvas.toBlob. Rejects when the underlying
+  // call returns null (typically a tainted canvas) so the caller can
+  // fall back to a different source instead of hanging.
+  function canvasToBlob(canvas, type) {
+    return new Promise((resolve, reject) => {
+      try {
+        canvas.toBlob((b) => {
+          if (b) resolve(b);
+          else reject(new Error('Canvas export blocked (tainted by cross-origin content)'));
+        }, type || 'image/png');
+      } catch (e) { reject(e); }
+    });
   }
 
   // Capture the iframe's current rendered content into a canvas.
@@ -1545,6 +1585,11 @@
     // viewport (w × h) shows the same region as the visible iframe.
     // Cloning lets us mutate without disturbing the live document.
     const root = doc.documentElement.cloneNode(true);
+    // Scripts don't run inside the SVG snapshot anyway (data/blob URL
+    // context). Strip them up-front: arbitrary JS contents are a common
+    // source of XML-serialisation failures, since unescaped <, >, & in
+    // script bodies turn into malformed markup.
+    root.querySelectorAll('script').forEach(s => s.remove());
     let head = root.querySelector('head');
     if (!head) { head = doc.createElement('head'); root.insertBefore(head, root.firstChild); }
     const styleEl = doc.createElement('style');
