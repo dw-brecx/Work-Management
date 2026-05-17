@@ -159,6 +159,7 @@ const {
   sendTicketReminderEmail,
   sendPersonalReminderEmail,
   sendUpdateRequestedEmail,
+  sendBulkUpdateRequestedEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
 } = require('./email');
@@ -706,6 +707,33 @@ async function resolveUserIdByName(name) {
   return u ? u.id : null;
 }
 
+// Persist a workspace-wide activity row on the timeline. Surfaces in:
+//   - dashboard Recent Activity (/api/activity, scoped per viewer)
+//   - the ticket-detail Timeline tab (/api/tickets/:id/timeline)
+// Helpers below pick a sensible color dot for each kind of event so the
+// feed reads at a glance. Failures are logged and swallowed — a timeline
+// row is auxiliary signal, never the canonical data.
+async function writeTimeline(ticketId, dot, text) {
+  if (!ticketId || !text) return;
+  try {
+    await run(
+      'INSERT INTO ticket_timelines (ticket_id,dot,text,sub) VALUES (?,?,?,?)',
+      ticketId, dot || 'var(--accent)', String(text).slice(0, 500), 'Just now'
+    );
+  } catch (e) { console.warn('[timeline] insert failed:', e.message); }
+}
+const TL = {
+  create:   'var(--green)',
+  status:   'var(--yellow)',
+  assign:   'var(--accent)',
+  priority: 'var(--accent2)',
+  comment:  'var(--accent)',
+  snooze:   '#4f46e5',
+  close:    'var(--green)',
+  reopen:   'var(--accent)',
+  delete:   'var(--red)',
+};
+
 // Derive the *current* display name for a user.id (so a profile rename
 // reflects everywhere automatically). Falls back to the stored name string
 // when no user_id is set (legacy data) or when the user was deleted.
@@ -972,14 +1000,15 @@ app.post('/api/tickets/:id/snooze', requireAuth, requireTicketAccess, async (req
       `UPDATE tickets SET snoozed_until=?, snoozed_by=?, snoozed_at=? WHERE id=?`,
       wakeUtc, req.session.userId, nowUtc, id
     );
+    const snoozer = await getUser(req.session.userId);
+    const niceDate = wake.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+    writeTimeline(id, TL.snooze, `${snoozer?.name || 'Someone'} snoozed until ${niceDate}`);
     // Notify the requester (unless they snoozed it themselves).
     if (ticket.req_user_id && ticket.req_user_id !== req.session.userId) {
-      const me = await getUser(req.session.userId);
-      const niceDate = wake.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
       await run(
         'INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
         ticket.req_user_id, 'snoozed', '💤',
-        `${me?.name || 'Someone'} snoozed "${ticket.title}" until ${niceDate}`,
+        `${snoozer?.name || 'Someone'} snoozed "${ticket.title}" until ${niceDate}`,
         id
       );
     }
@@ -995,6 +1024,8 @@ app.post('/api/tickets/:id/unsnooze', requireAuth, requireTicketAccess, async (r
   try {
     const id = req.params.id;
     await run('UPDATE tickets SET snoozed_until=NULL, snoozed_by=NULL, snoozed_at=NULL WHERE id=?', id);
+    const actor = (await getUser(req.session.userId))?.name || 'Someone';
+    writeTimeline(id, TL.snooze, `${actor} unsnoozed the ticket`);
     const fresh = await buildTicket(await get('SELECT * FROM tickets WHERE id=?', id));
     res.json(fresh);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -1402,6 +1433,7 @@ app.post('/api/tickets', requireAuth, async (req, res) => {
       }
     }
     const creator = await getUser(req.session.userId);
+    writeTimeline(id, TL.create, `Ticket created by ${creator?.name || 'someone'}${assignee ? ` · assigned to ${assignee}` : ''}`);
     for (const a of (assignees||[])) {
       const target = await get('SELECT id,name,email FROM users WHERE name=?', a);
       if (target && target.id !== req.session.userId) {
@@ -1506,6 +1538,33 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
       u.push('close_reason=?'); v.push(null);
     }
     if (u.length) { v.push(req.params.id); await run(`UPDATE tickets SET ${u.join(',')} WHERE id=?`, ...v); }
+
+    // Persist meaningful changes to the timeline so they surface in the
+    // dashboard Recent Activity feed + the ticket-detail Timeline tab.
+    // Fire-and-forget — we do NOT block the PUT response on these writes.
+    {
+      const actor = (await getUser(req.session.userId))?.name || 'someone';
+      if (status !== undefined && status !== oldStatus) {
+        const dot = status === 'Closed' ? TL.close
+                  : (oldStatus === 'Closed' ? TL.reopen : TL.status);
+        const verb = status === 'Closed' ? 'closed'
+                   : (oldStatus === 'Closed' ? 'reopened' : `changed status to ${status}`);
+        writeTimeline(req.params.id, dot,
+          oldStatus === 'Closed' && status !== 'Closed'
+            ? `${actor} reopened the ticket`
+            : `${actor} ${verb}${status !== 'Closed' && oldStatus !== 'Closed' ? ` (was ${oldStatus})` : ''}`);
+      }
+      if (assignee !== undefined && assignee !== exists.assignee) {
+        writeTimeline(req.params.id, TL.assign,
+          assignee
+            ? `${actor} ${exists.assignee ? `reassigned to ${assignee} (was ${exists.assignee})` : `assigned to ${assignee}`}`
+            : `${actor} unassigned the ticket`);
+      }
+      if (priority !== undefined && priority !== exists.priority) {
+        writeTimeline(req.params.id, TL.priority,
+          `${actor} changed priority to ${priority}${exists.priority ? ` (was ${exists.priority})` : ''}`);
+      }
+    }
 
     // Flavor-launch pipeline hook: when a flavor pipeline ticket transitions
     // to Closed, let routes/flavors.js decide whether to spawn a follow-up
@@ -2293,6 +2352,7 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
     const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_user_id,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
       req.params.id, u.name, u.id, init, bg, col, commentText, safeParentId);
     await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
+    writeTimeline(req.params.id, TL.comment, `${u.name} commented${safeParentId ? ' (reply)' : ''}`);
 
     // ── All comment fan-out (mentions, reply, watchers) runs in the
     //    background so the POST returns immediately. Sequential awaits
@@ -5904,6 +5964,245 @@ app.post(
     }
   }
 );
+
+// ── Admin Reports ────────────────────────────────────────────────────────────
+// Per-user performance summary + drill-down by user + bulk
+// "request update" email. All three are Admin-only because they expose
+// data across every workspace user.
+
+function requireStrictAdmin(req, res, next) {
+  if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
+  getUser(req.session.userId).then(u => {
+    if (!u || u.perm_role !== 'Admin') return res.status(403).json({ error: 'Admin only' });
+    next();
+  }).catch(next);
+}
+
+// Parse optional period filters into UTC text bounds. Accepts:
+//   - ?from=YYYY-MM-DD&to=YYYY-MM-DD  (inclusive window)
+//   - or no params → null bounds (all-time)
+function _periodBounds(req) {
+  const fromQ = String(req.query.from || '').trim();
+  const toQ   = String(req.query.to   || '').trim();
+  const fmt = (s, endOfDay) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    return s + (endOfDay ? ' 23:59:59' : ' 00:00:00');
+  };
+  return { from: fmt(fromQ, false), to: fmt(toQ, true) };
+}
+
+// GET /api/reports/user-performance?from=&to=
+// One row per workspace user with the headline metrics. Counts are
+// scoped to active (non-deleted) tickets; "closed in period" is
+// stamped via tickets.closed_at.
+app.get('/api/reports/user-performance', requireStrictAdmin, async (req, res) => {
+  try {
+    const { from, to } = _periodBounds(req);
+    const users = await all('SELECT id, name, email, role, dept, avatar_url, perm_role FROM users ORDER BY LOWER(name) ASC');
+    if (!users.length) return res.json([]);
+    const ids = users.map(u => u.id);
+    const ph = ids.map(() => '?').join(',');
+
+    // Open tickets per user (primary or additional assignee, not closed/archived/deleted)
+    const openRows = await all(`
+      SELECT u.id AS user_id, COUNT(DISTINCT t.id) AS cnt
+        FROM users u
+        LEFT JOIN tickets t ON t.deleted_at IS NULL
+          AND t.status NOT IN ('Closed','Archived')
+          AND (t.assignee_user_id = u.id
+               OR (t.assignee_user_id IS NULL AND t.assignee = u.name)
+               OR EXISTS (SELECT 1 FROM ticket_assignees ta
+                            WHERE ta.ticket_id = t.id
+                              AND (ta.user_id = u.id OR (ta.user_id IS NULL AND ta.user_name = u.name))))
+       WHERE u.id IN (${ph})
+       GROUP BY u.id`, ...ids);
+    const open = new Map(openRows.map(r => [r.user_id, parseInt(r.cnt, 10)]));
+
+    // Overdue subset of the above
+    const overdueRows = await all(`
+      SELECT u.id AS user_id, COUNT(DISTINCT t.id) AS cnt
+        FROM users u
+        LEFT JOIN tickets t ON t.deleted_at IS NULL
+          AND t.status NOT IN ('Closed','Archived')
+          AND t.overdue = 1
+          AND (t.assignee_user_id = u.id
+               OR (t.assignee_user_id IS NULL AND t.assignee = u.name)
+               OR EXISTS (SELECT 1 FROM ticket_assignees ta
+                            WHERE ta.ticket_id = t.id
+                              AND (ta.user_id = u.id OR (ta.user_id IS NULL AND ta.user_name = u.name))))
+       WHERE u.id IN (${ph})
+       GROUP BY u.id`, ...ids);
+    const overdue = new Map(overdueRows.map(r => [r.user_id, parseInt(r.cnt, 10)]));
+
+    // Closed-in-period count + average days-to-close (when both created_at + closed_at are present)
+    const periodWhere = (from && to)
+      ? `AND t.closed_at >= ? AND t.closed_at <= ?`
+      : (from ? `AND t.closed_at >= ?` : (to ? `AND t.closed_at <= ?` : ''));
+    const periodArgs = [from, to].filter(Boolean);
+    const closedRows = await all(`
+      SELECT u.id AS user_id,
+             COUNT(DISTINCT t.id) AS cnt,
+             AVG(
+               CASE WHEN t.created_at IS NOT NULL AND t.closed_at IS NOT NULL
+                    THEN EXTRACT(EPOCH FROM (
+                          TO_TIMESTAMP(t.closed_at,  'YYYY-MM-DD HH24:MI:SS')
+                        - TO_TIMESTAMP(t.created_at, 'YYYY-MM-DD HH24:MI:SS')
+                        )) / 86400.0
+                    ELSE NULL END) AS avg_days
+        FROM users u
+        LEFT JOIN tickets t ON t.deleted_at IS NULL
+          AND t.status = 'Closed'
+          AND t.closed_at IS NOT NULL
+          ${periodWhere}
+          AND (t.assignee_user_id = u.id
+               OR (t.assignee_user_id IS NULL AND t.assignee = u.name)
+               OR EXISTS (SELECT 1 FROM ticket_assignees ta
+                            WHERE ta.ticket_id = t.id
+                              AND (ta.user_id = u.id OR (ta.user_id IS NULL AND ta.user_name = u.name))))
+       WHERE u.id IN (${ph})
+       GROUP BY u.id`, ...periodArgs, ...ids);
+    const closed = new Map(closedRows.map(r => [r.user_id, parseInt(r.cnt, 10)]));
+    const avgDays = new Map(closedRows.map(r => [r.user_id, r.avg_days != null ? Number(r.avg_days) : null]));
+
+    // Comments authored in period
+    const commentsRows = await all(`
+      SELECT COALESCE(c.author_user_id, (SELECT id FROM users WHERE name=c.author ORDER BY id ASC LIMIT 1)) AS user_id,
+             COUNT(*) AS cnt,
+             MAX(c.created_at) AS last_at
+        FROM ticket_comments c
+       WHERE 1=1
+         ${from ? `AND c.created_at >= ?` : ''}
+         ${to   ? `AND c.created_at <= ?` : ''}
+       GROUP BY user_id`,
+      ...[from, to].filter(Boolean));
+    const comments = new Map();
+    const lastActiveByComment = new Map();
+    for (const r of commentsRows) {
+      if (r.user_id != null) {
+        comments.set(r.user_id, parseInt(r.cnt, 10));
+        lastActiveByComment.set(r.user_id, r.last_at || null);
+      }
+    }
+
+    const out = users.map(u => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: u.role || '',
+      dept: u.dept || '',
+      avatarUrl: u.avatar_url || '',
+      permRole: u.perm_role || 'Member',
+      openTickets:    open.get(u.id)    || 0,
+      overdueTickets: overdue.get(u.id) || 0,
+      closedInPeriod: closed.get(u.id)  || 0,
+      avgDaysToClose: avgDays.get(u.id) != null ? Math.round(avgDays.get(u.id) * 10) / 10 : null,
+      commentsInPeriod: comments.get(u.id) || 0,
+      lastActiveAt:   lastActiveByComment.get(u.id) || null,
+    }));
+    res.json(out);
+  } catch (e) {
+    console.error('[reports:user-performance] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/reports/user/:id/tickets?from=&to=
+// Every ticket the user touched in the period: assigned to them (primary
+// or additional), reporter on, requester on, OR created. Each row
+// carries enough for the drawer to render without a second fetch.
+app.get('/api/reports/user/:id/tickets', requireStrictAdmin, async (req, res) => {
+  try {
+    const uid = Number(req.params.id);
+    const target = await get('SELECT id, name FROM users WHERE id=?', uid);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    const { from, to } = _periodBounds(req);
+    // "Touched in period" is a slightly fuzzy thing — we use ticket
+    // created_at as the floor; closed_at <= to for closed tickets. A
+    // user might have updated an old ticket in the period; we surface
+    // those via comments later if needed. For now keep it simple and
+    // fast: any active relationship to the user, optionally filtered by
+    // the created/closed window if either bound is set.
+    const periodClause = (from && to)
+      ? `AND ((t.created_at >= ? AND t.created_at <= ?)
+              OR (t.closed_at IS NOT NULL AND t.closed_at >= ? AND t.closed_at <= ?))`
+      : '';
+    const args = (from && to) ? [from, to, from, to] : [];
+    const rows = await all(`
+      SELECT t.* FROM tickets t
+       WHERE t.deleted_at IS NULL
+         AND (t.assignee_user_id = ?
+              OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+              OR EXISTS (
+                   SELECT 1 FROM ticket_assignees ta
+                    WHERE ta.ticket_id = t.id
+                      AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))
+                 )
+              OR t.reporter_user_id = ?
+              OR (t.reporter_user_id IS NULL AND t.reporter = ?)
+              OR t.req_user_id = ?
+              OR (t.req_user_id IS NULL AND t.req = ?)
+              OR t.created_by = ?)
+         ${periodClause}
+       ORDER BY t.id DESC`,
+      target.id, target.name, target.id, target.name,
+      target.id, target.name, target.id, target.name, target.id,
+      ...args
+    );
+    const tickets = await Promise.all((rows || []).map(buildTicket));
+    res.json(tickets);
+  } catch (e) {
+    console.error('[reports:user-tickets] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/reports/user/:id/request-update
+// Body: { ticketIds: [...], note: '' }
+// Sends a single email to the target user with the full list of selected
+// tickets + an optional note. Also drops a timeline row on each ticket
+// so the audit trail shows the request was made.
+app.post('/api/reports/user/:id/request-update', requireStrictAdmin, async (req, res) => {
+  try {
+    const uid = Number(req.params.id);
+    const target = await get('SELECT id, name, email FROM users WHERE id=?', uid);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!target.email) return res.status(400).json({ error: 'User has no email on file' });
+    const ids = Array.isArray(req.body?.ticketIds)
+      ? req.body.ticketIds.map(String).filter(Boolean).slice(0, 50)
+      : [];
+    if (!ids.length) return res.status(400).json({ error: 'ticketIds required' });
+    const note = String(req.body?.note || '').trim().slice(0, 2000);
+    const me = await getUser(req.session.userId);
+    const ph = ids.map(() => '?').join(',');
+    const rows = await all(
+      `SELECT id, title, status, priority, due FROM tickets WHERE id IN (${ph}) AND deleted_at IS NULL`,
+      ...ids
+    );
+    if (!rows.length) return res.status(400).json({ error: 'No valid tickets found' });
+    fireEmail('bulk-update-requested', () => sendBulkUpdateRequestedEmail({
+      toEmail: target.email,
+      toName:  target.name,
+      requesterName: me?.name || 'An admin',
+      note,
+      tickets: rows.map(r => ({
+        id: r.id, title: r.title, status: r.status, priority: r.priority, dueAt: r.due,
+      })),
+    }));
+    for (const r of rows) {
+      writeTimeline(r.id, TL.assign, `${me?.name || 'An admin'} requested an update from ${target.name} (via Reports)`);
+      run(
+        'INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        target.id, 'comment', '📩',
+        `${me?.name || 'An admin'} is asking for an update on "${r.title || r.id}"`,
+        r.id
+      ).catch(() => {});
+    }
+    res.json({ ok: true, sentTo: target.email, tickets: rows.length });
+  } catch (e) {
+    console.error('[reports:request-update] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
 // Cross-app API for syncing tickets ↔ Syruvia Lab flavors.

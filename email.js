@@ -1211,6 +1211,62 @@ async function sendPersonalReminderEmail({
 // ─────────────────────────────────────────────────────────────────────────────
 // 20. UPDATE REQUESTED (someone is asking the assignee for a ticket update)
 // ─────────────────────────────────────────────────────────────────────────────
+// Bulk variant — an admin uses Reports → User Performance to select a
+// batch of tickets at once and ask the assignee for updates on all of
+// them in one email. The body lists every selected ticket with a direct
+// link, plus an optional note typed by the admin.
+async function sendBulkUpdateRequestedEmail({
+  toEmail, toName, requesterName, note, tickets,
+}) {
+  if (!toEmail) return { skipped: true };
+  const list = Array.isArray(tickets) ? tickets.filter(Boolean) : [];
+  if (!list.length) return { skipped: true };
+  const subject = `${requesterName || 'Someone'} is asking for an update on ${list.length} ticket${list.length === 1 ? '' : 's'}`;
+  const rows = list.map(t => {
+    const id = String(t.id || '');
+    const title = String(t.title || '');
+    const status = String(t.status || '—');
+    const due = String(t.dueAt || t.due || '');
+    return `
+      <tr>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:12px;vertical-align:top">
+          <a href="${ticketUrl(id)}" style="color:#0a78b3;text-decoration:none;font-weight:600">${escapeHtml(id)}</a>
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:12px;vertical-align:top;color:#334155">
+          ${escapeHtml(title)}
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:11px;vertical-align:top;color:#64748b;white-space:nowrap">
+          ${escapeHtml(status)}${due ? ` · due ${escapeHtml(due)}` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+  const html = shell({
+    name: 'Update requested', subject,
+    preheader: `${requesterName || 'A teammate'} is asking for an update on ${list.length} ticket${list.length === 1 ? '' : 's'}.`,
+    headerEyebrow: 'Update requested',
+    headerEmoji: '📩',
+    headerTitle: `${escapeHtml(requesterName || 'Someone')} is asking for an update`,
+    headerSub: `${list.length} ticket${list.length === 1 ? '' : 's'}`,
+    body:
+      (note
+        ? `<div style="margin:0 0 18px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;color:#1e3a8a;font-size:13px;line-height:1.55;white-space:pre-wrap"><strong style="color:#1d4ed8">Note:</strong> ${escapeHtml(note)}</div>`
+        : '') +
+      `<table cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #e2e8f0;border-radius:10px;border-collapse:separate;border-spacing:0;background:#fff;margin:0 0 18px;overflow:hidden">
+        <thead><tr style="background:#f8fafc">
+          <th align="left" style="padding:9px 12px;font-size:10px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e2e8f0">Ticket</th>
+          <th align="left" style="padding:9px 12px;font-size:10px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e2e8f0">Title</th>
+          <th align="left" style="padding:9px 12px;font-size:10px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e2e8f0">Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">Please open each ticket and post a quick comment with the latest status. The requester will see your replies right in the ticket activity.</p>`,
+    ctaText: 'Open My Tickets',
+    ctaHref: `${APP_URL}/my-tickets`,
+    footerNote: `You're receiving this because you're assigned to the tickets above.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
 async function sendUpdateRequestedEmail({
   toEmail, toName, requesterName, ticketId, title, status, priority, dueAt, dept, note,
 }) {
@@ -1301,6 +1357,7 @@ module.exports = {
   sendTicketReminderEmail,
   sendPersonalReminderEmail,
   sendUpdateRequestedEmail,
+  sendBulkUpdateRequestedEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
   // Account
