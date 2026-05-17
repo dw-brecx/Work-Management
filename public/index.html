@@ -4189,6 +4189,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
       My Reminders <span class="badge" id="nav-reminders-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" data-page="mentioned">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+      Mentioned <span class="badge" id="nav-mentioned-badge" style="display:none"></span>
+    </div>
 
     <!-- ── Plans & Calendar ── -->
     <div class="sb-divider"></div>
@@ -4908,6 +4912,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             Reporting to me
             <span id="mt-count-reporting" class="mt-chip-count">0</span>
           </button>
+          <button id="mt-chip-mentioned" class="mt-chip" onclick="toggleMtScope('mentioned')" title="Tickets where someone @-mentioned you">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></svg>
+            Mentioned
+            <span id="mt-count-mentioned" class="mt-chip-count">0</span>
+          </button>
           <span class="mt-chip-divider"></span>
           <button id="mt-overdue-toggle" class="mt-chip overdue-pill" onclick="toggleOverdueOnly()" title="Show only overdue tickets">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -5366,6 +5375,23 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
       <div id="my-reminders-list" style="display:flex;flex-direction:column;gap:10px;max-width:820px"></div>
       <div id="my-reminders-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">No reminders yet — click "+ New Reminder" to add one.</div>
+    </div>
+
+    <!-- ========== MENTIONED (open tickets I was @-mentioned on) ========== -->
+    <div id="page-mentioned" class="page">
+      <div style="max-width:820px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:4px;flex-wrap:wrap">
+          <h1 style="font-size:20px;font-weight:600;margin:0">Mentioned</h1>
+          <span id="mentioned-pending-callout" style="display:none;font-size:11.5px;font-weight:700;padding:5px 12px;border-radius:999px;background:#fef3c7;color:#92400e">
+            <span id="mentioned-pending-count">0</span> waiting your reply
+          </span>
+        </div>
+        <p style="color:var(--text2);font-size:12px;margin-bottom:14px">Open tickets where someone @-mentioned you. Click any one to jump straight in — you have access even when you're not assigned.</p>
+        <div id="mentioned-list" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div id="mentioned-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">
+          No open mentions. You're all caught up.
+        </div>
+      </div>
     </div>
 
     <!-- ========== NOTIFICATIONS (full-page version of the topbar bell panel) ========== -->
@@ -7169,6 +7195,7 @@ window.PAGE_PATHS = {
   'my-tickets':  '/my-tickets',
   'my-reminders':'/my-reminders',
   'notifications':'/notifications',
+  'mentioned':   '/mentioned',
   'snoozed':     '/snoozed',
   'docs':         '/docs',
   'chat':        '/chat',
@@ -7236,6 +7263,7 @@ function navigate(page, opts) {
       'dashboard': 'Dashboard', 'tickets': 'Tickets', 'my-tickets': 'My Tickets',
       'my-reminders': 'My Reminders',
       'notifications': 'Notifications',
+      'mentioned': 'Mentioned',
       'snoozed': 'Snoozed',
       'docs': 'Docs',
       'chat': 'Chat',
@@ -7255,6 +7283,7 @@ function navigate(page, opts) {
   if (page === 'planning') renderPlans();
   if (page === 'snoozed' && typeof loadSnoozedPage === 'function') loadSnoozedPage();
   if (page === 'notifications' && typeof renderNotifPage === 'function') renderNotifPage();
+  if (page === 'mentioned' && typeof loadMentionedPage === 'function') loadMentionedPage();
   if (page === 'flavors') renderFlavors();
   // Dashboard always defaults to "Mine" — admin's All/Mine toggle resets
   // every time you land on the dashboard. They can still flip it to All
@@ -8411,6 +8440,88 @@ function updateSnoozedBadge() {
   } catch {}
 }
 let _snoozedBadgeCold = true;
+
+// ── Mentioned page (open tickets I was @-mentioned on) ──────────────────────
+let MENTIONED_TICKETS = [];
+let _mentionedBadgeCold = true;
+
+async function loadMentionedPage() {
+  const wrap = document.getElementById('mentioned-list');
+  const empty = document.getElementById('mentioned-empty');
+  if (!wrap) return;
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:10px">Loading…</div>';
+  try {
+    const items = await apiGet('/api/my-mentioned');
+    MENTIONED_TICKETS = Array.isArray(items) ? items : [];
+    renderMentionedList();
+    updateMentionedBadge();
+  } catch (e) {
+    wrap.innerHTML = '<div style="color:#dc2626;font-size:12px;padding:10px">Failed to load: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderMentionedList() {
+  const wrap = document.getElementById('mentioned-list');
+  const empty = document.getElementById('mentioned-empty');
+  const callout = document.getElementById('mentioned-pending-callout');
+  const countEl = document.getElementById('mentioned-pending-count');
+  if (!wrap) return;
+  const pending = MENTIONED_TICKETS.filter(t => t.pendingReply).length;
+  if (callout && countEl) {
+    if (pending > 0) { countEl.textContent = pending; callout.style.display = ''; }
+    else callout.style.display = 'none';
+  }
+  if (!MENTIONED_TICKETS.length) {
+    wrap.innerHTML = '';
+    if (empty) empty.style.display = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  wrap.innerHTML = MENTIONED_TICKETS.map(t => {
+    const due = t.due ? `Due ${escapeHtml(t.due)}` : '';
+    const pendingPill = t.pendingReply
+      ? '<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e">⏳ Waiting your reply</span>'
+      : '';
+    return `
+      <div class="card" style="padding:14px;cursor:pointer" onclick="openTicketDetail('${escapeAttr(t.id)}')">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;color:var(--accent);font-weight:700;margin-bottom:2px">${escapeHtml(t.id)}</div>
+            <div style="font-size:13.5px;font-weight:600;margin-bottom:4px">${escapeHtml(t.title)}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--text2);margin-top:6px">
+              <span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">${escapeHtml(t.status || '')}</span>
+              <span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">Assignee: ${escapeHtml(t.assignee || '—')}</span>
+              ${due ? `<span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">${due}</span>` : ''}
+              ${pendingPill}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateMentionedBadge() {
+  try {
+    const badge = document.getElementById('nav-mentioned-badge');
+    if (!badge) return;
+    const set = (n) => {
+      if (n > 0) { badge.textContent = n > 99 ? '99+' : String(n); badge.style.display = ''; }
+      else       { badge.style.display = 'none'; }
+    };
+    // Badge counts pending replies (the urgent subset), not every open
+    // mentioned ticket — that mirrors what the dashboard's
+    // pendingMentions stat surfaces and matches how the user asked for
+    // it ("a number of tickets waiting my reply").
+    const pending = MENTIONED_TICKETS.filter(t => t.pendingReply).length;
+    if (pending > 0 || _mentionedBadgeCold === false) { set(pending); return; }
+    _mentionedBadgeCold = false;
+    apiGet('/api/my-mentioned').then(items => {
+      MENTIONED_TICKETS = Array.isArray(items) ? items : [];
+      set(MENTIONED_TICKETS.filter(t => t.pendingReply).length);
+    }).catch(() => set(0));
+  } catch {}
+}
 
 function bulkArchive() {
   if (!selectedTicketIds.size) return;
@@ -11588,7 +11699,7 @@ function toggleMtScope(scope) {
   // Single-select: clicking the same chip is a no-op; clicking another swaps
   if (mtScope.has(scope)) return;
   mtScope = new Set([scope]);
-  ['assigned', 'requested', 'reporting'].forEach(s => {
+  ['assigned', 'requested', 'reporting', 'mentioned'].forEach(s => {
     const el = document.getElementById('mt-chip-' + s);
     if (el) el.classList.toggle('active', mtScope.has(s));
   });
@@ -11602,6 +11713,7 @@ function ticketInScope(t, s) {
   if (s === 'assigned')  return getAssignees(t).includes(me);
   if (s === 'requested') return t.req === me;
   if (s === 'reporting') return t.reporter === me;
+  if (s === 'mentioned') return !!t.mentioned;
   return false;
 }
 
@@ -11637,10 +11749,12 @@ function renderKanban() {
   const countAssigned  = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'assigned')).length;
   const countRequested = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'requested')).length;
   const countReporting = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'reporting')).length;
+  const countMentioned = TICKETS_DATA.filter(t => isActive(t) && ticketInScope(t, 'mentioned')).length;
   const setText = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
   setText('mt-count-assigned',  countAssigned);
   setText('mt-count-requested', countRequested);
   setText('mt-count-reporting', countReporting);
+  setText('mt-count-mentioned', countMentioned);
 
   // Build the working set: union of all enabled scopes (no duplicates by id)
   const seen = new Set();
@@ -20183,11 +20297,13 @@ initApp();
     var r = _origRenderTickets2 ? _origRenderTickets2.apply(this, arguments) : undefined;
     updateNavBadge();
     if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge();
+    if (typeof updateMentionedBadge === 'function') updateMentionedBadge();
     return r;
   };
   // Also update after app init loads tickets
   setTimeout(updateNavBadge, 1000);
   setTimeout(function(){ if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge(); }, 1100);
+  setTimeout(function(){ if (typeof updateMentionedBadge === 'function') updateMentionedBadge(); }, 1200);
 
   /* ── Settings: always show profile tab when navigating to settings ── */
   (function patchSettingsNav() {
@@ -20531,6 +20647,7 @@ window.refreshPageData = refreshPageData;
     'my-tickets':  '/my-tickets',
     'my-reminders':'/my-reminders',
     'notifications':'/notifications',
+    'mentioned':   '/mentioned',
     'snoozed':     '/snoozed',
   'docs':         '/docs',
   'chat':        '/chat',

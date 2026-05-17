@@ -396,8 +396,12 @@ async function canAccessTicket(req, ticketId) {
               OR (t.reporter_user_id IS NULL AND t.reporter = ?)
               OR t.req_user_id = ?
               OR (t.req_user_id IS NULL AND t.req = ?)
-              OR t.created_by = ?)`,
-    ticketId, me.id, me.name, me.id, me.name, me.id, me.name, me.id, me.name, me.id
+              OR t.created_by = ?
+              OR EXISTS (
+                   SELECT 1 FROM ticket_watchers tw
+                    WHERE tw.ticket_id = t.id AND tw.user_id = ?
+                 ))`,
+    ticketId, me.id, me.name, me.id, me.name, me.id, me.name, me.id, me.name, me.id, me.id
   );
   return !!t;
 }
@@ -810,7 +814,11 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
                   OR (t.reporter_user_id IS NULL AND t.reporter = ?)
                   OR t.req_user_id = ?
                   OR (t.req_user_id IS NULL AND t.req = ?)
-                  OR t.created_by = ?)
+                  OR t.created_by = ?
+                  OR EXISTS (
+                       SELECT 1 FROM ticket_watchers tw
+                        WHERE tw.ticket_id = t.id AND tw.user_id = ?
+                     ))
              AND (
                    t.snoozed_until IS NULL
                 OR t.snoozed_until <= ?
@@ -818,11 +826,24 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
                 OR (t.req_user_id IS NULL AND t.req = ?)
              )
            ORDER BY t.id DESC`,
-        u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id,
+        u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.name, u.id, u.id,
         nowUtc, u.id, u.name
       );
     }
     const tickets = await Promise.all(rows.map(buildTicket));
+    // Mark which tickets the user is a mention-watcher on. Used by the
+    // "Mentioned" filter chip on /my-tickets and the same-named sidebar
+    // page. One indexed query against ticket_watchers, then a set lookup.
+    if (tickets.length) {
+      const ids = tickets.map(t => t.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const wrows = await all(
+        `SELECT ticket_id FROM ticket_watchers WHERE user_id=? AND ticket_id IN (${placeholders})`,
+        u.id, ...ids
+      );
+      const wset = new Set(wrows.map(r => r.ticket_id));
+      for (const t of tickets) t.mentioned = wset.has(t.id);
+    }
     // Per-user unread flag. A ticket is unread when:
     //   1. The user is personally involved (assignee, additional assignee,
     //      reporter, or requester) — admins seeing every ticket should NOT
@@ -1024,6 +1045,55 @@ app.get('/api/my-snoozed', requireAuth, async (req, res) => {
       );
     }
     const tickets = await Promise.all(rows.map(buildTicket));
+    res.json(tickets);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Open tickets where the caller was @-mentioned (i.e. they're a row in
+// ticket_watchers with source='mention'). Each ticket carries a
+// pendingReply flag — true when there's an undismissed mention
+// notification on the ticket AND the user hasn't commented after it.
+// Powers the sidebar "Mentioned" page + its waiting-my-reply badge.
+app.get('/api/my-mentioned', requireAuth, async (req, res) => {
+  try {
+    const u = await getUser(req.session.userId);
+    if (!u) return res.status(401).json({ error: 'Not signed in' });
+    const rows = await all(
+      `SELECT t.* FROM tickets t
+         JOIN ticket_watchers tw ON tw.ticket_id = t.id
+        WHERE tw.user_id = ? AND tw.source = 'mention'
+          AND t.deleted_at IS NULL
+          AND t.status NOT IN ('Closed','Archived')
+        ORDER BY t.id DESC`,
+      u.id
+    );
+    if (!rows.length) return res.json([]);
+    const tickets = await Promise.all(rows.map(buildTicket));
+    // Pending-reply: any undismissed mention notification on this
+    // ticket where the user hasn't authored a comment dated after the
+    // notification. Single grouped query keeps it fast even on a long
+    // mention history.
+    const ids = tickets.map(t => t.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const pendingRows = await all(
+      `SELECT n.ticket_id
+         FROM notifications n
+        WHERE n.user_id = ?
+          AND n.type = 'mention'
+          AND n.dismissed_at IS NULL
+          AND n.ticket_id IN (${placeholders})
+          AND NOT EXISTS (
+                SELECT 1 FROM ticket_comments tc
+                 WHERE tc.ticket_id = n.ticket_id
+                   AND (tc.author_user_id = ?
+                        OR (tc.author_user_id IS NULL AND tc.author = ?))
+                   AND tc.created_at > n.created_at
+              )
+        GROUP BY n.ticket_id`,
+      u.id, ...ids, u.id, u.name
+    );
+    const pendingSet = new Set(pendingRows.map(r => r.ticket_id));
+    for (const t of tickets) t.pendingReply = pendingSet.has(t.id);
     res.json(tickets);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -2232,6 +2302,16 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         const mentionedUsers = (await Promise.all(
           Array.from(matchedNames).map(n => get('SELECT id,name,email,role,dept FROM users WHERE name=?', n))
         )).filter(Boolean);
+        // Subscribe every mentioned user to this ticket: a watcher row
+        // grants them read access (see canAccessTicket) AND keeps them in
+        // the comment fan-out for future activity. Idempotent on the
+        // (ticket_id, user_id) primary key, so re-mentioning is a no-op.
+        for (const m of mentionedUsers) {
+          run(
+            "INSERT INTO ticket_watchers (ticket_id, user_id, source) VALUES (?,?,?) ON CONFLICT (ticket_id, user_id) DO NOTHING",
+            req.params.id, m.id, 'mention'
+          ).catch(err => console.warn('[watcher] insert failed:', err && err.message));
+        }
         for (const m of mentionedUsers) {
           if (emailedUserIds.has(m.id)) continue;
           emailedUserIds.add(m.id);
@@ -2288,18 +2368,28 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         }
 
         // ── Watcher fan-out: assignees + reporter + requester + creator ──
+        // + anyone who's been @-mentioned on the ticket previously (now
+        // a real watcher row, see ticket_watchers). Once you're pulled
+        // in by a mention you keep getting notified on future activity —
+        // same model as GitHub / Linear / Jira.
         const watchers = new Set();
         const assigneesRows = await all('SELECT user_name FROM ticket_assignees WHERE ticket_id=?', req.params.id);
         assigneesRows.forEach(r => r.user_name && watchers.add(r.user_name));
         if (tkt?.reporter) watchers.add(tkt.reporter);
         if (tkt?.req)      watchers.add(tkt.req);
-        const [resolvedWatchers, creatorUser] = await Promise.all([
+        const [resolvedWatchers, creatorUser, mentionWatcherUsers] = await Promise.all([
           Promise.all(Array.from(watchers).map(n => get('SELECT id,name,email FROM users WHERE name=?', n))),
           tkt?.created_by ? get('SELECT id,name,email FROM users WHERE id=?', tkt.created_by) : Promise.resolve(null),
+          all(`SELECT u.id, u.name, u.email
+                 FROM ticket_watchers tw JOIN users u ON u.id = tw.user_id
+                WHERE tw.ticket_id = ?`, req.params.id),
         ]);
         const watcherUsers = resolvedWatchers.filter(Boolean);
         if (creatorUser && !watcherUsers.some(w => w.id === creatorUser.id)) {
           watcherUsers.push(creatorUser);
+        }
+        for (const mw of (mentionWatcherUsers || [])) {
+          if (!watcherUsers.some(w => w.id === mw.id)) watcherUsers.push(mw);
         }
         for (const w of watcherUsers) {
           if (emailedUserIds.has(w.id)) continue;

@@ -1037,6 +1037,23 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN snoozed_at TEXT DEFAULT NULL");
   await run('CREATE INDEX IF NOT EXISTS idx_tickets_snoozed_until ON tickets (snoozed_until)');
 
+  // Ticket watchers: users who get read access + the ongoing comment
+  // fan-out on a ticket they aren't otherwise on. Today this is populated
+  // when someone @-mentions them in a comment — the mention is no longer
+  // a dead-end notification, it implicitly subscribes the user. Same
+  // pattern GitHub / Linear / Jira use. `source` records how they got
+  // added so we could surface this in a "Why am I seeing this?" UI later.
+  await run(
+    `CREATE TABLE IF NOT EXISTS ticket_watchers (
+       ticket_id TEXT NOT NULL,
+       user_id INTEGER NOT NULL,
+       source TEXT DEFAULT 'mention',
+       added_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+       PRIMARY KEY (ticket_id, user_id)
+     )`
+  );
+  await run('CREATE INDEX IF NOT EXISTS idx_ticket_watchers_user ON ticket_watchers (user_id)');
+
   // Per-user API tokens for the Gmail-add-on (and any future integration
   // that needs to authenticate as a specific user without the session
   // cookie). We store a SHA-256 hash of the token, never the raw value;
