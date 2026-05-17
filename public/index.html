@@ -3486,7 +3486,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       #tickets-tbody { display: block !important; width: 100% !important; }
       #tickets-tbody tr {
         display: grid !important;
-        grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+        grid-template-columns: minmax(0, auto) minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
         grid-template-rows: auto auto auto;
         gap: 4px 10px;
         align-items: center;
@@ -3502,6 +3502,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       }
       #tickets-tbody tr:hover td,
       #tickets-tbody tr.selected td { background: transparent !important; }
+      #tickets-tbody tr.selected {
+        background: #eef4ff !important;
+        box-shadow: inset 3px 0 0 #0a78b3, 0 1px 3px rgba(0,0,0,.05) !important;
+      }
       #tickets-tbody tr.unread {
         background: #eef2ff !important;
         box-shadow: inset 3px 0 0 #4f46e5, 0 1px 3px rgba(0,0,0,.05) !important;
@@ -3510,7 +3514,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
          Order: checkbox(1) ID(2) Title(3) Status(4) Priority(5) Assignee(6)
          Requester(7) Dept(8) Created(9) Due(10) Comments(11) Actions(12). */
       #page-tickets .tbl thead { display: none !important; }
-      #tickets-tbody td:nth-child(1),  /* checkbox */
       #tickets-tbody td:nth-child(7),  /* requester */
       #tickets-tbody td:nth-child(8),  /* department */
       #tickets-tbody td:nth-child(9),  /* created */
@@ -3522,19 +3525,29 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         background: transparent !important;
         max-width: none !important;
       }
-      #tickets-tbody td:nth-child(2) { /* ID */
+      /* Checkbox stays visible on mobile so bulk actions (Mark read, Close
+         etc.) are reachable from the same UI. Larger tap target than the
+         default browser size. */
+      #tickets-tbody td:nth-child(1) {
         grid-row: 1; grid-column: 1;
+        display: flex !important; align-items: center; justify-content: center;
+      }
+      #tickets-tbody td:nth-child(1) input[type="checkbox"] {
+        width: 18px; height: 18px;
+      }
+      #tickets-tbody td:nth-child(2) { /* ID */
+        grid-row: 1; grid-column: 2;
         font-size: 11px !important; color: var(--accent) !important; font-weight: 700;
       }
       #tickets-tbody td:nth-child(4) { /* Status */
-        grid-row: 1; grid-column: 2;
+        grid-row: 1; grid-column: 3;
         justify-self: start;
       }
       #tickets-tbody td:nth-child(12) { /* Actions (⋯) */
-        grid-row: 1; grid-column: 3;
+        grid-row: 1; grid-column: 4;
       }
       #tickets-tbody td:nth-child(3) { /* Title — wraps under id+status */
-        grid-row: 2; grid-column: 1 / span 3;
+        grid-row: 2; grid-column: 1 / span 4;
         font-size: 14px !important; font-weight: 500;
         line-height: 1.4 !important;
         white-space: normal !important;
@@ -3547,9 +3560,9 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         grid-row: 3;
         font-size: 11.5px !important;
       }
-      #tickets-tbody td:nth-child(5) { grid-column: 1; }
-      #tickets-tbody td:nth-child(6) { grid-column: 2; }
-      #tickets-tbody td:nth-child(10) { grid-column: 3; justify-self: end; color: var(--text2) !important; }
+      #tickets-tbody td:nth-child(5) { grid-column: 1 / span 2; }
+      #tickets-tbody td:nth-child(6) { grid-column: 3; }
+      #tickets-tbody td:nth-child(10) { grid-column: 4; justify-self: end; color: var(--text2) !important; }
 
       /* Pagination row: center + larger taps. */
       #page-tickets .card > div[style*="padding-top:12px"] {
@@ -4564,6 +4577,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
                 Tag
               </button>
               <span class="bulk-divider"></span>
+              <button class="bulk-action-btn" onclick="bulkMarkRead()" title="Mark every selected ticket as read">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                Mark read
+              </button>
               <button class="bulk-action-btn" onclick="bulkRemindMe()" title="Set the same reminder on every selected ticket">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
                 Remind me
@@ -7834,6 +7851,34 @@ function bulkRemindMe() {
   const ids = Array.from(typeof selectedTicketIds !== 'undefined' ? selectedTicketIds : []);
   if (!ids.length) { alert('Pick at least one ticket first.'); return; }
   if (typeof openTicketReminderModal === 'function') openTicketReminderModal(ids);
+}
+
+// Bulk mark-as-read: stamps a ticket_views row for every selected ticket so
+// the unread pill clears immediately. Optimistically updates the local
+// TICKETS_DATA and re-renders, then re-loads the dashboard insights so the
+// "unread" count card stays in sync.
+async function bulkMarkRead() {
+  const ids = Array.from(typeof selectedTicketIds !== 'undefined' ? selectedTicketIds : []);
+  if (!ids.length) { alert('Pick at least one ticket first.'); return; }
+  try {
+    const r = await fetch('/api/tickets/bulk-mark-viewed', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!r.ok) throw new Error('Request failed');
+    if (Array.isArray(window.TICKETS_DATA)) {
+      for (const t of TICKETS_DATA) if (ids.includes(t.id)) t.unread = false;
+    }
+    const n = ids.length;
+    if (typeof clearSelection === 'function') clearSelection();
+    if (typeof renderTickets === 'function') renderTickets();
+    if (typeof loadDashboardInsights === 'function') loadDashboardInsights();
+    if (typeof settingsToast === 'function') settingsToast(`Marked ${n} ticket${n === 1 ? '' : 's'} as read`);
+  } catch (e) {
+    alert('Could not mark tickets as read: ' + e.message);
+  }
 }
 
 function bulkClose() {
