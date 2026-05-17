@@ -4543,8 +4543,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         <table class="tbl" id="dash-ticket-table"></table>
       </div>
 
-      <!-- Bottom row (admin/owner only) -->
-      <div class="admin-only">
+      <!-- Bottom row (Admin only — Team Workload + Recent Activity both
+           pull data across every ticket in the workspace, including ones
+           a Manager isn't on. Manager keeps every other admin power but
+           loses these cross-workspace views, same as the tickets list). -->
+      <div class="admin-strict-only">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <!-- Team workload -->
           <div class="card">
@@ -20394,10 +20397,15 @@ initApp();
       document.querySelectorAll('.admin-only').forEach(function(el) {
         el.style.display = isAdmin ? '' : 'none';
       });
-      // The Mine/All scope toggle on /tickets shows tickets across the
-      // whole workspace when set to "All" — that's Admin-only territory.
-      // Manager keeps everything else admin-like but is scoped to their
-      // own ticket involvement, so hide the toggle entirely for them.
+      // .admin-strict-only is for surfaces that expose data across every
+      // ticket in the workspace (Team Workload, Recent Activity feed,
+      // the Mine/All scope toggle). Manager would see info about
+      // tickets they can't open, so these hide for Manager — Admin only.
+      document.querySelectorAll('.admin-strict-only').forEach(function(el) {
+        el.style.display = isStrictAdmin ? '' : 'none';
+      });
+      // Scope toggle on /tickets is admin-strict too. Kept the explicit
+      // by-id handling so future renames don't silently break it.
       var scopeWrap = document.getElementById('admin-scope-wrap');
       if (scopeWrap) scopeWrap.style.display = isStrictAdmin ? '' : 'none';
       // Always-hidden Admin tab reveals only for admins

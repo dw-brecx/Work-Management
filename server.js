@@ -4152,6 +4152,12 @@ app.put('/api/notifications/:id/read', requireAuth, async (req, res) => {
 // ── Activity feed ─────────────────────────────────────────────────────────────
 app.get('/api/activity', requireAuth, async (req, res) => {
   try {
+    // Workspace-wide activity is Admin-only. Manager could see timeline
+    // entries from tickets they can't open via the main list, so we
+    // return an empty list for them — the UI hides the card anyway,
+    // this is defense in depth against a direct API call.
+    const u = await getUser(req.session.userId);
+    if (!u || u.perm_role !== 'Admin') return res.json([]);
     // Skip activity tied to soft-deleted tickets
     const rows = await all(`
       SELECT tt.id, tt.ticket_id, tt.text, tt.dot, tt.created_at,
