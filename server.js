@@ -2165,10 +2165,40 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       const parent = await get('SELECT id FROM ticket_comments WHERE id=? AND ticket_id=?', Number(parentId), req.params.id);
       if (parent) safeParentId = parent.id;
     }
-    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_user_id,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
-      req.params.id, u.name, u.id, init, bg, col, text.trim(), safeParentId);
-    await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
+
+    // Auto-mention the requester when the commenter didn't explicitly
+    // @-mention anyone in the workspace. Keeps the requester in the
+    // notification loop on every reply, even when people forget to type
+    // @them. We append "@<requesterName>" to the saved text so the
+    // mention chip renders in the UI exactly like a manual @-mention,
+    // and the existing mention-fan-out further below picks them up
+    // through the same code path.
+    let commentText = text.trim();
     const tkt = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+    if (tkt && tkt.req_user_id && tkt.req_user_id !== u.id) {
+      const rawCaptures = (commentText.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
+      let alreadyMentions = false;
+      for (const captured of rawCaptures) {
+        const words = captured.split(' ');
+        for (let len = words.length; len >= 1; len--) {
+          const candidate = words.slice(0, len).join(' ');
+          if (await get('SELECT id FROM users WHERE name=? LIMIT 1', candidate)) {
+            alreadyMentions = true; break;
+          }
+        }
+        if (alreadyMentions) break;
+      }
+      if (!alreadyMentions) {
+        const requesterName = await nameForUserId(tkt.req_user_id, '');
+        if (requesterName) {
+          commentText = commentText + (commentText.endsWith(' ') ? '' : ' ') + '@' + requesterName;
+        }
+      }
+    }
+
+    const info = await run(`INSERT INTO ticket_comments (ticket_id,author,author_user_id,author_init,author_bg,author_col,text,parent_id) VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+      req.params.id, u.name, u.id, init, bg, col, commentText, safeParentId);
+    await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
 
     // ── All comment fan-out (mentions, reply, watchers) runs in the
     //    background so the POST returns immediately. Sequential awaits
@@ -2181,7 +2211,7 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
         const emailedUserIds = new Set([req.session.userId]);
 
         // ── @-mentions: longest-prefix match against users.name ───────────
-        const mentionRaw = (text.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
+        const mentionRaw = (commentText.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(m => m.slice(1));
         const matchedNames = new Set();
         for (const captured of mentionRaw) {
           const words = captured.split(' ');
@@ -2205,16 +2235,16 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
             toEmail: m.email, toName: m.name,
             authorName: u.name, authorRole: u.role || '', authorDept: u.dept || '',
             ticketId: req.params.id, title: tkt?.title || '',
-            commentText: text.trim(),
+            commentText: commentText,
           }));
           sendPushToUser(m.id, {
             title: `${u.name} mentioned you`,
-            body: text.trim().slice(0, 140),
+            body: commentText.slice(0, 140),
             tag: 'ticket-' + req.params.id + '-cmt',
             url: '/tickets/' + req.params.id,
           }).catch(()=>{});
           slackDmUser(m.id, {
-            text: `💬 *${u.name}* mentioned you on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+            text: `💬 *${u.name}* mentioned you on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${commentText.slice(0, 280)}`,
           }).catch(()=>{});
         }
 
@@ -2236,16 +2266,16 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
               authorName: u.name, authorRole: u.role || '',
               authorBg: bg, authorFg: col,
               ticketId: req.params.id, title: tkt?.title || '',
-              commentText: text.trim(),
+              commentText: commentText,
             }));
             sendPushToUser(parentInfo.user_id, {
               title: `${u.name} replied`,
-              body: text.trim().slice(0, 140),
+              body: commentText.slice(0, 140),
               tag: 'ticket-' + req.params.id + '-cmt',
               url: '/tickets/' + req.params.id,
             }).catch(()=>{});
             slackDmUser(parentInfo.user_id, {
-              text: `↩ *${u.name}* replied to your comment on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+              text: `↩ *${u.name}* replied to your comment on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${commentText.slice(0, 280)}`,
             }).catch(()=>{});
           }
         }
@@ -2275,16 +2305,16 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
             authorName: u.name, authorRole: u.role || '',
             authorBg: bg, authorFg: col,
             ticketId: req.params.id, title: tkt?.title || '',
-            commentText: text.trim(),
+            commentText: commentText,
           }));
           sendPushToUser(w.id, {
             title: `${u.name} commented on ${tkt?.title || req.params.id}`,
-            body: text.trim().slice(0, 140),
+            body: commentText.slice(0, 140),
             tag: 'ticket-' + req.params.id + '-cmt',
             url: '/tickets/' + req.params.id,
           }).catch(()=>{});
           slackDmUser(w.id, {
-            text: `💬 *${u.name}* commented on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${text.trim().slice(0, 280)}`,
+            text: `💬 *${u.name}* commented on <${(process.env.APP_URL || `http://localhost:${PORT}`)}/tickets/${req.params.id}|${req.params.id}>${tkt?.title ? ' — ' + tkt.title : ''}\n> ${commentText.slice(0, 280)}`,
           }).catch(()=>{});
         }
       } catch (err) {
@@ -2293,7 +2323,7 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
     })(); });
 
     const _nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:text.trim(), createdAt: _nowUtc, time: formatUSDateTime(new Date().toISOString()) });
+    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:commentText, createdAt: _nowUtc, time: formatUSDateTime(new Date().toISOString()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
