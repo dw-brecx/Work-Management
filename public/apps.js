@@ -31,7 +31,7 @@
     apps: [],
     app: null,        // currently loaded app (with .pages)
     pageView: 'dashboard', // 'dashboard' (app overview) | 'page' | 'ticket'
-    sidebarSection: 'pages', // 'pages' | 'tickets'  — which list is shown on the left
+    sidebarSection: 'pages', // 'pages' | 'tickets' | 'items'
     selectedPageId: null,
     pageDetail: null, // currently loaded page with html_content
     tab: 'preview',   // 'preview' | 'blueprint' | 'qa' | 'todos' | 'functions'
@@ -55,6 +55,11 @@
     ticketFilter: 'all', // 'all' | 'open' | 'closed'
     selectedTicketId: null,
     ticketDetail: null, // loaded ticket with comments
+    // Items — flat feed of every Q&A comment, pin annotation, and todo
+    // across the whole app, surfaced in the sidebar. Hydrated from the
+    // dashboard payload (which already aggregates the same data) so we
+    // don't need a second round-trip.
+    itemsFilter: 'all', // 'all' | 'qa' | 'pins' | 'todos'
     loading: false,
     error: null,
   };
@@ -441,7 +446,9 @@
             <div class="ap-sb-toggle">
               <button class="ap-sb-toggle-btn ${state.sidebarSection === 'pages' ? 'active' : ''}" data-section="pages">Pages (${a.pages ? a.pages.length : 0})</button>
               <button class="ap-sb-toggle-btn ${state.sidebarSection === 'tickets' ? 'active' : ''}" data-section="tickets">Tickets (${state.tickets.length})</button>
+              <button class="ap-sb-toggle-btn ${state.sidebarSection === 'items' ? 'active' : ''}" data-section="items">Items${itemsCountBadge()}</button>
             </div>
+            ${state.sidebarSection === 'items' ? renderItemsFilters() : ''}
             <div class="ap-pages-list">
               <div class="ap-page-item ${dashActive ? 'active' : ''}" data-dash="1">
                 <span class="ap-page-item-dot" style="background:#0ea5e9"></span>
@@ -450,10 +457,16 @@
                   <div class="ap-page-item-meta">Overview &amp; all items</div>
                 </div>
               </div>
-              ${state.sidebarSection === 'pages' ? (pageList || '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No pages yet</div>') : renderTicketsSidebar()}
+              ${state.sidebarSection === 'pages'
+                ? (pageList || '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No pages yet</div>')
+                : state.sidebarSection === 'tickets'
+                  ? renderTicketsSidebar()
+                  : renderItemsSidebar()}
               ${state.sidebarSection === 'pages'
                 ? '<div class="ap-add-page-btn" id="ap-add-page">+ Add page</div>'
-                : '<div class="ap-add-page-btn" id="ap-add-ticket">+ New ticket</div>'}
+                : state.sidebarSection === 'tickets'
+                  ? '<div class="ap-add-page-btn" id="ap-add-ticket">+ New ticket</div>'
+                  : ''}
             </div>
           </aside>
           <section class="ap-page-pane">
@@ -1001,6 +1014,75 @@
     return ({ open: 'Open', in_progress: 'In progress', review: 'In review', resolved: 'Resolved', closed: 'Closed' })[s] || s;
   }
 
+  // ── Items sidebar (Q&A + pins + todos in one feed) ───────────────────
+  function itemsCountBadge() {
+    if (!state.dashboard) return '';
+    const d = state.dashboard;
+    const total = (d.all_comments || []).length + (d.all_annotations || []).length + (d.all_todos || []).length;
+    return ' (' + total + ')';
+  }
+
+  function renderItemsFilters() {
+    const f = state.itemsFilter;
+    const chip = (key, label) => `<span class="ap-items-chip ${f === key ? 'active' : ''}" data-items-filter="${key}">${escapeHtml(label)}</span>`;
+    return `
+      <div class="ap-items-filters">
+        ${chip('all', 'All')}
+        ${chip('qa', 'Q&A')}
+        ${chip('pins', 'Pins')}
+        ${chip('todos', 'To-dos')}
+      </div>
+    `;
+  }
+
+  function renderItemsSidebar() {
+    if (!state.dashboard) {
+      return '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">Loading items…</div>';
+    }
+    const d = state.dashboard;
+    const f = state.itemsFilter;
+    // Merge into one feed with a `kind` tag so the row renderer can pick
+    // an icon and the right click-target tab.
+    const items = [];
+    if (f === 'all' || f === 'qa') {
+      for (const c of (d.all_comments || [])) items.push({ kind: 'comment', tab: 'qa', ...c });
+    }
+    if (f === 'all' || f === 'pins') {
+      for (const a of (d.all_annotations || [])) items.push({ kind: 'annotation', tab: 'preview', ...a });
+    }
+    if (f === 'all' || f === 'todos') {
+      for (const t of (d.all_todos || [])) items.push({ kind: 'todo', tab: 'todos', ...t });
+    }
+    // Newest first; created_at is "YYYY-MM-DD HH:MM:SS" so lexical sort works.
+    items.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    if (items.length === 0) {
+      return '<div style="padding:8px 14px;font-size:12px;color:#94a3b8">No items yet</div>';
+    }
+    return items.map(it => {
+      const icon = it.kind === 'comment' ? '💬'
+        : it.kind === 'annotation' ? (it.type === 'broken' ? '✗' : it.type === 'issue' ? '⚠️' : it.type === 'note' ? '✎' : '❔')
+        : (it.done ? '☑' : '☐');
+      const closed = (it.kind === 'comment' && it.resolved)
+        || (it.kind === 'annotation' && it.status === 'resolved')
+        || (it.kind === 'todo' && it.done);
+      const text = String(it.text || '').slice(0, 80);
+      const author = it.author_name || it.created_by_name || '';
+      return `
+        <div class="ap-item-row ${closed ? 'closed' : ''}" data-item-page="${it.page_id}" data-item-tab="${it.tab}">
+          <span class="ap-item-icon ap-item-${it.kind}">${icon}</span>
+          <div class="ap-item-body">
+            <div class="ap-item-text">${escapeHtml(text)}</div>
+            <div class="ap-item-meta">
+              <strong>${escapeHtml(it.page_name || '?')}</strong>
+              ${author ? ' · ' + escapeHtml(author) : ''}
+              · ${escapeHtml(formatTime(it.created_at))}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
   // ── Ticket detail pane ────────────────────────────────────────────────
   function renderTicketPane() {
     const t = state.ticketDetail;
@@ -1106,13 +1188,15 @@
     const addTicketBtn = document.getElementById('ap-add-ticket');
     if (addTicketBtn) addTicketBtn.onclick = () => openTicketModal(null);
 
-    // Sidebar section toggle (Pages | Tickets).
+    // Sidebar section toggle (Pages | Tickets | Items).
     root.querySelectorAll('[data-section]').forEach(el => {
       el.onclick = () => {
         state.sidebarSection = el.getAttribute('data-section');
-        // Lazy-load tickets the first time the user flips to Tickets.
+        // Lazy-load on demand the first time each section is opened.
         if (state.sidebarSection === 'tickets' && (state.tickets.length === 0 || !state.tickets._loaded)) {
           loadTickets();
+        } else if (state.sidebarSection === 'items' && !state.dashboard) {
+          loadDashboard();
         } else {
           render();
         }
@@ -1124,6 +1208,22 @@
         if (el.getAttribute('data-dash')) navigate('/' + state.app.id);
         else if (el.getAttribute('data-ticket-id')) navigate('/' + state.app.id + '/t/' + el.getAttribute('data-ticket-id'));
         else navigate('/' + state.app.id + '/p/' + el.getAttribute('data-page-id'));
+      };
+    });
+
+    // Items section: filter chips + row clicks.
+    root.querySelectorAll('[data-items-filter]').forEach(el => {
+      el.onclick = () => {
+        state.itemsFilter = el.getAttribute('data-items-filter');
+        render();
+      };
+    });
+    root.querySelectorAll('[data-item-page]').forEach(el => {
+      el.onclick = () => {
+        const pid = el.getAttribute('data-item-page');
+        const tab = el.getAttribute('data-item-tab');
+        if (tab) state.tab = tab;
+        navigate('/' + state.app.id + '/p/' + pid);
       };
     });
 
@@ -1353,14 +1453,42 @@
     if (saveBtn) saveBtn.onclick = () => savePenSnippet(canvas, w, h);
   }
 
-  // Convert the current pen drawing into a PNG, compute the centroid of
-  // strokes (used as the pin coordinate), then drop into the new-pin
-  // flow with the snippet pre-attached. Pen mode exits afterwards.
-  function savePenSnippet(canvas, displayW, displayH) {
+  // Convert the current pen drawing into a PNG that *includes* a snapshot
+  // of the iframe behind the strokes, then drop into the new-pin flow
+  // with the snippet pre-attached. Pen mode exits afterwards. The design
+  // capture goes through snapshotIframe; if that fails (rare HTML feature
+  // SVG/foreignObject can't render, cross-origin asset, etc.) we fall
+  // back to strokes-only and warn the user.
+  async function savePenSnippet(canvas, displayW, displayH) {
     if (state.penStrokes.length === 0) { toast('Draw something first', 'err'); return; }
-    canvas.toBlob((blob) => {
+
+    const saveBtn = document.getElementById('ap-pen-save');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Capturing…'; }
+
+    let finalCanvas = canvas;
+    try {
+      const iframe = root.querySelector('.ap-preview-frame');
+      if (iframe) {
+        const bg = await snapshotIframe(iframe);
+        // Compose: design first, strokes on top, both sized to canvas px.
+        const composed = document.createElement('canvas');
+        composed.width = canvas.width;
+        composed.height = canvas.height;
+        const ctx = composed.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, composed.width, composed.height);
+        ctx.drawImage(bg, 0, 0, composed.width, composed.height);
+        ctx.drawImage(canvas, 0, 0, composed.width, composed.height);
+        finalCanvas = composed;
+      }
+    } catch (e) {
+      console.warn('[apps] snippet bg capture failed:', e);
+      toast('Could not capture the design background — saved strokes only', 'err');
+    }
+
+    finalCanvas.toBlob((blob) => {
       if (!blob) { toast('Snippet save failed', 'err'); return; }
-      // Centroid of all stroke points (in % of the canvas).
+      // Centroid of all stroke points (in % of the on-screen canvas).
       let sx = 0, sy = 0, n = 0;
       for (const stroke of state.penStrokes) {
         for (const p of stroke.points) {
@@ -1379,6 +1507,97 @@
       state.penStrokes = [];
       render();
     }, 'image/png');
+  }
+
+  // Capture the iframe's current rendered content into a canvas.
+  //
+  // Implementation: serialise the iframe's <html> into an SVG
+  // foreignObject, load it via an <img> (which forces the browser to
+  // rasterise the HTML/CSS), then drawImage onto a 2D canvas at
+  // devicePixelRatio resolution.
+  //
+  // Limitations worth being explicit about:
+  //   * cross-origin images / fonts won't load inside the SVG snapshot —
+  //     the page renders without them
+  //   * a handful of CSS features (filter-backdrop, some pseudo-elements)
+  //     render imperfectly
+  //   * Safari historically has more foreignObject quirks than Chromium
+  //
+  // For typical Claude-designed pages (self-contained, inline <style>,
+  // inline SVG icons) it produces a faithful screenshot with no external
+  // dependency. Failures bubble up so savePenSnippet can fall back to
+  // strokes-only.
+  async function snapshotIframe(iframe) {
+    const doc = iframe.contentDocument;
+    if (!doc || !doc.documentElement) throw new Error('Cannot access iframe content');
+    const w = iframe.clientWidth;
+    const h = iframe.clientHeight;
+    if (!w || !h) throw new Error('Iframe has no size');
+
+    // Match what the user sees on screen — including scroll position,
+    // not just the top of the page.
+    const win = iframe.contentWindow;
+    const scrollY = (win && win.scrollY) || doc.documentElement.scrollTop || 0;
+    const scrollX = (win && win.scrollX) || doc.documentElement.scrollLeft || 0;
+
+    // We inject a small style override that translates <body> by the
+    // negative scroll offset and clips overflow, so the SVG's fixed
+    // viewport (w × h) shows the same region as the visible iframe.
+    // Cloning lets us mutate without disturbing the live document.
+    const root = doc.documentElement.cloneNode(true);
+    let head = root.querySelector('head');
+    if (!head) { head = doc.createElement('head'); root.insertBefore(head, root.firstChild); }
+    const styleEl = doc.createElement('style');
+    styleEl.textContent =
+      `html{background:#fff;overflow:hidden;width:${w}px;height:${h}px}` +
+      `body{margin:0;transform:translate(${-scrollX}px,${-scrollY}px);transform-origin:0 0}`;
+    head.appendChild(styleEl);
+
+    // Serialise. XMLSerializer outputs XHTML-compatible markup (self-
+    // closing tags, properly escaped attributes) so the SVG parser
+    // accepts it inside foreignObject.
+    let xml = new XMLSerializer().serializeToString(root);
+    // Belt-and-braces: ensure the xhtml namespace is on <html>. Without
+    // it, the foreignObject treats the contents as the SVG namespace
+    // and nothing renders.
+    if (!/xmlns=["']http:\/\/www\.w3\.org\/1999\/xhtml["']/.test(xml)) {
+      xml = xml.replace(/^<html\b/i, '<html xmlns="http://www.w3.org/1999/xhtml"');
+    }
+
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+        `<foreignObject width="100%" height="100%">` +
+          xml +
+        `</foreignObject>` +
+      `</svg>`;
+
+    // Blob URL — survives the size limits some browsers impose on
+    // percent-encoded data: URLs for large pages.
+    const blobUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+    try {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('SVG snapshot failed to render'));
+        img.src = blobUrl;
+        // Belt-and-braces timeout — if the browser silently stalls
+        // (typically because of a cross-origin font load), don't hang
+        // the UI forever.
+        setTimeout(() => reject(new Error('SVG snapshot timed out')), 8000);
+      });
+
+      const dpr = window.devicePixelRatio || 1;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas;
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
   }
 
   // Preview tab — annotation overlay, pin clicks, new-pin popup.
