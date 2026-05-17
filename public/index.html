@@ -8237,10 +8237,12 @@ async function submitSnooze() {
       if (i >= 0) TICKETS_DATA[i] = fresh;
     }
     closeSnoozeModal();
-    // If we were on the ticket detail, hop back to the list — the ticket is
-    // now hidden for the non-requester. (Requester still sees it.)
-    if (typeof currentPage !== 'undefined' && currentPage === 'ticket-detail') {
-      if (typeof navigate === 'function') navigate('tickets');
+    // Stay on the detail page if we're already there — the user can see the
+    // new "Snoozed until …" pill in the header and the toolbar button has
+    // flipped to "Wake up", which is more informative than navigating away.
+    if (typeof currentPage !== 'undefined' && currentPage === 'ticket-detail'
+        && typeof renderTicketDetail === 'function') {
+      renderTicketDetail();
     } else if (typeof renderTickets === 'function') {
       renderTickets();
     }
@@ -8258,13 +8260,22 @@ async function unsnoozeTicket(ticketId) {
       method: 'POST', credentials: 'same-origin',
     });
     if (!r.ok) throw new Error('Unsnooze failed');
-    if (typeof loadSnoozedPage === 'function') loadSnoozedPage();
-    if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge();
     if (Array.isArray(window.TICKETS_DATA)) {
       const t = TICKETS_DATA.find(x => x.id === ticketId);
       if (t) { t.snoozedUntil = null; t.snoozedBy = null; t.snoozedByName = null; t.snoozedAt = null; }
     }
+    // Repaint the ticket-detail header so the snoozed pill disappears
+    // and the toolbar button flips back to "Snooze" — without this the
+    // user sees stale state until they navigate away.
+    if (typeof currentTicketId !== 'undefined' && currentTicketId === ticketId
+        && typeof renderTicketDetail === 'function') {
+      renderTicketDetail();
+    }
+    if (typeof loadSnoozedPage === 'function' && typeof currentPage !== 'undefined' && currentPage === 'snoozed') {
+      loadSnoozedPage();
+    }
     if (typeof renderTickets === 'function') renderTickets();
+    if (typeof updateSnoozedBadge === 'function') updateSnoozedBadge();
     if (typeof settingsToast === 'function') settingsToast('Ticket is back in your list');
   } catch (e) {
     alert(e.message);
@@ -8715,6 +8726,16 @@ function renderTicketDetail() {
       Open email
     </a>
   ` : '';
+  // Snoozed pill — when the open ticket is currently snoozed, show who
+  // snoozed it + the wake-up time right in the header so the state is
+  // obvious. The toolbar button below also flips to "Unsnooze" in this
+  // case (see applyClosedActionState / snooze-trigger toggle further down).
+  const snoozedChip = t.snoozedUntil ? `
+    <span title="Snoozed by ${escapeAttr(t.snoozedByName || 'someone')}"
+       style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;border-radius:999px;font-size:11px;font-weight:600">
+      💤 Snoozed until ${escapeHtml(_fmtLocal(t.snoozedUntil))}
+    </span>
+  ` : '';
 
   document.getElementById('det-badges').innerHTML = `
     ${statusBadge(t.status)}
@@ -8725,7 +8746,24 @@ function renderTicketDetail() {
     ${closeReasonPill}
     ${wtChip}
     ${emailChip}
+    ${snoozedChip}
   `;
+
+  // Toolbar snooze button toggles between "Snooze" and "Wake up" depending
+  // on whether this ticket is currently snoozed. The same button id stays
+  // for layout stability; we just rewrite its label + onclick.
+  const snoozeBtn = document.getElementById('snooze-trigger');
+  if (snoozeBtn) {
+    if (t.snoozedUntil) {
+      snoozeBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 11 12 14 16 9"/></svg> Wake up';
+      snoozeBtn.setAttribute('title', 'Bring this ticket back to the main list now');
+      snoozeBtn.setAttribute('onclick', "unsnoozeTicket(currentTicketId)");
+    } else {
+      snoozeBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg> Snooze';
+      snoozeBtn.setAttribute('title', 'Park this ticket for up to 7 days');
+      snoozeBtn.setAttribute('onclick', 'openSnoozeModal()');
+    }
+  }
 
   // Compute SLA from due date relative to "today" (mock = May 21, 2024)
   const sla = computeSLA(t);
