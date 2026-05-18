@@ -1481,36 +1481,51 @@
   // Snapshot the iframe contents into state.penBgImage using html2canvas.
   // Runs in the background after pen mode activates so the user can
   // start drawing immediately on a transparent canvas — the bg fills in
-  // when ready. We swap an inline "⏳ Capturing…" indicator into the pen
-  // toolbar so it's clear something's happening.
+  // when ready. We swap a status pill into the pen toolbar so it's
+  // obvious whether the capture worked or fell back to strokes-only.
   async function capturePenBackground(redrawFn) {
     state.penSnapshotInflight = true;
     const ctrls = root.querySelector('.ap-pen-controls');
-    let statusEl = null;
-    if (ctrls) {
-      statusEl = document.createElement('span');
-      statusEl.className = 'ap-pen-status';
-      statusEl.style.cssText = 'color:#fde68a;font-size:11px;margin-right:4px';
-      statusEl.textContent = '⏳ Capturing design…';
-      ctrls.insertBefore(statusEl, ctrls.firstChild);
-    }
+    const setStatus = (text, color) => {
+      if (!ctrls) return;
+      let el = ctrls.querySelector('.ap-pen-status');
+      if (!el) {
+        el = document.createElement('span');
+        el.className = 'ap-pen-status';
+        el.style.cssText = 'font-size:11px;margin-right:4px';
+        ctrls.insertBefore(el, ctrls.firstChild);
+      }
+      el.style.color = color;
+      el.textContent = text;
+    };
+    setStatus('⏳ Capturing…', '#fde68a');
+
     try {
       const iframe = root.querySelector('.ap-preview-frame');
       if (!iframe) throw new Error('Preview iframe not found');
-      if (!window.html2canvas) throw new Error('html2canvas not loaded');
+      if (!window.html2canvas) throw new Error('html2canvas not loaded — check /vendor/html2canvas.min.js');
       const doc = iframe.contentDocument;
       if (!doc || !doc.body) throw new Error('Cannot access iframe content');
-      const captured = await window.html2canvas(doc.body, {
+
+      console.log('[apps] capturing iframe',
+        iframe.clientWidth + 'x' + iframe.clientHeight,
+        'body has', doc.body.children.length, 'children');
+
+      // Pass the full <html> element rather than just the body. With the
+      // body alone html2canvas drops any styling that's attached at the
+      // <html>/<head> level and the capture can come out blank — most
+      // visibly when a Claude-designed page uses a single <style> block
+      // in the head.
+      const target = doc.documentElement || doc.body;
+      const captured = await window.html2canvas(target, {
         backgroundColor: '#ffffff',
         useCORS: true,
         allowTaint: false,
         scale: window.devicePixelRatio || 1,
         width: iframe.clientWidth,
         height: iframe.clientHeight,
-        // Honour the iframe's current scroll position so the snapshot
-        // matches what the user sees on screen.
-        scrollX: -(iframe.contentWindow.scrollX || doc.documentElement.scrollLeft || 0),
-        scrollY: -(iframe.contentWindow.scrollY || doc.documentElement.scrollTop || 0),
+        windowWidth: iframe.clientWidth,
+        windowHeight: iframe.clientHeight,
         logging: false,
         // Force the painter renderer — foreignObject rendering would
         // re-introduce the SVG taint we just got rid of.
@@ -1520,14 +1535,53 @@
         // would need their own clone pipeline.
         ignoreElements: (el) => el.tagName === 'SCRIPT' || el.tagName === 'IFRAME',
       });
+
+      // Sanity check: if html2canvas returned a canvas with 0 size or all
+      // transparent pixels, treat that as a soft failure so the user
+      // sees a clear status rather than an invisible "success".
+      if (!captured || !captured.width || !captured.height) {
+        throw new Error('html2canvas produced an empty canvas');
+      }
+      // Cheap check for "all transparent / all white" — sample 9 points
+      // across the canvas. If none have a coloured pixel, the capture
+      // probably didn't render the design (e.g. external stylesheet
+      // didn't load in the clone).
+      try {
+        const ctx2 = captured.getContext('2d');
+        const samples = [
+          [0.1, 0.1], [0.5, 0.1], [0.9, 0.1],
+          [0.1, 0.5], [0.5, 0.5], [0.9, 0.5],
+          [0.1, 0.9], [0.5, 0.9], [0.9, 0.9],
+        ];
+        let coloured = 0;
+        for (const [sx, sy] of samples) {
+          const px = ctx2.getImageData(Math.floor(captured.width * sx), Math.floor(captured.height * sy), 1, 1).data;
+          // Anything not white (255,255,255) or transparent counts.
+          if (px[3] > 0 && !(px[0] > 245 && px[1] > 245 && px[2] > 245)) coloured++;
+        }
+        console.log('[apps] capture sample: ' + coloured + '/9 coloured points,', captured.width + 'x' + captured.height);
+        if (coloured === 0) {
+          // Still set the bg (white with whatever was captured), but warn.
+          state.penBgImage = captured;
+          if (typeof redrawFn === 'function') redrawFn();
+          setStatus('⚠ Design captured blank — check console', '#fca5a5');
+          return;
+        }
+      } catch (samplingErr) {
+        // getImageData can fail if the canvas is somehow tainted — fall
+        // through and trust the captured canvas anyway.
+        console.warn('[apps] sample check failed:', samplingErr && samplingErr.message);
+      }
+
       state.penBgImage = captured;
       if (typeof redrawFn === 'function') redrawFn();
+      setStatus('✓ Design captured', '#86efac');
     } catch (e) {
       console.warn('[apps] pen background snapshot failed:', e && e.message);
       toast('Could not capture the design — drawing on transparent overlay', 'err');
+      setStatus('⚠ Capture failed: ' + (e && e.message || 'unknown'), '#fca5a5');
     } finally {
       state.penSnapshotInflight = false;
-      if (statusEl && statusEl.parentNode) statusEl.parentNode.removeChild(statusEl);
     }
   }
 
@@ -2712,6 +2766,10 @@
   // ── Boot ───────────────────────────────────────────────────────────────
   window.addEventListener('hashchange', handleRoute);
   (async () => {
+    // Version stamp + html2canvas availability check, logged on every
+    // load so it's easy to confirm the right build is running when
+    // diagnosing pen-snippet issues from the browser console.
+    console.log('[apps] build 2026-05-17.4 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
