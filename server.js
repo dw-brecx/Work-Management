@@ -1542,8 +1542,19 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
     // Persist meaningful changes to the timeline so they surface in the
     // dashboard Recent Activity feed + the ticket-detail Timeline tab.
     // Fire-and-forget — we do NOT block the PUT response on these writes.
+    // Every editable field is covered so the activity log reads like a
+    // full audit trail ("Bob changed title from X to Y", etc.). Internal
+    // book-keeping (overdue flag, closed_at) is skipped.
     {
       const actor = (await getUser(req.session.userId))?.name || 'someone';
+      const shortVal = v => {
+        const s = String(v == null ? '' : v).trim();
+        return s.length > 80 ? s.slice(0, 77) + '…' : s;
+      };
+      if (title !== undefined && title !== exists.title) {
+        writeTimeline(req.params.id, TL.status,
+          `${actor} renamed the ticket: "${shortVal(exists.title)}" → "${shortVal(title)}"`);
+      }
       if (status !== undefined && status !== oldStatus) {
         const dot = status === 'Closed' ? TL.close
                   : (oldStatus === 'Closed' ? TL.reopen : TL.status);
@@ -1563,6 +1574,50 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
       if (priority !== undefined && priority !== exists.priority) {
         writeTimeline(req.params.id, TL.priority,
           `${actor} changed priority to ${priority}${exists.priority ? ` (was ${exists.priority})` : ''}`);
+      }
+      if (reqName !== undefined && reqName !== exists.req) {
+        writeTimeline(req.params.id, TL.assign,
+          `${actor} changed requester${exists.req ? ` from ${shortVal(exists.req)}` : ''} to ${shortVal(reqName) || '—'}`);
+      }
+      if (reporter !== undefined && reporter !== exists.reporter) {
+        writeTimeline(req.params.id, TL.assign,
+          `${actor} changed reporter${exists.reporter ? ` from ${shortVal(exists.reporter)}` : ''} to ${shortVal(reporter) || '—'}`);
+      }
+      if (dept !== undefined && dept !== exists.dept) {
+        writeTimeline(req.params.id, TL.status,
+          `${actor} moved to ${shortVal(dept)}${exists.dept ? ` (was ${shortVal(exists.dept)})` : ''}`);
+      }
+      if (due !== undefined && due !== exists.due) {
+        writeTimeline(req.params.id, TL.status,
+          due
+            ? `${actor} ${exists.due ? `changed due date to ${shortVal(due)} (was ${shortVal(exists.due)})` : `set due date to ${shortVal(due)}`}`
+            : `${actor} cleared the due date`);
+      }
+      if (tags !== undefined) {
+        let oldTags = [];
+        try { oldTags = JSON.parse(exists.tags_json || '[]'); } catch {}
+        const newSet = new Set(tags || []);
+        const oldSet = new Set(oldTags || []);
+        const added   = (tags || []).filter(t => !oldSet.has(t));
+        const removed = oldTags.filter(t => !newSet.has(t));
+        if (added.length) {
+          writeTimeline(req.params.id, TL.status,
+            `${actor} added tag${added.length === 1 ? '' : 's'} ${added.map(shortVal).join(', ')}`);
+        }
+        if (removed.length) {
+          writeTimeline(req.params.id, TL.status,
+            `${actor} removed tag${removed.length === 1 ? '' : 's'} ${removed.map(shortVal).join(', ')}`);
+        }
+      }
+      // Additional-assignees diff. The primary assignee is handled above;
+      // here we cover the multi-assign list.
+      if (Array.isArray(assignees)) {
+        const oldExtra = new Set(oldAssigneesAll || []);
+        const newExtra = new Set(assignees || []);
+        const added   = (assignees || []).filter(n => !oldExtra.has(n));
+        const removed = (oldAssigneesAll || []).filter(n => !newExtra.has(n));
+        for (const n of added)   writeTimeline(req.params.id, TL.assign, `${actor} added ${n} as an assignee`);
+        for (const n of removed) writeTimeline(req.params.id, TL.assign, `${actor} removed ${n} as an assignee`);
       }
     }
 
@@ -2231,9 +2286,31 @@ app.get('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req
 app.put('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const { description, checklist } = req.body;
+    // Snapshot before so we can log meaningful changes to the timeline.
+    // A description rewrite is significant for audit; we log "updated"
+    // rather than the full text (no need to dump multi-line bodies into
+    // the activity feed).
+    const before = await get('SELECT description, checklist_json FROM ticket_details WHERE ticket_id=?', req.params.id);
     await run(`INSERT INTO ticket_details (ticket_id,description,checklist_json) VALUES (?,?,?)
          ON CONFLICT(ticket_id) DO UPDATE SET description=EXCLUDED.description,checklist_json=EXCLUDED.checklist_json`,
       req.params.id, description||'', JSON.stringify(checklist||[]));
+    try {
+      const actor = (await getUser(req.session.userId))?.name || 'someone';
+      const oldDesc = (before?.description || '').trim();
+      const newDesc = String(description || '').trim();
+      if (oldDesc !== newDesc) {
+        writeTimeline(req.params.id, TL.status,
+          oldDesc ? `${actor} updated the description` : `${actor} added a description`);
+      }
+      let oldCl = [];
+      try { oldCl = JSON.parse(before?.checklist_json || '[]'); } catch {}
+      const newCl = Array.isArray(checklist) ? checklist : [];
+      if (oldCl.length !== newCl.length) {
+        const delta = newCl.length - oldCl.length;
+        writeTimeline(req.params.id, TL.status,
+          `${actor} ${delta > 0 ? `added ${delta} checklist item${delta === 1 ? '' : 's'}` : `removed ${-delta} checklist item${delta === -1 ? '' : 's'}`}`);
+      }
+    } catch {}
     res.json({ ok:true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
