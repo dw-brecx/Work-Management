@@ -105,10 +105,30 @@
     toastTimer = setTimeout(() => { el.className = el.className.replace('show', '').trim(); }, 2800);
   }
 
-  // ── Routing ────────────────────────────────────────────────────────────
-  function parseHash() {
-    const h = (window.location.hash || '').replace(/^#/, '');
-    const parts = h.split('/').filter(Boolean);
+  // ── Routing (path-based, using History API) ──────────────────────────
+  // URLs the user sees in the address bar:
+  //   /apps               → list
+  //   /apps/:id           → app detail (dashboard)
+  //   /apps/:id/p/:pid    → page within an app
+  //   /apps/:id/t/:tid    → ticket within an app
+  //
+  // Old hash-based routes (#/1/p/2) on /apps.html still work — the boot
+  // code below transparently rewrites them to the new path form before
+  // first render.
+  function parsePath() {
+    let path = window.location.pathname || '/';
+    // Strip the /apps prefix. If we're on /apps.html (legacy) treat the
+    // hash as the route source instead.
+    let rest;
+    if (path === '/apps' || path.startsWith('/apps/')) {
+      rest = path.slice('/apps'.length);
+    } else if (path === '/apps.html') {
+      rest = (window.location.hash || '').replace(/^#/, '');
+    } else {
+      // Direct hit on apps.js without /apps — treat as list root.
+      rest = '';
+    }
+    const parts = rest.split('/').filter(Boolean);
     if (parts.length === 0) return { view: 'list' };
     const appId = Number(parts[0]);
     if (!Number.isFinite(appId)) return { view: 'list' };
@@ -120,7 +140,28 @@
     }
     return { view: 'detail', appId, pageId, ticketId };
   }
-  function navigate(hash) { window.location.hash = hash; }
+  // Backwards-compat alias so the rest of the file can keep calling
+  // parseHash(). The shape of the returned object is unchanged.
+  const parseHash = parsePath;
+
+  // Navigate to a new view. `subPath` looks like '/', '/1', '/1/p/2'.
+  // We use pushState so each view has a real URL the user can copy,
+  // bookmark, or hit refresh on without losing context.
+  function navigate(subPath) {
+    const path = '/apps' + (subPath === '/' || !subPath ? '' : subPath);
+    if (window.location.pathname + window.location.hash === path) {
+      handleRoute();
+      return;
+    }
+    try {
+      window.history.pushState(null, '', path);
+    } catch {
+      // Some embeds disable pushState — fall back to a full nav.
+      window.location.href = path;
+      return;
+    }
+    handleRoute();
+  }
 
   async function handleRoute() {
     const route = parseHash();
@@ -320,21 +361,54 @@
     return renderDetail();
   }
 
+  // Build the topbar. `crumbs` is an array of { label, path } — every
+  // crumb except the last is a clickable back link. `path` is the
+  // sub-route under /apps (e.g. '/' for the list, '/3' for app 3).
+  // Two always-on affordances:
+  //   * "Back to Syruvia" on the far left — full nav to the main app
+  //   * "Apps" crumb — back to the apps list, even when deep in an app
+  // so the user always has at least one way back at every level.
   function topbar(crumbs, actions) {
-    const safeCrumbs = (crumbs || []).map(c => escapeHtml(c)).join('<span class="ap-crumb">&nbsp;/&nbsp;</span>');
+    const list = Array.isArray(crumbs) ? crumbs : [];
+    // Accept legacy callers that passed an array of strings: convert
+    // them to { label } objects so the breadcrumb still renders.
+    const norm = list.map(c => (typeof c === 'string' ? { label: c } : c));
+    // Always lead with an "Apps" crumb that links to the list — gives
+    // the user a one-click back path no matter how deep they are.
+    if (norm.length === 0 || norm[0].label !== 'Apps') {
+      norm.unshift({ label: 'Apps', path: '/' });
+    }
+    const crumbsHtml = norm.map((c, i) => {
+      const isLast = i === norm.length - 1;
+      if (!isLast && c.path !== undefined) {
+        return `<a class="ap-crumb-link" href="/apps${c.path === '/' ? '' : c.path}" data-nav-path="${escapeHtml(c.path)}">${escapeHtml(c.label)}</a>`;
+      }
+      return `<span class="ap-crumb-current">${escapeHtml(c.label)}</span>`;
+    }).join('<span class="ap-crumb-sep">›</span>');
     return `
       <div class="ap-topbar">
-        <a class="ap-back" href="/" title="Back to Syruvia">
+        <a class="ap-back" href="/" title="Back to Syruvia / Tickets">
           <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-          Syruvia
+          <span>Back to Syruvia</span>
         </a>
-        <span class="ap-crumb">/</span>
-        <h1>${safeCrumbs || 'Apps'}</h1>
+        <span class="ap-crumb-sep">›</span>
+        <div class="ap-crumbs">${crumbsHtml}</div>
         <div class="ap-spacer"></div>
         ${actions || ''}
         ${state.me ? `<div class="ap-me">${escapeHtml(state.me.name || state.me.email || '')}</div>` : ''}
       </div>
     `;
+  }
+
+  // Wire breadcrumb crumbs to client-side navigation so back clicks
+  // pushState (no full page reload) like the rest of the app.
+  function bindTopbarEvents() {
+    document.querySelectorAll('.ap-crumb-link[data-nav-path]').forEach(a => {
+      a.onclick = (e) => {
+        e.preventDefault();
+        navigate(a.getAttribute('data-nav-path') || '/');
+      };
+    });
   }
 
   function renderList() {
@@ -392,19 +466,35 @@
         navigate('/' + id);
       });
     });
+    bindTopbarEvents();
   }
 
   function renderDetail() {
     if (state.loading && !state.app) {
-      root.innerHTML = topbar(['Loading…']) + '<div class="ap-boot">Loading app…</div>';
+      root.innerHTML = topbar([{ label: 'Loading…' }]) + '<div class="ap-boot">Loading app…</div>';
+      bindTopbarEvents();
       return;
     }
     if (state.error) {
-      root.innerHTML = topbar(['Error']) + `<div class="ap-main"><div class="ap-card-empty"><h3>Couldn't open app</h3><p>${escapeHtml(state.error)}</p></div></div>`;
+      root.innerHTML = topbar([{ label: 'Error' }]) + `<div class="ap-main"><div class="ap-card-empty"><h3>Couldn't open app</h3><p>${escapeHtml(state.error)}</p></div></div>`;
+      bindTopbarEvents();
       return;
     }
     if (!state.app) return;
     const a = state.app;
+    // Build crumbs based on the current view. Always: Apps › App name › …
+    // The middle (App name) crumb is a link back to the app's dashboard
+    // whenever we're inside a page or ticket; the last crumb is the
+    // current location, not clickable.
+    const detailCrumbs = [{ label: a.name, path: '/' + a.id }];
+    if (state.pageView === 'dashboard') {
+      // Just App name (last crumb, not clickable).
+      detailCrumbs[detailCrumbs.length - 1] = { label: a.name };
+    } else if (state.pageView === 'page' && state.pageDetail) {
+      detailCrumbs.push({ label: state.pageDetail.name });
+    } else if (state.pageView === 'ticket' && state.ticketDetail) {
+      detailCrumbs.push({ label: '#' + state.ticketDetail.id + ' ' + state.ticketDetail.title });
+    }
     const dashActive = state.pageView === 'dashboard';
     const pageList = (a.pages || []).map(p => {
       const isActive = state.pageView === 'page' && p.id === state.selectedPageId;
@@ -423,7 +513,7 @@
     }).join('');
 
     root.innerHTML = `
-      ${topbar([a.name], `
+      ${topbar(detailCrumbs, `
         <button class="btn btn-secondary btn-small" id="ap-edit-app" title="Edit app settings">
           <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           Settings
@@ -480,6 +570,7 @@
       </div>
     `;
     bindDetailEvents();
+    bindTopbarEvents();
   }
 
   function assigneeRow(role, name) {
@@ -2805,12 +2896,20 @@
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────
-  window.addEventListener('hashchange', handleRoute);
+  window.addEventListener('popstate', handleRoute);
+  // Back-compat: anyone who still has an old #-route bookmarked (e.g.
+  // /apps.html#/1/p/2) lands on the legacy URL — quietly rewrite to the
+  // new /apps/1/p/2 form so the address bar matches what the SPA renders.
+  if (window.location.pathname === '/apps.html') {
+    const hash = (window.location.hash || '').replace(/^#/, '');
+    const cleanHash = (hash === '/' || hash === '') ? '' : hash;
+    try { window.history.replaceState(null, '', '/apps' + cleanHash); } catch {}
+  }
   (async () => {
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-17.5 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.1 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();

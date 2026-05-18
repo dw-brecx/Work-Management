@@ -7170,6 +7170,23 @@ app.get(/^\/p\/[A-Za-z0-9_-]+\/?$/, (req, res) => {
   } catch (e) { res.status(404).send('Not found'); }
 });
 
+// /apps and /apps/* — serve the Apps SPA shell (public/apps.html) for any
+// path under /apps so client-side routing can produce proper URLs like
+// /apps/1, /apps/1/p/2, /apps/1/t/3 instead of #-fragments. The static
+// middleware handles /apps.html, /apps.css, /apps.js, and /vendor/* on
+// its own; this catch-all only fires for path-style routes.
+const appsHtmlPath = path.join(__dirname, 'public', 'apps.html');
+app.get(/^\/apps(?:\/.*)?$/, (req, res, next) => {
+  // Don't intercept static asset requests that happen to start with /apps.
+  // The express.static middleware runs before us; anything still here is
+  // a "logical" route the client owns.
+  try {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.send(fs.readFileSync(appsHtmlPath, 'utf8'));
+  } catch (e) { next(); }
+});
+
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 // Registered last, after every API route, so it doesn't intercept genuine
 // /api/* GETs (which previously returned a fake 404 because this handler ran

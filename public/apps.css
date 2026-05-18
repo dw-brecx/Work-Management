@@ -14,13 +14,22 @@ button{font-family:inherit;cursor:pointer;border:none;background:none}
 #ap-app{height:100vh;display:flex;flex-direction:column}
 
 /* ── Topbar ──────────────────────────────────────────────────────────── */
-.ap-topbar{height:56px;background:#fff;border-bottom:1px solid #e3ebf3;display:flex;align-items:center;gap:12px;padding:0 18px;flex-shrink:0}
-.ap-topbar .ap-back{display:inline-flex;align-items:center;gap:6px;color:#475569;font-size:13px;padding:7px 11px;border-radius:8px;transition:background .15s}
-.ap-topbar .ap-back:hover{background:#eef2f8}
-.ap-topbar h1{font-size:16px;font-weight:600;color:#0f172a;margin:0}
-.ap-topbar .ap-crumb{color:#94a3b8;font-size:13px}
+.ap-topbar{height:56px;background:#fff;border-bottom:1px solid #e3ebf3;display:flex;align-items:center;gap:10px;padding:0 18px;flex-shrink:0}
+.ap-topbar .ap-back{display:inline-flex;align-items:center;gap:6px;color:#1e40af;font-size:13px;font-weight:600;padding:8px 13px;border-radius:8px;background:#eff6ff;border:1px solid #dbeafe;transition:all .15s;flex-shrink:0}
+.ap-topbar .ap-back:hover{background:#dbeafe;border-color:#93c5fd;color:#1e3a8a}
+.ap-topbar .ap-back svg{flex-shrink:0}
+.ap-topbar .ap-crumbs{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:500;min-width:0;flex-wrap:wrap}
+.ap-topbar .ap-crumb-link{color:#475569;padding:4px 8px;border-radius:6px;font-weight:500;transition:background .15s;cursor:pointer;text-decoration:none}
+.ap-topbar .ap-crumb-link:hover{background:#f1f5f9;color:#0f172a}
+.ap-topbar .ap-crumb-current{color:#0f172a;font-weight:600;padding:4px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
+.ap-topbar .ap-crumb-sep{color:#cbd5e1;font-size:14px;font-weight:400}
 .ap-topbar .ap-spacer{flex:1}
-.ap-topbar .ap-me{font-size:12px;color:#64748b;padding:6px 10px;background:#f1f5f9;border-radius:7px}
+.ap-topbar .ap-me{font-size:12px;color:#64748b;padding:6px 10px;background:#f1f5f9;border-radius:7px;flex-shrink:0}
+@media(max-width:760px){
+  .ap-topbar .ap-back span{display:none}
+  .ap-topbar .ap-back{padding:8px 10px}
+  .ap-topbar .ap-crumb-current{max-width:160px}
+}
 
 /* ── Buttons ─────────────────────────────────────────────────────────── */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:500;transition:all .15s;border:1px solid transparent}
