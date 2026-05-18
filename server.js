@@ -1558,40 +1558,60 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
       if (status !== undefined && status !== oldStatus) {
         const dot = status === 'Closed' ? TL.close
                   : (oldStatus === 'Closed' ? TL.reopen : TL.status);
-        const verb = status === 'Closed' ? 'closed'
-                   : (oldStatus === 'Closed' ? 'reopened' : `changed status to ${status}`);
-        writeTimeline(req.params.id, dot,
-          oldStatus === 'Closed' && status !== 'Closed'
-            ? `${actor} reopened the ticket`
-            : `${actor} ${verb}${status !== 'Closed' && oldStatus !== 'Closed' ? ` (was ${oldStatus})` : ''}`);
+        // Always include both the old and new value so the audit log
+        // reads as a real "from → to". Close + reopen used to drop the
+        // counterpart; now: "Admin closed the ticket (was In Progress)",
+        // "Admin reopened the ticket (now Open)", same shape as a mid-
+        // workflow status change.
+        let msg;
+        if (status === 'Closed') {
+          msg = `${actor} closed the ticket (was ${oldStatus})`;
+        } else if (oldStatus === 'Closed') {
+          msg = `${actor} reopened the ticket (now ${status})`;
+        } else {
+          msg = `${actor} changed status from ${oldStatus} to ${status}`;
+        }
+        writeTimeline(req.params.id, dot, msg);
       }
       if (assignee !== undefined && assignee !== exists.assignee) {
         writeTimeline(req.params.id, TL.assign,
-          assignee
-            ? `${actor} ${exists.assignee ? `reassigned to ${assignee} (was ${exists.assignee})` : `assigned to ${assignee}`}`
-            : `${actor} unassigned the ticket`);
+          assignee && exists.assignee
+            ? `${actor} changed assignee from ${shortVal(exists.assignee)} to ${shortVal(assignee)}`
+            : (assignee
+                ? `${actor} assigned the ticket to ${shortVal(assignee)} (was unassigned)`
+                : `${actor} removed assignee ${shortVal(exists.assignee)}`));
       }
       if (priority !== undefined && priority !== exists.priority) {
         writeTimeline(req.params.id, TL.priority,
-          `${actor} changed priority to ${priority}${exists.priority ? ` (was ${exists.priority})` : ''}`);
+          exists.priority
+            ? `${actor} changed priority from ${exists.priority} to ${priority}`
+            : `${actor} set priority to ${priority}`);
       }
       if (reqName !== undefined && reqName !== exists.req) {
         writeTimeline(req.params.id, TL.assign,
-          `${actor} changed requester${exists.req ? ` from ${shortVal(exists.req)}` : ''} to ${shortVal(reqName) || '—'}`);
+          exists.req
+            ? `${actor} changed requester from ${shortVal(exists.req)} to ${shortVal(reqName) || '—'}`
+            : `${actor} set requester to ${shortVal(reqName) || '—'}`);
       }
       if (reporter !== undefined && reporter !== exists.reporter) {
         writeTimeline(req.params.id, TL.assign,
-          `${actor} changed reporter${exists.reporter ? ` from ${shortVal(exists.reporter)}` : ''} to ${shortVal(reporter) || '—'}`);
+          exists.reporter
+            ? `${actor} changed reporter from ${shortVal(exists.reporter)} to ${shortVal(reporter) || '—'}`
+            : `${actor} set reporter to ${shortVal(reporter) || '—'}`);
       }
       if (dept !== undefined && dept !== exists.dept) {
         writeTimeline(req.params.id, TL.status,
-          `${actor} moved to ${shortVal(dept)}${exists.dept ? ` (was ${shortVal(exists.dept)})` : ''}`);
+          exists.dept
+            ? `${actor} changed department from ${shortVal(exists.dept)} to ${shortVal(dept) || '—'}`
+            : `${actor} set department to ${shortVal(dept) || '—'}`);
       }
       if (due !== undefined && due !== exists.due) {
         writeTimeline(req.params.id, TL.status,
-          due
-            ? `${actor} ${exists.due ? `changed due date to ${shortVal(due)} (was ${shortVal(exists.due)})` : `set due date to ${shortVal(due)}`}`
-            : `${actor} cleared the due date`);
+          due && exists.due
+            ? `${actor} changed due date from ${shortVal(exists.due)} to ${shortVal(due)}`
+            : (due
+                ? `${actor} set due date to ${shortVal(due)}`
+                : `${actor} cleared the due date (was ${shortVal(exists.due)})`));
       }
       if (tags !== undefined) {
         let oldTags = [];

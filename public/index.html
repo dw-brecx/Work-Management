@@ -9311,12 +9311,17 @@ function startEditDetTitle() {
   h1.dataset.editing = '1';
   const original = t.title || '';
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px';
+  // width:100% is essential — the wrap REPLACES the h1 inside a block-
+  // level container (no parent flex), so without an explicit width the
+  // flex wrap shrinks to fit its buttons and the input ends up ~0px
+  // wide. The user reported "the title gets small / nothing types"
+  // because the visible input field is actually invisible at width 0.
+  wrap.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px;width:100%';
   wrap.innerHTML = `
     <input type="text" id="det-title-input" value="${escapeHtml(original)}"
-           style="flex:1;font-size:18px;font-weight:600;padding:5px 9px;border:1px solid var(--accent);border-radius:6px;outline:none"/>
-    <button id="det-title-save" style="background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px">Save</button>
-    <button id="det-title-cancel" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px;color:var(--text2)">Cancel</button>
+           style="flex:1;min-width:0;font-size:18px;font-weight:600;padding:6px 10px;border:1px solid var(--accent);border-radius:6px;outline:none;background:#fff;color:var(--text)"/>
+    <button id="det-title-save" style="background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px;white-space:nowrap">Save</button>
+    <button id="det-title-cancel" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px;color:var(--text2);white-space:nowrap">Cancel</button>
   `;
   h1.replaceWith(wrap);
   const input = document.getElementById('det-title-input');
@@ -9326,11 +9331,13 @@ function startEditDetTitle() {
   const restore = (newTitle) => {
     const newH1 = document.createElement('h1');
     newH1.id = 'det-title';
-    newH1.title = 'Click to edit';
+    newH1.title = (newTitle || '') + ' (click to edit)';
     newH1.setAttribute('onclick', 'startEditDetTitle()');
     newH1.setAttribute('onmouseenter', "this.style.background='#f5f3ff'");
     newH1.setAttribute('onmouseleave', "this.style.background=''");
-    newH1.style.cssText = 'font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:8px;line-height:1.3;color:var(--text);cursor:pointer;border-radius:6px;padding:2px 4px;transition:background .12s';
+    // Keep the title on one row with ellipsis — matches the inline style on
+    // the original h1 so a saved title doesn't suddenly wrap differently.
+    newH1.style.cssText = 'font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:8px;line-height:1.3;color:var(--text);cursor:pointer;border-radius:6px;padding:2px 4px;transition:background .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%';
     newH1.textContent = newTitle;
     wrap.replaceWith(newH1);
   };
