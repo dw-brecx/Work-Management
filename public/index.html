@@ -4761,7 +4761,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               </button>
             </div>
             <h1 id="det-title" onclick="startEditDetTitle()" title="Click to edit"
-                style="font-size:20px!important;font-weight:600!important;letter-spacing:-.02em!important;margin-bottom:8px;line-height:1.3;color:var(--text);cursor:pointer;border-radius:6px;padding:2px 4px;transition:background .12s"
+                style="font-size:20px!important;font-weight:600!important;letter-spacing:-.02em!important;margin-bottom:8px;line-height:1.3;color:var(--text);cursor:pointer;border-radius:6px;padding:2px 4px;transition:background .12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%"
                 onmouseenter="this.style.background='#f5f3ff'" onmouseleave="this.style.background=''">API Integration for Payment Gateway</h1>
             <div id="det-badges" style="display:flex;gap:6px;flex-wrap:wrap"></div>
           </div>
@@ -8977,7 +8977,14 @@ function renderTicketDetail() {
   // Header
   document.getElementById('det-id').textContent = '#' + t.id;
   document.getElementById('detail-id-bc').textContent = '#' + t.id;
-  document.getElementById('det-title').textContent = t.title;
+  {
+    const _detTitleEl = document.getElementById('det-title');
+    if (_detTitleEl) {
+      _detTitleEl.textContent = t.title;
+      // Title is single-line + ellipsis; expose the full text on hover.
+      _detTitleEl.title = (t.title || '') + ' (click to edit)';
+    }
+  }
 
   // Header badges (+ WorkTrack link chip if any)
   const wtChip = t.worktrackTaskId ? `
