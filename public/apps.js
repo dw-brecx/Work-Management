@@ -1478,6 +1478,37 @@
     if (saveBtn) saveBtn.onclick = () => savePenSnippet(canvas, w, h);
   }
 
+  // Resolve once the iframe is fully loaded and has at least one body
+  // child — or reject after a generous timeout. Handles three cases:
+  //   * iframe already loaded with content (resolves immediately)
+  //   * iframe still loading (waits for the `load` event)
+  //   * 404'ing subresources delaying `load` (polls readyState as a
+  //     fallback so we don't sit forever)
+  async function waitForIframeReady(iframe) {
+    const isReady = () => {
+      try {
+        const d = iframe.contentDocument;
+        return !!(d && d.readyState === 'complete' && d.body && d.body.children.length > 0);
+      } catch { return false; }
+    };
+    if (isReady()) return;
+    await new Promise((resolve, reject) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; clearInterval(poll); clearTimeout(timer); iframe.removeEventListener('load', finish); resolve(); } };
+      const fail = (msg) => { if (!done) { done = true; clearInterval(poll); clearTimeout(timer); iframe.removeEventListener('load', finish); reject(new Error(msg)); } };
+      iframe.addEventListener('load', finish, { once: true });
+      // Poll as a safety net — `load` can be delayed by failing
+      // subresource fetches, and on a re-rendered iframe the load
+      // event may have already fired by the time we attach.
+      const poll = setInterval(() => { if (isReady()) finish(); }, 100);
+      const timer = setTimeout(() => fail('iframe load timed out (10s)'), 10000);
+    });
+    // One extra tick after the document reports "complete" so any
+    // post-load layout / font rendering settles before html2canvas
+    // walks the DOM.
+    await new Promise(r => setTimeout(r, 120));
+  }
+
   // Snapshot the iframe contents into state.penBgImage using html2canvas.
   // Runs in the background after pen mode activates so the user can
   // start drawing immediately on a transparent canvas — the bg fills in
@@ -1504,6 +1535,16 @@
       const iframe = root.querySelector('.ap-preview-frame');
       if (!iframe) throw new Error('Preview iframe not found');
       if (!window.html2canvas) throw new Error('html2canvas not loaded — check /vendor/html2canvas.min.js');
+
+      // Toggling pen mode re-renders the preview pane, which destroys
+      // and recreates the iframe — meaning the iframe is freshly
+      // loading when we get here and its body is empty. Wait for the
+      // load event (or until the body actually has content) before
+      // letting html2canvas walk it. Without this guard, captures
+      // come back as a blank canvas because the design hasn't
+      // populated yet.
+      await waitForIframeReady(iframe);
+
       const doc = iframe.contentDocument;
       if (!doc || !doc.body) throw new Error('Cannot access iframe content');
 
@@ -2769,7 +2810,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-17.4 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-17.5 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
