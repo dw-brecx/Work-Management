@@ -11346,7 +11346,46 @@ function _mdRender(text) {
     .replace(/(^|\W)_([^_\n]+)_(\W|$)/g, '$1<em>$2</em>$3')
     .replace(/`([^`\n]+)`/g, '<code style="background:#f1f5f9;padding:1px 6px;border-radius:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:90%">$1</code>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
+  // Step 4: auto-link bare URLs (http://, https://, www.) and bare email
+  // addresses anywhere outside an existing <a> tag. Tokenize by anchors
+  // so we don't double-wrap markdown links from Step 3, and trailing
+  // punctuation (., comma, ;, !, ?, ), ]) is split off the URL so it
+  // doesn't get pulled into the link target.
+  html = _autoLinkHtml(html);
   return html;
+}
+function _autoLinkHtml(html) {
+  const out = [];
+  let i = 0;
+  const anchorRe = /<a\b[^>]*>[\s\S]*?<\/a>/gi;
+  let m;
+  while ((m = anchorRe.exec(html)) !== null) {
+    out.push(_autoLinkPlain(html.slice(i, m.index)));
+    out.push(m[0]);
+    i = m.index + m[0].length;
+  }
+  out.push(_autoLinkPlain(html.slice(i)));
+  return out.join('');
+}
+function _autoLinkPlain(s) {
+  // URL → anchor. Capture trailing punctuation separately so it stays
+  // outside the link. The pattern matches http(s)://, www., and bare
+  // domain.tld occurrences inside a word boundary.
+  s = s.replace(
+    /(\bhttps?:\/\/[^\s<]+?|\bwww\.[^\s<]+?)([.,;:!?)\]]*)(?=\s|$|<)/gi,
+    (full, url, trail) => {
+      const href = url.startsWith('http') ? url : 'https://' + url;
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline;word-break:break-all">${url}</a>${trail}`;
+    }
+  );
+  // Bare email → mailto:. Same trailing-punct guard.
+  s = s.replace(
+    /(\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})([.,;:!?)\]]*)(?=\s|$|<)/gi,
+    (full, addr, trail) => {
+      return `<a href="mailto:${addr}" style="color:var(--accent);text-decoration:underline">${addr}</a>${trail}`;
+    }
+  );
+  return s;
 }
 window._mdRender = _mdRender;
 
