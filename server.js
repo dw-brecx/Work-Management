@@ -4405,12 +4405,17 @@ function gcalFeedBaseUrl(req) {
 app.get('/api/calendar/sync-info', requireAuth, async (req, res) => {
   try {
     const token = await gcalEnsureToken(req.session.userId);
-    const u = await get('SELECT gcal_feed_sources_json FROM users WHERE id=?', req.session.userId);
+    const u = await get('SELECT gcal_feed_sources_json, gcal_feed_last_fetched_at FROM users WHERE id=?', req.session.userId);
     const sources = gcalParseSources(u?.gcal_feed_sources_json);
     res.json({
       token,
       url: `${gcalFeedBaseUrl(req)}/api/calendar/feed/${token}.ics`,
       sources,
+      // The timestamp the feed was last pulled by *any* external client
+      // (Google, Apple, Outlook, manual curl…). The Sync-Now UI uses
+      // this to honestly tell the user whether their feed has been
+      // picked up yet, and roughly when Google polled last.
+      lastFetchedAt: (u && u.gcal_feed_last_fetched_at) || '',
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -4646,6 +4651,13 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
     const user = await get('SELECT id, name, email, gcal_feed_sources_json FROM users WHERE gcal_feed_token=?', token);
     if (!user) return res.status(404).type('text/plain').send('Not found');
     const sources = gcalParseSources(user.gcal_feed_sources_json);
+    // Stamp the fetch so the in-app Sync-Now UI can honestly tell the
+    // user when Google last polled. Fire-and-forget — a failure here
+    // must never block the actual feed response.
+    run(
+      "UPDATE users SET gcal_feed_last_fetched_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?",
+      user.id
+    ).catch(() => {});
 
     const events = [];
 

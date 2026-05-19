@@ -5210,10 +5210,15 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <h1 style="font-size:20px;font-weight:600;margin-bottom:2px">Calendar</h1>
             <p style="font-size:12px;color:var(--text2)">Plan tasks, tickets, deadlines, and meetings in one place.</p>
           </div>
-          <button class="btn-sec" style="font-size:12px;padding:7px 12px;display:inline-flex;align-items:center;gap:6px" onclick="window.location.href='/calendar-sync.html'" title="Subscribe Google / Apple / Outlook Calendar to this workspace">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            Sync to Google Calendar
-          </button>
+          <div style="display:inline-flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-primary" style="font-size:12px;padding:7px 14px;display:inline-flex;align-items:center;gap:6px" onclick="openSyncNowModal()" title="Show Google poll status and force-refresh steps so events appear right away">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Sync now
+            </button>
+            <button class="btn-sec" style="font-size:12px;padding:7px 12px;display:inline-flex;align-items:center;gap:6px" onclick="window.location.href='/calendar-sync.html'" title="Subscribe URL + per-source toggles">
+              Sync settings
+            </button>
+          </div>
         </div>
         <div style="padding:10px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <button onclick="prevMonth()" class="btn-sec" style="padding:5px 10px;font-size:14px">‹</button>
@@ -7020,6 +7025,48 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
 <!-- CREATE EVENT MODAL -->
 <!-- CALENDAR STATS MODAL (Meetings / Tasks Due / Deadlines this week) -->
+<!-- "Sync now" modal — honest about Google's poll cadence and gives a
+     one-click path to force a refresh (remove + re-add the URL in
+     Google Calendar). Populated by openSyncNowModal() each time it's
+     shown so the "last picked up by Google" timestamp is live. -->
+<div id="modal-sync-now" class="modal-overlay">
+  <div class="modal" style="width:540px">
+    <div class="modal-header">
+      <span class="modal-title">Sync to Google Calendar</span>
+      <button class="modal-close" onclick="closeModal('sync-now')">×</button>
+    </div>
+    <p style="font-size:12.5px;color:var(--text2);line-height:1.6;margin:0 0 12px">
+      Your subscribe feed is always live — every event you create here is
+      already in it. Google polls subscribed calendars on its own clock
+      (usually every 4–12 hours), so new events <em>do</em> arrive
+      automatically, just not instantly.
+    </p>
+    <div id="sn-status" style="background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:12px;color:var(--text2);margin-bottom:14px">Loading…</div>
+    <div style="font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px">Your subscribe URL</div>
+    <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+      <input id="sn-url" type="text" readonly style="flex:1;min-width:220px;font-family:monospace;font-size:11.5px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text)"/>
+      <button class="btn-sec" id="sn-copy-btn" style="font-size:12px;padding:8px 12px" onclick="copySyncUrl()">Copy URL</button>
+    </div>
+    <div style="font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px">Force Google to pull right now</div>
+    <ol style="margin:0 0 14px 18px;padding:0;font-size:12px;color:var(--text2);line-height:1.65">
+      <li>Open <a href="https://calendar.google.com/calendar/u/0/r/settings/calendar" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">Google Calendar settings</a>.</li>
+      <li>Find <strong>Syruvia · &lt;your name&gt;</strong> in the left sidebar (under <em>Settings for other calendars</em>), open it, scroll down, and click <strong>Unsubscribe</strong>.</li>
+      <li>Go to <a href="https://calendar.google.com/calendar/u/0/r/settings/addbyurl" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">Add calendar → From URL</a> and paste the URL above. Google does a fresh pull on subscribe, so every new event lands within seconds.</li>
+    </ol>
+    <p style="font-size:11.5px;color:var(--text3);line-height:1.55;margin:0">
+      The unsubscribe + re-add dance is the only way today — Google's API
+      doesn't let outside apps trigger a per-calendar refresh. A real
+      "Sync now that runs in the background" needs the upcoming
+      Connect-Google integration, which can write events directly via
+      the Google Calendar API.
+    </p>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('sync-now')">Close</button>
+      <a class="btn-primary" style="font-size:12px;padding:9px 16px;text-decoration:none;display:inline-flex;align-items:center;gap:6px" href="https://calendar.google.com" target="_blank" rel="noopener">Open Google Calendar →</a>
+    </div>
+  </div>
+</div>
+
 <div id="modal-cal-stats" class="modal-overlay">
   <div class="modal" style="width:520px;max-height:80vh;display:flex;flex-direction:column">
     <div class="modal-header">
@@ -7137,14 +7184,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap">
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px">
       <button id="ev-delete-btn" class="btn-sec" style="font-size:12px;padding:9px 14px;color:var(--red);border-color:#fecaca;display:none" onclick="deleteCurrentEvent()">Delete</button>
-      <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;margin-left:auto">
         <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('create-event')">Cancel</button>
-        <button class="btn-sec" style="font-size:12px;padding:9px 14px;display:inline-flex;align-items:center;gap:6px" onclick="saveAndPushEventToGoogle()" title="Save here and open Google Calendar with this event pre-filled — one click to add it there too">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-          Save &amp; push to Google
-        </button>
         <button class="btn-primary" style="font-size:12px;padding:9px 16px" onclick="saveEvent()">Save Event</button>
       </div>
     </div>
@@ -14150,22 +14193,12 @@ function renderDayEventsModal() {
     }
 
     const rowClick = isTicketType ? '' : `onclick="openEditEventModalFromDay(${realIdx})"`;
-    // "Push to Google" works for every event type. Ticket rows push the
-    // ticket itself (with title, priority, due date, description, and a
-    // click-through URL); event rows push the meeting/task/deadline
-    // (and if it's linked to a ticket, the description includes that
-    // ticket's URL + summary as well).
-    const pushBtn = `<button class="day-evt-action-btn" onclick="event.stopPropagation();pushEventToGoogle('${escapeAttr(selectedDayKey)}', ${realIdx})" title="Open Google Calendar with this event pre-filled — one click to add it there">↗ Push to Google</button>`;
     const trailing = isTicketType
       ? `<div class="day-evt-actions">
           ${ticketId ? `<button class="day-evt-action-btn primary" onclick="event.stopPropagation();openTicketFromDayEvents('${escapeAttr(ticketId)}')" title="Open ticket detail">↗ Open ticket</button>` : ''}
-          ${pushBtn}
           <button class="day-evt-action-btn" onclick="event.stopPropagation();openEditEventModalFromDay(${realIdx})" title="Edit schedule on calendar">✎ Edit schedule</button>
         </div>`
-      : `<div class="day-evt-actions">
-          ${pushBtn}
-          <div class="day-evt-arrow">›</div>
-        </div>`;
+      : `<div class="day-evt-arrow">›</div>`;
 
     return `
       <div class="day-evt-row ${isTicketType ? 'is-ticket' : ''}" ${rowClick}>
@@ -14282,182 +14315,75 @@ function closeAndRefresh() {
   if (currentPage === 'calendar') buildCalendar();
 }
 
-// ── Push to Google Calendar (no OAuth required) ────────────────────────────
-// Opens Google Calendar's pre-filled event-creation URL in a new tab.
-// Works in two modes:
-//   - With a saved event (object from CAL_EVENTS): pulls title/time/
-//     attendees/location/description directly from the object.
-//   - Without (called from the create modal "Save & push" button): the
-//     caller passes the same shape we'd save locally.
-// Note: this is a true "push" — the event lands in the user's Google
-// Calendar permanently. It does NOT depend on the ICS subscribe feed.
-// Two-way sync (changes flowing back) still needs the OAuth API
-// integration; this is the practical bridge until then.
-function _gcalIsoUtc(d) {
-  if (!(d instanceof Date) || isNaN(d.getTime())) return null;
-  const pad = n => String(n).padStart(2, '0');
-  return d.getUTCFullYear()
-       + pad(d.getUTCMonth() + 1)
-       + pad(d.getUTCDate())
-       + 'T'
-       + pad(d.getUTCHours())
-       + pad(d.getUTCMinutes())
-       + pad(d.getUTCSeconds())
-       + 'Z';
-}
-function _gcalDateOnly(d) {
-  if (!(d instanceof Date) || isNaN(d.getTime())) return null;
-  const pad = n => String(n).padStart(2, '0');
-  return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
-}
-// Parse the calendar's 0-indexed-month date key "YYYY-M-D" into a Date.
-// Mirrors the server-side _icsParseDateKey so the client builds the same
-// time slot the ICS feed would.
-function _parseCalDateKey(key) {
-  if (!key) return null;
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(key).trim());
-  if (!m) return null;
-  return { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]) };  // mo is 0-indexed
-}
-function pushEventToGoogle(evtOrKey, idxIfKey) {
-  // Resolve the event whether we got a (key, idx) pair or a direct
-  // object. Synthetic ticket-due rows aren't stored in CAL_EVENTS —
-  // they're computed by _calEventsForKey at render time, mixed in
-  // with stored events. Use that combined view (when available) so
-  // pushing a ticket-type row hits the right element.
-  let evt = evtOrKey;
-  let dateKey = null;
-  if (typeof evtOrKey === 'string') {
-    dateKey = evtOrKey;
-    const combined = (typeof window._calEventsForKey === 'function')
-      ? window._calEventsForKey(dateKey)
-      : (CAL_EVENTS[dateKey] || []);
-    evt = combined[idxIfKey || 0];
-  } else if (evt && evt.__dateKey) {
-    dateKey = evt.__dateKey;
-  }
-  if (!evt) { if (typeof toast === 'function') toast('Could not find that event.', 'err'); return; }
-
-  // dateKey isn't always carried by the object, so let the caller pass it
-  // via the second arg or via evt.__dateKey. Without it we can't compute
-  // a Date for timed events — fall back to all-day on today.
-  const parts = _parseCalDateKey(dateKey);
-  const params = new URLSearchParams();
-  params.set('text', evt.title || evt.label || 'Event');
-
-  // Build the dates= param. Google's syntax:
-  //   timed:   YYYYMMDDTHHMMSSZ/YYYYMMDDTHHMMSSZ
-  //   all-day: YYYYMMDD/YYYYMMDD  (end is exclusive, so next day)
-  let datesParam = '';
-  if (parts) {
-    if (evt.allDay || !evt.startTime) {
-      const start = new Date(parts.y, parts.mo, parts.d);
-      const next  = new Date(parts.y, parts.mo, parts.d + 1);
-      datesParam = `${_gcalDateOnly(start)}/${_gcalDateOnly(next)}`;
-    } else {
-      const tm = /^(\d{1,2}):(\d{2})/.exec(String(evt.startTime).trim());
-      if (tm) {
-        const hh = Number(tm[1]), mm = Number(tm[2]);
-        const start = new Date(parts.y, parts.mo, parts.d, hh, mm, 0);
-        let end;
-        if (evt.endTime) {
-          const tm2 = /^(\d{1,2}):(\d{2})/.exec(String(evt.endTime).trim());
-          if (tm2) end = new Date(parts.y, parts.mo, parts.d, Number(tm2[1]), Number(tm2[2]), 0);
-        }
-        if (!end || isNaN(end.getTime()) || end <= start) {
-          end = new Date(start.getTime() + 15 * 60 * 1000);  // matches new default
-        }
-        datesParam = `${_gcalIsoUtc(start)}/${_gcalIsoUtc(end)}`;
+// ── "Sync now" modal on the calendar page ─────────────────────────────────
+// Pops a small modal showing the user's subscribe URL, the live "last
+// picked up by Google" timestamp, and the one-time unsubscribe + re-add
+// dance that forces an immediate poll. Honest about why we can't push a
+// real "sync now" without OAuth — that's the next-phase Google Calendar
+// API integration.
+async function openSyncNowModal() {
+  const statusEl = document.getElementById('sn-status');
+  const urlEl = document.getElementById('sn-url');
+  if (statusEl) statusEl.textContent = 'Loading…';
+  if (urlEl) urlEl.value = '';
+  if (typeof openModal === 'function') openModal('sync-now');
+  try {
+    const info = await apiGet('/api/calendar/sync-info');
+    if (urlEl) urlEl.value = info.url || '';
+    if (statusEl) {
+      if (!info.lastFetchedAt) {
+        statusEl.innerHTML = '<strong>Status:</strong> Google hasn\'t pulled this feed yet. ' +
+          'After your first subscribe Google does an immediate fetch, then polls on its own schedule.';
+      } else {
+        const d = new Date(String(info.lastFetchedAt).replace(' ', 'T') + 'Z');
+        const ago = _humanAgo(d);
+        statusEl.innerHTML = '<strong>Last picked up by Google:</strong> ' + (ago || 'just now') +
+          ' (' + d.toLocaleString() + ')';
       }
     }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Could not load sync status — please refresh.';
   }
-  if (datesParam) params.set('dates', datesParam);
-
-  // Description: keep the user's notes plus any join link, attendee list,
-  // and (when present) the linked-ticket URL — mirroring what the ICS
-  // feed includes for the same event. The ticket link is the key thing
-  // the recipient often needs after the meeting.
-  const descLines = [];
-  if (Array.isArray(evt.attendees) && evt.attendees.length) {
-    descLines.push('Attendees: ' + evt.attendees.join(', '));
-  }
-  if (evt.location && /^https?:\/\//i.test(evt.location)) {
-    descLines.push(`Join link: ${evt.location}`);
-  }
-  // Synthetic ticket-type events carry `ticketId`; user-created events
-  // linked to a ticket carry `linkedTicketId`. Surface either.
-  const linkedTicket = evt.ticketId || evt.linkedTicketId || null;
-  if (linkedTicket) {
-    const tkt = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []).find(t => t.id === linkedTicket);
-    const ttl = tkt && tkt.title ? ` · ${tkt.title}` : '';
-    descLines.push(`Linked ticket: ${linkedTicket}${ttl}`);
-    descLines.push(`Open ticket: ${location.origin}/tickets/${encodeURIComponent(linkedTicket)}`);
-    // Add ticket detail (priority, status, assignees, description) so the
-    // event in Google Calendar carries the same info as the ticket page.
-    if (tkt) {
-      const lines = [];
-      if (tkt.priority) lines.push(`Priority: ${tkt.priority}`);
-      if (tkt.status)   lines.push(`Status: ${tkt.status}`);
-      const asgns = (Array.isArray(tkt.assignees) ? tkt.assignees : []).filter(Boolean);
-      if (asgns.length) lines.push(`Assignees: ${asgns.join(', ')}`);
-      else if (tkt.assignee) lines.push(`Assignee: ${tkt.assignee}`);
-      if (tkt.dept)     lines.push(`Dept: ${tkt.dept}`);
-      if (tkt.due)      lines.push(`Due: ${tkt.due}`);
-      if (lines.length) descLines.push(lines.join(' · '));
-      if (tkt.description) { descLines.push(''); descLines.push(tkt.description); }
-    }
-  }
-  if (evt.desc || evt.description) {
-    if (descLines.length) descLines.push('');
-    descLines.push(evt.desc || evt.description);
-  }
-  if (descLines.length) params.set('details', descLines.join('\n'));
-
-  if (evt.location) params.set('location', evt.location);
-
-  // Attendees → emails via TEAM_DATA (Google's add= takes a comma list).
-  const emails = (evt.attendees || [])
-    .map(n => (TEAM_DATA.find(m => m.name === n) || {}).email)
-    .filter(Boolean);
-  if (emails.length) params.set('add', emails.join(','));
-
-  const url = 'https://calendar.google.com/calendar/r/eventedit?' + params.toString();
-  window.open(url, '_blank', 'noopener');
 }
-window.pushEventToGoogle = pushEventToGoogle;
+window.openSyncNowModal = openSyncNowModal;
 
-// "Save & push" button on the create/edit modal — saves locally first
-// (so the event lives in this app), then opens Google's editor with the
-// same details pre-filled so the user clicks one more Save and it's in
-// Google Calendar too.
-async function saveAndPushEventToGoogle() {
-  // Capture the form values up front because saveEvent() closes the modal
-  // and resets state before we'd otherwise be able to read them.
-  const title = (document.getElementById('ev-title')?.value || '').trim();
-  if (!title) { alert('Please enter an event title.'); return; }
-  const dateRaw = document.getElementById('ev-date').value;
-  if (!dateRaw) { alert('Please pick a date.'); return; }
-  const dateKey = (typeof eventDateKeyFromInput === 'function') ? eventDateKeyFromInput(dateRaw) : null;
-  const allDay = document.getElementById('ev-allday').checked;
-  const evt = {
-    title,
-    desc: (document.getElementById('ev-desc')?.value || '').trim(),
-    allDay,
-    startTime: allDay ? '' : document.getElementById('ev-time-start').value,
-    endTime:   allDay ? '' : document.getElementById('ev-time-end').value,
-    location:  (document.getElementById('ev-location')?.value || '').trim(),
-    attendees: Array.from(evSelectedAttendees || []),
-    // Carry the linked-ticket id through so the Google event gets the
-    // ticket URL + summary in its description, the way you asked for.
-    linkedTicketId: (typeof evSelectedTicketId !== 'undefined' && evSelectedTicketId) ? evSelectedTicketId : null,
-    __dateKey: dateKey,
-  };
-  // Save first so the event is persisted locally + server-side …
-  if (typeof saveEvent === 'function') saveEvent();
-  // … then open Google with the pre-filled editor.
-  pushEventToGoogle(evt);
+function copySyncUrl() {
+  const el = document.getElementById('sn-url');
+  if (!el) return;
+  const btn = document.getElementById('sn-copy-btn');
+  const reset = () => { if (btn) { btn.textContent = 'Copy URL'; } };
+  try {
+    navigator.clipboard.writeText(el.value).then(() => {
+      if (btn) { btn.textContent = 'Copied!'; setTimeout(reset, 1500); }
+    }).catch(() => {
+      el.select(); document.execCommand('copy');
+      if (btn) { btn.textContent = 'Copied!'; setTimeout(reset, 1500); }
+    });
+  } catch {
+    el.select();
+    try { document.execCommand('copy'); if (btn) { btn.textContent = 'Copied!'; setTimeout(reset, 1500); } } catch {}
+  }
 }
-window.saveAndPushEventToGoogle = saveAndPushEventToGoogle;
+window.copySyncUrl = copySyncUrl;
+
+// Tiny "3 hours ago" formatter — keep it local so the Sync-Now modal
+// doesn't drag in moment.js / Intl.RelativeTimeFormat just for this.
+function _humanAgo(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+  const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (sec < 45) return 'just now';
+  if (sec < 90) return 'a minute ago';
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} minutes ago`;
+  if (min < 90) return 'an hour ago';
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} hours ago`;
+  const days = Math.round(hr / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${days} days ago`;
+  return d.toLocaleDateString();
+}
+
 
 async function deleteCurrentEvent() {
   if (editingEventKey == null || editingEventIdx == null) return;
