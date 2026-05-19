@@ -274,13 +274,23 @@
   input[type=checkbox]{width:14px;height:14px;accent-color:var(--accent);cursor:pointer}
   label{font-size:11px;color:var(--text2);display:block;margin-bottom:4px}
 
-  /* MODAL */
-  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:20000;align-items:center;justify-content:center}
-  .modal-overlay.open{display:flex}
-  .modal{background:var(--card);border-radius:14px;padding:24px;width:460px;max-width:95vw;border:1px solid var(--border)}
+  /* MODAL — every popup uses this pattern: a centered card on a dimmed,
+     slightly-blurred backdrop, with a gentle fade+scale on open. */
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.46);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);z-index:20000;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;overflow-y:auto}
+  .modal-overlay.open{display:flex;animation:modal-overlay-in .18s ease-out}
+  .modal{background:var(--card);border-radius:16px;padding:24px;width:460px;max-width:95vw;max-height:calc(100vh - 48px);overflow-y:auto;border:1px solid var(--border);box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);margin:auto;animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1)}
   .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
   .modal-title{font-size:15px;font-weight:600;color:var(--text)}
-  .modal-close{background:none;border:none;cursor:pointer;color:var(--text3);font-size:20px;line-height:1;padding:0}
+  .modal-close{background:none;border:none;cursor:pointer;color:var(--text3);font-size:20px;line-height:1;padding:4px 8px;border-radius:6px;transition:background .12s,color .12s}
+  .modal-close:hover{background:var(--bg2);color:var(--text)}
+  @keyframes modal-overlay-in{from{opacity:0}to{opacity:1}}
+  @keyframes modal-card-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+  /* Normalize the few legacy popups whose outer element is not .modal-overlay
+     so they still land in the middle of the page with the same backdrop. */
+  #modal-reminder-edit,#modal-reminder-daily,#modal-feedback-create{position:fixed!important;inset:0!important;z-index:20000!important;align-items:center!important;justify-content:center!important;padding:24px!important;box-sizing:border-box!important;background:rgba(15,23,42,.46)!important;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);overflow-y:auto}
+  #modal-reminder-edit:not([style*="display:none"]),#modal-reminder-daily:not([style*="display:none"]),#modal-feedback-create:not([style*="display:none"]){display:flex!important}
+  #modal-reminder-edit > .modal-overlay,#modal-reminder-daily > .modal-overlay,#modal-feedback-create > .modal-overlay{display:none!important}
+  #modal-reminder-edit > .modal-content,#modal-reminder-daily > .modal-content,#modal-feedback-create > .modal-content{margin:auto;max-height:calc(100vh - 48px);overflow-y:auto;background:var(--card);border-radius:16px;border:1px solid var(--border);box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1)}
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .form-row{margin-bottom:11px}
 
@@ -4177,6 +4187,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
       Snoozed <span class="badge" id="nav-snoozed-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" data-page="recurring">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      Recurring Tasks
+    </div>
 
     <!-- ── Personal ── -->
     <div class="sb-divider"></div>
@@ -5473,6 +5487,21 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
+    <!-- ========== RECURRING TASKS PAGE ========== -->
+    <div id="page-recurring" class="page">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:6px;flex-wrap:wrap">
+        <h1 style="font-size:20px;font-weight:600;margin:0">Recurring Tasks</h1>
+        <button class="btn-primary" style="font-size:12px;padding:7px 14px" onclick="openRecurringTaskModal()">+ New Recurring Task</button>
+      </div>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:14px;max-width:760px">
+        Set up a task that should fire on a schedule — every month on a specific date, once a week, or every N days. Each recurring task can hold one or many ticket templates; when the schedule fires, every template is created as a fresh ticket, each routed to its own assignee.
+      </p>
+      <div id="recurring-list" style="display:flex;flex-direction:column;gap:12px;max-width:920px"></div>
+      <div id="recurring-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">
+        No recurring tasks yet. Click <strong>+ New Recurring Task</strong> to set one up.
+      </div>
+    </div>
+
     <!-- ========== DOCS (workspace document store) ========== -->
     <!-- Two states share the same page id: list view and editor view.
          loadDocsPage() and openDoc() flip between them via display. -->
@@ -6630,6 +6659,66 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   </div>
 </div>
 
+<!-- CREATE / EDIT RECURRING TASK MODAL -->
+<div id="modal-recurring-task" class="modal-overlay">
+  <div class="modal" style="width:680px">
+    <div class="modal-header">
+      <span class="modal-title" id="rt-modal-title">New Recurring Task</span>
+      <button class="modal-close" onclick="closeModal('recurring-task')">×</button>
+    </div>
+    <input type="hidden" id="rt-id" value=""/>
+    <div class="form-row"><label>Name *</label><input type="text" id="rt-name" placeholder="e.g. Monthly inventory check"/></div>
+    <div class="form-row"><label>Description</label><textarea id="rt-desc" placeholder="What does this recurring task cover?" style="height:64px;resize:vertical"></textarea></div>
+    <div class="form-grid">
+      <div class="form-row"><label>First start date *</label><input type="date" id="rt-start"/></div>
+      <div class="form-row">
+        <label>Recurrence *</label>
+        <select id="rt-recur-type" onchange="rtUpdateRecurOptions()">
+          <option value="monthly_same">Every month on the start-date's day</option>
+          <option value="monthly_day">Every month on a specific day</option>
+          <option value="weekly">Once a week</option>
+          <option value="every_n_days">Every N days</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row" id="rt-opt-monthly-day" style="display:none">
+      <label>Day of the month (1–31)</label>
+      <input type="number" id="rt-recur-day" min="1" max="31" placeholder="e.g. 15"/>
+      <div style="font-size:10.5px;color:var(--text3);margin-top:4px">If the month has fewer days (e.g. day 31 in February) it will fire on the last day of that month.</div>
+    </div>
+    <div class="form-row" id="rt-opt-weekly" style="display:none">
+      <label>Weekday</label>
+      <select id="rt-recur-weekday">
+        <option value="0">Sunday</option>
+        <option value="1">Monday</option>
+        <option value="2">Tuesday</option>
+        <option value="3">Wednesday</option>
+        <option value="4">Thursday</option>
+        <option value="5">Friday</option>
+        <option value="6">Saturday</option>
+      </select>
+    </div>
+    <div class="form-row" id="rt-opt-every-n" style="display:none">
+      <label>Every (days)</label>
+      <input type="number" id="rt-recur-interval" min="1" max="365" placeholder="e.g. 3"/>
+    </div>
+
+    <div class="ticket-extra-box" style="margin-top:6px">
+      <div class="ticket-extra-head">
+        <span class="ticket-extra-title">Tickets to create on each run</span>
+        <span style="font-size:10px;color:var(--text3)">Add as many as you need</span>
+      </div>
+      <div id="rt-items" style="display:flex;flex-direction:column;gap:10px"></div>
+      <button type="button" class="add-checklist-btn" onclick="rtAddItem()">+ Add another ticket</button>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn-sec" style="flex:1;padding:10px" onclick="closeModal('recurring-task')">Cancel</button>
+      <button class="btn-primary" style="flex:2;padding:10px;justify-content:center" onclick="saveRecurringTask()">Save Recurring Task</button>
+    </div>
+  </div>
+</div>
+
 
 <!-- INVITE MEMBER MODAL -->
 <div id="modal-invite-member" class="modal-overlay">
@@ -7309,6 +7398,7 @@ window.PAGE_PATHS = {
   'notifications':'/notifications',
   'mentioned':   '/mentioned',
   'snoozed':     '/snoozed',
+  'recurring':   '/recurring',
   'docs':         '/docs',
   'chat':        '/chat',
   'planning':    '/planning',
@@ -7377,6 +7467,7 @@ function navigate(page, opts) {
       'notifications': 'Notifications',
       'mentioned': 'Mentioned',
       'snoozed': 'Snoozed',
+      'recurring': 'Recurring Tasks',
       'docs': 'Docs',
       'chat': 'Chat',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
@@ -7394,6 +7485,7 @@ function navigate(page, opts) {
   if (page === 'calendar') buildCalendar();
   if (page === 'planning') renderPlans();
   if (page === 'snoozed' && typeof loadSnoozedPage === 'function') loadSnoozedPage();
+  if (page === 'recurring' && typeof loadRecurringTasksPage === 'function') loadRecurringTasksPage();
   if (page === 'notifications' && typeof renderNotifPage === 'function') renderNotifPage();
   if (page === 'mentioned' && typeof loadMentionedPage === 'function') loadMentionedPage();
   if (page === 'flavors') renderFlavors();
@@ -13011,6 +13103,247 @@ function saveTicket() {
   }
 
   alert(`Ticket ${newId} created successfully!`);
+}
+
+// ============ RECURRING TASKS ============
+// A "recurring task" is a schedule + a list of ticket templates. When the
+// schedule fires, each template is materialized as a fresh ticket (one per
+// template, each with its own assignee). The server cron does the firing —
+// the client just CRUDs the schedule + templates.
+
+let RECURRING_TASKS = [];
+
+async function loadRecurringTasksPage() {
+  const list  = document.getElementById('recurring-list');
+  const empty = document.getElementById('recurring-empty');
+  if (!list) return;
+  list.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:18px 0;text-align:center">Loading…</div>';
+  try {
+    RECURRING_TASKS = await apiGet('/api/recurring-tasks');
+  } catch (e) {
+    list.innerHTML = '<div style="color:#dc2626;font-size:12px;padding:18px 0;text-align:center">Failed to load. Please refresh.</div>';
+    return;
+  }
+  renderRecurringTasks();
+}
+
+function rtRecurDescribe(rt) {
+  if (rt.recur_type === 'monthly_same') return 'Every month on day ' + new Date(rt.start_date + 'T00:00:00').getDate();
+  if (rt.recur_type === 'monthly_day')  return 'Every month on day ' + (rt.recur_day || '—');
+  if (rt.recur_type === 'weekly') {
+    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    return 'Every ' + (days[rt.recur_weekday] || '—');
+  }
+  if (rt.recur_type === 'every_n_days') return 'Every ' + (rt.recur_interval || '?') + ' day' + ((rt.recur_interval||0) === 1 ? '' : 's');
+  return rt.recur_type;
+}
+
+function renderRecurringTasks() {
+  const list  = document.getElementById('recurring-list');
+  const empty = document.getElementById('recurring-empty');
+  if (!list) return;
+  if (!RECURRING_TASKS.length) { list.innerHTML = ''; empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  list.innerHTML = RECURRING_TASKS.map(rt => {
+    const items = rt.items || [];
+    const itemsHtml = items.length
+      ? items.map(it => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg2);border-radius:8px;font-size:12px">
+            <span style="flex:1;color:var(--text);font-weight:500">${escapeHtml(it.title || '(untitled ticket)')}</span>
+            <span style="color:var(--text3);font-size:11px">${escapeHtml(it.assignee || '— unassigned')}</span>
+            <span class="badge-status ${({'High':'p-h','Medium':'p-m','Low':'p-l','Urgent':'p-u'})[it.priority] || 'p-m'}" style="font-size:9px">${escapeHtml(it.priority || 'Medium')}</span>
+          </div>`).join('')
+      : '<div style="color:var(--text3);font-size:11.5px;padding:8px 0">No ticket templates yet — edit to add some.</div>';
+    return `
+      <div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;background:var(--card)">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:240px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:14px;font-weight:600;color:var(--text)">${escapeHtml(rt.name || '(untitled)')}</span>
+              ${rt.active ? '<span class="badge-status s-open" style="font-size:9px">ACTIVE</span>' : '<span class="badge-status s-oh" style="font-size:9px">PAUSED</span>'}
+            </div>
+            ${rt.description ? `<div style="font-size:11.5px;color:var(--text2);margin-top:3px">${escapeHtml(rt.description)}</div>` : ''}
+            <div style="font-size:11px;color:var(--text3);margin-top:6px">
+              ${escapeHtml(rtRecurDescribe(rt))} · Next: <strong style="color:var(--text2)">${escapeHtml(rt.next_run_date || '—')}</strong>
+              ${rt.last_run_date ? ' · Last: ' + escapeHtml(rt.last_run_date) : ''}
+              · ${items.length} ticket${items.length === 1 ? '' : 's'} per run
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="rtToggleActive(${rt.id})">${rt.active ? 'Pause' : 'Resume'}</button>
+            <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="rtRunNow(${rt.id})">Run now</button>
+            <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="openRecurringTaskModal(${rt.id})">Edit</button>
+            <button class="btn-sec" style="font-size:11px;padding:5px 10px;border-color:#fecaca;color:#dc2626" onclick="rtDelete(${rt.id})">Delete</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">${itemsHtml}</div>
+      </div>`;
+  }).join('');
+}
+
+function rtUpdateRecurOptions() {
+  const t = document.getElementById('rt-recur-type').value;
+  document.getElementById('rt-opt-monthly-day').style.display = (t === 'monthly_day')   ? '' : 'none';
+  document.getElementById('rt-opt-weekly').style.display      = (t === 'weekly')         ? '' : 'none';
+  document.getElementById('rt-opt-every-n').style.display     = (t === 'every_n_days')   ? '' : 'none';
+}
+
+function rtItemRowHtml(item) {
+  item = item || {};
+  const teamOpts = (TEAM_DATA || []).map(m =>
+    `<option value="${escapeHtml(m.name)}" ${m.name === item.assignee ? 'selected' : ''}>${escapeHtml(m.name)}</option>`
+  ).join('');
+  const prio = item.priority || 'Medium';
+  return `
+    <div class="rt-item" style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--bg2)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:11px;color:var(--text3);font-weight:600">Ticket template</span>
+        <button type="button" class="checklist-remove" style="margin-left:auto" onclick="rtRemoveItem(this)">×</button>
+      </div>
+      <div class="form-row"><label>Title *</label><input type="text" class="rt-it-title" placeholder="e.g. Run monthly inventory audit" value="${escapeHtml(item.title || '')}"/></div>
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Assignee *</label>
+          <select class="rt-it-assignee"><option value="">— Select —</option>${teamOpts}</select>
+        </div>
+        <div class="form-row">
+          <label>Priority</label>
+          <select class="rt-it-priority">
+            <option ${prio==='Urgent'?'selected':''}>Urgent</option>
+            <option ${prio==='High'?'selected':''}>High</option>
+            <option ${prio==='Medium'?'selected':''}>Medium</option>
+            <option ${prio==='Low'?'selected':''}>Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row"><label>Department</label><input type="text" class="rt-it-dept" placeholder="e.g. Engineering" value="${escapeHtml(item.dept || '')}"/></div>
+      <div class="form-row"><label>Description</label><textarea class="rt-it-desc" placeholder="Details for this ticket…" style="height:54px;resize:vertical">${escapeHtml(item.description || '')}</textarea></div>
+    </div>`;
+}
+
+function rtAddItem(item) {
+  const wrap = document.getElementById('rt-items');
+  if (!wrap) return;
+  wrap.insertAdjacentHTML('beforeend', rtItemRowHtml(item));
+}
+
+function rtRemoveItem(btn) {
+  const row = btn.closest('.rt-item');
+  if (row) row.remove();
+}
+
+function openRecurringTaskModal(id) {
+  const modal = document.getElementById('modal-recurring-task');
+  const titleEl = document.getElementById('rt-modal-title');
+  const itemsWrap = document.getElementById('rt-items');
+  // Reset
+  document.getElementById('rt-id').value = '';
+  document.getElementById('rt-name').value = '';
+  document.getElementById('rt-desc').value = '';
+  document.getElementById('rt-start').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('rt-recur-type').value = 'monthly_same';
+  document.getElementById('rt-recur-day').value = '';
+  document.getElementById('rt-recur-weekday').value = '1';
+  document.getElementById('rt-recur-interval').value = '';
+  itemsWrap.innerHTML = '';
+  rtUpdateRecurOptions();
+
+  if (id) {
+    const rt = RECURRING_TASKS.find(x => x.id === id);
+    if (rt) {
+      titleEl.textContent = 'Edit Recurring Task';
+      document.getElementById('rt-id').value = rt.id;
+      document.getElementById('rt-name').value = rt.name || '';
+      document.getElementById('rt-desc').value = rt.description || '';
+      document.getElementById('rt-start').value = rt.start_date || '';
+      document.getElementById('rt-recur-type').value = rt.recur_type || 'monthly_same';
+      if (rt.recur_day != null)      document.getElementById('rt-recur-day').value = rt.recur_day;
+      if (rt.recur_weekday != null)  document.getElementById('rt-recur-weekday').value = String(rt.recur_weekday);
+      if (rt.recur_interval != null) document.getElementById('rt-recur-interval').value = rt.recur_interval;
+      rtUpdateRecurOptions();
+      (rt.items || []).forEach(rtAddItem);
+    }
+  } else {
+    titleEl.textContent = 'New Recurring Task';
+  }
+  if (!itemsWrap.children.length) rtAddItem();
+  modal.classList.add('open');
+}
+
+async function saveRecurringTask() {
+  const id = document.getElementById('rt-id').value || null;
+  const name = document.getElementById('rt-name').value.trim();
+  if (!name) { alert('Please enter a name.'); return; }
+  const startDate = document.getElementById('rt-start').value;
+  if (!startDate) { alert('Please pick a first start date.'); return; }
+  const recurType = document.getElementById('rt-recur-type').value;
+  const payload = {
+    name,
+    description: document.getElementById('rt-desc').value.trim(),
+    start_date: startDate,
+    recur_type: recurType,
+    recur_day: recurType === 'monthly_day' ? parseInt(document.getElementById('rt-recur-day').value, 10) : null,
+    recur_weekday: recurType === 'weekly' ? parseInt(document.getElementById('rt-recur-weekday').value, 10) : null,
+    recur_interval: recurType === 'every_n_days' ? parseInt(document.getElementById('rt-recur-interval').value, 10) : null,
+    items: [],
+  };
+  if (recurType === 'monthly_day' && (!payload.recur_day || payload.recur_day < 1 || payload.recur_day > 31)) {
+    alert('Please pick a day of the month between 1 and 31.'); return;
+  }
+  if (recurType === 'every_n_days' && (!payload.recur_interval || payload.recur_interval < 1)) {
+    alert('Please enter how many days between runs.'); return;
+  }
+
+  const rows = document.querySelectorAll('#rt-items .rt-item');
+  for (const row of rows) {
+    const title = row.querySelector('.rt-it-title').value.trim();
+    const assignee = row.querySelector('.rt-it-assignee').value;
+    if (!title) { alert('Every ticket template needs a title.'); return; }
+    if (!assignee) { alert('Every ticket template needs an assignee.'); return; }
+    payload.items.push({
+      title,
+      assignee,
+      priority: row.querySelector('.rt-it-priority').value || 'Medium',
+      dept: row.querySelector('.rt-it-dept').value.trim() || '',
+      description: row.querySelector('.rt-it-desc').value.trim() || '',
+    });
+  }
+  if (!payload.items.length) { alert('Please add at least one ticket template.'); return; }
+
+  try {
+    if (id) await apiPut('/api/recurring-tasks/' + id, payload);
+    else    await apiPost('/api/recurring-tasks', payload);
+    closeModal('recurring-task');
+    await loadRecurringTasksPage();
+  } catch (e) {
+    alert('Could not save: ' + (e.message || 'unknown error'));
+  }
+}
+
+async function rtToggleActive(id) {
+  const rt = RECURRING_TASKS.find(x => x.id === id);
+  if (!rt) return;
+  try {
+    await apiPut('/api/recurring-tasks/' + id, { active: rt.active ? 0 : 1 });
+    await loadRecurringTasksPage();
+  } catch { alert('Could not update.'); }
+}
+
+async function rtRunNow(id) {
+  if (!confirm('Run this recurring task now? Tickets will be created immediately.')) return;
+  try {
+    const r = await apiPost('/api/recurring-tasks/' + id + '/run-now', {});
+    if (r && r.created != null) alert('Created ' + r.created + ' ticket(s).');
+    await loadRecurringTasksPage();
+  } catch { alert('Could not run now.'); }
+}
+
+async function rtDelete(id) {
+  if (!confirm('Delete this recurring task? Already-created tickets will remain.')) return;
+  try {
+    await apiDel('/api/recurring-tasks/' + id);
+    await loadRecurringTasksPage();
+  } catch { alert('Could not delete.'); }
 }
 
 
@@ -21134,6 +21467,7 @@ window.refreshPageData = refreshPageData;
     'notifications':'/notifications',
     'mentioned':   '/mentioned',
     'snoozed':     '/snoozed',
+    'recurring':   '/recurring',
   'docs':         '/docs',
   'chat':        '/chat',
     'planning':    '/planning',
