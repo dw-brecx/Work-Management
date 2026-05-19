@@ -65,7 +65,7 @@
       const revoke = el('button', {
         class: 'btn danger',
         onclick: async () => {
-          if (!confirm('Revoke this token? Any add-on using it will stop working.')) return;
+          if (!await uiConfirm('Revoke this token? Any add-on using it will stop working.')) return;
           revoke.disabled = true;
           try { await api('/api/api-tokens/' + t.id, { method: 'DELETE' }); await loadTokens(); }
           catch (e) { alert(e.message); revoke.disabled = false; }

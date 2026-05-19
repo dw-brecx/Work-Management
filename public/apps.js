@@ -1361,7 +1361,7 @@
     const delBtn = document.getElementById('ap-page-delete');
     if (delBtn) {
       delBtn.onclick = async () => {
-        if (!confirm('Delete this page? Comments and functions on it will be removed too.')) return;
+        if (!await uiConfirm('Delete this page? Comments and functions on it will be removed too.')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id);
           state.app.pages = state.app.pages.filter(p => p.id !== state.pageDetail.id);
@@ -1940,7 +1940,7 @@
     root.querySelectorAll('[data-act="delete-pin"]').forEach(el => {
       el.onclick = async () => {
         const aid = Number(el.getAttribute('data-aid'));
-        if (!confirm('Delete this pin?')) return;
+        if (!await uiConfirm('Delete this pin?')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations/' + aid);
           state.annotations = state.annotations.filter(x => x.id !== aid);
@@ -1960,7 +1960,7 @@
       el.onclick = async () => {
         const aid = Number(el.getAttribute('data-aid'));
         const att = Number(el.getAttribute('data-att'));
-        if (!confirm('Remove this attachment?')) return;
+        if (!await uiConfirm('Remove this attachment?')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/annotations/' + aid + '/attachments/' + att);
           const ann = state.annotations.find(x => x.id === aid);
@@ -2298,7 +2298,7 @@
     root.querySelectorAll('[data-act="delete-todo"]').forEach(el => {
       el.onclick = async () => {
         const tid = Number(el.getAttribute('data-tid'));
-        if (!confirm('Delete this to-do?')) return;
+        if (!await uiConfirm('Delete this to-do?')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/todos/' + tid);
           state.todos = state.todos.filter(x => x.id !== tid);
@@ -2345,7 +2345,7 @@
     const delBtn = document.getElementById('ap-ticket-delete');
     if (delBtn) {
       delBtn.onclick = async () => {
-        if (!confirm('Delete this ticket? All comments will be removed too.')) return;
+        if (!await uiConfirm('Delete this ticket? All comments will be removed too.')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/tickets/' + t.id);
           state.tickets = state.tickets.filter(x => x.id !== t.id);
@@ -2390,7 +2390,7 @@
     root.querySelectorAll('[data-act="del-tc"]').forEach(el => {
       el.onclick = async () => {
         const cid = Number(el.getAttribute('data-cid'));
-        if (!confirm('Delete this comment?')) return;
+        if (!await uiConfirm('Delete this comment?')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/tickets/' + t.id + '/comments/' + cid);
           state.ticketDetail.comments = state.ticketDetail.comments.filter(x => x.id !== cid);
@@ -2572,7 +2572,7 @@
         };
       } else if (act === 'delete') {
         el.onclick = async () => {
-          if (!confirm('Delete this comment?')) return;
+          if (!await uiConfirm('Delete this comment?')) return;
           try {
             await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/comments/' + cid);
             state.comments = state.comments.filter(x => x.id !== Number(cid));
@@ -2649,7 +2649,7 @@
     root.querySelectorAll('[data-act="delete-fn"]').forEach(el => {
       el.onclick = async () => {
         const fid = Number(el.getAttribute('data-fid'));
-        if (!confirm('Delete this function?')) return;
+        if (!await uiConfirm('Delete this function?')) return;
         try {
           await api('DELETE', '/api/apps/' + state.app.id + '/pages/' + state.pageDetail.id + '/functions/' + fid);
           state.functions = state.functions.filter(x => x.id !== fid);
@@ -2734,7 +2734,7 @@
     modal.onclick = (e) => { if (e.target === modal) closeModal(); };
     if (editing) {
       document.getElementById('m-delete').onclick = async () => {
-        if (!confirm('Delete this app? This soft-deletes it and hides all pages, comments, and functions.')) return;
+        if (!await uiConfirm('Delete this app? This soft-deletes it and hides all pages, comments, and functions.')) return;
         try {
           await api('DELETE', '/api/apps/' + existing.id);
           closeModal();

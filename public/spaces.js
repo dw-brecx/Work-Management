@@ -292,7 +292,7 @@
         ev.stopPropagation();
         const sp = state.spaces.find(s => s.id === id);
         if (!sp) return;
-        if (!confirm(`Delete "${sp.name}"? This removes all items and cannot be undone.`)) return;
+        if (!await uiConfirm(`Delete "${sp.name}"? This removes all items and cannot be undone.`)) return;
         try { await db.deleteSpace(id); toast('Space deleted'); openListView(); }
         catch (e) { toast(e.message || 'Delete failed'); }
       };
@@ -686,7 +686,7 @@
     };
     tb.querySelector('[data-pen-action=clear]').onclick = async () => {
       if (!state.strokes.length) return;
-      if (!confirm('Erase the whole whiteboard?')) return;
+      if (!await uiConfirm('Erase the whole whiteboard?')) return;
       state.strokes = [];
       renderStrokes();
       saveWhiteboard();
@@ -1228,7 +1228,7 @@
     });
     menu.querySelector('[data-action=delete]').onclick = async () => {
       menu.remove();
-      if (!confirm('Delete this item?')) return;
+      if (!await uiConfirm('Delete this item?')) return;
       try {
         await db.deleteSpaceItem(state.activeSpaceId, item.id);
         state.items = state.items.filter(i => i.id !== item.id);

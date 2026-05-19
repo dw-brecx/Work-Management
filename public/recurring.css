@@ -387,6 +387,261 @@ textarea { resize: vertical; min-height: 56px; }
 .rt-modal-actions .btn-sec { flex: 1; justify-content: center; padding: 10px; }
 .rt-modal-actions .btn-primary { flex: 2; justify-content: center; padding: 10px; }
 
+/* Wider variant for the full-featured ticket template modal. */
+.modal-wide { width: 760px !important; }
+@media (max-width: 820px) { .modal-wide { width: 95vw !important; } }
+
+/* Hint text under inputs */
+.rt-hint {
+  font-size: 10.5px;
+  color: var(--text3);
+  margin-top: 4px;
+}
+.rt-muted { color: var(--text3); font-weight: 400; }
+
+/* Callout box inside the schedule modal */
+.rt-callout {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  color: #1e40af;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+@media (prefers-color-scheme: dark) {
+  .rt-callout { background: rgba(59,130,246,.08); border-color: rgba(59,130,246,.35); color: #93c5fd; }
+}
+
+/* Detail view meta block */
+.rt-detail-meta {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--card);
+  margin-bottom: 18px;
+}
+.rt-detail-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rt-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--text2);
+  background: var(--bg2);
+  border-radius: 7px;
+  padding: 4px 10px;
+}
+.rt-meta-chip strong { color: var(--text); margin-left: 4px; }
+.rt-detail-desc {
+  font-size: 12.5px;
+  color: var(--text2);
+  margin-top: 10px;
+  line-height: 1.55;
+}
+.rt-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.rt-section-divider {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.rt-section-divider-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rt-section-divider-hint {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+/* Template (ticket) cards in the detail view */
+.rt-tpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rt-tpl-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--card);
+  transition: box-shadow .14s ease, transform .12s ease;
+}
+.rt-tpl-card:hover {
+  box-shadow: 0 6px 18px -10px rgba(15,23,42,.16);
+  transform: translateY(-1px);
+}
+.rt-tpl-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.rt-tpl-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rt-tpl-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 6px;
+  align-items: center;
+  font-size: 11.5px;
+}
+.rt-tpl-meta { color: var(--text2); }
+.rt-tpl-desc {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+.rt-tpl-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.rt-tpl-checklist {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text2);
+}
+.rt-tpl-checklist li { margin: 2px 0; }
+.rt-tpl-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* Chips (assignees, tags) */
+.rt-chips-input {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px;
+  background: var(--card);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+}
+.rt-chips-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.rt-chips-add { position: relative; }
+.rt-chips-textbox {
+  border: none !important;
+  background: transparent !important;
+  outline: none;
+  flex: 1;
+  min-width: 100px;
+  padding: 4px !important;
+  font-size: 12px;
+  box-shadow: none !important;
+}
+.rt-empty-chips { font-size: 11.5px; padding: 2px 4px; }
+
+.rt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #e0e7ff;
+  color: #3730a3;
+  border-radius: 14px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.rt-chip-static { background: #e0e7ff; color: #3730a3; }
+.rt-chip-tag    { background: #ecfeff; color: #155e75; }
+.rt-chip-x {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  opacity: .65;
+}
+.rt-chip-x:hover { opacity: 1; }
+
+/* Popover (assignee picker) */
+.rt-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  z-index: 50;
+  width: 240px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px -10px rgba(15,23,42,.22);
+  padding: 6px;
+}
+.rt-popover input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  outline: none;
+}
+.rt-popover input:focus { border-color: var(--accent); }
+.rt-popover-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.rt-popover-item {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rt-popover-item:hover { background: var(--bg2); }
+.rt-popover-empty {
+  padding: 12px 8px;
+  font-size: 11.5px;
+  color: var(--text3);
+  text-align: center;
+}
+
+/* Checklist editor rows */
+.rt-checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.rt-checklist-row input[type=text] { flex: 1; }
+
 /* Toast */
 #rt-toast {
   position: fixed;

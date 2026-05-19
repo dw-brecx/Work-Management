@@ -7742,10 +7742,15 @@ function rtInitialNextRunDate(rt) {
   return rt.start_date;
 }
 
-// Allocate a unique TKT-#### id and INSERT a single ticket row. Used by the
-// recurring cron and by the manual "Run now" endpoint. Returns the new id,
-// or throws if allocation fails after a few retries.
-async function rtSpawnOneTicket({ title, description, assignee, priority, dept, createdById, requesterName }) {
+// Allocate a unique TKT-#### id and INSERT one regular workspace ticket
+// from a recurring-task template. The spawned row goes through the same
+// schema as a manually-created ticket: multi-assignee, reporter, tags,
+// checklist subtasks, description, and a due date computed as today +
+// `due_offset_days`. Each named assignee that isn't the creator also gets
+// an in-app `notifications` row. Returns the new TKT-### id.
+async function rtSpawnOneTicket(item, ctx) {
+  // Allocate id with a tiny retry loop — matches POST /api/tickets so two
+  // cron passes never collide.
   let id = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
@@ -7755,27 +7760,64 @@ async function rtSpawnOneTicket({ title, description, assignee, priority, dept, 
     if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
   }
   if (!id) throw new Error('could not allocate ticket id');
+
   const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const assigneeUid = assignee ? await resolveUserIdByName(assignee) : null;
-  const requesterUid = createdById || null;
-  await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
-    id, title, requesterName || '', assignee || '', requesterName || '',
-    priority || 'Medium', 'Open', dept || '', '', createdStr, 0, '[]',
-    createdById || null, assigneeUid, requesterUid, requesterUid);
+  // Due date = today + due_offset_days, formatted to match how POST
+  // /api/tickets stores its dates (long human-readable string).
+  const offset = Number.isFinite(item.due_offset_days) ? Math.max(0, item.due_offset_days) : 7;
+  const dueDate = new Date(Date.now() + offset * 86400000);
+  const dueStr = dueDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const assignees = Array.isArray(item.assignees) ? item.assignees : (item.assignee ? [item.assignee] : []);
+  const primaryAssignee = assignees[0] || '';
+  const assigneeUid = primaryAssignee ? await resolveUserIdByName(primaryAssignee) : null;
+  const reporterName = item.reporter || ctx.creatorName || '';
+  const reporterUid = reporterName ? await resolveUserIdByName(reporterName) : null;
+  const requesterName = ctx.creatorName || '';
+  const requesterUid = ctx.creatorId || null;
+
+  await run(
+    `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
+    id, item.title, requesterName, primaryAssignee, reporterName,
+    item.priority || 'Medium', 'Open', item.dept || '',
+    dueStr, createdStr, 0, JSON.stringify(item.tags || []),
+    ctx.creatorId || null, assigneeUid, reporterUid, requesterUid
+  );
   await run(
     `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
        ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
-    id, description || ''
+    id, item.description || ''
   );
-  if (assignee) {
-    await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, assignee, assigneeUid);
-    if (assigneeUid && assigneeUid !== createdById) {
+  // Multi-assignee fan-out + per-assignee in-app notification. The cron
+  // intentionally skips email/Slack/push for these — they'd flood inboxes
+  // every cycle for daily/weekly schedules. The in-app dot is enough.
+  for (const name of assignees) {
+    if (!name) continue;
+    const uid = await resolveUserIdByName(name);
+    await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, name, uid);
+    if (uid && uid !== ctx.creatorId) {
       await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-        assigneeUid, 'assigned', '🔁', `Recurring task created "${title}" and assigned it to you`, id);
+        uid, 'assigned', '🔁', `Recurring task spawned "${item.title}" and assigned it to you`, id);
     }
   }
-  try { writeTimeline(id, TL.create, `Ticket spawned by recurring task${assignee ? ` · assigned to ${assignee}` : ''}`); } catch {}
+  // Checklist → real subtask rows on the spawned ticket. Mirrors what
+  // POST /api/tickets does for create-modal checklists.
+  const checklist = Array.isArray(item.checklist) ? item.checklist : [];
+  let pos = 1;
+  for (const c of checklist) {
+    const text = (typeof c === 'string' ? c : (c && c.text) || '').trim();
+    if (!text) continue;
+    await run(
+      `INSERT INTO ticket_subtasks (ticket_id, position, text, done, assignee) VALUES (?,?,?,?,?)`,
+      id, pos++, text, c && c.done ? 1 : 0, primaryAssignee
+    );
+  }
+  try {
+    writeTimeline(id, TL.create,
+      `Ticket spawned by recurring task "${ctx.recurringName || ''}"${primaryAssignee ? ` · assigned to ${primaryAssignee}` : ''}`
+    );
+  } catch {}
   return id;
 }
 
@@ -7784,18 +7826,16 @@ async function rtSpawnOneTicket({ title, description, assignee, priority, dept, 
 // blocks the rest of the run.
 async function rtProcessOne(rt) {
   try {
-    const items = await all('SELECT * FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+    const rows = await all('SELECT * FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+    const items = rows.map(rtHydrateItem);
     const creator = rt.created_by ? await getUser(rt.created_by) : null;
+    const ctx = {
+      creatorId: rt.created_by || null,
+      creatorName: creator?.name || '',
+      recurringName: rt.name || '',
+    };
     for (const it of items) {
-      await rtSpawnOneTicket({
-        title: it.title,
-        description: it.description,
-        assignee: it.assignee,
-        priority: it.priority,
-        dept: it.dept,
-        createdById: rt.created_by || null,
-        requesterName: creator?.name || '',
-      });
+      await rtSpawnOneTicket(it, ctx);
     }
     const today = rtTodayUTC();
     const next = rtComputeNextRunDate(rt, today);
@@ -7823,9 +7863,39 @@ async function runRecurringTasksJob() {
   } catch (e) { console.error('[cron:recurring]', e.message); }
 }
 
+// Normalize stored JSON-array columns into arrays before sending to the
+// client. Bad/legacy rows just become [] rather than throwing.
+function rtParseJsonArray(s) {
+  try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+
+// Map a raw DB row from recurring_task_items into the client-shaped object.
+// Keeps `assignee` (singular legacy column) as the first assignee when the
+// new assignees_json is empty, so legacy rows stay usable.
+function rtHydrateItem(r) {
+  let assignees = rtParseJsonArray(r.assignees_json);
+  if (!assignees.length && r.assignee) assignees = [r.assignee];
+  return {
+    id: r.id,
+    position: r.position,
+    title: r.title || '',
+    description: r.description || '',
+    assignees,
+    assignee: assignees[0] || '',
+    reporter: r.reporter || '',
+    priority: r.priority || 'Medium',
+    dept: r.dept || '',
+    tags: rtParseJsonArray(r.tags_json),
+    checklist: rtParseJsonArray(r.checklist_json),
+    due_offset_days: r.due_offset_days == null ? 7 : Number(r.due_offset_days),
+  };
+}
+
 // Read a recurring task + its items into a single object for the client.
 async function rtHydrate(rt) {
-  const items = await all('SELECT id, position, title, description, assignee, priority, dept FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+  const rows = await all('SELECT * FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+  const items = rows.map(rtHydrateItem);
   return {
     id: rt.id,
     name: rt.name,
@@ -7860,6 +7930,56 @@ app.get('/api/recurring-tasks/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Sanitize an incoming item payload from the client. Strings get trimmed,
+// arrays get clamped to arrays of strings, due_offset_days is bounded.
+// Returns null when the item is missing a title (caller filters those out).
+function rtCleanItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const title = String(raw.title || '').trim();
+  if (!title) return null;
+  const description = String(raw.description || '');
+  // Accept either { assignees:[…] } (preferred) or { assignee:"…" } (legacy).
+  let assignees = Array.isArray(raw.assignees)
+    ? raw.assignees.map(s => String(s || '').trim()).filter(Boolean)
+    : [];
+  if (!assignees.length && raw.assignee) {
+    const a = String(raw.assignee).trim();
+    if (a) assignees = [a];
+  }
+  // Dedupe while preserving order.
+  assignees = Array.from(new Set(assignees));
+  const reporter = String(raw.reporter || '').trim();
+  const dept = String(raw.dept || '').trim();
+  const allowedPriority = ['Urgent', 'High', 'Medium', 'Low'];
+  const priority = allowedPriority.includes(raw.priority) ? raw.priority : 'Medium';
+  const tags = Array.isArray(raw.tags)
+    ? raw.tags.map(s => String(s || '').trim()).filter(Boolean)
+    : [];
+  // Checklist items can come as strings or { text, done } objects.
+  const checklist = Array.isArray(raw.checklist)
+    ? raw.checklist.map(c => {
+        if (typeof c === 'string') return { text: c.trim(), done: false };
+        return { text: String((c && c.text) || '').trim(), done: !!(c && c.done) };
+      }).filter(c => c.text)
+    : [];
+  const dueOffset = parseInt(raw.due_offset_days, 10);
+  const due_offset_days = Number.isFinite(dueOffset) && dueOffset >= 0 && dueOffset <= 3650 ? dueOffset : 7;
+  return { title, description, assignees, reporter, priority, dept, tags, checklist, due_offset_days };
+}
+
+// Insert one cleaned item under the given recurring task. Returns the new id.
+async function rtInsertItem(recurringTaskId, position, c) {
+  const ins = await run(
+    `INSERT INTO recurring_task_items (recurring_task_id, position, title, description, assignee, assignees_json, reporter, priority, dept, tags_json, checklist_json, due_offset_days)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    recurringTaskId, position, c.title, c.description,
+    c.assignees[0] || '', JSON.stringify(c.assignees),
+    c.reporter, c.priority, c.dept,
+    JSON.stringify(c.tags), JSON.stringify(c.checklist), c.due_offset_days
+  );
+  return Number(ins.lastInsertRowid);
+}
+
 // Validate + clamp recurrence fields from the request body. Returns the
 // sanitized fields (the caller still has to apply them).
 function rtCleanRecurFields(body) {
@@ -7876,7 +7996,6 @@ app.post('/api/recurring-tasks', requireAuth, async (req, res) => {
     const { name, description, start_date, items } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(start_date || ''))) return res.status(400).json({ error: 'start_date required (YYYY-MM-DD)' });
-    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'At least one ticket template is required' });
     const r = rtCleanRecurFields(req.body);
     const draft = { start_date, ...r };
     const next_run_date = rtInitialNextRunDate(draft);
@@ -7889,18 +8008,79 @@ app.post('/api/recurring-tasks', requireAuth, async (req, res) => {
       next_run_date, req.session.userId
     );
     const id = Number(ins.lastInsertRowid);
-    let pos = 1;
-    for (const it of items) {
-      if (!it || !it.title || !String(it.title).trim()) continue;
-      await run(
-        `INSERT INTO recurring_task_items (recurring_task_id, position, title, description, assignee, priority, dept) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        id, pos++, String(it.title).trim(), String(it.description || ''),
-        String(it.assignee || ''), String(it.priority || 'Medium'), String(it.dept || '')
-      );
+    // Items at creation time are now optional — the UI's preferred flow is
+    // "save the schedule, then open it and add tickets like a project".
+    if (Array.isArray(items)) {
+      let pos = 1;
+      for (const raw of items) {
+        const c = rtCleanItem(raw);
+        if (c) await rtInsertItem(id, pos++, c);
+      }
     }
     const row = await get('SELECT * FROM recurring_tasks WHERE id=?', id);
     res.status(201).json(await rtHydrate(row));
   } catch (e) { console.error('[recurring:create]', e); res.status(500).json({ error: e.message }); }
+});
+
+// Granular item endpoints — used by the detail view when you add, edit, or
+// remove one template at a time (the "like adding sub-tickets to a project"
+// flow). The bulk-replace path on PUT /api/recurring-tasks/:id still works
+// for clients that want to send the whole list in one shot.
+
+app.get('/api/recurring-tasks/:id/items', requireAuth, async (req, res) => {
+  try {
+    const rt = await get('SELECT id FROM recurring_tasks WHERE id=?', req.params.id);
+    if (!rt) return res.status(404).json({ error: 'Not found' });
+    const rows = await all('SELECT * FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+    res.json(rows.map(rtHydrateItem));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/recurring-tasks/:id/items', requireAuth, async (req, res) => {
+  try {
+    const rt = await get('SELECT id FROM recurring_tasks WHERE id=?', req.params.id);
+    if (!rt) return res.status(404).json({ error: 'Not found' });
+    const c = rtCleanItem(req.body);
+    if (!c) return res.status(400).json({ error: 'title required' });
+    const maxRow = await get('SELECT COALESCE(MAX(position), 0) AS p FROM recurring_task_items WHERE recurring_task_id=?', rt.id);
+    const pos = Number(maxRow?.p || 0) + 1;
+    const itemId = await rtInsertItem(rt.id, pos, c);
+    const row = await get('SELECT * FROM recurring_task_items WHERE id=?', itemId);
+    res.status(201).json(rtHydrateItem(row));
+  } catch (e) { console.error('[recurring:item-create]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/recurring-tasks/:id/items/:itemId', requireAuth, async (req, res) => {
+  try {
+    const row = await get('SELECT * FROM recurring_task_items WHERE id=? AND recurring_task_id=?', req.params.itemId, req.params.id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    res.json(rtHydrateItem(row));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/recurring-tasks/:id/items/:itemId', requireAuth, async (req, res) => {
+  try {
+    const existing = await get('SELECT * FROM recurring_task_items WHERE id=? AND recurring_task_id=?', req.params.itemId, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const c = rtCleanItem(req.body);
+    if (!c) return res.status(400).json({ error: 'title required' });
+    await run(
+      `UPDATE recurring_task_items SET title=?, description=?, assignee=?, assignees_json=?, reporter=?, priority=?, dept=?, tags_json=?, checklist_json=?, due_offset_days=? WHERE id=?`,
+      c.title, c.description, c.assignees[0] || '', JSON.stringify(c.assignees),
+      c.reporter, c.priority, c.dept,
+      JSON.stringify(c.tags), JSON.stringify(c.checklist), c.due_offset_days,
+      existing.id
+    );
+    const row = await get('SELECT * FROM recurring_task_items WHERE id=?', existing.id);
+    res.json(rtHydrateItem(row));
+  } catch (e) { console.error('[recurring:item-update]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/recurring-tasks/:id/items/:itemId', requireAuth, async (req, res) => {
+  try {
+    await run('DELETE FROM recurring_task_items WHERE id=? AND recurring_task_id=?', req.params.itemId, req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/recurring-tasks/:id', requireAuth, async (req, res) => {
@@ -7935,19 +8115,15 @@ app.put('/api/recurring-tasks/:id', requireAuth, async (req, res) => {
       `UPDATE recurring_tasks SET name=?, description=?, start_date=?, recur_type=?, recur_day=?, recur_weekday=?, recur_interval=?, next_run_date=?, active=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
       name, description, start_date, recur_type, recur_day, recur_weekday, recur_interval, next_run_date, active, id
     );
-    // If items array was sent, replace the whole template list. Item editing
-    // is always full-replace (no per-item PATCH) — the UI sends back the
-    // entire list every save anyway.
+    // If items array was sent, replace the whole template list. The detail
+    // view normally edits items one at a time via the granular endpoints,
+    // but this bulk path stays available for callers that want it.
     if (Array.isArray(b.items)) {
       await run('DELETE FROM recurring_task_items WHERE recurring_task_id=?', id);
       let pos = 1;
-      for (const it of b.items) {
-        if (!it || !it.title || !String(it.title).trim()) continue;
-        await run(
-          `INSERT INTO recurring_task_items (recurring_task_id, position, title, description, assignee, priority, dept) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          id, pos++, String(it.title).trim(), String(it.description || ''),
-          String(it.assignee || ''), String(it.priority || 'Medium'), String(it.dept || '')
-        );
+      for (const raw of b.items) {
+        const c = rtCleanItem(raw);
+        if (c) await rtInsertItem(id, pos++, c);
       }
     }
     const row = await get('SELECT * FROM recurring_tasks WHERE id=?', id);
