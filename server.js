@@ -4700,13 +4700,24 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
 
         // Compose a richer description so the recipient sees the same
         // context they'd have inside the app — attendee list, the
-        // join-link if it's a video meeting, and the original notes.
+        // join-link if it's a video meeting, the linked-ticket URL
+        // (so Google viewers can jump straight to the ticket in
+        // Syruvia from the event details), and the original notes.
         const descLines = [];
         if (t === 'meeting' && attendees.length) {
           descLines.push('Attendees: ' + attendees.map(a => a.email ? `${a.name || ''} <${a.email}>` : (a.name || '')).filter(Boolean).join(', '));
         }
         if (location && /^https?:\/\//i.test(location)) {
           descLines.push(`Join link: ${location}`);
+        }
+        if (r.linked_ticket_id) {
+          // Pull the ticket title so the line reads "TKT-1234 · Fix login"
+          // instead of just the id. Best-effort — if the ticket was
+          // deleted out from under the event we still emit the id.
+          const linked = await get('SELECT title FROM tickets WHERE id=? AND deleted_at IS NULL', r.linked_ticket_id);
+          const ttl = linked && linked.title ? ` · ${linked.title}` : '';
+          descLines.push(`Linked ticket: ${r.linked_ticket_id}${ttl}`);
+          descLines.push(`Open ticket: ${_icsTicketUrl(req, r.linked_ticket_id)}`);
         }
         if (baseDesc) {
           if (descLines.length) descLines.push('');
@@ -4724,6 +4735,10 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
           t === 'deadline'? 'Deadline': 'Event';
         const transparency = (t === 'task') ? 'TRANSPARENT' : 'OPAQUE';
 
+        // When the event is linked to a ticket, the event's URL property
+        // points at the ticket so the Google Calendar event header
+        // itself becomes a click-through to Syruvia.
+        const eventUrl = r.linked_ticket_id ? _icsTicketUrl(req, r.linked_ticket_id) : null;
         if (r.all_day || !r.start_time) {
           const date = icsDateOnly(r.date_key);
           events.push(icsAllDay({
@@ -4731,6 +4746,7 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
             organizer, attendees,
             categories, transparency,
             status: 'CONFIRMED',
+            url: eventUrl,
           }));
         } else {
           const startDate = icsDateTimeUTC(r.date_key, r.start_time);
@@ -4740,6 +4756,7 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
             organizer, attendees,
             categories, transparency,
             status: 'CONFIRMED',
+            url: eventUrl,
           }));
         }
       }

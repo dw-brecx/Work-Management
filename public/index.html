@@ -14150,15 +14150,16 @@ function renderDayEventsModal() {
     }
 
     const rowClick = isTicketType ? '' : `onclick="openEditEventModalFromDay(${realIdx})"`;
-    // Build a "Push to Google" button for non-ticket events. For ticket-
-    // type rows we already have two actions (Open + Edit schedule); the
-    // push lives in the regular event-edit modal for those.
-    const pushBtn = !isTicketType
-      ? `<button class="day-evt-action-btn" onclick="event.stopPropagation();pushEventToGoogle('${escapeAttr(selectedDayKey)}', ${realIdx})" title="Open Google Calendar with this event pre-filled — one click to add it there">↗ Push to Google</button>`
-      : '';
+    // "Push to Google" works for every event type. Ticket rows push the
+    // ticket itself (with title, priority, due date, description, and a
+    // click-through URL); event rows push the meeting/task/deadline
+    // (and if it's linked to a ticket, the description includes that
+    // ticket's URL + summary as well).
+    const pushBtn = `<button class="day-evt-action-btn" onclick="event.stopPropagation();pushEventToGoogle('${escapeAttr(selectedDayKey)}', ${realIdx})" title="Open Google Calendar with this event pre-filled — one click to add it there">↗ Push to Google</button>`;
     const trailing = isTicketType
       ? `<div class="day-evt-actions">
           ${ticketId ? `<button class="day-evt-action-btn primary" onclick="event.stopPropagation();openTicketFromDayEvents('${escapeAttr(ticketId)}')" title="Open ticket detail">↗ Open ticket</button>` : ''}
+          ${pushBtn}
           <button class="day-evt-action-btn" onclick="event.stopPropagation();openEditEventModalFromDay(${realIdx})" title="Edit schedule on calendar">✎ Edit schedule</button>
         </div>`
       : `<div class="day-evt-actions">
@@ -14319,13 +14320,19 @@ function _parseCalDateKey(key) {
   return { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]) };  // mo is 0-indexed
 }
 function pushEventToGoogle(evtOrKey, idxIfKey) {
-  // Resolve the event whether we got a (key, idx) pair or a direct object.
+  // Resolve the event whether we got a (key, idx) pair or a direct
+  // object. Synthetic ticket-due rows aren't stored in CAL_EVENTS —
+  // they're computed by _calEventsForKey at render time, mixed in
+  // with stored events. Use that combined view (when available) so
+  // pushing a ticket-type row hits the right element.
   let evt = evtOrKey;
   let dateKey = null;
   if (typeof evtOrKey === 'string') {
     dateKey = evtOrKey;
-    const arr = CAL_EVENTS[dateKey] || [];
-    evt = arr[idxIfKey || 0];
+    const combined = (typeof window._calEventsForKey === 'function')
+      ? window._calEventsForKey(dateKey)
+      : (CAL_EVENTS[dateKey] || []);
+    evt = combined[idxIfKey || 0];
   } else if (evt && evt.__dateKey) {
     dateKey = evt.__dateKey;
   }
@@ -14366,14 +14373,39 @@ function pushEventToGoogle(evtOrKey, idxIfKey) {
   }
   if (datesParam) params.set('dates', datesParam);
 
-  // Description: keep the user's notes plus any join link + attendee list,
-  // mirroring what the ICS feed includes for the same event.
+  // Description: keep the user's notes plus any join link, attendee list,
+  // and (when present) the linked-ticket URL — mirroring what the ICS
+  // feed includes for the same event. The ticket link is the key thing
+  // the recipient often needs after the meeting.
   const descLines = [];
   if (Array.isArray(evt.attendees) && evt.attendees.length) {
     descLines.push('Attendees: ' + evt.attendees.join(', '));
   }
   if (evt.location && /^https?:\/\//i.test(evt.location)) {
     descLines.push(`Join link: ${evt.location}`);
+  }
+  // Synthetic ticket-type events carry `ticketId`; user-created events
+  // linked to a ticket carry `linkedTicketId`. Surface either.
+  const linkedTicket = evt.ticketId || evt.linkedTicketId || null;
+  if (linkedTicket) {
+    const tkt = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []).find(t => t.id === linkedTicket);
+    const ttl = tkt && tkt.title ? ` · ${tkt.title}` : '';
+    descLines.push(`Linked ticket: ${linkedTicket}${ttl}`);
+    descLines.push(`Open ticket: ${location.origin}/tickets/${encodeURIComponent(linkedTicket)}`);
+    // Add ticket detail (priority, status, assignees, description) so the
+    // event in Google Calendar carries the same info as the ticket page.
+    if (tkt) {
+      const lines = [];
+      if (tkt.priority) lines.push(`Priority: ${tkt.priority}`);
+      if (tkt.status)   lines.push(`Status: ${tkt.status}`);
+      const asgns = (Array.isArray(tkt.assignees) ? tkt.assignees : []).filter(Boolean);
+      if (asgns.length) lines.push(`Assignees: ${asgns.join(', ')}`);
+      else if (tkt.assignee) lines.push(`Assignee: ${tkt.assignee}`);
+      if (tkt.dept)     lines.push(`Dept: ${tkt.dept}`);
+      if (tkt.due)      lines.push(`Due: ${tkt.due}`);
+      if (lines.length) descLines.push(lines.join(' · '));
+      if (tkt.description) { descLines.push(''); descLines.push(tkt.description); }
+    }
   }
   if (evt.desc || evt.description) {
     if (descLines.length) descLines.push('');
@@ -14415,6 +14447,9 @@ async function saveAndPushEventToGoogle() {
     endTime:   allDay ? '' : document.getElementById('ev-time-end').value,
     location:  (document.getElementById('ev-location')?.value || '').trim(),
     attendees: Array.from(evSelectedAttendees || []),
+    // Carry the linked-ticket id through so the Google event gets the
+    // ticket URL + summary in its description, the way you asked for.
+    linkedTicketId: (typeof evSelectedTicketId !== 'undefined' && evSelectedTicketId) ? evSelectedTicketId : null,
     __dateKey: dateKey,
   };
   // Save first so the event is persisted locally + server-side …
