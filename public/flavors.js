@@ -2529,9 +2529,9 @@
 
   // ── Channels ──────────────────────────────────────────────────────────────
   async function addChannel() {
-    const name = prompt('Channel name (e.g. eBay, Faire):');
+    const name = await uiPrompt('Channel name (e.g. eBay, Faire):');
     if (!name) return;
-    const code = prompt('Channel code (lowercase, used as URL key — e.g. ebay, faire):',
+    const code = await uiPrompt('Channel code (lowercase, used as URL key — e.g. ebay, faire):',
                          name.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
     if (!code) return;
     try {
@@ -2700,7 +2700,7 @@
   }
 
   async function deletePattern(channelId, patternId) {
-    if (!confirm('Delete this SKU pattern? Existing channel SKUs already generated for flavors aren\'t affected — only future generations stop emitting this row.')) return;
+    if (!await uiConfirm('Delete this SKU pattern? Existing channel SKUs already generated for flavors aren\'t affected — only future generations stop emitting this row.')) return;
     try {
       const r = await fetch(`/api/flavors2/settings/channels/${channelId}/sku-patterns/${patternId}`, { method: 'DELETE' });
       if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Delete failed'); }
@@ -2774,7 +2774,7 @@
   }
 
   async function deletePrice(channelId, priceId) {
-    if (!confirm('Delete this price rule? Tickets that already reference it aren\'t edited — only future launch tickets stop showing the price.')) return;
+    if (!await uiConfirm('Delete this price rule? Tickets that already reference it aren\'t edited — only future launch tickets stop showing the price.')) return;
     try {
       const r = await fetch(`/api/flavors2/settings/channels/${channelId}/price-rules/${priceId}`, { method: 'DELETE' });
       if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Delete failed'); }
@@ -2785,7 +2785,7 @@
   async function deleteChannel(id) {
     const row = state.settings.channels.find(c => c.id === id);
     if (!row) return;
-    if (!confirm(`Delete channel "${row.name}"? Existing tickets that reference it won't be deleted, but new launches won't include this channel.`)) return;
+    if (!await uiConfirm(`Delete channel "${row.name}"? Existing tickets that reference it won't be deleted, but new launches won't include this channel.`)) return;
     try {
       const r = await fetch(`/api/flavors2/settings/channels/${id}`, { method: 'DELETE' });
       if (!r.ok) {
@@ -2841,7 +2841,7 @@
   async function deleteVariation(id) {
     const v = (state.settings.variations || []).find(x => x.id === id);
     if (!v) return;
-    if (!confirm(`Delete variation "${v.name}"? Existing tickets that reference it stay intact, but new flavors won't see this variation in their match list.`)) return;
+    if (!await uiConfirm(`Delete variation "${v.name}"? Existing tickets that reference it stay intact, but new flavors won't see this variation in their match list.`)) return;
     try {
       const r = await fetch(`/api/flavors2/settings/variation-listings/${id}`, { method: 'DELETE' });
       if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Delete failed'); }
@@ -2915,7 +2915,7 @@
         saved.name !== editing.name ||
         saved.is_raw_example !== editing.is_raw_example
       );
-      if (hasUnsaved && !confirm('You have unsaved edits. Duplicate will copy the SAVED version, not what you see in the editor. Continue?')) {
+      if (hasUnsaved && !await uiConfirm('You have unsaved edits. Duplicate will copy the SAVED version, not what you see in the editor. Continue?')) {
         return;
       }
     }
@@ -3034,7 +3034,7 @@
 
   async function regenerateListingContent() {
     if (!state.detailId) return;
-    if (!confirm('Discard the current edits and regenerate from the product-type template?')) return;
+    if (!await uiConfirm('Discard the current edits and regenerate from the product-type template?')) return;
     try {
       const r = await fetch(`/api/flavors2/${state.detailId}/listing-content/regenerate`, { method: 'POST' });
       const data = await r.json();

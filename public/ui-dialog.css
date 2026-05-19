@@ -1,0 +1,154 @@
+/* ============================================================
+   ui-dialog.css — shared "nice popup" styling
+   Loaded by every page that has an HTML shell. Mirrors the
+   .modal-overlay / .modal look in index.html so the dialog
+   feels native to the rest of the app, but lives under its
+   own .ui-dlg-* namespace so it can't collide with page CSS.
+   ============================================================ */
+
+.ui-dlg-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, .46);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  animation: ui-dlg-overlay-in .18s ease-out;
+}
+.ui-dlg-card {
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 16px;
+  padding: 24px;
+  width: 440px;
+  max-width: 95vw;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 24px 60px -12px rgba(15, 23, 42, .32),
+              0 8px 20px -6px rgba(15, 23, 42, .18);
+  margin: auto;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  animation: ui-dlg-card-in .22s cubic-bezier(.2, .8, .2, 1);
+}
+@media (prefers-color-scheme: dark) {
+  .ui-dlg-card {
+    background: #1e293b;
+    color: #f8fafc;
+    border-color: #334155;
+  }
+}
+
+.ui-dlg-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -.005em;
+}
+.ui-dlg-message {
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0 0 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: inherit;
+  opacity: .92;
+}
+.ui-dlg-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: inherit;
+  outline: none;
+  margin-bottom: 16px;
+}
+.ui-dlg-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, .15);
+}
+@media (prefers-color-scheme: dark) {
+  .ui-dlg-input { background: #0f172a; border-color: #475569; }
+}
+
+.ui-dlg-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.ui-dlg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 9px 18px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s, transform .1s, box-shadow .15s;
+}
+.ui-dlg-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+.ui-dlg-btn-cancel {
+  background: #ffffff;
+  color: #475569;
+  border-color: #e2e8f0;
+}
+.ui-dlg-btn-cancel:hover { background: #f1f5f9; color: #0f172a; }
+@media (prefers-color-scheme: dark) {
+  .ui-dlg-btn-cancel { background: #1e293b; color: #94a3b8; border-color: #334155; }
+  .ui-dlg-btn-cancel:hover { background: #0f172a; color: #f8fafc; }
+}
+.ui-dlg-btn-primary {
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(59, 130, 246, .25);
+}
+.ui-dlg-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(59, 130, 246, .32);
+}
+.ui-dlg-btn-danger {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  color: #ffffff;
+  box-shadow: 0 6px 16px rgba(239, 68, 68, .25);
+}
+.ui-dlg-btn-danger:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(239, 68, 68, .32);
+}
+
+@keyframes ui-dlg-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes ui-dlg-card-in {
+  from { opacity: 0; transform: translateY(8px) scale(.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Mobile: keep the card centered but let it span more width with cleaner
+   spacing. We avoid the full-bleed pattern other modals use because these
+   are short confirmation dialogs and shouldn't feel like a takeover. */
+@media (max-width: 520px) {
+  .ui-dlg-overlay { padding: 16px; }
+  .ui-dlg-card { padding: 20px; border-radius: 14px; }
+  .ui-dlg-actions { flex-direction: column-reverse; }
+  .ui-dlg-actions .ui-dlg-btn { width: 100%; }
+}

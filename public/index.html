@@ -13,6 +13,11 @@
      per feature, loaded here, used from a tiny shell in #page-spaces). -->
 <link rel="stylesheet" href="/spaces.css"/>
 <link rel="stylesheet" href="/space-chat.css"/>
+<!-- Shared "nice popup" replacement for native alert/confirm/prompt.
+     Loaded in <head> (and before all other scripts) so window.alert is
+     patched before any inline script can call it. -->
+<link rel="stylesheet" href="/ui-dialog.css"/>
+<script src="/ui-dialog.js"></script>
 <link rel="apple-touch-icon" href="/app-icon.svg"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
@@ -8337,7 +8342,7 @@ async function ticketSwipeAction(ticketId, action) {
         break;
       }
       case 'delete': {
-        if (!confirm('Move this ticket to trash? It can be restored from Admin → Trash for 30 days.')) return;
+        if (!await uiConfirm('Move this ticket to trash? It can be restored from Admin → Trash for 30 days.')) return;
         const r = await fetch('/api/tickets/' + encodeURIComponent(ticketId), {
           method: 'DELETE', credentials: 'same-origin',
         });
@@ -8654,9 +8659,9 @@ function updateMentionedBadge() {
   } catch {}
 }
 
-function bulkArchive() {
+async function bulkArchive() {
   if (!selectedTicketIds.size) return;
-  if (!confirm(`Archive ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'}?`)) return;
+  if (!await uiConfirm(`Archive ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'}?`)) return;
   applyToSelected(t => {
     t.status = 'Archived';
     logActivity(t.id, '📦', 'Archived via bulk action', 'Just now');
@@ -8691,9 +8696,9 @@ function bulkExport() {
   settingsToast(`Exported ${ids.length} ticket${ids.length === 1 ? '' : 's'} to CSV`);
 }
 
-function bulkDelete() {
+async function bulkDelete() {
   if (!selectedTicketIds.size) return;
-  if (!confirm(`Delete ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'} permanently? This cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete ${selectedTicketIds.size} ticket${selectedTicketIds.size === 1 ? '' : 's'} permanently? This cannot be undone.`, { danger: true, okText: 'Delete permanently' })) return;
   const ids = Array.from(selectedTicketIds);
   ids.forEach(id => {
     const idx = TICKETS_DATA.findIndex(t => t.id === id);
@@ -10824,13 +10829,13 @@ function getWorkTrackWorkers() {
   return list.map(m => ({ name: m.name, team: m.dept || 'General' }));
 }
 
-function openSendToWorkTrack() {
+async function openSendToWorkTrack() {
   closeHeaderActionMenu && closeHeaderActionMenu();
   const t = getCurrentTicket();
   if (!t) return;
   // If already linked, ask first
   if (t.worktrackTaskId) {
-    if (!confirm(`This ticket is already linked to WorkTrack task ${t.worktrackTaskId}. Send another?`)) return;
+    if (!await uiConfirm(`This ticket is already linked to WorkTrack task ${t.worktrackTaskId}. Send another?`)) return;
   }
   // Pre-fill modal fields
   document.getElementById('swt-ticket-info').innerHTML =
@@ -11613,7 +11618,7 @@ window.dismissMentionsOnCurrentTicket = async function(btnEl) {
 // from non-eligible viewers as a courtesy.
 window.deleteCommentFromUI = async function(commentId) {
   if (!commentId) return;
-  if (!confirm('Delete this comment? This cannot be undone.')) return;
+  if (!await uiConfirm('Delete this comment? This cannot be undone.')) return;
   const t = (typeof getCurrentTicket === 'function') ? getCurrentTicket() : null;
   const tid = (t && t.id) || window.currentDetailTicketId;
   if (!tid) return;
@@ -11647,7 +11652,7 @@ window.deleteCommentFromUI = async function(commentId) {
 
 window.deleteAttachmentFromUI = async function(attId, ticketId) {
   if (!attId) return;
-  if (!confirm('Delete this file? This cannot be undone.')) return;
+  if (!await uiConfirm('Delete this file? This cannot be undone.')) return;
   try {
     const r = await fetch('/api/attachments/' + attId, { method: 'DELETE' });
     if (!r.ok) {
@@ -11695,7 +11700,7 @@ window.submitReply = async function(parentId) {
 
 // After a comment POST, the server tells us which @-mentioned users
 // weren't on the ticket in any role before. Offer to add each as an
-// assignee — single confirm() per name; one tiny PUT per "yes" so the
+// assignee — single await uiConfirm() per name; one tiny PUT per "yes" so the
 // activity log shows "Admin assigned the ticket to Bob".
 async function promptAddNewlyMentioned(ticketId, resp) {
   try {
@@ -11709,7 +11714,11 @@ async function promptAddNewlyMentioned(ticketId, resp) {
     ].filter(Boolean));
     for (const m of list) {
       if (existing.has(m.name)) continue;
-      const ok = window.confirm(`@${m.name} isn't on this ticket yet. Add them as an assignee?`);
+      const ok = await uiConfirm(`@${m.name} isn't on this ticket yet. Add them as an assignee?`, {
+        title: 'Add as assignee?',
+        okText: 'Add ' + (m.name.split(' ')[0] || m.name),
+        cancelText: 'Skip',
+      });
       if (!ok) continue;
       const fresh = (typeof TICKETS_DATA !== 'undefined' && Array.isArray(TICKETS_DATA))
         ? TICKETS_DATA.find(x => x.id === ticketId) : null;
@@ -13249,8 +13258,8 @@ function toggle2FA(checkbox) {
 }
 
 async function confirmAccountDelete() {
-  if (!confirm('Permanently delete your account?\n\nAll your tickets, plans, and team data will be removed. This cannot be undone.')) return;
-  if (!confirm('This is your final warning. Are you absolutely sure?')) return;
+  if (!await uiConfirm('Permanently delete your account?\n\nAll your tickets, plans, and team data will be removed. This cannot be undone.')) return;
+  if (!await uiConfirm('This is your final warning. Are you absolutely sure?')) return;
   // Account self-deletion isn't a supported flow on the server (admin must
   // remove the account). Ask the user to contact an admin instead of pretending
   // the deletion succeeded.
@@ -13371,10 +13380,10 @@ function changeMemberRole(idx, role) {
   settingsToast(`${TEAM_DATA[idx].name} is now ${role}`);
 }
 
-function removeMember(idx) {
+async function removeMember(idx) {
   const m = TEAM_DATA[idx];
   if (!m) return;
-  if (!confirm(`Remove ${m.name} from the team?`)) return;
+  if (!await uiConfirm(`Remove ${m.name} from the team?`, { danger: true, okText: 'Remove' })) return;
   TEAM_DATA.splice(idx, 1);
   renderUsersTab();
   if (typeof renderTeams === 'function') renderTeams();
@@ -13466,10 +13475,10 @@ function renderPendingInvites() {
   `).join('');
 }
 
-function cancelInvite(idx) {
+async function cancelInvite(idx) {
   const inv = TEAM_INVITES[idx];
   if (!inv) return;
-  if (!confirm(`Cancel invite to ${inv.email}?`)) return;
+  if (!await uiConfirm(`Cancel invite to ${inv.email}?`, { okText: 'Cancel invite', cancelText: 'Keep' })) return;
   TEAM_INVITES.splice(idx, 1);
   renderPendingInvites();
   if (typeof renderTeams === 'function') renderTeams();
@@ -14178,9 +14187,9 @@ function closeAndRefresh() {
   if (currentPage === 'calendar') buildCalendar();
 }
 
-function deleteCurrentEvent() {
+async function deleteCurrentEvent() {
   if (editingEventKey == null || editingEventIdx == null) return;
-  if (!confirm('Delete this event?')) return;
+  if (!await uiConfirm('Delete this event?', { danger: true, okText: 'Delete' })) return;
   CAL_EVENTS[editingEventKey].splice(editingEventIdx, 1);
   if (!CAL_EVENTS[editingEventKey].length) delete CAL_EVENTS[editingEventKey];
   closeAndRefresh();
@@ -14586,10 +14595,10 @@ function bulkArchivePlans() {
   renderPlans();
 }
 
-function bulkDeletePlans() {
+async function bulkDeletePlans() {
   if (!planSelectedIds.size) return;
   const n = planSelectedIds.size;
-  if (!confirm(`Delete ${n} plan${n === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete ${n} plan${n === 1 ? '' : 's'}? This cannot be undone.`, { danger: true, okText: 'Delete' })) return;
   PLANS = PLANS.filter(p => !planSelectedIds.has(p.id));
   planSelectedIds.clear();
   settingsToast(`Deleted ${n} plan${n === 1 ? '' : 's'}`);
@@ -14713,17 +14722,17 @@ function savePlan() {
   if (currentPage === 'plan-detail') renderPlanDetail();
 }
 
-function deleteCurrentPlan() {
+async function deleteCurrentPlan() {
   if (!editingPlanId) return;
-  if (!confirm('Delete this plan? This cannot be undone.')) return;
+  if (!await uiConfirm('Delete this plan? This cannot be undone.', { danger: true, okText: 'Delete' })) return;
   PLANS = PLANS.filter(p => p.id !== editingPlanId);
   editingPlanId = null;
   closeModal('plan');
   renderPlans();
 }
 
-function deletePlan(id) {
-  if (!confirm('Delete this plan? This cannot be undone.')) return;
+async function deletePlan(id) {
+  if (!await uiConfirm('Delete this plan? This cannot be undone.', { danger: true, okText: 'Delete' })) return;
   PLANS = PLANS.filter(p => p.id !== id);
   renderPlans();
 }
@@ -15408,11 +15417,11 @@ function convertCurrentPlanToTicket() {
   convertPlanToTicket(currentPlanId);
 }
 
-function deletePlanFromDetail() {
+async function deletePlanFromDetail() {
   if (!currentPlanId) return;
   const p = PLANS.find(x => x.id === currentPlanId);
   if (!p) return;
-  if (!confirm(`Delete plan "${p.title}"? This cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete plan "${p.title}"? This cannot be undone.`, { danger: true, okText: 'Delete' })) return;
   PLANS = PLANS.filter(x => x.id !== currentPlanId);
   delete PLAN_COMMENTS[currentPlanId];
   delete PLAN_ACTIVITY[currentPlanId];
@@ -15488,8 +15497,8 @@ function loadPersistedState() {
   }
 }
 
-function clearPersistedState() {
-  if (!confirm('Reset all WorkNest data to the initial demo state? This will erase tickets, plans, notifications, and activity history you\'ve created.')) return;
+async function clearPersistedState() {
+  if (!await uiConfirm('Reset all WorkNest data to the initial demo state? This will erase tickets, plans, notifications, and activity history you\'ve created.', { danger: true, okText: 'Reset everything' })) return;
   localStorage.removeItem(PERSIST_KEY);
   location.reload();
 }
@@ -17150,7 +17159,7 @@ async function loadTicketAttachments(ticketId) {
         }
         // Append a small Delete button to the right of the row when this
         // user uploaded the file or is an Admin/Manager. Click goes through
-        // a confirm() prompt then calls the API and re-renders.
+        // a await uiConfirm() prompt then calls the API and re-renders.
         if (canDelAtt) {
           const del = document.createElement('button');
           del.type = 'button';
@@ -18406,7 +18415,7 @@ window.setFeedbackStatus = async function(id, status) {
 };
 
 window.deleteFeedback = async function(id) {
-  if (!confirm('Delete this feedback item permanently?')) return;
+  if (!await uiConfirm('Delete this feedback item permanently?')) return;
   try {
     const r = await fetch('/api/feedback/'+id, { method:'DELETE' });
     if (!r.ok) throw new Error('status '+r.status);
@@ -18464,9 +18473,9 @@ window.deleteCurrentTicketWithConfirm = async function() {
   const cascadeNote = (t.isProject && childCount > 0)
     ? `\nThis will also move ${childCount} sub-ticket${childCount === 1 ? '' : 's'} to trash.`
     : '';
-  if (!confirm(`Move ${t.id} to trash?` + cascadeNote + '\nIt can be restored from Trash within 30 days.')) return;
+  if (!await uiConfirm(`Move ${t.id} to trash?` + cascadeNote + '\nIt can be restored from Trash within 30 days.')) return;
   // Second prompt to make accidental deletes harder.
-  if (!confirm(`Are you sure? Type OK below to confirm: deleting ${t.id}.`)) return;
+  if (!await uiConfirm(`Are you sure? Type OK below to confirm: deleting ${t.id}.`)) return;
   try {
     const r = await fetch('/api/tickets/' + encodeURIComponent(t.id), { method: 'DELETE' });
     if (!r.ok) {
@@ -18736,7 +18745,7 @@ async function submitReminderEditor() {
 async function deleteReminderFromEditor() {
   const id = _remEditorState.id;
   if (!id) return;
-  if (!confirm('Delete this reminder? This cannot be undone.')) return;
+  if (!await uiConfirm('Delete this reminder? This cannot be undone.')) return;
   try {
     await apiDel('/api/my-reminders/' + id);
     closeReminderEditor();
@@ -18746,7 +18755,7 @@ async function deleteReminderFromEditor() {
 }
 
 async function deleteReminderAttachment(attId) {
-  if (!confirm('Remove this attachment?')) return;
+  if (!await uiConfirm('Remove this attachment?')) return;
   try {
     await apiDel('/api/attachments/' + attId);
     // Refresh the editor view by re-fetching the reminder.
@@ -18941,12 +18950,12 @@ function closeDailyRemindersPopup() {
 async function requestUpdateOnCurrentTicket() {
   const tid = (typeof currentTicketId !== 'undefined') ? currentTicketId : null;
   if (!tid) return;
-  const note = prompt(
+  const note = await uiPrompt(
     'Ask the assignees for an update on this ticket.\n\n' +
     'Optional note (will appear in the email — leave blank to just ask):',
     ''
   );
-  // prompt() returns null when the user clicks Cancel — bail without
+  // await uiPrompt() returns null when the user clicks Cancel — bail without
   // sending. An empty string means "send with no note", which is fine.
   if (note === null) return;
   const btn = document.getElementById('request-update-trigger');
@@ -19477,7 +19486,7 @@ window.createNewDoc = window.createMarkdownDoc;
 window.renameDocFromList = async function(id) {
   const d = DOCS_CACHE.find(x => x.id === id);
   if (!d) return;
-  const nv = prompt('Rename doc:', d.title || '');
+  const nv = await uiPrompt('Rename doc:', d.title || '');
   if (!nv || nv.trim() === d.title) return;
   try {
     await apiPut('/api/docs/' + id, { title: nv.trim() });
@@ -19592,7 +19601,7 @@ window.toggleDocPreview = function() {
 window.deleteCurrentDoc = async function() {
   if (!_currentDocId) return;
   const title = document.getElementById('doc-edit-title').value || 'this doc';
-  if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete "${title}"? This cannot be undone.`)) return;
   try {
     await apiDel('/api/docs/' + _currentDocId);
     DOCS_CACHE = DOCS_CACHE.filter(x => x.id !== _currentDocId);
@@ -19608,7 +19617,7 @@ window.deleteCurrentDoc = async function() {
 
 window.deleteDocFromList = async function(id) {
   const d = DOCS_CACHE.find(x => x.id === id);
-  if (!confirm(`Delete "${d?.title || 'this doc'}"? This cannot be undone.`)) return;
+  if (!await uiConfirm(`Delete "${d?.title || 'this doc'}"? This cannot be undone.`)) return;
   try {
     await apiDel('/api/docs/' + id);
     DOCS_CACHE = DOCS_CACHE.filter(x => x.id !== id);
@@ -19661,7 +19670,7 @@ async function loadTrashPage() {
 }
 
 window.restoreTrashedTicket = async function(id) {
-  if (!confirm(`Restore ${id} from trash?`)) return;
+  if (!await uiConfirm(`Restore ${id} from trash?`)) return;
   try {
     const r = await fetch('/api/admin/tickets/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
     if (!r.ok) {
@@ -19687,8 +19696,8 @@ window.restoreTrashedTicket = async function(id) {
 };
 
 window.permanentlyDeleteTrashedTicket = async function(id) {
-  if (!confirm(`Permanently delete ${id}? This is final — it cannot be recovered.`)) return;
-  if (!confirm(`Last chance: type-your-mind moment. ${id} will be erased from the database including all comments, attachments, and reminders. Proceed?`)) return;
+  if (!await uiConfirm(`Permanently delete ${id}? This is final — it cannot be recovered.`)) return;
+  if (!await uiConfirm(`Last chance: type-your-mind moment. ${id} will be erased from the database including all comments, attachments, and reminders. Proceed?`)) return;
   try {
     const r = await fetch('/api/admin/tickets/' + encodeURIComponent(id) + '/permanent', { method: 'DELETE' });
     if (!r.ok) {
@@ -19721,7 +19730,7 @@ window.consumePendingParentForCreate = function() {
 // Promote / demote — admin only (server enforces, but we hide the UI for
 // non-admins so they don't see useless buttons).
 window.promoteTicketToProject = async function(id) {
-  if (!confirm('Convert this ticket into a project? You will be able to add sub-tickets under it.')) return;
+  if (!await uiConfirm('Convert this ticket into a project? You will be able to add sub-tickets under it.')) return;
   try {
     const r = await fetch('/api/tickets/' + encodeURIComponent(id) + '/promote', { method: 'POST' });
     const text = await r.text();
@@ -19746,7 +19755,7 @@ window.promoteTicketToProject = async function(id) {
 };
 
 window.demoteProject = async function(id) {
-  if (!confirm('Disconnect this project? Its sub-tickets will become regular tickets again.')) return;
+  if (!await uiConfirm('Disconnect this project? Its sub-tickets will become regular tickets again.')) return;
   try {
     const r = await fetch('/api/tickets/' + encodeURIComponent(id) + '/demote', { method: 'POST' });
     if (!r.ok) {
@@ -20252,7 +20261,7 @@ initApp();
   };
 
   window.removeProfileAvatar = async function() {
-    if (!confirm('Remove your profile photo?')) return;
+    if (!await uiConfirm('Remove your profile photo?')) return;
     try {
       var r = await fetch('/api/profile/avatar', { method: 'DELETE' });
       var data = await r.json().catch(function() { return null; });
@@ -20963,7 +20972,7 @@ initApp();
     window.adminDeleteUser = async function(id) {
       var btn = document.querySelector('button[onclick="adminDeleteUser(' + id + ')"]');
       var name = btn ? btn.dataset.uname : 'this user';
-      if (!confirm('Delete user ' + name + '? This cannot be undone.')) return;
+      if (!await uiConfirm('Delete user ' + name + '? This cannot be undone.')) return;
       try {
         var res = await apiDel('/api/admin/users/' + id);
         if (res.error) { alert(res.error); return; }
@@ -20986,7 +20995,7 @@ initApp();
     // Delete department — btn element passed from onclick
     window.adminDeleteDepartment = async function(btn) {
       var name = btn.dataset ? btn.dataset.dname : btn;
-      if (!confirm('Delete department "' + name + '"? Only possible if no users or tickets use it.')) return;
+      if (!await uiConfirm('Delete department "' + name + '"? Only possible if no users or tickets use it.')) return;
       try {
         var r = await fetch('/api/departments/' + encodeURIComponent(name), { method: 'DELETE' });
         var res = await r.json();
@@ -21386,7 +21395,11 @@ window.openRowActionsMenu = function(btn, ticketId) {
 
 window.quickCloseTicket = async function(id) {
   const t = TICKETS_DATA.find(x => x.id === id); if (!t) return;
-  if (!confirm(`Close ticket ${id}?`)) return;
+  if (!await uiConfirm(`Close ticket ${id}?`, {
+    title: 'Close ticket',
+    okText: 'Close ticket',
+    cancelText: 'Keep open',
+  })) return;
   t.status = 'Closed'; t.overdue = false;
   if (typeof renderTickets === 'function') renderTickets();
   if (typeof initDashboard === 'function') initDashboard();
@@ -21405,7 +21418,7 @@ window.quickReopenTicket = async function(id) {
 
 window.quickArchiveTicket = async function(id) {
   const t = TICKETS_DATA.find(x => x.id === id); if (!t) return;
-  if (!confirm(`Archive ticket ${id}?`)) return;
+  if (!await uiConfirm(`Archive ticket ${id}?`)) return;
   t.status = 'Archived';
   if (typeof renderTickets === 'function') renderTickets();
   if (typeof initDashboard === 'function') initDashboard();
@@ -21423,7 +21436,7 @@ window.quickDeleteTicket = async function(id) {
   const prompt = isProject && childCount > 0
     ? `Delete project ${id} and its ${childCount} sub-ticket${childCount === 1 ? '' : 's'}? This is recoverable from the admin dump until purged.`
     : `Delete ticket ${id}? This is recoverable from the admin dump until purged.`;
-  if (!confirm(prompt)) return;
+  if (!await uiConfirm(prompt)) return;
   // Optimistically remove the project + every sub-ticket so the list
   // updates immediately; the server cascades the same set.
   const toRemove = new Set([id, ...childIds]);
@@ -21694,14 +21707,14 @@ window.scheduleEventForCurrentTicket = function() {
   }
 
   async function resendAnnouncement(id) {
-    if (!confirm('Re-send this announcement? Everyone who already saw it will see it again.')) return;
+    if (!await uiConfirm('Re-send this announcement? Everyone who already saw it will see it again.')) return;
     try { await apiPut('/api/announcements/' + id, { resetSeen: true }); }
     catch {}
     loadAnnouncementsTab();
   }
 
   async function deleteAnnouncement(id) {
-    if (!confirm('Delete this announcement? This cannot be undone.')) return;
+    if (!await uiConfirm('Delete this announcement? This cannot be undone.')) return;
     try { await apiDel('/api/announcements/' + id); }
     catch {}
     loadAnnouncementsTab();
@@ -22253,7 +22266,7 @@ window.scheduleEventForCurrentTicket = function() {
 
   window.deleteExternalApp = async function(id) {
     const app = APPS_CACHE.find(a => a.id === id);
-    if (!confirm(`Remove "${app?.name || 'this app'}" from the sidebar?`)) return;
+    if (!await uiConfirm(`Remove "${app?.name || 'this app'}" from the sidebar?`)) return;
     try {
       await apiDel('/api/external-apps/' + id);
       APPS_CACHE = APPS_CACHE.filter(a => a.id !== id);
@@ -22427,7 +22440,7 @@ window.scheduleEventForCurrentTicket = function() {
   window.renameProjectTemplate = async function(id) {
     const t = RP_TEMPLATES.find(x => x.id === id);
     if (!t) return;
-    const nv = prompt('New name for this template:', t.name);
+    const nv = await uiPrompt('New name for this template:', t.name);
     if (!nv || nv.trim() === t.name) return;
     try {
       await apiPut('/api/project-templates/' + id, { name: nv.trim() });
@@ -22438,7 +22451,7 @@ window.scheduleEventForCurrentTicket = function() {
 
   window.deleteProjectTemplate = async function(id) {
     const t = RP_TEMPLATES.find(x => x.id === id);
-    if (!confirm(`Delete template "${t?.name || 'this template'}"? Existing projects spawned from it stay intact.`)) return;
+    if (!await uiConfirm(`Delete template "${t?.name || 'this template'}"? Existing projects spawned from it stay intact.`)) return;
     try {
       await apiDel('/api/project-templates/' + id);
       RP_TEMPLATES = RP_TEMPLATES.filter(x => x.id !== id);
@@ -22669,7 +22682,7 @@ window.scheduleEventForCurrentTicket = function() {
 // ═══════════════════════════════════════════════════════════════════════════
 // Chrome/Edge on Windows + Android fire 'beforeinstallprompt' when the page
 // becomes installable. We stash the event so a button can replay it later
-// (the API rule: prompt() must be called from a user gesture). Safari/iOS
+// (the API rule: await uiPrompt() must be called from a user gesture). Safari/iOS
 // doesn't fire it — installs are manual via Share → Add to Home Screen,
 // so we surface manual instructions instead.
 
@@ -24612,7 +24625,7 @@ async function startChatEdit(messageId) {
   const list = CHAT_STATE.messagesByChannel.get(c.id) || [];
   const m = list.find(x => x.id === messageId);
   if (!m) return;
-  const next = prompt('Edit message:', m.body || '');
+  const next = await uiPrompt('Edit message:', m.body || '');
   if (next === null) return;
   const trimmed = next.trim();
   if (!trimmed) return;
@@ -24627,7 +24640,7 @@ async function startChatEdit(messageId) {
 }
 
 async function deleteChatMessage(messageId) {
-  if (!confirm('Delete this message?')) return;
+  if (!await uiConfirm('Delete this message?')) return;
   try {
     await fetch(`/api/chat/messages/${messageId}`, { method: 'DELETE' });
     // WS message:delete repaints.
@@ -25042,7 +25055,7 @@ async function setChatNotify(channelId, pref) {
 }
 
 async function closeChatGroup(channelId) {
-  if (!confirm('Close this group? It moves to "Closed groups" in the sidebar and is auto-deleted after 30 days unless reopened.')) return;
+  if (!await uiConfirm('Close this group? It moves to "Closed groups" in the sidebar and is auto-deleted after 30 days unless reopened.')) return;
   try {
     const r = await fetch(`/api/chat/channels/${channelId}/close`, { method: 'POST' });
     if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Close failed'); return; }
@@ -25066,7 +25079,7 @@ async function reopenChatGroup(channelId) {
 }
 
 async function leaveChatChannel(channelId) {
-  if (!confirm('Leave this conversation?')) return;
+  if (!await uiConfirm('Leave this conversation?')) return;
   try {
     await fetch(`/api/chat/channels/${channelId}/leave`, { method: 'POST' });
     closeChatModals();
@@ -25075,7 +25088,7 @@ async function leaveChatChannel(channelId) {
 }
 
 async function deleteChatChannel(channelId) {
-  if (!confirm('Delete this channel and all its messages? This cannot be undone.')) return;
+  if (!await uiConfirm('Delete this channel and all its messages? This cannot be undone.')) return;
   try {
     const r = await fetch(`/api/chat/channels/${channelId}`, { method: 'DELETE' });
     if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Delete failed'); return; }
@@ -25085,7 +25098,7 @@ async function deleteChatChannel(channelId) {
 }
 
 async function removeChatMember(channelId, userId) {
-  if (!confirm('Remove this member?')) return;
+  if (!await uiConfirm('Remove this member?')) return;
   try {
     await fetch(`/api/chat/channels/${channelId}/members/${userId}`, { method: 'DELETE' });
     // The server will update the channel via WS too.

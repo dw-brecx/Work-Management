@@ -788,7 +788,7 @@
 
   async function deleteTemplate(itemId) {
     if (!CURRENT_DETAIL) return;
-    if (!confirm('Remove this ticket from the recurring task?')) return;
+    if (!await uiConfirm('Remove this ticket from the recurring task?')) return;
     try {
       await apiDel('/api/recurring-tasks/' + CURRENT_DETAIL.id + '/items/' + itemId);
       const fresh = await apiGet('/api/recurring-tasks/' + CURRENT_DETAIL.id);
@@ -812,7 +812,7 @@
   }
 
   async function runNow(id) {
-    if (!confirm('Run this recurring task now? Tickets will be created immediately.')) return;
+    if (!await uiConfirm('Run this recurring task now? Tickets will be created immediately.')) return;
     try {
       const r = await apiPost('/api/recurring-tasks/' + id + '/run-now', {});
       toast('Created ' + (r.created || 0) + ' ticket(s).', 'ok');
@@ -822,7 +822,7 @@
   }
 
   async function deleteSchedule(id, goBackAfter) {
-    if (!confirm('Delete this recurring task? Already-created tickets will remain.')) return;
+    if (!await uiConfirm('Delete this recurring task? Already-created tickets will remain.')) return;
     try {
       await apiDel('/api/recurring-tasks/' + id);
       await reload();
