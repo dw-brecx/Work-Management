@@ -4308,6 +4308,374 @@ app.delete('/api/events/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Calendar sync (ICS feed) ────────────────────────────────────────────────
+// One-way export so any external calendar (Google, Apple, Outlook, Notion,
+// Fantastical, etc.) can subscribe and show this user's app activity.
+// The user gets a private secret-URL — token is the sole auth on the
+// public feed endpoint — and can toggle which sources to include
+// (calendar events, ticket due dates, personal reminders, recurring
+// task next-run dates) on a per-user basis. A two-way Google Calendar
+// API integration is planned as a follow-up; the schema is forward-
+// compatible with that (we just keep adding columns).
+
+const crypto = require('crypto');
+
+function gcalDefaultSources() {
+  return { events: true, tickets: true, reminders: false, recurring: false };
+}
+function gcalParseSources(rawJson) {
+  const def = gcalDefaultSources();
+  try {
+    const obj = JSON.parse(rawJson || '{}');
+    return {
+      events:    obj.events    !== false,
+      tickets:   obj.tickets   !== false,
+      reminders: !!obj.reminders,
+      recurring: !!obj.recurring,
+    };
+  } catch { return def; }
+}
+
+// Lazily mint a 24-byte hex token the first time a user looks at their
+// sync settings. Stored as a flat string on users.gcal_feed_token. The
+// caller is responsible for fetching the user row.
+async function gcalEnsureToken(userId) {
+  const u = await get('SELECT gcal_feed_token FROM users WHERE id=?', userId);
+  if (u && u.gcal_feed_token) return u.gcal_feed_token;
+  const tok = crypto.randomBytes(24).toString('hex');
+  await run('UPDATE users SET gcal_feed_token=? WHERE id=?', tok, userId);
+  return tok;
+}
+
+function gcalFeedBaseUrl(req) {
+  // Honour reverse-proxy headers so the URL we hand the user actually
+  // works from outside the box. Falls back to the request host + scheme
+  // when the headers aren't set.
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').toString().split(',')[0].trim();
+  const host  = (req.headers['x-forwarded-host']  || req.headers.host || '').toString().split(',')[0].trim();
+  return `${proto}://${host}`;
+}
+
+// GET /api/calendar/sync-info — auth'd; returns the current user's
+// feed URL + which sources are toggled on. Lazily creates the token.
+app.get('/api/calendar/sync-info', requireAuth, async (req, res) => {
+  try {
+    const token = await gcalEnsureToken(req.session.userId);
+    const u = await get('SELECT gcal_feed_sources_json FROM users WHERE id=?', req.session.userId);
+    const sources = gcalParseSources(u?.gcal_feed_sources_json);
+    res.json({
+      token,
+      url: `${gcalFeedBaseUrl(req)}/api/calendar/feed/${token}.ics`,
+      sources,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/calendar/sync-settings — saves which sources to include
+// in the feed. Subsequent feed fetches reflect the new toggles
+// immediately (Google polls on its own schedule, so visible-in-Google
+// can lag by a few hours).
+app.post('/api/calendar/sync-settings', requireAuth, async (req, res) => {
+  try {
+    const sources = gcalParseSources(JSON.stringify(req.body || {}));
+    await run('UPDATE users SET gcal_feed_sources_json=? WHERE id=?', JSON.stringify(sources), req.session.userId);
+    res.json({ ok: true, sources });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/calendar/sync-regenerate — invalidates the existing feed
+// URL and mints a new one. Used when the user accidentally pasted the
+// URL somewhere it shouldn't have gone.
+app.post('/api/calendar/sync-regenerate', requireAuth, async (req, res) => {
+  try {
+    const tok = crypto.randomBytes(24).toString('hex');
+    await run('UPDATE users SET gcal_feed_token=? WHERE id=?', tok, req.session.userId);
+    res.json({
+      token: tok,
+      url: `${gcalFeedBaseUrl(req)}/api/calendar/feed/${tok}.ics`,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Helpers used by the .ics generator below ────────────────────────────────
+function icsEscape(s) {
+  // RFC 5545 §3.3.11: backslash, comma, semicolon need escaping; newlines
+  // become \\n. Strip control chars Google rejects silently.
+  return String(s == null ? '' : s)
+    .replace(/[ --]/g, '')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g,  '\\;')
+    .replace(/,/g,  '\\,')
+    .replace(/\r?\n/g, '\\n');
+}
+function icsFoldLine(line) {
+  // RFC 5545 §3.1: lines must not exceed 75 octets; continue with " "
+  // at the start of each fold. We measure bytes (UTF-8) to stay safe
+  // with non-ASCII titles.
+  const bytes = Buffer.from(line, 'utf8');
+  if (bytes.length <= 75) return line;
+  const out = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const chunk = bytes.subarray(i, Math.min(i + 75, bytes.length)).toString('utf8');
+    out.push(i === 0 ? chunk : ' ' + chunk);
+    i += 75;
+  }
+  return out.join('\r\n');
+}
+function icsDateUTC(d) {
+  // YYYYMMDDTHHMMSSZ
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getUTCFullYear()
+       + pad(d.getUTCMonth() + 1)
+       + pad(d.getUTCDate())
+       + 'T'
+       + pad(d.getUTCHours())
+       + pad(d.getUTCMinutes())
+       + pad(d.getUTCSeconds())
+       + 'Z';
+}
+// The in-app calendar stores cal_events.date_key in a non-standard form:
+// "YYYY-M-D" with a 0-indexed month, unpadded (May 19, 2026 → "2026-4-19").
+// The original server comment claiming "dateKey is 'YYYY-MM-DD'" is wrong.
+// 100% of in-app calendar writes use the 0-indexed form (see
+// public/index.html's buildCalendar + eventDateKeyFromInput), so we
+// always treat keys as 0-indexed and bump by one. The 0..11 month
+// values mean Dec is "11" not "12" — the standard YYYY-MM-DD form
+// would put Dec at "12" and Jan at "01", which we never see in this
+// table. If a future code path inserts ISO keys, this parser will
+// shift them forward by one month, which would surface as a clear
+// off-by-one in the feed rather than silent wrongness.
+function _icsParseDateKey(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) + 1; // 0-indexed → 1-indexed
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return { y, mo, d };
+}
+function icsDateOnly(rawDateKey) {
+  // VALUE=DATE form for all-day events. Returns "YYYYMMDD" or null.
+  const p = _icsParseDateKey(rawDateKey);
+  if (!p) return null;
+  return String(p.y).padStart(4, '0') + String(p.mo).padStart(2, '0') + String(p.d).padStart(2, '0');
+}
+function icsDateTimeUTC(rawDateKey, hhmm) {
+  // Combines a date-key + "HH:MM" string into a Date interpreted in
+  // the server's local timezone, then serialized as UTC.
+  if (!hhmm) return null;
+  const p = _icsParseDateKey(rawDateKey);
+  if (!p) return null;
+  const tm = /^(\d{1,2}):(\d{2})/.exec(String(hhmm).trim());
+  if (!tm) return null;
+  const hh = Number(tm[1]), mm = Number(tm[2]);
+  const dt = new Date(p.y, p.mo - 1, p.d, hh, mm, 0);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+// Parse a long-form ticket due like "May 19, 2026" into a Date at
+// noon-local. Used because the tickets table stores due dates as
+// human strings, not ISO. Returns null on unparseable values.
+function icsParseTicketDue(str) {
+  if (!str) return null;
+  const d = new Date(String(str));
+  if (isNaN(d.getTime())) return null;
+  // Set to noon so the resulting all-day UTC ICS date doesn't roll
+  // off the user's local day in either direction.
+  d.setHours(12, 0, 0, 0);
+  return d;
+}
+function icsDateOnlyFromDate(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+}
+
+// Build a single VEVENT block for an all-day event.
+function icsAllDay({ uid, dateYYYYMMDD, summary, description, location }) {
+  if (!dateYYYYMMDD) return '';
+  // DTEND on an all-day event is exclusive — one day after DTSTART
+  // for a single-day item.
+  const start = dateYYYYMMDD;
+  const startD = new Date(Number(start.slice(0,4)), Number(start.slice(4,6)) - 1, Number(start.slice(6,8)));
+  const next = new Date(startD); next.setDate(next.getDate() + 1);
+  const end = icsDateOnlyFromDate(next);
+  const now = icsDateUTC(new Date());
+  const lines = [
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${now}`,
+    `DTSTART;VALUE=DATE:${start}`,
+    `DTEND;VALUE=DATE:${end}`,
+    `SUMMARY:${icsEscape(summary)}`,
+  ];
+  if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+  if (location)    lines.push(`LOCATION:${icsEscape(location)}`);
+  lines.push('END:VEVENT');
+  return lines.map(icsFoldLine).join('\r\n');
+}
+function icsTimedEvent({ uid, startDate, endDate, summary, description, location }) {
+  if (!startDate) return '';
+  // If no end provided, default to a one-hour block — most calendars
+  // refuse zero-length events.
+  if (!endDate) endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+  const now = icsDateUTC(new Date());
+  const lines = [
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${now}`,
+    `DTSTART:${icsDateUTC(startDate)}`,
+    `DTEND:${icsDateUTC(endDate)}`,
+    `SUMMARY:${icsEscape(summary)}`,
+  ];
+  if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+  if (location)    lines.push(`LOCATION:${icsEscape(location)}`);
+  lines.push('END:VEVENT');
+  return lines.map(icsFoldLine).join('\r\n');
+}
+
+// GET /api/calendar/feed/:token.ics — UNAUTHENTICATED on purpose.
+// The token is the auth: anyone with it sees the user's feed.
+// Regenerating the token in the UI invalidates this URL.
+app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
+  try {
+    // Token is encoded into the path with a trailing ".ics" suffix
+    // so Google Calendar's URL validation accepts it as a calendar.
+    const raw = String(req.params.tokenIcs || '');
+    const m = /^([a-f0-9]{32,})\.ics$/i.exec(raw);
+    if (!m) return res.status(404).type('text/plain').send('Not found');
+    const token = m[1];
+    const user = await get('SELECT id, name, email, gcal_feed_sources_json FROM users WHERE gcal_feed_token=?', token);
+    if (!user) return res.status(404).type('text/plain').send('Not found');
+    const sources = gcalParseSources(user.gcal_feed_sources_json);
+
+    const events = [];
+
+    // 1) In-app calendar events the user owns
+    if (sources.events) {
+      const rows = await all(
+        "SELECT * FROM cal_events WHERE user_id=? OR source='syruvia' ORDER BY date_key ASC",
+        user.id
+      );
+      for (const r of rows) {
+        const uid = `calendar-event-${r.id}@worknest`;
+        const summary = r.title || r.label || 'Event';
+        const description = r.description || '';
+        const location = r.location || '';
+        if (r.all_day || !r.start_time) {
+          const date = icsDateOnly(r.date_key);
+          events.push(icsAllDay({ uid, dateYYYYMMDD: date, summary, description, location }));
+        } else {
+          const startDate = icsDateTimeUTC(r.date_key, r.start_time);
+          const endDate   = r.end_time ? icsDateTimeUTC(r.date_key, r.end_time) : null;
+          events.push(icsTimedEvent({ uid, startDate, endDate, summary, description, location }));
+        }
+      }
+    }
+
+    // 2) Ticket due dates for tickets where the user is involved
+    if (sources.tickets) {
+      const rows = await all(`
+        SELECT t.id, t.title, t.due, t.priority, t.status
+          FROM tickets t
+          LEFT JOIN ticket_assignees ta ON ta.ticket_id = t.id
+         WHERE t.deleted_at IS NULL
+           AND COALESCE(t.status, '') NOT IN ('Closed','Archived')
+           AND (t.assignee_user_id = ? OR t.created_by = ? OR t.req_user_id = ? OR ta.user_id = ?)
+         GROUP BY t.id
+      `, user.id, user.id, user.id, user.id);
+      for (const r of rows) {
+        const due = icsParseTicketDue(r.due);
+        if (!due) continue;
+        const uid = `ticket-${r.id}@worknest`;
+        const summary = `${r.id} · ${r.title || ''} (due)`;
+        const description = `Priority: ${r.priority || 'Medium'} · Status: ${r.status || 'Open'}`;
+        events.push(icsAllDay({
+          uid,
+          dateYYYYMMDD: icsDateOnlyFromDate(due),
+          summary,
+          description,
+          location: '',
+        }));
+      }
+    }
+
+    // 3) Personal reminders (active, not completed)
+    if (sources.reminders) {
+      const rows = await all(
+        "SELECT id, title, description, due_at, ticket_id FROM personal_reminders WHERE user_id=? AND completed=0",
+        user.id
+      );
+      for (const r of rows) {
+        if (!r.due_at) continue;
+        // due_at is stored as 'YYYY-MM-DD HH:MM:SS' UTC.
+        const due = new Date(String(r.due_at).replace(' ', 'T') + 'Z');
+        if (isNaN(due.getTime())) continue;
+        const uid = `reminder-${r.id}@worknest`;
+        const summary = '⏰ ' + (r.title || 'Reminder');
+        const description = (r.description || '') + (r.ticket_id ? `\nTicket: ${r.ticket_id}` : '');
+        events.push(icsTimedEvent({
+          uid,
+          startDate: due,
+          endDate: new Date(due.getTime() + 30 * 60 * 1000),
+          summary,
+          description,
+        }));
+      }
+    }
+
+    // 4) Recurring tasks (next_run_date)
+    if (sources.recurring) {
+      const rows = await all(
+        "SELECT id, name, description, next_run_date FROM recurring_tasks WHERE active=1 AND created_by=?",
+        user.id
+      );
+      for (const r of rows) {
+        if (!r.next_run_date) continue;
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(r.next_run_date);
+        if (!m) continue;
+        const date = m[1] + m[2] + m[3];
+        const uid = `recurring-${r.id}-${m[1]}${m[2]}${m[3]}@worknest`;
+        const summary = '🔁 ' + (r.name || 'Recurring task');
+        events.push(icsAllDay({
+          uid,
+          dateYYYYMMDD: date,
+          summary,
+          description: r.description || '',
+          location: '',
+        }));
+      }
+    }
+
+    const header = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Syruvia//Work Management//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      `X-WR-CALNAME:Syruvia · ${icsEscape(user.name || 'My calendar')}`,
+      `X-WR-CALDESC:${icsEscape('Synced from Syruvia Work Management')}`,
+      'X-PUBLISHED-TTL:PT1H',
+    ].map(icsFoldLine).join('\r\n');
+    const footer = 'END:VCALENDAR';
+    const body = events.filter(Boolean).join('\r\n');
+    const text = [header, body, footer].filter(Boolean).join('\r\n');
+
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', 'inline; filename="syruvia.ics"');
+    // Tell aggregators we'd like a poll roughly every hour. Google
+    // ultimately decides its own cadence (often 4-24h), so this is a
+    // hint, not a guarantee.
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.send(text);
+  } catch (e) {
+    console.error('[gcal-feed]', e.message);
+    res.status(500).type('text/plain').send('Feed generation failed');
+  }
+});
+
 // ── Plans ─────────────────────────────────────────────────────────────────────
 async function buildPlan(row) {
   if (!row) return null;

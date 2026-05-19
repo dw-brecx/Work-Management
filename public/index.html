@@ -5205,9 +5205,15 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <!-- ========== CALENDAR ========== -->
     <div id="page-calendar" class="page-with-right">
       <div class="page-content" style="padding:0;display:flex;flex-direction:column">
-        <div style="padding:14px 20px;border-bottom:1px solid var(--border)">
-          <h1 style="font-size:20px;font-weight:600;margin-bottom:2px">Calendar</h1>
-          <p style="font-size:12px;color:var(--text2)">Plan tasks, tickets, deadlines, and meetings in one place.</p>
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap">
+          <div>
+            <h1 style="font-size:20px;font-weight:600;margin-bottom:2px">Calendar</h1>
+            <p style="font-size:12px;color:var(--text2)">Plan tasks, tickets, deadlines, and meetings in one place.</p>
+          </div>
+          <button class="btn-sec" style="font-size:12px;padding:7px 12px;display:inline-flex;align-items:center;gap:6px" onclick="window.location.href='/calendar-sync.html'" title="Subscribe Google / Apple / Outlook Calendar to this workspace">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Sync to Google Calendar
+          </button>
         </div>
         <div style="padding:10px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <button onclick="prevMonth()" class="btn-sec" style="padding:5px 10px;font-size:14px">‹</button>

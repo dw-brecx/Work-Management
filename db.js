@@ -1209,6 +1209,16 @@ async function init() {
   // 'NOTFOUND' sentinel = "Slack workspace has no user with this email,
   // don't keep retrying". Populated lazily by slackDmUser in server.js.
   await safeAlter("ALTER TABLE users ADD COLUMN slack_user_id TEXT DEFAULT ''");
+
+  // Calendar sync (ICS feed) — each user gets a private token that's the
+  // sole credential on the public /api/calendar/feed/:token.ics endpoint
+  // they hand to Google Calendar / Apple Calendar / Outlook. Lazily
+  // generated on first request and regeneratable from the UI. The
+  // _sources_json column holds a JSON object like
+  // {"events":true,"tickets":true,"reminders":false,"recurring":false}
+  // so each user picks what their external calendar sees.
+  await safeAlter("ALTER TABLE users ADD COLUMN gcal_feed_token TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE users ADD COLUMN gcal_feed_sources_json TEXT DEFAULT '{\"events\":true,\"tickets\":true,\"reminders\":false,\"recurring\":false}'");
   // Per-notification "user has triaged this" stamp. Null = active, set =
   // user marked it handled (e.g. clicked "No reply needed" on a mention).
   // Used to clear mentions from the dashboard's "awaiting reply" count
