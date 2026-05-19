@@ -5016,7 +5016,11 @@ app.put('/api/profile/password', requireAuth, async (req, res) => {
 app.get('/api/notifications', requireAuth, async (req, res) => {
   try {
     const rows = await all('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50', req.session.userId);
-    res.json(rows.map(n => ({ ...n, time_label: formatUSDateTime(n.created_at) })));
+    // Don't pre-format the time on the server — formatUSDateTime() uses
+    // the host's local timezone, which is almost never the user's. The
+    // client formats from `created_at` (always sent as UTC) so the
+    // displayed time matches the viewer's clock.
+    res.json(rows);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

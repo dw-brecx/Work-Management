@@ -16735,12 +16735,25 @@ async function loadRealNotifications() {
     // Map DB rows to the UI format the template expects
     NOTIFICATIONS.length = 0;
     rows.forEach(function(n) {
+      // Always format on the client so the displayed time uses the
+      // VIEWER's timezone. The server also sends a `time_label`, but it's
+      // computed in the server's local time — if the server is ahead of
+      // the user (e.g. a UTC host serving a New York user), an event
+      // created at 02:00 UTC = 22:00 EDT renders as "tomorrow" instead
+      // of "today" on the user's screen.
+      let timeStr = '';
+      if (n.created_at) {
+        const iso = String(n.created_at).replace(' ', 'T') + 'Z';
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) timeStr = formatNowUS(d);
+      }
+      if (!timeStr) timeStr = formatNowUS();
       NOTIFICATIONS.push({
         id:       n.id,
         type:     n.type || 'mention',
         icon:     n.icon || '🔔',
         unread:   !!n.unread,
-        time:     n.time_label || (n.created_at ? formatNowUS(new Date(String(n.created_at).replace(' ','T') + 'Z')) : formatNowUS()),
+        time:     timeStr,
         text:     n.text || '',
         ticketId: n.ticket_id || '',
       });
