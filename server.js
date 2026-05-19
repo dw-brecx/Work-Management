@@ -4195,12 +4195,24 @@ app.post('/api/events', requireAuth, async (req, res) => {
 
     // ── Calendar emails ───────────────────────────────────────────────────
     // Build a real Date for start time so the email helper can format it
-    // nicely. dateKey is 'YYYY-MM-DD'. startTime may be 'HH:MM' or empty.
+    // nicely.  IMPORTANT: the in-app calendar stores date_key as a
+    // 0-indexed-month "YYYY-M-D" (May 19 → "2026-4-19"), NOT standard ISO.
+    // Feeding that straight into `new Date(...)` returns Invalid Date,
+    // which then bubbles through as `startAt: null` to the email helpers
+    // and renders as "January 1, 1970".  Parse the parts by hand and
+    // construct a proper local Date.
     function combineDateTime(dKey, tStr) {
       if (!dKey) return null;
+      const dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(dKey).trim());
+      if (!dm) return null;
+      const y = Number(dm[1]);
+      const mo = Number(dm[2]) + 1; // 0-indexed → 1-indexed
+      const dd = Number(dm[3]);
+      if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return null;
       const cleanT = (tStr && /^\d{1,2}:\d{2}/.test(tStr)) ? tStr : '00:00';
-      const iso = `${dKey}T${cleanT.length === 4 ? '0'+cleanT : cleanT}:00`;
-      const d = new Date(iso);
+      const tm = /^(\d{1,2}):(\d{2})/.exec(cleanT);
+      const hh = Number(tm[1]), mm = Number(tm[2]);
+      const d = new Date(y, mo - 1, dd, hh, mm, 0);
       return isNaN(d.getTime()) ? null : d;
     }
     try {
@@ -4274,15 +4286,25 @@ app.delete('/api/events/:id', requireAuth, async (req, res) => {
     if (ev && (ev.type === 'meeting' || ev.type === 'task')) {
       try {
         const canceller = await getUser(req.session.userId);
-        // Combine date_key + start_time into a real Date so the email format is nice.
+        // Combine date_key + start_time into a real Date so the email format
+        // is nice. date_key is "YYYY-M-D" with a 0-indexed month (the
+        // in-app calendar's storage shape, not standard ISO) — parsing it
+        // straight with `new Date(...)` returns Invalid Date, which then
+        // bubbles into the email as "January 1, 1970".
         let originalStart = null, originalEnd = null;
-        if (ev.date_key) {
-          const t1 = (ev.start_time && /^\d{1,2}:\d{2}/.test(ev.start_time)) ? ev.start_time : '00:00';
-          originalStart = new Date(`${ev.date_key}T${t1.length === 4 ? '0'+t1 : t1}:00`);
-          if (ev.end_time && /^\d{1,2}:\d{2}/.test(ev.end_time)) {
-            const t2 = ev.end_time;
-            originalEnd = new Date(`${ev.date_key}T${t2.length === 4 ? '0'+t2 : t2}:00`);
-          }
+        const _dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(ev.date_key || '').trim());
+        if (_dm) {
+          const y = Number(_dm[1]);
+          const mo = Number(_dm[2]) + 1;
+          const dd = Number(_dm[3]);
+          const buildAt = (tStr) => {
+            if (!tStr || !/^\d{1,2}:\d{2}/.test(tStr)) return null;
+            const tm = /^(\d{1,2}):(\d{2})/.exec(tStr);
+            const d = new Date(y, mo - 1, dd, Number(tm[1]), Number(tm[2]), 0);
+            return isNaN(d.getTime()) ? null : d;
+          };
+          originalStart = buildAt(ev.start_time || '00:00');
+          originalEnd   = buildAt(ev.end_time);
         }
         let attList = [];
         try { attList = JSON.parse(ev.attendees_json || '[]'); } catch {}
@@ -5653,11 +5675,23 @@ app.get('/api/health', (req, res) => {
 // .deadline_warned) and a per-user timestamp (users.last_overdue_digest_at).
 
 // Combine a date_key + time string into a real Date.
+// Combine a 0-indexed "YYYY-M-D" date key + "HH:MM" time into a real
+// local Date. Same shape issue as combineDateTime inside the POST
+// /api/events handler — feeding the non-standard key directly to
+// `new Date(...)` returns Invalid Date, which silently disables every
+// cron job that depends on it (meeting reminders, deadline warnings,
+// overdue digests). Parse by hand.
 function combineEventStart(dateKey, timeStr) {
   if (!dateKey) return null;
-  const t = (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) ? timeStr : '00:00';
-  const iso = `${dateKey}T${t.length === 4 ? '0'+t : t}:00`;
-  const d = new Date(iso);
+  const dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(dateKey).trim());
+  if (!dm) return null;
+  const y = Number(dm[1]);
+  const mo = Number(dm[2]) + 1; // 0-indexed → 1-indexed
+  const dd = Number(dm[3]);
+  if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return null;
+  const cleanT = (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) ? timeStr : '00:00';
+  const tm = /^(\d{1,2}):(\d{2})/.exec(cleanT);
+  const d = new Date(y, mo - 1, dd, Number(tm[1]), Number(tm[2]), 0);
   return isNaN(d.getTime()) ? null : d;
 }
 
