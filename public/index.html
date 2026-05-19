@@ -5210,10 +5210,15 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <h1 style="font-size:20px;font-weight:600;margin-bottom:2px">Calendar</h1>
             <p style="font-size:12px;color:var(--text2)">Plan tasks, tickets, deadlines, and meetings in one place.</p>
           </div>
-          <button class="btn-sec" style="font-size:12px;padding:7px 12px;display:inline-flex;align-items:center;gap:6px" onclick="window.location.href='/calendar-sync.html'" title="Subscribe Google / Apple / Outlook Calendar to this workspace">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            Sync to Google Calendar
-          </button>
+          <div style="display:inline-flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-primary" style="font-size:12px;padding:7px 14px;display:inline-flex;align-items:center;gap:6px" onclick="openSyncNowModal()" title="Show Google poll status and force-refresh steps so events appear right away">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Sync now
+            </button>
+            <button class="btn-sec" style="font-size:12px;padding:7px 12px;display:inline-flex;align-items:center;gap:6px" onclick="window.location.href='/calendar-sync.html'" title="Subscribe URL + per-source toggles">
+              Sync settings
+            </button>
+          </div>
         </div>
         <div style="padding:10px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <button onclick="prevMonth()" class="btn-sec" style="padding:5px 10px;font-size:14px">‹</button>
@@ -7020,6 +7025,48 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
 <!-- CREATE EVENT MODAL -->
 <!-- CALENDAR STATS MODAL (Meetings / Tasks Due / Deadlines this week) -->
+<!-- "Sync now" modal — honest about Google's poll cadence and gives a
+     one-click path to force a refresh (remove + re-add the URL in
+     Google Calendar). Populated by openSyncNowModal() each time it's
+     shown so the "last picked up by Google" timestamp is live. -->
+<div id="modal-sync-now" class="modal-overlay">
+  <div class="modal" style="width:540px">
+    <div class="modal-header">
+      <span class="modal-title">Sync to Google Calendar</span>
+      <button class="modal-close" onclick="closeModal('sync-now')">×</button>
+    </div>
+    <p style="font-size:12.5px;color:var(--text2);line-height:1.6;margin:0 0 12px">
+      Your subscribe feed is always live — every event you create here is
+      already in it. Google polls subscribed calendars on its own clock
+      (usually every 4–12 hours), so new events <em>do</em> arrive
+      automatically, just not instantly.
+    </p>
+    <div id="sn-status" style="background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:12px;color:var(--text2);margin-bottom:14px">Loading…</div>
+    <div style="font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px">Your subscribe URL</div>
+    <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+      <input id="sn-url" type="text" readonly style="flex:1;min-width:220px;font-family:monospace;font-size:11.5px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text)"/>
+      <button class="btn-sec" id="sn-copy-btn" style="font-size:12px;padding:8px 12px" onclick="copySyncUrl()">Copy URL</button>
+    </div>
+    <div style="font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px">Force Google to pull right now</div>
+    <ol style="margin:0 0 14px 18px;padding:0;font-size:12px;color:var(--text2);line-height:1.65">
+      <li>Open <a href="https://calendar.google.com/calendar/u/0/r/settings/calendar" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">Google Calendar settings</a>.</li>
+      <li>Find <strong>Syruvia · &lt;your name&gt;</strong> in the left sidebar (under <em>Settings for other calendars</em>), open it, scroll down, and click <strong>Unsubscribe</strong>.</li>
+      <li>Go to <a href="https://calendar.google.com/calendar/u/0/r/settings/addbyurl" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">Add calendar → From URL</a> and paste the URL above. Google does a fresh pull on subscribe, so every new event lands within seconds.</li>
+    </ol>
+    <p style="font-size:11.5px;color:var(--text3);line-height:1.55;margin:0">
+      The unsubscribe + re-add dance is the only way today — Google's API
+      doesn't let outside apps trigger a per-calendar refresh. A real
+      "Sync now that runs in the background" needs the upcoming
+      Connect-Google integration, which can write events directly via
+      the Google Calendar API.
+    </p>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;flex-wrap:wrap">
+      <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('sync-now')">Close</button>
+      <a class="btn-primary" style="font-size:12px;padding:9px 16px;text-decoration:none;display:inline-flex;align-items:center;gap:6px" href="https://calendar.google.com" target="_blank" rel="noopener">Open Google Calendar →</a>
+    </div>
+  </div>
+</div>
+
 <div id="modal-cal-stats" class="modal-overlay">
   <div class="modal" style="width:520px;max-height:80vh;display:flex;flex-direction:column">
     <div class="modal-header">
@@ -14425,6 +14472,75 @@ function pushEventToGoogle(evtOrKey, idxIfKey) {
   window.open(url, '_blank', 'noopener');
 }
 window.pushEventToGoogle = pushEventToGoogle;
+
+// ── "Sync now" modal on the calendar page ─────────────────────────────────
+// Pops a small modal showing the user's subscribe URL, the live "last
+// picked up by Google" timestamp, and the one-time unsubscribe + re-add
+// dance that forces an immediate poll. Honest about why we can't push a
+// real "sync now" without OAuth — that's the next-phase Google Calendar
+// API integration.
+async function openSyncNowModal() {
+  const statusEl = document.getElementById('sn-status');
+  const urlEl = document.getElementById('sn-url');
+  if (statusEl) statusEl.textContent = 'Loading…';
+  if (urlEl) urlEl.value = '';
+  if (typeof openModal === 'function') openModal('sync-now');
+  try {
+    const info = await apiGet('/api/calendar/sync-info');
+    if (urlEl) urlEl.value = info.url || '';
+    if (statusEl) {
+      if (!info.lastFetchedAt) {
+        statusEl.innerHTML = '<strong>Status:</strong> Google hasn\'t pulled this feed yet. ' +
+          'After your first subscribe Google does an immediate fetch, then polls on its own schedule.';
+      } else {
+        const d = new Date(String(info.lastFetchedAt).replace(' ', 'T') + 'Z');
+        const ago = _humanAgo(d);
+        statusEl.innerHTML = '<strong>Last picked up by Google:</strong> ' + (ago || 'just now') +
+          ' (' + d.toLocaleString() + ')';
+      }
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Could not load sync status — please refresh.';
+  }
+}
+window.openSyncNowModal = openSyncNowModal;
+
+function copySyncUrl() {
+  const el = document.getElementById('sn-url');
+  if (!el) return;
+  const btn = document.getElementById('sn-copy-btn');
+  const reset = () => { if (btn) { btn.textContent = 'Copy URL'; } };
+  try {
+    navigator.clipboard.writeText(el.value).then(() => {
+      if (btn) { btn.textContent = 'Copied!'; setTimeout(reset, 1500); }
+    }).catch(() => {
+      el.select(); document.execCommand('copy');
+      if (btn) { btn.textContent = 'Copied!'; setTimeout(reset, 1500); }
+    });
+  } catch {
+    el.select();
+    try { document.execCommand('copy'); if (btn) { btn.textContent = 'Copied!'; setTimeout(reset, 1500); } } catch {}
+  }
+}
+window.copySyncUrl = copySyncUrl;
+
+// Tiny "3 hours ago" formatter — keep it local so the Sync-Now modal
+// doesn't drag in moment.js / Intl.RelativeTimeFormat just for this.
+function _humanAgo(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return '';
+  const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (sec < 45) return 'just now';
+  if (sec < 90) return 'a minute ago';
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} minutes ago`;
+  if (min < 90) return 'an hour ago';
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} hours ago`;
+  const days = Math.round(hr / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${days} days ago`;
+  return d.toLocaleDateString();
+}
 
 // "Save & push" button on the create/edit modal — saves locally first
 // (so the event lives in this app), then opens Google's editor with the
