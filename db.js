@@ -1031,11 +1031,22 @@ async function init() {
     title TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     assignee TEXT NOT NULL DEFAULT '',
+    assignees_json TEXT NOT NULL DEFAULT '[]',
+    reporter TEXT NOT NULL DEFAULT '',
     priority TEXT NOT NULL DEFAULT 'Medium',
     dept TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    checklist_json TEXT NOT NULL DEFAULT '[]',
+    due_offset_days INTEGER NOT NULL DEFAULT 7,
     created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_recurring_task_items_parent ON recurring_task_items (recurring_task_id, position)`);
+  // Existing installs predate the full-ticket fields — backfill via safeAlter.
+  await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN assignees_json TEXT NOT NULL DEFAULT '[]'");
+  await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN reporter TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
+  await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN checklist_json TEXT NOT NULL DEFAULT '[]'");
+  await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN due_offset_days INTEGER NOT NULL DEFAULT 7");
 
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
