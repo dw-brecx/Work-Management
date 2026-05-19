@@ -145,18 +145,37 @@ function initials(name) {
   return String(name || '?').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
-// Format any input that looks like a date into "Friday, May 24, 2024"
+// Format any input that looks like a date into "Friday, May 24, 2024".
+// Critically: `new Date(null)` and `new Date(0)` BOTH return a valid Date
+// of 1970-01-01, which slips past isNaN() and would render as
+// "Thursday, January 1, 1970" in the recipient's email. Reject those
+// (and any other obvious "no date" inputs) explicitly. Same fix for
+// fmtShortDate.
+function _isUsableDateInput(d) {
+  if (d == null) return false;                  // null / undefined
+  if (d === 0 || d === '0') return false;       // Unix epoch sentinel
+  if (typeof d === 'string' && !d.trim()) return false;
+  return true;
+}
 function fmtLongDate(d) {
+  if (!_isUsableDateInput(d)) return '';
   try {
     const dt = (d instanceof Date) ? d : new Date(d);
     if (isNaN(dt.getTime())) return String(d || '');
+    // Sanity-check: dates before the year 2000 in this app are almost
+    // certainly a coercion artefact from a missing field, not a real
+    // user-meaningful value. Surface them as empty rather than
+    // "Thursday, January 1, 1970".
+    if (dt.getUTCFullYear() < 2000) return '';
     return dt.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   } catch { return String(d || ''); }
 }
 function fmtShortDate(d) {
+  if (!_isUsableDateInput(d)) return '';
   try {
     const dt = (d instanceof Date) ? d : new Date(d);
     if (isNaN(dt.getTime())) return String(d || '');
+    if (dt.getUTCFullYear() < 2000) return '';
     return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   } catch { return String(d || ''); }
 }

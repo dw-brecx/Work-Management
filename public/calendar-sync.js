@@ -53,11 +53,18 @@
   }
 
   // ── Sources ────────────────────────────────────────────────────────────────
+  // Each calendar-event subtype is its own toggle — most users only want
+  // their meetings to land in a shared external calendar and prefer to
+  // keep personal tasks / private deadlines out of it. Tickets,
+  // reminders, and recurring tasks stay as single toggles since they're
+  // already a single category each.
   const SOURCES = [
-    { key: 'events',    name: 'Calendar events',          desc: 'Meetings, tasks, and deadlines you create on the Calendar page.' },
-    { key: 'tickets',   name: 'My ticket due dates',      desc: 'All-day items in Google Calendar for tickets where you\'re the assignee, requester, or creator (open tickets only).' },
-    { key: 'reminders', name: 'My Reminders',             desc: 'One-shot and daily personal reminders from the My Reminders page, surfaced at the reminder time.' },
-    { key: 'recurring', name: 'Recurring task next runs', desc: 'For each active recurring task you own, an all-day marker on the next date it\'s scheduled to fire.' },
+    { key: 'meetings',  group: 'Calendar events', name: 'Meetings',                desc: 'Meetings you create on the Calendar page (including any video link from the Location field).' },
+    { key: 'tasks',     group: 'Calendar events', name: 'Tasks',                   desc: 'Calendar tasks you assign to yourself or others — handy if your external calendar is also your to-do list.' },
+    { key: 'deadlines', group: 'Calendar events', name: 'Deadlines',               desc: 'Calendar deadlines you set on the calendar page (independent of ticket due dates).' },
+    { key: 'tickets',   group: 'Other',           name: 'My ticket due dates',     desc: 'All-day items for tickets where you\'re the assignee, requester, or creator (open tickets only).' },
+    { key: 'reminders', group: 'Other',           name: 'My Reminders',            desc: 'One-shot and daily personal reminders from the My Reminders page, at the reminder time.' },
+    { key: 'recurring', group: 'Other',           name: 'Recurring task next runs', desc: 'For each active recurring task you own, an all-day marker on the next date it\'s scheduled to fire.' },
   ];
 
   let STATE = { url: '', token: '', sources: {} };
@@ -95,17 +102,7 @@
             <span class="cs-card-title">What to include</span>
             <span class="cs-card-hint">Toggles apply on the next Google poll</span>
           </div>
-          ${SOURCES.map(s => `
-            <div class="cs-source-row">
-              <label>
-                <input type="checkbox" data-source="${s.key}" ${STATE.sources[s.key] ? 'checked' : ''}/>
-                <div>
-                  <div class="cs-source-name">${escapeHtml(s.name)}</div>
-                  <div class="cs-source-desc">${escapeHtml(s.desc)}</div>
-                </div>
-              </label>
-            </div>
-          `).join('')}
+          ${renderSourceGroups()}
         </div>
 
         <div class="cs-card">
@@ -121,6 +118,9 @@
           <div class="cs-callout">
             Tip: Apple Calendar (<strong>File → New Calendar Subscription</strong>) and Outlook (<strong>Add calendar → Subscribe from web</strong>) accept the same URL. Outlook even lets you set the refresh interval yourself.
           </div>
+          <div class="cs-callout cs-callout-info" style="margin-top:10px">
+            <strong>What you get via subscribe today:</strong> each meeting lands at the correct time slot with the attendee list and join link visible in Google's event details, and each ticket appears as a task-styled all-day item with its full description, priority, status, assignees, and a link back to the ticket. <strong>What needs the upcoming Google account connection:</strong> Google won't <em>send</em> invitations to attendees from a subscribed calendar, and changes made inside Google Calendar don't flow back to Syruvia. Both unlock once we ship the OAuth integration (planned next).
+          </div>
         </div>
       </div>
     `;
@@ -130,6 +130,70 @@
     document.querySelectorAll('input[data-source]').forEach(el => {
       el.addEventListener('change', onSourceToggle);
     });
+    document.querySelectorAll('button[data-bulk]').forEach(el => {
+      el.addEventListener('click', onBulkClick);
+    });
+  }
+
+  // Render the source rows grouped by their `group` field, with a small
+  // group-level heading and "All / None" shortcuts for the multi-row
+  // groups (right now only "Calendar events"). Keeps the toggles
+  // visually organised without changing how individual rows are saved.
+  function renderSourceGroups() {
+    const groups = {};
+    for (const s of SOURCES) {
+      if (!groups[s.group]) groups[s.group] = [];
+      groups[s.group].push(s);
+    }
+    return Object.entries(groups).map(([groupName, items]) => `
+      <div class="cs-group">
+        <div class="cs-group-head">
+          <span class="cs-group-title">${escapeHtml(groupName)}</span>
+          ${items.length > 1
+            ? `<span class="cs-group-bulk">
+                 <button class="cs-bulk-btn" data-bulk="all"  data-group="${escapeHtml(groupName)}" type="button">All</button>
+                 <button class="cs-bulk-btn" data-bulk="none" data-group="${escapeHtml(groupName)}" type="button">None</button>
+               </span>`
+            : ''}
+        </div>
+        ${items.map(s => `
+          <div class="cs-source-row" data-source-group="${escapeHtml(groupName)}">
+            <label>
+              <input type="checkbox" data-source="${s.key}" ${STATE.sources[s.key] ? 'checked' : ''}/>
+              <div>
+                <div class="cs-source-name">${escapeHtml(s.name)}</div>
+                <div class="cs-source-desc">${escapeHtml(s.desc)}</div>
+              </div>
+            </label>
+          </div>
+        `).join('')}
+      </div>
+    `).join('');
+  }
+
+  // "All" / "None" shortcut inside one group. Sets every checkbox in the
+  // group, then sends one combined PATCH instead of triggering N saves.
+  async function onBulkClick(e) {
+    const group = e.target.dataset.group;
+    const want = e.target.dataset.bulk === 'all';
+    const rows = document.querySelectorAll(`.cs-source-row[data-source-group="${CSS.escape(group)}"] input[data-source]`);
+    const changed = [];
+    rows.forEach(r => {
+      if (r.checked !== want) {
+        r.checked = want;
+        STATE.sources[r.dataset.source] = want;
+        changed.push(r.dataset.source);
+      }
+    });
+    if (!changed.length) return;
+    try {
+      await apiPost('/api/calendar/sync-settings', STATE.sources);
+      toast(want ? `Including all ${group.toLowerCase()}` : `Skipping all ${group.toLowerCase()}`, 'ok');
+    } catch {
+      // Roll back the UI on failure so the user sees the truth.
+      rows.forEach(r => { r.checked = !want; STATE.sources[r.dataset.source] = !want; });
+      toast('Could not save', 'err');
+    }
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────

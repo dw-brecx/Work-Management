@@ -129,6 +129,40 @@ a { color:inherit; }
 .btn-danger:hover { background: #fee2e2; }
 .btn:disabled { opacity:.55; cursor:not-allowed; transform:none; box-shadow:none; }
 
+/* Source groups (e.g. "Calendar events" wraps Meetings/Tasks/Deadlines) */
+.cs-group + .cs-group {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.cs-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  padding: 0 10px;
+}
+.cs-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text3);
+}
+.cs-group-bulk { display: inline-flex; gap: 4px; }
+.cs-bulk-btn {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text2);
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.cs-bulk-btn:hover { background: var(--card); color: var(--text); border-color: var(--accent); }
+
 .cs-source-row {
   display: flex;
   align-items: flex-start;
@@ -181,8 +215,14 @@ a { color:inherit; }
   font-size: 11.5px;
   line-height: 1.55;
 }
+.cs-callout-info {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
 @media (prefers-color-scheme: dark) {
   .cs-callout { background: rgba(234,179,8,.08); border-color: rgba(234,179,8,.35); color: #fde68a; }
+  .cs-callout-info { background: rgba(59,130,246,.08); border-color: rgba(59,130,246,.35); color: #93c5fd; }
 }
 
 #cs-toast {

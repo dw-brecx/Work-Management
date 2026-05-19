@@ -4195,12 +4195,24 @@ app.post('/api/events', requireAuth, async (req, res) => {
 
     // ── Calendar emails ───────────────────────────────────────────────────
     // Build a real Date for start time so the email helper can format it
-    // nicely. dateKey is 'YYYY-MM-DD'. startTime may be 'HH:MM' or empty.
+    // nicely.  IMPORTANT: the in-app calendar stores date_key as a
+    // 0-indexed-month "YYYY-M-D" (May 19 → "2026-4-19"), NOT standard ISO.
+    // Feeding that straight into `new Date(...)` returns Invalid Date,
+    // which then bubbles through as `startAt: null` to the email helpers
+    // and renders as "January 1, 1970".  Parse the parts by hand and
+    // construct a proper local Date.
     function combineDateTime(dKey, tStr) {
       if (!dKey) return null;
+      const dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(dKey).trim());
+      if (!dm) return null;
+      const y = Number(dm[1]);
+      const mo = Number(dm[2]) + 1; // 0-indexed → 1-indexed
+      const dd = Number(dm[3]);
+      if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return null;
       const cleanT = (tStr && /^\d{1,2}:\d{2}/.test(tStr)) ? tStr : '00:00';
-      const iso = `${dKey}T${cleanT.length === 4 ? '0'+cleanT : cleanT}:00`;
-      const d = new Date(iso);
+      const tm = /^(\d{1,2}):(\d{2})/.exec(cleanT);
+      const hh = Number(tm[1]), mm = Number(tm[2]);
+      const d = new Date(y, mo - 1, dd, hh, mm, 0);
       return isNaN(d.getTime()) ? null : d;
     }
     try {
@@ -4274,15 +4286,25 @@ app.delete('/api/events/:id', requireAuth, async (req, res) => {
     if (ev && (ev.type === 'meeting' || ev.type === 'task')) {
       try {
         const canceller = await getUser(req.session.userId);
-        // Combine date_key + start_time into a real Date so the email format is nice.
+        // Combine date_key + start_time into a real Date so the email format
+        // is nice. date_key is "YYYY-M-D" with a 0-indexed month (the
+        // in-app calendar's storage shape, not standard ISO) — parsing it
+        // straight with `new Date(...)` returns Invalid Date, which then
+        // bubbles into the email as "January 1, 1970".
         let originalStart = null, originalEnd = null;
-        if (ev.date_key) {
-          const t1 = (ev.start_time && /^\d{1,2}:\d{2}/.test(ev.start_time)) ? ev.start_time : '00:00';
-          originalStart = new Date(`${ev.date_key}T${t1.length === 4 ? '0'+t1 : t1}:00`);
-          if (ev.end_time && /^\d{1,2}:\d{2}/.test(ev.end_time)) {
-            const t2 = ev.end_time;
-            originalEnd = new Date(`${ev.date_key}T${t2.length === 4 ? '0'+t2 : t2}:00`);
-          }
+        const _dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(ev.date_key || '').trim());
+        if (_dm) {
+          const y = Number(_dm[1]);
+          const mo = Number(_dm[2]) + 1;
+          const dd = Number(_dm[3]);
+          const buildAt = (tStr) => {
+            if (!tStr || !/^\d{1,2}:\d{2}/.test(tStr)) return null;
+            const tm = /^(\d{1,2}):(\d{2})/.exec(tStr);
+            const d = new Date(y, mo - 1, dd, Number(tm[1]), Number(tm[2]), 0);
+            return isNaN(d.getTime()) ? null : d;
+          };
+          originalStart = buildAt(ev.start_time || '00:00');
+          originalEnd   = buildAt(ev.end_time);
         }
         let attList = [];
         try { attList = JSON.parse(ev.attendees_json || '[]'); } catch {}
@@ -4321,14 +4343,36 @@ app.delete('/api/events/:id', requireAuth, async (req, res) => {
 const crypto = require('crypto');
 
 function gcalDefaultSources() {
-  return { events: true, tickets: true, reminders: false, recurring: false };
+  return {
+    meetings:  true,
+    tasks:     true,
+    deadlines: true,
+    tickets:   true,
+    reminders: false,
+    recurring: false,
+  };
 }
 function gcalParseSources(rawJson) {
   const def = gcalDefaultSources();
   try {
     const obj = JSON.parse(rawJson || '{}');
+    // Backwards-compat: rows written before the per-type split carried a
+    // single `events` flag covering meetings + tasks + deadlines. If we
+    // see that shape and none of the new keys are present, expand it.
+    const legacyPresent = ('events' in obj) && !('meetings' in obj) && !('tasks' in obj) && !('deadlines' in obj);
+    if (legacyPresent) {
+      const v = obj.events !== false;
+      return {
+        meetings: v, tasks: v, deadlines: v,
+        tickets:   obj.tickets   !== false,
+        reminders: !!obj.reminders,
+        recurring: !!obj.recurring,
+      };
+    }
     return {
-      events:    obj.events    !== false,
+      meetings:  obj.meetings  !== false,
+      tasks:     obj.tasks     !== false,
+      deadlines: obj.deadlines !== false,
       tickets:   obj.tickets   !== false,
       reminders: !!obj.reminders,
       recurring: !!obj.recurring,
@@ -4494,7 +4538,34 @@ function icsDateOnlyFromDate(d) {
 }
 
 // Build a single VEVENT block for an all-day event.
-function icsAllDay({ uid, dateYYYYMMDD, summary, description, location }) {
+// Common VEVENT body shared by the all-day and timed event builders.
+// Handles ORGANIZER, ATTENDEE, CATEGORIES, STATUS, X-* hints — the
+// stuff that turns a bare time-slot into something Google/Apple render
+// as a proper meeting or task-style item.
+function _icsCommonEventLines({ organizer, attendees, categories, status, transparency, classification, url }) {
+  const lines = [];
+  if (organizer && organizer.email) {
+    const cn = organizer.name ? `;CN="${String(organizer.name).replace(/"/g, '')}"` : '';
+    lines.push(`ORGANIZER${cn}:mailto:${organizer.email}`);
+  }
+  for (const a of (attendees || [])) {
+    if (!a || !a.email) continue;
+    const cn = a.name ? `;CN="${String(a.name).replace(/"/g, '')}"` : '';
+    // ROLE / PARTSTAT / RSVP make Google show this as a real participant
+    // entry in the event details (subscribed calendars still won't *send*
+    // the invite — that needs the Google Calendar API integration — but
+    // attendees are visible and the slot is rendered correctly).
+    lines.push(`ATTENDEE${cn};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${a.email}`);
+  }
+  if (categories)    lines.push(`CATEGORIES:${icsEscape(categories)}`);
+  if (status)        lines.push(`STATUS:${status}`);
+  if (transparency)  lines.push(`TRANSP:${transparency}`); // OPAQUE blocks time, TRANSPARENT doesn't
+  if (classification)lines.push(`CLASS:${classification}`);
+  if (url)           lines.push(`URL:${url}`);
+  return lines;
+}
+
+function icsAllDay({ uid, dateYYYYMMDD, summary, description, location, organizer, attendees, categories, status, transparency, url }) {
   if (!dateYYYYMMDD) return '';
   // DTEND on an all-day event is exclusive — one day after DTSTART
   // for a single-day item.
@@ -4513,10 +4584,11 @@ function icsAllDay({ uid, dateYYYYMMDD, summary, description, location }) {
   ];
   if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
   if (location)    lines.push(`LOCATION:${icsEscape(location)}`);
+  lines.push(..._icsCommonEventLines({ organizer, attendees, categories, status, transparency, url }));
   lines.push('END:VEVENT');
   return lines.map(icsFoldLine).join('\r\n');
 }
-function icsTimedEvent({ uid, startDate, endDate, summary, description, location }) {
+function icsTimedEvent({ uid, startDate, endDate, summary, description, location, organizer, attendees, categories, status, transparency, url }) {
   if (!startDate) return '';
   // If no end provided, default to a one-hour block — most calendars
   // refuse zero-length events.
@@ -4532,8 +4604,32 @@ function icsTimedEvent({ uid, startDate, endDate, summary, description, location
   ];
   if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
   if (location)    lines.push(`LOCATION:${icsEscape(location)}`);
+  lines.push(..._icsCommonEventLines({ organizer, attendees, categories, status, transparency, url }));
   lines.push('END:VEVENT');
   return lines.map(icsFoldLine).join('\r\n');
+}
+
+// Look up workspace users by display name. Used to convert attendee
+// names stored on cal_events.attendees_json into mailto:-able
+// {name,email} pairs for the ICS feed.
+async function _icsResolveAttendees(names) {
+  const out = [];
+  for (const raw of (names || [])) {
+    const n = String(raw || '').trim();
+    if (!n) continue;
+    const u = await get('SELECT name, email FROM users WHERE name=? LIMIT 1', n);
+    if (u && u.email) out.push({ name: u.name, email: u.email });
+    else out.push({ name: n });  // No mailto:, but still show the name
+  }
+  return out;
+}
+
+// Build the workspace's "open this" URL for a given ticket. Prefers
+// APP_URL (the real public URL configured in env) and falls back to
+// the request's own host so dev / preview deployments still work.
+function _icsTicketUrl(req, ticketId) {
+  const base = (process.env.APP_URL || gcalFeedBaseUrl(req) || '').replace(/\/+$/, '');
+  return `${base}/tickets/${encodeURIComponent(ticketId)}`;
 }
 
 // GET /api/calendar/feed/:token.ics — UNAUTHENTICATED on purpose.
@@ -4553,32 +4649,113 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
 
     const events = [];
 
-    // 1) In-app calendar events the user owns
-    if (sources.events) {
+    // 1) In-app calendar events the user owns — gated by event TYPE so
+    //    callers can sync only meetings (the common ask) and leave their
+    //    private tasks / deadlines out of the shared external calendar.
+    const wantMeetings  = !!sources.meetings;
+    const wantTasks     = !!sources.tasks;
+    const wantDeadlines = !!sources.deadlines;
+    if (wantMeetings || wantTasks || wantDeadlines) {
       const rows = await all(
         "SELECT * FROM cal_events WHERE user_id=? OR source='syruvia' ORDER BY date_key ASC",
         user.id
       );
+      // Organizer for events the feed owner created is the feed owner.
+      const organizer = user.email ? { name: user.name, email: user.email } : null;
       for (const r of rows) {
+        const t = String(r.type || 'meeting').toLowerCase();
+        // 'ticket'-type rows on the calendar are synthetic mirrors of
+        // open tickets, which we already cover under the dedicated
+        // tickets toggle below — skip them here.
+        if (t === 'ticket') continue;
+        if (t === 'meeting'  && !wantMeetings)  continue;
+        if (t === 'task'     && !wantTasks)     continue;
+        if (t === 'deadline' && !wantDeadlines) continue;
+        // Unknown types fall through under the meetings toggle so they
+        // aren't silently dropped if a future event type is introduced.
+        if (!['meeting','task','deadline'].includes(t) && !wantMeetings) continue;
+
         const uid = `calendar-event-${r.id}@worknest`;
         const summary = r.title || r.label || 'Event';
-        const description = r.description || '';
+        const baseDesc = r.description || '';
         const location = r.location || '';
+
+        // Meetings get the full attendee treatment: ORGANIZER + every
+        // attendee resolved to mailto:, so subscribed Google shows the
+        // event at the right time with the participant list visible.
+        // Google won't *send* invitations from a subscribed calendar
+        // (that needs the two-way Google Calendar API integration), but
+        // the slot, location, organizer, and attendee list all land
+        // correctly.
+        let attendees = [];
+        if (t === 'meeting') {
+          let nameList = [];
+          try { nameList = JSON.parse(r.attendees_json || '[]'); } catch {}
+          // The on-screen "assignee" of a meeting is treated as an
+          // additional participant (mirrors what the in-app meeting
+          // invite email already does).
+          if (r.assignee && !nameList.includes(r.assignee)) nameList.push(r.assignee);
+          attendees = await _icsResolveAttendees(nameList);
+        }
+
+        // Compose a richer description so the recipient sees the same
+        // context they'd have inside the app — attendee list, the
+        // join-link if it's a video meeting, and the original notes.
+        const descLines = [];
+        if (t === 'meeting' && attendees.length) {
+          descLines.push('Attendees: ' + attendees.map(a => a.email ? `${a.name || ''} <${a.email}>` : (a.name || '')).filter(Boolean).join(', '));
+        }
+        if (location && /^https?:\/\//i.test(location)) {
+          descLines.push(`Join link: ${location}`);
+        }
+        if (baseDesc) {
+          if (descLines.length) descLines.push('');
+          descLines.push(baseDesc);
+        }
+        const description = descLines.join('\n');
+
+        // CATEGORIES + TRANSP let Google render each type appropriately:
+        // meetings block time, deadlines block time, tasks/tasks-style
+        // items can be marked TRANSPARENT so they don't visually
+        // overlap real meetings on the day grid.
+        const categories =
+          t === 'meeting' ? 'Meeting' :
+          t === 'task'    ? 'Task'    :
+          t === 'deadline'? 'Deadline': 'Event';
+        const transparency = (t === 'task') ? 'TRANSPARENT' : 'OPAQUE';
+
         if (r.all_day || !r.start_time) {
           const date = icsDateOnly(r.date_key);
-          events.push(icsAllDay({ uid, dateYYYYMMDD: date, summary, description, location }));
+          events.push(icsAllDay({
+            uid, dateYYYYMMDD: date, summary, description, location,
+            organizer, attendees,
+            categories, transparency,
+            status: 'CONFIRMED',
+          }));
         } else {
           const startDate = icsDateTimeUTC(r.date_key, r.start_time);
           const endDate   = r.end_time ? icsDateTimeUTC(r.date_key, r.end_time) : null;
-          events.push(icsTimedEvent({ uid, startDate, endDate, summary, description, location }));
+          events.push(icsTimedEvent({
+            uid, startDate, endDate, summary, description, location,
+            organizer, attendees,
+            categories, transparency,
+            status: 'CONFIRMED',
+          }));
         }
       }
     }
 
-    // 2) Ticket due dates for tickets where the user is involved
+    // 2) Tickets the user is involved in, rendered task-style — full
+    //    ticket detail in the description, link back to the app, and
+    //    TRANSP=TRANSPARENT so they don't visually block the user's
+    //    real meeting slots. Google's subscribed-calendar surface
+    //    doesn't import items into Google Tasks (VTODO support is
+    //    spotty), so we still emit VEVENT — but with the Task category
+    //    and rich body so it reads as a task at a glance.
     if (sources.tickets) {
       const rows = await all(`
-        SELECT t.id, t.title, t.due, t.priority, t.status
+        SELECT t.id, t.title, t.due, t.priority, t.status, t.dept,
+               t.req, t.assignee, t.reporter
           FROM tickets t
           LEFT JOIN ticket_assignees ta ON ta.ticket_id = t.id
          WHERE t.deleted_at IS NULL
@@ -4590,14 +4767,43 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
         const due = icsParseTicketDue(r.due);
         if (!due) continue;
         const uid = `ticket-${r.id}@worknest`;
-        const summary = `${r.id} · ${r.title || ''} (due)`;
-        const description = `Priority: ${r.priority || 'Medium'} · Status: ${r.status || 'Open'}`;
+
+        // Pull the full assignee list + description so the calendar
+        // event carries the same context the user has inside the app.
+        const assigneeRows = await all(
+          'SELECT user_name FROM ticket_assignees WHERE ticket_id=? ORDER BY user_name ASC',
+          r.id
+        );
+        const assigneeNames = assigneeRows.map(a => a.user_name).filter(Boolean);
+        if (r.assignee && !assigneeNames.includes(r.assignee)) assigneeNames.unshift(r.assignee);
+
+        const detRow = await get('SELECT description FROM ticket_details WHERE ticket_id=?', r.id);
+        const fullDesc = (detRow && detRow.description) || '';
+
+        const summary = `📌 ${r.id} · ${r.title || ''}`;
+        const descLines = [
+          `Priority: ${r.priority || 'Medium'}`,
+          `Status:   ${r.status || 'Open'}`,
+        ];
+        if (r.dept)               descLines.push(`Dept:     ${r.dept}`);
+        if (assigneeNames.length) descLines.push(`Assignees: ${assigneeNames.join(', ')}`);
+        if (r.req)                descLines.push(`Requester: ${r.req}`);
+        if (r.reporter && r.reporter !== r.req) descLines.push(`Reporter:  ${r.reporter}`);
+        if (fullDesc) { descLines.push(''); descLines.push(fullDesc); }
+        descLines.push('');
+        descLines.push(`Open in app: ${_icsTicketUrl(req, r.id)}`);
+        const description = descLines.join('\n');
+
         events.push(icsAllDay({
           uid,
           dateYYYYMMDD: icsDateOnlyFromDate(due),
           summary,
           description,
           location: '',
+          categories: 'Task',
+          transparency: 'TRANSPARENT',
+          status: r.status === 'Closed' ? 'COMPLETED' : 'CONFIRMED',
+          url: _icsTicketUrl(req, r.id),
         }));
       }
     }
@@ -5653,11 +5859,23 @@ app.get('/api/health', (req, res) => {
 // .deadline_warned) and a per-user timestamp (users.last_overdue_digest_at).
 
 // Combine a date_key + time string into a real Date.
+// Combine a 0-indexed "YYYY-M-D" date key + "HH:MM" time into a real
+// local Date. Same shape issue as combineDateTime inside the POST
+// /api/events handler — feeding the non-standard key directly to
+// `new Date(...)` returns Invalid Date, which silently disables every
+// cron job that depends on it (meeting reminders, deadline warnings,
+// overdue digests). Parse by hand.
 function combineEventStart(dateKey, timeStr) {
   if (!dateKey) return null;
-  const t = (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) ? timeStr : '00:00';
-  const iso = `${dateKey}T${t.length === 4 ? '0'+t : t}:00`;
-  const d = new Date(iso);
+  const dm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(dateKey).trim());
+  if (!dm) return null;
+  const y = Number(dm[1]);
+  const mo = Number(dm[2]) + 1; // 0-indexed → 1-indexed
+  const dd = Number(dm[3]);
+  if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return null;
+  const cleanT = (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) ? timeStr : '00:00';
+  const tm = /^(\d{1,2}):(\d{2})/.exec(cleanT);
+  const d = new Date(y, mo - 1, dd, Number(tm[1]), Number(tm[2]), 0);
   return isNaN(d.getTime()) ? null : d;
 }
 
