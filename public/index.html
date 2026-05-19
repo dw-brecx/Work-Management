@@ -8584,22 +8584,22 @@ function renderMentionedList() {
   const callout = document.getElementById('mentioned-pending-callout');
   const countEl = document.getElementById('mentioned-pending-count');
   if (!wrap) return;
-  const pending = MENTIONED_TICKETS.filter(t => t.pendingReply).length;
+  // The page only ever lists tickets that still need a reply. Once the
+  // user replies or hits "no reply needed", the server's pendingReply
+  // flag flips to false and the row disappears on the next refresh.
+  const items = MENTIONED_TICKETS.filter(t => t.pendingReply);
   if (callout && countEl) {
-    if (pending > 0) { countEl.textContent = pending; callout.style.display = ''; }
+    if (items.length > 0) { countEl.textContent = items.length; callout.style.display = ''; }
     else callout.style.display = 'none';
   }
-  if (!MENTIONED_TICKETS.length) {
+  if (!items.length) {
     wrap.innerHTML = '';
     if (empty) empty.style.display = '';
     return;
   }
   if (empty) empty.style.display = 'none';
-  wrap.innerHTML = MENTIONED_TICKETS.map(t => {
+  wrap.innerHTML = items.map(t => {
     const due = t.due ? `Due ${escapeHtml(t.due)}` : '';
-    const pendingPill = t.pendingReply
-      ? '<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e">⏳ Waiting your reply</span>'
-      : '';
     return `
       <div class="card" style="padding:14px;cursor:pointer" onclick="openTicketDetail('${escapeAttr(t.id)}')">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">
@@ -8610,7 +8610,7 @@ function renderMentionedList() {
               <span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">${escapeHtml(t.status || '')}</span>
               <span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">Assignee: ${escapeHtml(t.assignee || '—')}</span>
               ${due ? `<span style="padding:2px 7px;border-radius:10px;background:#f1f5f9;color:#334155">${due}</span>` : ''}
-              ${pendingPill}
+              <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e">⏳ Waiting your reply</span>
             </div>
           </div>
         </div>
@@ -11674,10 +11674,47 @@ window.submitReply = async function(parentId) {
     localComments.push(r);
     closeReplyForm(parentId);
     renderComments();
+    promptAddNewlyMentioned(ticketId, r);
   } catch (e) {
     alert('Could not send reply — check connection.');
   }
 };
+
+// After a comment POST, the server tells us which @-mentioned users
+// weren't on the ticket in any role before. Offer to add each as an
+// assignee — single confirm() per name; one tiny PUT per "yes" so the
+// activity log shows "Admin assigned the ticket to Bob".
+async function promptAddNewlyMentioned(ticketId, resp) {
+  try {
+    const list = resp && Array.isArray(resp.newlyMentioned) ? resp.newlyMentioned : [];
+    if (!list.length) return;
+    const t = (typeof TICKETS_DATA !== 'undefined' && Array.isArray(TICKETS_DATA))
+      ? TICKETS_DATA.find(x => x.id === ticketId) : null;
+    const existing = new Set([
+      ...(t?.assignees || []),
+      ...(t?.assignee ? [t.assignee] : []),
+    ].filter(Boolean));
+    for (const m of list) {
+      if (existing.has(m.name)) continue;
+      const ok = window.confirm(`@${m.name} isn't on this ticket yet. Add them as an assignee?`);
+      if (!ok) continue;
+      const fresh = (typeof TICKETS_DATA !== 'undefined' && Array.isArray(TICKETS_DATA))
+        ? TICKETS_DATA.find(x => x.id === ticketId) : null;
+      const next = Array.from(new Set([...(fresh?.assignees || []), m.name]));
+      try {
+        await apiPut('/api/tickets/' + encodeURIComponent(ticketId), { assignees: next });
+        if (fresh) fresh.assignees = next;
+        existing.add(m.name);
+        if (typeof renderTicketDetail === 'function' && currentTicketId === ticketId) renderTicketDetail();
+        if (typeof renderTickets === 'function') renderTickets();
+        if (typeof settingsToast === 'function') settingsToast('Added ' + m.name + ' as an assignee');
+      } catch (e) {
+        alert('Could not add ' + m.name + ' — ' + (e?.message || 'unknown error'));
+      }
+    }
+  } catch {}
+}
+window.promptAddNewlyMentioned = promptAddNewlyMentioned;
 
 // Legacy drawer no-ops (compatibility shims; comments now always visible inline)
 function openCommentsDrawer() {}
@@ -17525,6 +17562,9 @@ function setupCommentAttachBar() {
         try {
           const resp = await apiPost('/api/tickets/' + ticketId + '/comments', { text: commentText });
           newCommentId = (resp && resp.id) || null;
+          // If the comment mentioned someone who wasn't on the ticket,
+          // offer to add them as an assignee.
+          if (typeof promptAddNewlyMentioned === 'function') promptAddNewlyMentioned(ticketId, resp);
         } catch {}
       }
       // Handle attached files

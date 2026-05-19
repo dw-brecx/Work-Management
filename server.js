@@ -1118,7 +1118,7 @@ app.get('/api/my-mentioned', requireAuth, async (req, res) => {
                  WHERE tc.ticket_id = n.ticket_id
                    AND (tc.author_user_id = ?
                         OR (tc.author_user_id IS NULL AND tc.author = ?))
-                   AND tc.created_at > n.created_at
+                   AND tc.created_at >= n.created_at
               )
         GROUP BY n.ticket_id`,
       u.id, ...ids, u.id, u.name
@@ -2593,8 +2593,55 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       }
     })(); });
 
+    // Compute "newly mentioned" users — workspace users this comment
+    // @-mentioned who weren't on the ticket in ANY role before this
+    // comment (not assignee/additional/reporter/requester/creator, not
+    // an existing watcher from a prior mention). The client uses this
+    // to prompt the admin "add @Bob as an assignee?" so casual one-off
+    // mentions don't silently become permanent ticket-watcher subscriptions.
+    const newlyMentioned = await (async () => {
+      const captures = (commentText.match(/@([A-Za-z]+(?: [A-Za-z]+)*)/g) || []).map(s => s.slice(1));
+      if (!captures.length) return [];
+      const matched = new Set();
+      for (const cap of captures) {
+        const words = cap.split(' ');
+        for (let len = words.length; len >= 1; len--) {
+          const cand = words.slice(0, len).join(' ');
+          const found = await get('SELECT id, name FROM users WHERE name=? LIMIT 1', cand);
+          if (found) { matched.add(found.id + '|' + found.name); break; }
+        }
+      }
+      if (!matched.size) return [];
+      const out = [];
+      const tktForCheck = tkt || await get('SELECT * FROM tickets WHERE id=?', req.params.id);
+      for (const key of matched) {
+        const [idStr, name] = key.split('|');
+        const uid = parseInt(idStr, 10);
+        if (uid === u.id) continue;  // self-mention doesn't prompt
+        if (tktForCheck.assignee_user_id === uid) continue;
+        if (!tktForCheck.assignee_user_id && tktForCheck.assignee === name) continue;
+        if (tktForCheck.reporter_user_id === uid) continue;
+        if (!tktForCheck.reporter_user_id && tktForCheck.reporter === name) continue;
+        if (tktForCheck.req_user_id === uid) continue;
+        if (!tktForCheck.req_user_id && tktForCheck.req === name) continue;
+        if (tktForCheck.created_by === uid) continue;
+        const ta = await get(
+          `SELECT 1 FROM ticket_assignees WHERE ticket_id=? AND (user_id=? OR (user_id IS NULL AND user_name=?))`,
+          req.params.id, uid, name
+        );
+        if (ta) continue;
+        const tw = await get(
+          `SELECT 1 FROM ticket_watchers WHERE ticket_id=? AND user_id=?`,
+          req.params.id, uid
+        );
+        if (tw) continue;
+        out.push({ id: uid, name });
+      }
+      return out;
+    })();
+
     const _nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:commentText, createdAt: _nowUtc, time: formatUSDateTime(new Date().toISOString()) });
+    res.status(201).json({ id:Number(info.lastInsertRowid), parentId: safeParentId, author:u.name, init, bg, col, text:commentText, createdAt: _nowUtc, time: formatUSDateTime(new Date().toISOString()), newlyMentioned });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
