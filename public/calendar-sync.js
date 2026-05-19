@@ -118,6 +118,9 @@
           <div class="cs-callout">
             Tip: Apple Calendar (<strong>File → New Calendar Subscription</strong>) and Outlook (<strong>Add calendar → Subscribe from web</strong>) accept the same URL. Outlook even lets you set the refresh interval yourself.
           </div>
+          <div class="cs-callout cs-callout-info" style="margin-top:10px">
+            <strong>What you get via subscribe today:</strong> each meeting lands at the correct time slot with the attendee list and join link visible in Google's event details, and each ticket appears as a task-styled all-day item with its full description, priority, status, assignees, and a link back to the ticket. <strong>What needs the upcoming Google account connection:</strong> Google won't <em>send</em> invitations to attendees from a subscribed calendar, and changes made inside Google Calendar don't flow back to Syruvia. Both unlock once we ship the OAuth integration (planned next).
+          </div>
         </div>
       </div>
     `;
