@@ -18229,8 +18229,15 @@ window.filterFeedback = function(status) {
 };
 
 function isCurrentUserAdmin() {
+  // "Admin-like" = anyone who has admin powers (feedback management,
+  // comment moderation, project oversight, attachment cleanup). Manager
+  // keeps these privileges; only workspace-wide ticket views are
+  // strict-Admin-only (those use _isAdminOrManager(), confusingly named
+  // — see the note above its definition). The server-side requireAdmin
+  // middleware already allows both roles.
   const u = window.CURRENT_USER || {};
-  return ((u.permRole || u.role || '') + '').toLowerCase() === 'admin';
+  const role = ((u.permRole || u.role || '') + '').toLowerCase();
+  return role === 'admin' || role === 'manager';
 }
 
 function renderFeedbackFeed() {
