@@ -1218,7 +1218,7 @@ async function init() {
   // {"events":true,"tickets":true,"reminders":false,"recurring":false}
   // so each user picks what their external calendar sees.
   await safeAlter("ALTER TABLE users ADD COLUMN gcal_feed_token TEXT DEFAULT ''");
-  await safeAlter("ALTER TABLE users ADD COLUMN gcal_feed_sources_json TEXT DEFAULT '{\"events\":true,\"tickets\":true,\"reminders\":false,\"recurring\":false}'");
+  await safeAlter("ALTER TABLE users ADD COLUMN gcal_feed_sources_json TEXT DEFAULT '{\"meetings\":true,\"tasks\":true,\"deadlines\":true,\"tickets\":true,\"reminders\":false,\"recurring\":false}'");
   // Per-notification "user has triaged this" stamp. Null = active, set =
   // user marked it handled (e.g. clicked "No reply needed" on a mention).
   // Used to clear mentions from the dashboard's "awaiting reply" count

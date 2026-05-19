@@ -4343,14 +4343,36 @@ app.delete('/api/events/:id', requireAuth, async (req, res) => {
 const crypto = require('crypto');
 
 function gcalDefaultSources() {
-  return { events: true, tickets: true, reminders: false, recurring: false };
+  return {
+    meetings:  true,
+    tasks:     true,
+    deadlines: true,
+    tickets:   true,
+    reminders: false,
+    recurring: false,
+  };
 }
 function gcalParseSources(rawJson) {
   const def = gcalDefaultSources();
   try {
     const obj = JSON.parse(rawJson || '{}');
+    // Backwards-compat: rows written before the per-type split carried a
+    // single `events` flag covering meetings + tasks + deadlines. If we
+    // see that shape and none of the new keys are present, expand it.
+    const legacyPresent = ('events' in obj) && !('meetings' in obj) && !('tasks' in obj) && !('deadlines' in obj);
+    if (legacyPresent) {
+      const v = obj.events !== false;
+      return {
+        meetings: v, tasks: v, deadlines: v,
+        tickets:   obj.tickets   !== false,
+        reminders: !!obj.reminders,
+        recurring: !!obj.recurring,
+      };
+    }
     return {
-      events:    obj.events    !== false,
+      meetings:  obj.meetings  !== false,
+      tasks:     obj.tasks     !== false,
+      deadlines: obj.deadlines !== false,
       tickets:   obj.tickets   !== false,
       reminders: !!obj.reminders,
       recurring: !!obj.recurring,
@@ -4575,13 +4597,29 @@ app.get('/api/calendar/feed/:tokenIcs', async (req, res) => {
 
     const events = [];
 
-    // 1) In-app calendar events the user owns
-    if (sources.events) {
+    // 1) In-app calendar events the user owns — gated by event TYPE so
+    //    callers can sync only meetings (the common ask) and leave their
+    //    private tasks / deadlines out of the shared external calendar.
+    const wantMeetings  = !!sources.meetings;
+    const wantTasks     = !!sources.tasks;
+    const wantDeadlines = !!sources.deadlines;
+    if (wantMeetings || wantTasks || wantDeadlines) {
       const rows = await all(
         "SELECT * FROM cal_events WHERE user_id=? OR source='syruvia' ORDER BY date_key ASC",
         user.id
       );
       for (const r of rows) {
+        const t = String(r.type || 'meeting').toLowerCase();
+        // 'ticket'-type rows on the calendar are synthetic mirrors of
+        // open tickets, which we already cover under the dedicated
+        // tickets toggle below — skip them here.
+        if (t === 'ticket') continue;
+        if (t === 'meeting'  && !wantMeetings)  continue;
+        if (t === 'task'     && !wantTasks)     continue;
+        if (t === 'deadline' && !wantDeadlines) continue;
+        // Unknown types fall through under the meetings toggle so they
+        // aren't silently dropped if a future event type is introduced.
+        if (!['meeting','task','deadline'].includes(t) && !wantMeetings) continue;
         const uid = `calendar-event-${r.id}@worknest`;
         const summary = r.title || r.label || 'Event';
         const description = r.description || '';
