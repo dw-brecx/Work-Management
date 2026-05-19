@@ -1060,10 +1060,25 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     margin-bottom:0;
   }
   .td-comment-composer{display:flex;gap:8px;align-items:flex-start;margin-top:10px;flex-shrink:0}
-  .td-composer-box{flex:1;min-width:0;border:1px solid var(--border);border-radius:9px;background:#fff;position:relative}
+  .td-composer-box{flex:1;min-width:0;border:1px solid var(--border);border-radius:9px;background:#fff;position:relative;transition:border-color .14s,box-shadow .14s,background-color .14s}
   .td-composer-box textarea{width:100%;border:none;padding:9px 11px;font-size:11.5px;line-height:1.55;background:transparent;outline:none;font-family:inherit;resize:none;min-height:72px;display:block;color:var(--text)}
   .td-composer-box textarea:focus{border:none!important;box-shadow:none!important;background:transparent!important;outline:none!important}
   .td-composer-box textarea::placeholder{color:var(--text3)}
+  /* Drag-and-drop file attach: tint the composer and surface a centered
+     "Drop to attach" caption while a real file is being hovered over it.
+     The overlay is pointer-events:none so it never steals the drop event. */
+  .td-composer-box.cmt-drag-over{border-color:var(--accent);background:#eff6ff;box-shadow:0 0 0 3px rgba(59,130,246,.15)}
+  .td-composer-box.cmt-drag-over::after{
+    content:"Drop to attach";
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:var(--accent);font-weight:600;font-size:13px;letter-spacing:.01em;
+    background:rgba(239,246,255,.6);backdrop-filter:blur(1px);
+    border-radius:9px;pointer-events:none;
+  }
+  @media (prefers-color-scheme: dark){
+    .td-composer-box.cmt-drag-over{background:rgba(59,130,246,.08)}
+    .td-composer-box.cmt-drag-over::after{background:rgba(15,23,42,.55)}
+  }
   .td-composer-actions{display:flex;justify-content:flex-end;padding:4px 6px 6px;border-top:1px solid var(--border)}
   .td-comment-list{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow-y:auto;padding-right:2px}
   .td-comment-list::-webkit-scrollbar{width:5px}
@@ -17389,7 +17404,7 @@ function setupCommentAttachBar() {
     </button>
     ${screenBtnHtml}
     <span class="rec-timer" id="cmt-rec-timer" style="display:none"></span>
-    <span style="font-size:10.5px;color:#6b7280">or paste image with <kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:3px;padding:0 4px;font-size:10px">Ctrl+V</kbd></span>
+    <span style="font-size:10.5px;color:#6b7280">or paste image with <kbd style="background:#eef2ff;border:1px solid #c7d7fe;border-radius:3px;padding:0 4px;font-size:10px">Ctrl+V</kbd> &middot; drag &amp; drop files anywhere on the composer</span>
     <div class="attach-preview-list" id="cmt-previews" style="width:100%;margin-top:4px"></div>
   `;
   const actions = box.querySelector('.td-composer-actions');
@@ -17584,6 +17599,56 @@ function setupCommentAttachBar() {
       handled = true;
     }
     if (handled) e.preventDefault();
+  });
+
+  // ── Drag-and-drop attach ─────────────────────────────────────────────────
+  // Files dropped on the composer are queued exactly like the file-picker
+  // path: pushed onto cmtPendingFiles and rendered as preview tiles.
+  // dragenter/dragleave use a depth counter so crossing child elements
+  // (the textarea, the attach bar, etc.) doesn't flicker the highlight off.
+  // The "external file" guard (checking for the "Files" type) keeps this
+  // handler from lighting up when the user drags text from inside the page.
+  let dragDepth = 0;
+  function isExternalFileDrag(e) {
+    const t = e.dataTransfer && e.dataTransfer.types;
+    if (!t) return false;
+    // DOMStringList in some browsers, Array in others — handle both.
+    for (let i = 0; i < t.length; i++) if (t[i] === 'Files') return true;
+    return false;
+  }
+  box.addEventListener('dragenter', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    box.classList.add('cmt-drag-over');
+  });
+  box.addEventListener('dragover', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    // Without preventDefault the browser refuses to fire 'drop'.
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  box.addEventListener('dragleave', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) box.classList.remove('cmt-drag-over');
+  });
+  box.addEventListener('drop', (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    box.classList.remove('cmt-drag-over');
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    let added = 0;
+    for (const f of files) {
+      cmtPendingFiles.push(f);
+      addCmtPreview(f, f.type && f.type.startsWith('audio/'));
+      added++;
+    }
+    if (added && typeof settingsToast === 'function') {
+      settingsToast(`Attached ${added} file${added === 1 ? '' : 's'} — they'll upload with your next comment.`);
+    }
   });
 
   function addCmtPreview(file, isAudio) {
