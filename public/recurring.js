@@ -93,11 +93,38 @@
     return { view: 'list' };
   }
   function goto(hash) { location.hash = hash; }
-  window.addEventListener('hashchange', renderRoute);
+  // In SPA mode the same recurring.js is loaded on every page, so a
+  // hashchange triggered by some other feature shouldn't accidentally
+  // re-render the (hidden) recurring tree. Only react when our container
+  // is actually visible.
+  window.addEventListener('hashchange', () => {
+    if (inSpa()) {
+      const el = document.getElementById('page-recurring');
+      if (!el || !el.classList.contains('active')) return;
+    }
+    renderRoute();
+  });
 
-  // ── Page skeleton (shared chrome — both views render inside #rt-app) ──────
+  // ── Mount detection ────────────────────────────────────────────────────────
+  // recurring.js runs in two modes:
+  //   - Standalone (/recurring.html): mounts in #rt-app, runs its own auth
+  //     check, shows a "Back to app" link.
+  //   - SPA-embedded (loaded from index.html): mounts in #page-recurring,
+  //     skips auth (the SPA already authenticated), hides the back-to-app
+  //     link (the sidebar is the navigation), and waits for the SPA's
+  //     navigate('recurring') handler to call window.RecurringTasks.activate().
+  function getMount() {
+    return document.getElementById('rt-app') || document.getElementById('page-recurring');
+  }
+  function inSpa() {
+    return !!document.getElementById('page-recurring') && !document.getElementById('rt-app');
+  }
+
+  // ── Page skeleton (shared chrome — both views render inside the mount) ────
   function renderShell() {
-    $('rt-app').innerHTML = `
+    const mount = getMount();
+    if (!mount) return;
+    mount.innerHTML = `
       <div class="rt-page" id="rt-page"></div>
       ${scheduleModalHtml()}
       ${templateModalHtml()}
@@ -135,12 +162,17 @@
   // ── LIST view ──────────────────────────────────────────────────────────────
   function renderListView() {
     const page = $('rt-page');
+    // In SPA mode the surrounding sidebar IS the navigation, so the
+    // "Back to app" link is just noise — skip it. In standalone mode
+    // it's the only way to get back to the rest of the app.
+    const backLink = inSpa() ? '' : `
+      <a class="rt-back" href="/tickets">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        Back to app
+      </a>`;
     page.innerHTML = `
       <div class="rt-header">
-        <a class="rt-back" href="/tickets">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-          Back to app
-        </a>
+        ${backLink}
         <h1 class="rt-title">Recurring Tasks</h1>
         <button class="btn-primary" id="rt-new-btn">+ New Recurring Task</button>
       </div>
@@ -837,20 +869,44 @@
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────
+  // Tracks whether the SPA-embedded copy has already initialized — clicking
+  // the sidebar item every time the user comes back shouldn't re-fetch the
+  // shell and re-wire modal events; just reload the data + re-render.
+  let _booted = false;
+
   async function boot() {
     try {
-      await apiGet('/api/auth/me');
-      try { TEAM = await apiGet('/api/team'); } catch { TEAM = []; }
-      renderShell();
+      // Standalone needs its own auth check. SPA mode inherits the session
+      // from index.html, so skipping the redundant /api/auth/me call avoids
+      // a wasted round-trip on every page switch.
+      if (!inSpa()) await apiGet('/api/auth/me');
+      if (!TEAM.length) {
+        try { TEAM = await apiGet('/api/team'); } catch { TEAM = []; }
+      }
+      if (!_booted) {
+        renderShell();
+        _booted = true;
+      }
       await reload();
       renderRoute();
     } catch (e) {
-      const root = $('rt-app');
+      const root = getMount();
       if (root) root.innerHTML = '<div class="rt-boot" style="color:#dc2626">Failed to load. Please refresh.</div>';
       console.error('[recurring] boot failed:', e);
     }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  // Public hook the SPA uses to (re)activate the page when its nav item is
+  // clicked. Standalone mode never calls this — it auto-boots on DOM ready.
+  window.RecurringTasks = { activate: boot };
+
+  if (inSpa()) {
+    // SPA mode: wait for navigate('recurring') to fire activate(). Don't
+    // boot eagerly — the page-recurring div is hidden until the user lands
+    // on /recurring, and rendering into a hidden node is just wasted work.
+  } else if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
 })();

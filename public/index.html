@@ -13,6 +13,11 @@
      per feature, loaded here, used from a tiny shell in #page-spaces). -->
 <link rel="stylesheet" href="/spaces.css"/>
 <link rel="stylesheet" href="/space-chat.css"/>
+<!-- Recurring Tasks: styled identically when embedded in the SPA or
+     visited standalone via /recurring.html. The same recurring.js
+     drives both modes — it picks its mount based on which container
+     it finds (#page-recurring vs #rt-app). -->
+<link rel="stylesheet" href="/recurring.css"/>
 <!-- Shared "nice popup" replacement for native alert/confirm/prompt.
      Loaded in <head> (and before all other scripts) so window.alert is
      patched before any inline script can call it. -->
@@ -4206,7 +4211,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
       Snoozed <span class="badge" id="nav-snoozed-badge" style="display:none"></span>
     </div>
-    <div class="nav-item" onclick="window.location.href='/recurring.html'">
+    <div class="nav-item" data-page="recurring">
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
       Recurring Tasks
     </div>
@@ -5507,6 +5512,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         Nothing snoozed. Open any ticket and click "Snooze" to park it for up to a week.
       </div>
     </div>
+
+    <!-- ========== RECURRING TASKS ========== -->
+    <!-- Thin container — recurring.js hydrates this when the SPA navigates
+         to /recurring. All the UI, modals, and behaviour live in
+         recurring.js / recurring.css so this HTML file doesn't grow with
+         the feature. The same script also drives /recurring.html for
+         direct visits. -->
+    <div id="page-recurring" class="page"></div>
 
     <!-- ========== DOCS (workspace document store) ========== -->
     <!-- Two states share the same page id: list view and editor view.
@@ -7343,6 +7356,7 @@ window.PAGE_PATHS = {
   'notifications':'/notifications',
   'mentioned':   '/mentioned',
   'snoozed':     '/snoozed',
+  'recurring':   '/recurring',
   'docs':         '/docs',
   'chat':        '/chat',
   'planning':    '/planning',
@@ -7411,6 +7425,7 @@ function navigate(page, opts) {
       'notifications': 'Notifications',
       'mentioned': 'Mentioned',
       'snoozed': 'Snoozed',
+      'recurring': 'Recurring Tasks',
       'docs': 'Docs',
       'chat': 'Chat',
       'planning': 'Planning', 'flavors': 'Flavors', 'calendar': 'Calendar',
@@ -7428,6 +7443,12 @@ function navigate(page, opts) {
   if (page === 'calendar') buildCalendar();
   if (page === 'planning') renderPlans();
   if (page === 'snoozed' && typeof loadSnoozedPage === 'function') loadSnoozedPage();
+  // Recurring Tasks: thin container in this HTML; the real renderer is in
+  // recurring.js. activate() (re)fetches the list and re-renders into
+  // #page-recurring every time we land here.
+  if (page === 'recurring' && window.RecurringTasks && typeof window.RecurringTasks.activate === 'function') {
+    window.RecurringTasks.activate();
+  }
   if (page === 'notifications' && typeof renderNotifPage === 'function') renderNotifPage();
   if (page === 'mentioned' && typeof loadMentionedPage === 'function') loadMentionedPage();
   if (page === 'flavors') renderFlavors();
@@ -21184,6 +21205,7 @@ window.refreshPageData = refreshPageData;
     'notifications':'/notifications',
     'mentioned':   '/mentioned',
     'snoozed':     '/snoozed',
+  'recurring':   '/recurring',
     'recurring':   '/recurring',
   'docs':         '/docs',
   'chat':        '/chat',
@@ -25225,5 +25247,9 @@ document.addEventListener('visibilitychange', () => {
      the main inline scripts have set window.CURRENT_USER etc. -->
 <script src="/spaces.js" defer></script>
 <script src="/space-chat.js" defer></script>
+<!-- Recurring Tasks: hydrates #page-recurring on demand. Standalone
+     /recurring.html loads this exact same file, and the script detects
+     which mount to use. -->
+<script src="/recurring.js" defer></script>
 </body>
 </html>
