@@ -7647,6 +7647,332 @@ app.get(/^\/apps(?:\/.*)?$/, (req, res, next) => {
   } catch (e) { next(); }
 });
 
+// ── Recurring Tasks ──────────────────────────────────────────────────────────
+// A "recurring task" is a schedule + a list of ticket templates. The hourly
+// `runRecurringTasksJob` materializes every template into a fresh ticket
+// whenever the schedule's next_run_date is on or before today's UTC date,
+// then rolls next_run_date forward by one cycle.
+
+// All recurrence math operates on UTC date strings (YYYY-MM-DD) — the same
+// shape stored in the DB. This avoids local-timezone drift moving a schedule
+// forward or backward by a day.
+function rtTodayUTC() {
+  return new Date().toISOString().slice(0, 10);
+}
+function rtParseUTC(s) {
+  // YYYY-MM-DD → Date pinned to UTC midnight. Returning a Date in UTC lets
+  // us use the standard get/setUTC* methods for arithmetic without DST drama.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+  if (!m) return null;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+}
+function rtFormatUTC(d) {
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+function rtDaysInMonth(year, month0) {
+  // month0 is 0-based to match Date semantics. Day-0 of next month = last day.
+  return new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+}
+// Given a recurring-task row and a "from" date (the date that just fired,
+// or the start_date on first calculation), return the next YYYY-MM-DD the
+// task should fire on. The result is always strictly after `fromDateStr`
+// (we never re-fire on the same date in one cycle).
+function rtComputeNextRunDate(rt, fromDateStr) {
+  const from = rtParseUTC(fromDateStr) || rtParseUTC(rt.start_date) || rtParseUTC(rtTodayUTC());
+  const start = rtParseUTC(rt.start_date) || from;
+  if (rt.recur_type === 'monthly_same') {
+    const day = start.getUTCDate();
+    const next = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1));
+    const dim = rtDaysInMonth(next.getUTCFullYear(), next.getUTCMonth());
+    next.setUTCDate(Math.min(day, dim));
+    return rtFormatUTC(next);
+  }
+  if (rt.recur_type === 'monthly_day') {
+    const day = Math.max(1, Math.min(31, Number(rt.recur_day) || 1));
+    // Try this month first (if still in the future), otherwise roll to next.
+    let y = from.getUTCFullYear(), m = from.getUTCMonth();
+    for (let i = 0; i < 2; i++) {
+      const dim = rtDaysInMonth(y, m);
+      const cand = new Date(Date.UTC(y, m, Math.min(day, dim)));
+      if (cand > from) return rtFormatUTC(cand);
+      m++; if (m > 11) { m = 0; y++; }
+    }
+    return rtFormatUTC(from);
+  }
+  if (rt.recur_type === 'weekly') {
+    const target = ((Number(rt.recur_weekday) || 0) % 7 + 7) % 7;
+    const cur = from.getUTCDay();
+    let delta = target - cur; if (delta <= 0) delta += 7;
+    const next = new Date(from); next.setUTCDate(next.getUTCDate() + delta);
+    return rtFormatUTC(next);
+  }
+  if (rt.recur_type === 'every_n_days') {
+    const n = Math.max(1, Number(rt.recur_interval) || 1);
+    const next = new Date(from); next.setUTCDate(next.getUTCDate() + n);
+    return rtFormatUTC(next);
+  }
+  // Unknown type — fall back to advancing by one day so we never loop forever.
+  const next = new Date(from); next.setUTCDate(next.getUTCDate() + 1);
+  return rtFormatUTC(next);
+}
+// Initial next_run_date when a recurring task is first created. We honour
+// the user-supplied start_date directly (it's the first fire date), unless
+// the rule requires alignment to a weekday / day-of-month — in which case
+// we step forward to the closest matching date on or after start_date.
+function rtInitialNextRunDate(rt) {
+  const start = rtParseUTC(rt.start_date);
+  if (!start) return rtTodayUTC();
+  if (rt.recur_type === 'weekly') {
+    const target = ((Number(rt.recur_weekday) || 0) % 7 + 7) % 7;
+    const cur = start.getUTCDay();
+    let delta = target - cur; if (delta < 0) delta += 7;
+    const d = new Date(start); d.setUTCDate(d.getUTCDate() + delta);
+    return rtFormatUTC(d);
+  }
+  if (rt.recur_type === 'monthly_day') {
+    const day = Math.max(1, Math.min(31, Number(rt.recur_day) || 1));
+    let y = start.getUTCFullYear(), m = start.getUTCMonth();
+    for (let i = 0; i < 2; i++) {
+      const dim = rtDaysInMonth(y, m);
+      const cand = new Date(Date.UTC(y, m, Math.min(day, dim)));
+      if (cand >= start) return rtFormatUTC(cand);
+      m++; if (m > 11) { m = 0; y++; }
+    }
+  }
+  return rt.start_date;
+}
+
+// Allocate a unique TKT-#### id and INSERT a single ticket row. Used by the
+// recurring cron and by the manual "Run now" endpoint. Returns the new id,
+// or throws if allocation fails after a few retries.
+async function rtSpawnOneTicket({ title, description, assignee, priority, dept, createdById, requesterName }) {
+  let id = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+    let nextNum = 1000;
+    if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+    const candidate = 'TKT-' + (nextNum + 1);
+    if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
+  }
+  if (!id) throw new Error('could not allocate ticket id');
+  const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const assigneeUid = assignee ? await resolveUserIdByName(assignee) : null;
+  const requesterUid = createdById || null;
+  await run(`INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
+    id, title, requesterName || '', assignee || '', requesterName || '',
+    priority || 'Medium', 'Open', dept || '', '', createdStr, 0, '[]',
+    createdById || null, assigneeUid, requesterUid, requesterUid);
+  await run(
+    `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+       ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+    id, description || ''
+  );
+  if (assignee) {
+    await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, assignee, assigneeUid);
+    if (assigneeUid && assigneeUid !== createdById) {
+      await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        assigneeUid, 'assigned', '🔁', `Recurring task created "${title}" and assigned it to you`, id);
+    }
+  }
+  try { writeTimeline(id, TL.create, `Ticket spawned by recurring task${assignee ? ` · assigned to ${assignee}` : ''}`); } catch {}
+  return id;
+}
+
+// Process one recurring-task row: spawn one ticket per item, then advance
+// the schedule. Wrapped in its own try/catch so a single bad row never
+// blocks the rest of the run.
+async function rtProcessOne(rt) {
+  try {
+    const items = await all('SELECT * FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+    const creator = rt.created_by ? await getUser(rt.created_by) : null;
+    for (const it of items) {
+      await rtSpawnOneTicket({
+        title: it.title,
+        description: it.description,
+        assignee: it.assignee,
+        priority: it.priority,
+        dept: it.dept,
+        createdById: rt.created_by || null,
+        requesterName: creator?.name || '',
+      });
+    }
+    const today = rtTodayUTC();
+    const next = rtComputeNextRunDate(rt, today);
+    await run('UPDATE recurring_tasks SET last_run_date=?, next_run_date=?, updated_at=TO_CHAR(NOW() AT TIME ZONE \'UTC\', \'YYYY-MM-DD HH24:MI:SS\') WHERE id=?', today, next, rt.id);
+    console.log(`[recurring] task #${rt.id} "${rt.name}" fired — ${items.length} ticket(s) created; next=${next}`);
+    return items.length;
+  } catch (e) {
+    console.error(`[recurring] task #${rt.id} failed:`, e.message);
+    return 0;
+  }
+}
+
+// Hourly cron entry-point. A single SELECT pulls every active task whose
+// next_run_date is at or before today; we drain the queue in one pass. If
+// the same task is overdue by multiple cycles (server was down for a
+// week), the cron only fires it once per run — the next pass picks up
+// the next missed cycle.
+async function runRecurringTasksJob() {
+  try {
+    const today = rtTodayUTC();
+    const due = await all(`SELECT * FROM recurring_tasks WHERE active=1 AND next_run_date <> '' AND next_run_date <= ? ORDER BY next_run_date ASC, id ASC`, today);
+    if (!due.length) return;
+    console.log(`[recurring] firing ${due.length} task(s) due on/before ${today}`);
+    for (const rt of due) await rtProcessOne(rt);
+  } catch (e) { console.error('[cron:recurring]', e.message); }
+}
+
+// Read a recurring task + its items into a single object for the client.
+async function rtHydrate(rt) {
+  const items = await all('SELECT id, position, title, description, assignee, priority, dept FROM recurring_task_items WHERE recurring_task_id=? ORDER BY position ASC, id ASC', rt.id);
+  return {
+    id: rt.id,
+    name: rt.name,
+    description: rt.description,
+    start_date: rt.start_date,
+    recur_type: rt.recur_type,
+    recur_day: rt.recur_day,
+    recur_weekday: rt.recur_weekday,
+    recur_interval: rt.recur_interval,
+    next_run_date: rt.next_run_date,
+    last_run_date: rt.last_run_date,
+    active: rt.active ? 1 : 0,
+    created_by: rt.created_by,
+    items,
+  };
+}
+
+app.get('/api/recurring-tasks', requireAuth, async (req, res) => {
+  try {
+    const rows = await all('SELECT * FROM recurring_tasks ORDER BY active DESC, next_run_date ASC, id DESC');
+    const out = [];
+    for (const r of rows) out.push(await rtHydrate(r));
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/recurring-tasks/:id', requireAuth, async (req, res) => {
+  try {
+    const row = await get('SELECT * FROM recurring_tasks WHERE id=?', req.params.id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    res.json(await rtHydrate(row));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Validate + clamp recurrence fields from the request body. Returns the
+// sanitized fields (the caller still has to apply them).
+function rtCleanRecurFields(body) {
+  const recur_type = ['monthly_same','monthly_day','weekly','every_n_days'].includes(body.recur_type) ? body.recur_type : 'monthly_same';
+  let recur_day = null, recur_weekday = null, recur_interval = null;
+  if (recur_type === 'monthly_day')  recur_day      = Math.max(1, Math.min(31, parseInt(body.recur_day, 10) || 1));
+  if (recur_type === 'weekly')       recur_weekday  = Math.max(0, Math.min(6, parseInt(body.recur_weekday, 10) || 0));
+  if (recur_type === 'every_n_days') recur_interval = Math.max(1, Math.min(365, parseInt(body.recur_interval, 10) || 1));
+  return { recur_type, recur_day, recur_weekday, recur_interval };
+}
+
+app.post('/api/recurring-tasks', requireAuth, async (req, res) => {
+  try {
+    const { name, description, start_date, items } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(start_date || ''))) return res.status(400).json({ error: 'start_date required (YYYY-MM-DD)' });
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'At least one ticket template is required' });
+    const r = rtCleanRecurFields(req.body);
+    const draft = { start_date, ...r };
+    const next_run_date = rtInitialNextRunDate(draft);
+    const ins = await run(
+      `INSERT INTO recurring_tasks (name, description, start_date, recur_type, recur_day, recur_weekday, recur_interval, next_run_date, last_run_date, active, created_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+       RETURNING id`,
+      String(name).trim(), String(description || '').trim(), start_date,
+      r.recur_type, r.recur_day, r.recur_weekday, r.recur_interval,
+      next_run_date, req.session.userId
+    );
+    const id = Number(ins.lastInsertRowid);
+    let pos = 1;
+    for (const it of items) {
+      if (!it || !it.title || !String(it.title).trim()) continue;
+      await run(
+        `INSERT INTO recurring_task_items (recurring_task_id, position, title, description, assignee, priority, dept) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        id, pos++, String(it.title).trim(), String(it.description || ''),
+        String(it.assignee || ''), String(it.priority || 'Medium'), String(it.dept || '')
+      );
+    }
+    const row = await get('SELECT * FROM recurring_tasks WHERE id=?', id);
+    res.status(201).json(await rtHydrate(row));
+  } catch (e) { console.error('[recurring:create]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/recurring-tasks/:id', requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const existing = await get('SELECT * FROM recurring_tasks WHERE id=?', id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    // Selective updates: any field present in the body replaces the old value.
+    // `active` toggles use this path with just { active: 0|1 }.
+    const name        = b.name        !== undefined ? String(b.name).trim()         : existing.name;
+    const description = b.description !== undefined ? String(b.description).trim()  : existing.description;
+    const start_date  = b.start_date  !== undefined ? String(b.start_date)          : existing.start_date;
+    const active      = b.active      !== undefined ? (b.active ? 1 : 0)            : (existing.active ? 1 : 0);
+    let { recur_type, recur_day, recur_weekday, recur_interval } = existing;
+    if (b.recur_type !== undefined) {
+      const r = rtCleanRecurFields(b);
+      recur_type     = r.recur_type;
+      recur_day      = r.recur_day;
+      recur_weekday  = r.recur_weekday;
+      recur_interval = r.recur_interval;
+    }
+    // Recompute next_run_date when the schedule shape changes (start date or
+    // any recurrence field). Pure active/name/items edits leave it alone so
+    // pausing+resuming doesn't accidentally skip a cycle.
+    let next_run_date = existing.next_run_date;
+    const scheduleChanged = b.start_date !== undefined || b.recur_type !== undefined || b.recur_day !== undefined || b.recur_weekday !== undefined || b.recur_interval !== undefined;
+    if (scheduleChanged) {
+      next_run_date = rtInitialNextRunDate({ start_date, recur_type, recur_day, recur_weekday, recur_interval });
+    }
+    await run(
+      `UPDATE recurring_tasks SET name=?, description=?, start_date=?, recur_type=?, recur_day=?, recur_weekday=?, recur_interval=?, next_run_date=?, active=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
+      name, description, start_date, recur_type, recur_day, recur_weekday, recur_interval, next_run_date, active, id
+    );
+    // If items array was sent, replace the whole template list. Item editing
+    // is always full-replace (no per-item PATCH) — the UI sends back the
+    // entire list every save anyway.
+    if (Array.isArray(b.items)) {
+      await run('DELETE FROM recurring_task_items WHERE recurring_task_id=?', id);
+      let pos = 1;
+      for (const it of b.items) {
+        if (!it || !it.title || !String(it.title).trim()) continue;
+        await run(
+          `INSERT INTO recurring_task_items (recurring_task_id, position, title, description, assignee, priority, dept) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id, pos++, String(it.title).trim(), String(it.description || ''),
+          String(it.assignee || ''), String(it.priority || 'Medium'), String(it.dept || '')
+        );
+      }
+    }
+    const row = await get('SELECT * FROM recurring_tasks WHERE id=?', id);
+    res.json(await rtHydrate(row));
+  } catch (e) { console.error('[recurring:update]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/recurring-tasks/:id', requireAuth, async (req, res) => {
+  try {
+    await run('DELETE FROM recurring_tasks WHERE id=?', req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Manual fire. Bypasses the schedule entirely but still rolls next_run_date
+// forward — same effect as if the cron had picked it up at the right time.
+app.post('/api/recurring-tasks/:id/run-now', requireAuth, async (req, res) => {
+  try {
+    const rt = await get('SELECT * FROM recurring_tasks WHERE id=?', req.params.id);
+    if (!rt) return res.status(404).json({ error: 'Not found' });
+    const created = await rtProcessOne(rt);
+    res.json({ ok: true, created });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 // Registered last, after every API route, so it doesn't intercept genuine
 // /api/* GETs (which previously returned a fake 404 because this handler ran
@@ -7795,6 +8121,9 @@ app.get('*', (req, res) => {
     setInterval(runTrashAutoPurgeJob, 24 * 60 * 60 * 1000);
     setInterval(chatPurgeOldClosedGroups, 24 * 60 * 60 * 1000);
     setInterval(runTicketAttachmentRetentionJob, 24 * 60 * 60 * 1000);
+    // Every hour: spawn tickets for any recurring task whose next_run_date
+    // is at or before today's UTC date.
+    setInterval(runRecurringTasksJob, 60 * 60 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
@@ -7806,6 +8135,7 @@ app.get('*', (req, res) => {
       runTrashAutoPurgeJob();
       chatPurgeOldClosedGroups();
       runTicketAttachmentRetentionJob();
+      runRecurringTasksJob();
     }, 30 * 1000);
     console.log('✅  Email cron loops scheduled (meeting/ticket/personal reminders, deadline, overdue-digest).');
   } catch(e) {

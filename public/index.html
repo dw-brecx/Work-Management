@@ -274,13 +274,23 @@
   input[type=checkbox]{width:14px;height:14px;accent-color:var(--accent);cursor:pointer}
   label{font-size:11px;color:var(--text2);display:block;margin-bottom:4px}
 
-  /* MODAL */
-  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:20000;align-items:center;justify-content:center}
-  .modal-overlay.open{display:flex}
-  .modal{background:var(--card);border-radius:14px;padding:24px;width:460px;max-width:95vw;border:1px solid var(--border)}
+  /* MODAL — every popup uses this pattern: a centered card on a dimmed,
+     slightly-blurred backdrop, with a gentle fade+scale on open. */
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.46);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);z-index:20000;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;overflow-y:auto}
+  .modal-overlay.open{display:flex;animation:modal-overlay-in .18s ease-out}
+  .modal{background:var(--card);border-radius:16px;padding:24px;width:460px;max-width:95vw;max-height:calc(100vh - 48px);overflow-y:auto;border:1px solid var(--border);box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);margin:auto;animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1)}
   .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
   .modal-title{font-size:15px;font-weight:600;color:var(--text)}
-  .modal-close{background:none;border:none;cursor:pointer;color:var(--text3);font-size:20px;line-height:1;padding:0}
+  .modal-close{background:none;border:none;cursor:pointer;color:var(--text3);font-size:20px;line-height:1;padding:4px 8px;border-radius:6px;transition:background .12s,color .12s}
+  .modal-close:hover{background:var(--bg2);color:var(--text)}
+  @keyframes modal-overlay-in{from{opacity:0}to{opacity:1}}
+  @keyframes modal-card-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+  /* Normalize the few legacy popups whose outer element is not .modal-overlay
+     so they still land in the middle of the page with the same backdrop. */
+  #modal-reminder-edit,#modal-reminder-daily,#modal-feedback-create{position:fixed!important;inset:0!important;z-index:20000!important;align-items:center!important;justify-content:center!important;padding:24px!important;box-sizing:border-box!important;background:rgba(15,23,42,.46)!important;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);overflow-y:auto}
+  #modal-reminder-edit:not([style*="display:none"]),#modal-reminder-daily:not([style*="display:none"]),#modal-feedback-create:not([style*="display:none"]){display:flex!important}
+  #modal-reminder-edit > .modal-overlay,#modal-reminder-daily > .modal-overlay,#modal-feedback-create > .modal-overlay{display:none!important}
+  #modal-reminder-edit > .modal-content,#modal-reminder-daily > .modal-content,#modal-feedback-create > .modal-content{margin:auto;max-height:calc(100vh - 48px);overflow-y:auto;background:var(--card);border-radius:16px;border:1px solid var(--border);box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1)}
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .form-row{margin-bottom:11px}
 
@@ -4177,6 +4187,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
       Snoozed <span class="badge" id="nav-snoozed-badge" style="display:none"></span>
     </div>
+    <div class="nav-item" onclick="window.location.href='/recurring.html'">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      Recurring Tasks
+    </div>
 
     <!-- ── Personal ── -->
     <div class="sb-divider"></div>
@@ -6629,7 +6643,6 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     <button class="btn-primary" onclick="saveTicket()" style="width:100%;justify-content:center;padding:10px">Create Ticket</button>
   </div>
 </div>
-
 
 <!-- INVITE MEMBER MODAL -->
 <div id="modal-invite-member" class="modal-overlay">
@@ -13012,7 +13025,6 @@ function saveTicket() {
 
   alert(`Ticket ${newId} created successfully!`);
 }
-
 
 function toggleProfileMenu(event) {
   event.stopPropagation();
@@ -21134,6 +21146,7 @@ window.refreshPageData = refreshPageData;
     'notifications':'/notifications',
     'mentioned':   '/mentioned',
     'snoozed':     '/snoozed',
+    'recurring':   '/recurring',
   'docs':         '/docs',
   'chat':        '/chat',
     'planning':    '/planning',

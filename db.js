@@ -998,6 +998,45 @@ async function init() {
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_ticket_comments_ticket ON app_ticket_comments (ticket_id, id)`);
 
+  // Recurring Tasks: a schedule + a list of ticket templates. When the
+  // hourly cron sees `next_run_date <= today`, it materializes every
+  // template as a real workspace ticket and advances the schedule.
+  //
+  //   recur_type:
+  //     'monthly_same'   – every month on start_date's day-of-month
+  //     'monthly_day'    – every month on `recur_day` (1-31)
+  //     'weekly'         – once a week on `recur_weekday` (0=Sun..6=Sat)
+  //     'every_n_days'   – every `recur_interval` days from start_date
+  await pool.query(`CREATE TABLE IF NOT EXISTS recurring_tasks (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    start_date TEXT NOT NULL DEFAULT '',
+    recur_type TEXT NOT NULL DEFAULT 'monthly_same',
+    recur_day INTEGER,
+    recur_weekday INTEGER,
+    recur_interval INTEGER,
+    next_run_date TEXT NOT NULL DEFAULT '',
+    last_run_date TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_recurring_tasks_due ON recurring_tasks (active, next_run_date)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS recurring_task_items (
+    id SERIAL PRIMARY KEY,
+    recurring_task_id INTEGER NOT NULL REFERENCES recurring_tasks(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    assignee TEXT NOT NULL DEFAULT '',
+    priority TEXT NOT NULL DEFAULT 'Medium',
+    dept TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_recurring_task_items_parent ON recurring_task_items (recurring_task_id, position)`);
+
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
   // Same for the new feedback / announcement parents — voice notes, screen
