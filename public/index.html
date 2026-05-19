@@ -290,12 +290,26 @@
   .modal-close:hover{background:var(--bg2);color:var(--text)}
   @keyframes modal-overlay-in{from{opacity:0}to{opacity:1}}
   @keyframes modal-card-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
-  /* Normalize the few legacy popups whose outer element is not .modal-overlay
-     so they still land in the middle of the page with the same backdrop. */
-  #modal-reminder-edit,#modal-reminder-daily,#modal-feedback-create{position:fixed!important;inset:0!important;z-index:20000!important;align-items:center!important;justify-content:center!important;padding:24px!important;box-sizing:border-box!important;background:rgba(15,23,42,.46)!important;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);overflow-y:auto}
-  #modal-reminder-edit:not([style*="display:none"]),#modal-reminder-daily:not([style*="display:none"]),#modal-feedback-create:not([style*="display:none"]){display:flex!important}
-  #modal-reminder-edit > .modal-overlay,#modal-reminder-daily > .modal-overlay,#modal-feedback-create > .modal-overlay{display:none!important}
-  #modal-reminder-edit > .modal-content,#modal-reminder-daily > .modal-content,#modal-feedback-create > .modal-content{margin:auto;max-height:calc(100vh - 48px);overflow-y:auto;background:var(--card);border-radius:16px;border:1px solid var(--border);box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1)}
+  /* Polish the inner card of the few legacy popups whose outer element is
+     not .modal-overlay (#modal-reminder-edit / #modal-reminder-daily /
+     #modal-feedback-create). They already self-center via their own inline
+     position:fixed + flex layout — we only re-skin the inner .modal-content
+     so it matches the rest of the app. Critically we do NOT force a
+     display value on the outer element: those modals are show/hide-driven
+     by JS toggling style.display, and any !important rule here fights
+     that and stops them from closing. */
+  #modal-reminder-edit > .modal-content,
+  #modal-reminder-daily > .modal-content,
+  #modal-feedback-create > .modal-content{
+    margin:auto;
+    max-height:calc(100vh - 48px);
+    overflow-y:auto;
+    background:var(--card);
+    border-radius:16px;
+    border:1px solid var(--border);
+    box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);
+    animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1);
+  }
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .form-row{margin-bottom:11px}
 
@@ -4196,6 +4210,10 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
       Recurring Tasks
     </div>
+    <div class="nav-item admin-only" data-page="projects">
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
+    </div>
 
     <!-- ── Personal ── -->
     <div class="sb-divider"></div>
@@ -4257,14 +4275,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       Apps
     </div>
 
-    <!-- ── Admin (hides entirely for Members; Manager keeps these) ── -->
+    <!-- ── Admin (hides entirely for Members; Manager keeps these).
+         Projects lives up in the Tickets section now (closer to the
+         tickets it groups), so this block is just Reports + Trash. -->
     <div class="admin-only">
       <div class="sb-divider"></div>
       <div class="sb-section-label">Admin</div>
-      <div class="nav-item" data-page="projects">
-        <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        Projects <span class="badge" id="nav-projects-badge" style="display:none"></span>
-      </div>
       <div class="nav-item" data-page="reports">
         <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Reports
@@ -16051,7 +16067,17 @@ function patchTicketMutations() {
       const el = document.getElementById('comment-text');
       const text = el ? el.value.trim() : '';
       const r = origSubmit.apply(this, args);
-      if (text && currentTicketId) apiPost('/api/tickets/' + currentTicketId + '/comments', { text }).catch(()=>{});
+      // Capture the server response so we can trigger the "add @mention as
+      // assignee" popup (promptAddNewlyMentioned). The previous version
+      // fire-and-forgot the request and threw the response away, which is
+      // why the popup never appeared on this code path.
+      if (text && currentTicketId) {
+        apiPost('/api/tickets/' + currentTicketId + '/comments', { text })
+          .then(resp => {
+            if (typeof promptAddNewlyMentioned === 'function') promptAddNewlyMentioned(currentTicketId, resp);
+          })
+          .catch(() => {});
+      }
       return r;
     };
   }
@@ -17574,7 +17600,10 @@ function setupCommentAttachBar() {
       cmtPendingFiles = [];
       document.getElementById('cmt-previews').innerHTML = '';
       const r = await _origAddComment.apply(this, args);
-      const ticketId = window.currentDetailTicketId;
+      // Fall back to currentTicketId (the older global) when the newer
+      // currentDetailTicketId isn't set — otherwise the comment POST and
+      // the "add @mention as assignee" popup silently get skipped.
+      const ticketId = window.currentDetailTicketId || (typeof currentTicketId !== 'undefined' ? currentTicketId : null);
       if (!ticketId) return r;
       // Save the text portion FIRST and await its id so file attachments
       // can be linked back to it.
