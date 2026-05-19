@@ -7137,10 +7137,14 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px">
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:14px;flex-wrap:wrap">
       <button id="ev-delete-btn" class="btn-sec" style="font-size:12px;padding:9px 14px;color:var(--red);border-color:#fecaca;display:none" onclick="deleteCurrentEvent()">Delete</button>
-      <div style="display:flex;gap:8px;margin-left:auto">
+      <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
         <button class="btn-sec" style="font-size:12px;padding:9px 14px" onclick="closeModal('create-event')">Cancel</button>
+        <button class="btn-sec" style="font-size:12px;padding:9px 14px;display:inline-flex;align-items:center;gap:6px" onclick="saveAndPushEventToGoogle()" title="Save here and open Google Calendar with this event pre-filled — one click to add it there too">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Save &amp; push to Google
+        </button>
         <button class="btn-primary" style="font-size:12px;padding:9px 16px" onclick="saveEvent()">Save Event</button>
       </div>
     </div>
@@ -13978,8 +13982,20 @@ function openCreateEventModal(presetDateKey) {
   document.getElementById('ev-title').value = '';
   document.getElementById('ev-desc').value = '';
   document.getElementById('ev-allday').checked = false;
-  document.getElementById('ev-time-start').value = '10:00';
-  document.getElementById('ev-time-end').value = '11:00';
+  // Default to a 15-min slot starting at the next quarter-hour. Most
+  // calendar events here are quick syncs, and short defaults are easier
+  // to lengthen than long defaults are to shorten.
+  (function _setDefaultEventTimes() {
+    const pad = n => String(n).padStart(2, '0');
+    const now = new Date();
+    const mins = now.getMinutes();
+    const nextQuarter = (Math.floor(mins / 15) + 1) * 15;
+    const start = new Date(now);
+    start.setMinutes(nextQuarter, 0, 0);
+    const end = new Date(start.getTime() + 15 * 60 * 1000);
+    document.getElementById('ev-time-start').value = pad(start.getHours()) + ':' + pad(start.getMinutes());
+    document.getElementById('ev-time-end').value   = pad(end.getHours())   + ':' + pad(end.getMinutes());
+  })();
   document.getElementById('ev-location').value = '';
   document.getElementById('ev-ticket-search').value = '';
   document.getElementById('ev-ticket-wrap').classList.remove('has-selection');
@@ -13994,9 +14010,20 @@ function openCreateEventModal(presetDateKey) {
     dateInput.value = `${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}`;
   }
 
-  // Populate assignee dropdown (used by all event types — label changes per type)
+  // Populate assignee dropdown (used by all event types — label changes
+  // per type, e.g. "Organizer" on meetings). Default selection is the
+  // current user: when you create a meeting, you ARE the organizer
+  // unless you change it. Previously the first team member by sort
+  // order (typically the admin) was selected, which was a fresh-account
+  // footgun.
   const taskSel = document.getElementById('ev-assignee');
-  taskSel.innerHTML = TEAM_DATA.map(m => `<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)}</option>`).join('');
+  const meName = (window.CURRENT_USER && window.CURRENT_USER.name) || '';
+  taskSel.innerHTML = TEAM_DATA.map(m =>
+    `<option value="${escapeHtml(m.name)}"${m.name === meName ? ' selected' : ''}>${escapeHtml(m.name)}</option>`
+  ).join('');
+  if (meName && Array.from(taskSel.options).some(o => o.value === meName)) {
+    taskSel.value = meName;
+  }
 
   // Reset type buttons
   document.querySelectorAll('#event-type-row .event-type-btn').forEach(b => {
@@ -14123,12 +14150,22 @@ function renderDayEventsModal() {
     }
 
     const rowClick = isTicketType ? '' : `onclick="openEditEventModalFromDay(${realIdx})"`;
+    // "Push to Google" works for every event type. Ticket rows push the
+    // ticket itself (with title, priority, due date, description, and a
+    // click-through URL); event rows push the meeting/task/deadline
+    // (and if it's linked to a ticket, the description includes that
+    // ticket's URL + summary as well).
+    const pushBtn = `<button class="day-evt-action-btn" onclick="event.stopPropagation();pushEventToGoogle('${escapeAttr(selectedDayKey)}', ${realIdx})" title="Open Google Calendar with this event pre-filled — one click to add it there">↗ Push to Google</button>`;
     const trailing = isTicketType
       ? `<div class="day-evt-actions">
           ${ticketId ? `<button class="day-evt-action-btn primary" onclick="event.stopPropagation();openTicketFromDayEvents('${escapeAttr(ticketId)}')" title="Open ticket detail">↗ Open ticket</button>` : ''}
+          ${pushBtn}
           <button class="day-evt-action-btn" onclick="event.stopPropagation();openEditEventModalFromDay(${realIdx})" title="Edit schedule on calendar">✎ Edit schedule</button>
         </div>`
-      : `<div class="day-evt-arrow">›</div>`;
+      : `<div class="day-evt-actions">
+          ${pushBtn}
+          <div class="day-evt-arrow">›</div>
+        </div>`;
 
     return `
       <div class="day-evt-row ${isTicketType ? 'is-ticket' : ''}" ${rowClick}>
@@ -14244,6 +14281,183 @@ function closeAndRefresh() {
   closeModal('create-event');
   if (currentPage === 'calendar') buildCalendar();
 }
+
+// ── Push to Google Calendar (no OAuth required) ────────────────────────────
+// Opens Google Calendar's pre-filled event-creation URL in a new tab.
+// Works in two modes:
+//   - With a saved event (object from CAL_EVENTS): pulls title/time/
+//     attendees/location/description directly from the object.
+//   - Without (called from the create modal "Save & push" button): the
+//     caller passes the same shape we'd save locally.
+// Note: this is a true "push" — the event lands in the user's Google
+// Calendar permanently. It does NOT depend on the ICS subscribe feed.
+// Two-way sync (changes flowing back) still needs the OAuth API
+// integration; this is the practical bridge until then.
+function _gcalIsoUtc(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+  const pad = n => String(n).padStart(2, '0');
+  return d.getUTCFullYear()
+       + pad(d.getUTCMonth() + 1)
+       + pad(d.getUTCDate())
+       + 'T'
+       + pad(d.getUTCHours())
+       + pad(d.getUTCMinutes())
+       + pad(d.getUTCSeconds())
+       + 'Z';
+}
+function _gcalDateOnly(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+}
+// Parse the calendar's 0-indexed-month date key "YYYY-M-D" into a Date.
+// Mirrors the server-side _icsParseDateKey so the client builds the same
+// time slot the ICS feed would.
+function _parseCalDateKey(key) {
+  if (!key) return null;
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(key).trim());
+  if (!m) return null;
+  return { y: Number(m[1]), mo: Number(m[2]), d: Number(m[3]) };  // mo is 0-indexed
+}
+function pushEventToGoogle(evtOrKey, idxIfKey) {
+  // Resolve the event whether we got a (key, idx) pair or a direct
+  // object. Synthetic ticket-due rows aren't stored in CAL_EVENTS —
+  // they're computed by _calEventsForKey at render time, mixed in
+  // with stored events. Use that combined view (when available) so
+  // pushing a ticket-type row hits the right element.
+  let evt = evtOrKey;
+  let dateKey = null;
+  if (typeof evtOrKey === 'string') {
+    dateKey = evtOrKey;
+    const combined = (typeof window._calEventsForKey === 'function')
+      ? window._calEventsForKey(dateKey)
+      : (CAL_EVENTS[dateKey] || []);
+    evt = combined[idxIfKey || 0];
+  } else if (evt && evt.__dateKey) {
+    dateKey = evt.__dateKey;
+  }
+  if (!evt) { if (typeof toast === 'function') toast('Could not find that event.', 'err'); return; }
+
+  // dateKey isn't always carried by the object, so let the caller pass it
+  // via the second arg or via evt.__dateKey. Without it we can't compute
+  // a Date for timed events — fall back to all-day on today.
+  const parts = _parseCalDateKey(dateKey);
+  const params = new URLSearchParams();
+  params.set('text', evt.title || evt.label || 'Event');
+
+  // Build the dates= param. Google's syntax:
+  //   timed:   YYYYMMDDTHHMMSSZ/YYYYMMDDTHHMMSSZ
+  //   all-day: YYYYMMDD/YYYYMMDD  (end is exclusive, so next day)
+  let datesParam = '';
+  if (parts) {
+    if (evt.allDay || !evt.startTime) {
+      const start = new Date(parts.y, parts.mo, parts.d);
+      const next  = new Date(parts.y, parts.mo, parts.d + 1);
+      datesParam = `${_gcalDateOnly(start)}/${_gcalDateOnly(next)}`;
+    } else {
+      const tm = /^(\d{1,2}):(\d{2})/.exec(String(evt.startTime).trim());
+      if (tm) {
+        const hh = Number(tm[1]), mm = Number(tm[2]);
+        const start = new Date(parts.y, parts.mo, parts.d, hh, mm, 0);
+        let end;
+        if (evt.endTime) {
+          const tm2 = /^(\d{1,2}):(\d{2})/.exec(String(evt.endTime).trim());
+          if (tm2) end = new Date(parts.y, parts.mo, parts.d, Number(tm2[1]), Number(tm2[2]), 0);
+        }
+        if (!end || isNaN(end.getTime()) || end <= start) {
+          end = new Date(start.getTime() + 15 * 60 * 1000);  // matches new default
+        }
+        datesParam = `${_gcalIsoUtc(start)}/${_gcalIsoUtc(end)}`;
+      }
+    }
+  }
+  if (datesParam) params.set('dates', datesParam);
+
+  // Description: keep the user's notes plus any join link, attendee list,
+  // and (when present) the linked-ticket URL — mirroring what the ICS
+  // feed includes for the same event. The ticket link is the key thing
+  // the recipient often needs after the meeting.
+  const descLines = [];
+  if (Array.isArray(evt.attendees) && evt.attendees.length) {
+    descLines.push('Attendees: ' + evt.attendees.join(', '));
+  }
+  if (evt.location && /^https?:\/\//i.test(evt.location)) {
+    descLines.push(`Join link: ${evt.location}`);
+  }
+  // Synthetic ticket-type events carry `ticketId`; user-created events
+  // linked to a ticket carry `linkedTicketId`. Surface either.
+  const linkedTicket = evt.ticketId || evt.linkedTicketId || null;
+  if (linkedTicket) {
+    const tkt = (typeof TICKETS_DATA !== 'undefined' ? TICKETS_DATA : []).find(t => t.id === linkedTicket);
+    const ttl = tkt && tkt.title ? ` · ${tkt.title}` : '';
+    descLines.push(`Linked ticket: ${linkedTicket}${ttl}`);
+    descLines.push(`Open ticket: ${location.origin}/tickets/${encodeURIComponent(linkedTicket)}`);
+    // Add ticket detail (priority, status, assignees, description) so the
+    // event in Google Calendar carries the same info as the ticket page.
+    if (tkt) {
+      const lines = [];
+      if (tkt.priority) lines.push(`Priority: ${tkt.priority}`);
+      if (tkt.status)   lines.push(`Status: ${tkt.status}`);
+      const asgns = (Array.isArray(tkt.assignees) ? tkt.assignees : []).filter(Boolean);
+      if (asgns.length) lines.push(`Assignees: ${asgns.join(', ')}`);
+      else if (tkt.assignee) lines.push(`Assignee: ${tkt.assignee}`);
+      if (tkt.dept)     lines.push(`Dept: ${tkt.dept}`);
+      if (tkt.due)      lines.push(`Due: ${tkt.due}`);
+      if (lines.length) descLines.push(lines.join(' · '));
+      if (tkt.description) { descLines.push(''); descLines.push(tkt.description); }
+    }
+  }
+  if (evt.desc || evt.description) {
+    if (descLines.length) descLines.push('');
+    descLines.push(evt.desc || evt.description);
+  }
+  if (descLines.length) params.set('details', descLines.join('\n'));
+
+  if (evt.location) params.set('location', evt.location);
+
+  // Attendees → emails via TEAM_DATA (Google's add= takes a comma list).
+  const emails = (evt.attendees || [])
+    .map(n => (TEAM_DATA.find(m => m.name === n) || {}).email)
+    .filter(Boolean);
+  if (emails.length) params.set('add', emails.join(','));
+
+  const url = 'https://calendar.google.com/calendar/r/eventedit?' + params.toString();
+  window.open(url, '_blank', 'noopener');
+}
+window.pushEventToGoogle = pushEventToGoogle;
+
+// "Save & push" button on the create/edit modal — saves locally first
+// (so the event lives in this app), then opens Google's editor with the
+// same details pre-filled so the user clicks one more Save and it's in
+// Google Calendar too.
+async function saveAndPushEventToGoogle() {
+  // Capture the form values up front because saveEvent() closes the modal
+  // and resets state before we'd otherwise be able to read them.
+  const title = (document.getElementById('ev-title')?.value || '').trim();
+  if (!title) { alert('Please enter an event title.'); return; }
+  const dateRaw = document.getElementById('ev-date').value;
+  if (!dateRaw) { alert('Please pick a date.'); return; }
+  const dateKey = (typeof eventDateKeyFromInput === 'function') ? eventDateKeyFromInput(dateRaw) : null;
+  const allDay = document.getElementById('ev-allday').checked;
+  const evt = {
+    title,
+    desc: (document.getElementById('ev-desc')?.value || '').trim(),
+    allDay,
+    startTime: allDay ? '' : document.getElementById('ev-time-start').value,
+    endTime:   allDay ? '' : document.getElementById('ev-time-end').value,
+    location:  (document.getElementById('ev-location')?.value || '').trim(),
+    attendees: Array.from(evSelectedAttendees || []),
+    // Carry the linked-ticket id through so the Google event gets the
+    // ticket URL + summary in its description, the way you asked for.
+    linkedTicketId: (typeof evSelectedTicketId !== 'undefined' && evSelectedTicketId) ? evSelectedTicketId : null,
+    __dateKey: dateKey,
+  };
+  // Save first so the event is persisted locally + server-side …
+  if (typeof saveEvent === 'function') saveEvent();
+  // … then open Google with the pre-filled editor.
+  pushEventToGoogle(evt);
+}
+window.saveAndPushEventToGoogle = saveAndPushEventToGoogle;
 
 async function deleteCurrentEvent() {
   if (editingEventKey == null || editingEventIdx == null) return;
@@ -16735,12 +16949,25 @@ async function loadRealNotifications() {
     // Map DB rows to the UI format the template expects
     NOTIFICATIONS.length = 0;
     rows.forEach(function(n) {
+      // Always format on the client so the displayed time uses the
+      // VIEWER's timezone. The server also sends a `time_label`, but it's
+      // computed in the server's local time — if the server is ahead of
+      // the user (e.g. a UTC host serving a New York user), an event
+      // created at 02:00 UTC = 22:00 EDT renders as "tomorrow" instead
+      // of "today" on the user's screen.
+      let timeStr = '';
+      if (n.created_at) {
+        const iso = String(n.created_at).replace(' ', 'T') + 'Z';
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) timeStr = formatNowUS(d);
+      }
+      if (!timeStr) timeStr = formatNowUS();
       NOTIFICATIONS.push({
         id:       n.id,
         type:     n.type || 'mention',
         icon:     n.icon || '🔔',
         unread:   !!n.unread,
-        time:     n.time_label || (n.created_at ? formatNowUS(new Date(String(n.created_at).replace(' ','T') + 'Z')) : formatNowUS()),
+        time:     timeStr,
         text:     n.text || '',
         ticketId: n.ticket_id || '',
       });
