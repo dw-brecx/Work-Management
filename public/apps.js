@@ -40,6 +40,7 @@
     todos: [],
     annotations: [],
     annotateMode: false,
+    interactiveMode: false, // run scripts in the preview iframe (off by default)
     penMode: false,        // pen tool active (overrides click-to-pin)
     penStrokes: [],        // [[{x,y},...], ...] currently-drawn strokes
     penBgImage: null,      // HTMLCanvasElement returned by html2canvas — the design snapshot taken when pen mode activates. Drawn as the bottom layer so the canvas can be exported as a single image (no SVG-foreignObject taint).
@@ -641,7 +642,19 @@
   }
 
   function renderPreviewTab(p) {
-    const previewUrl = '/api/apps/' + state.app.id + '/pages/' + p.id + '/preview?ts=' + (p.updated_at || '');
+    // ?ts= keeps the URL stable per HTML revision so the browser can
+    // cache, see /preview headers. ?interactive=1 flips the server-side
+    // CSP to allow scripts and pairs with the sandbox attr below.
+    const cacheBust = p.updated_at || '';
+    const previewUrl = '/api/apps/' + state.app.id + '/pages/' + p.id + '/preview?ts=' + encodeURIComponent(cacheBust) + (state.interactiveMode ? '&interactive=1' : '');
+    // Sandbox: with interactiveMode on we add allow-scripts so inline
+    // scripts and event handlers run. allow-same-origin is kept so the
+    // page can call back to /api/* with the user's session — which is
+    // typically what an in-house app needs to be testable. The combo
+    // is intentionally opt-in; warn the user before flipping it on.
+    const sandbox = state.interactiveMode
+      ? 'allow-scripts allow-same-origin allow-forms allow-popups'
+      : 'allow-same-origin';
     const pins = state.annotations.map((a, i) => {
       return `
         <div class="ap-pin ap-pin-${escapeHtml(a.type)} ${a.status === 'resolved' ? 'resolved' : ''}"
@@ -656,6 +669,9 @@
       <div class="ap-preview-toolbar">
         <span>Sandboxed preview of <strong>${escapeHtml(p.file_name || p.name)}</strong>${p.html_size ? ` · ${(p.html_size / 1024).toFixed(1)} KB` : ''}</span>
         <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn ${state.interactiveMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-interactive-toggle" title="${state.interactiveMode ? 'Scripts and buttons are active. Click to disable.' : 'Run the page JavaScript so buttons and form handlers work. Only enable for pages you trust.'}">
+            ${state.interactiveMode ? '▶ Interactive' : '⏸ Static'}
+          </button>
           <button class="btn ${state.annotateMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-annotate-toggle" title="Click on the design to drop a pin">
             ${state.annotateMode ? '✓ Annotating' : 'Annotate'}
           </button>
@@ -671,7 +687,7 @@
             <div class="ap-spinner"></div>
             <span>Loading design…</span>
           </div>
-          <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="allow-same-origin" title="Page preview" onload="(function(f){var l=document.getElementById('ap-preview-loading');if(l)l.style.display='none';})(this)"></iframe>
+          <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="${sandbox}" title="Page preview" onload="(function(f){var l=document.getElementById('ap-preview-loading');if(l)l.style.display='none';})(this)"></iframe>
           <div class="ap-pin-overlay ${state.annotateMode && !state.penMode ? 'active' : ''}" id="ap-pin-overlay">
             ${pins}
             ${state.pendingPin ? `<div class="ap-pin ap-pin-pending" style="left:${state.pendingPin.x_pct}%;top:${state.pendingPin.y_pct}%">+</div>` : ''}
@@ -1932,6 +1948,38 @@
 
   // Preview tab — annotation overlay, pin clicks, new-pin popup.
   function bindPreviewEvents() {
+    const interactiveBtn = document.getElementById('ap-interactive-toggle');
+    if (interactiveBtn) {
+      interactiveBtn.onclick = () => {
+        // Confirm before flipping ON — running unknown scripts in the
+        // preview iframe gives them access to the user's session
+        // cookie (because the iframe is served from the same origin).
+        // First-time confirm only, gated by sessionStorage so it isn't
+        // spammed every toggle.
+        if (!state.interactiveMode) {
+          const acked = (function(){ try { return sessionStorage.getItem('ap-interactive-ack') === '1'; } catch { return false; } })();
+          if (!acked) {
+            const ok = confirm(
+              'Interactive mode runs the design\'s JavaScript and lets it call back to /api/...\n\n' +
+              'Only enable this for designs you trust (your own apps, vetted templates). A malicious page could read or modify your data.\n\n' +
+              'Enable interactive mode?'
+            );
+            if (!ok) return;
+            try { sessionStorage.setItem('ap-interactive-ack', '1'); } catch {}
+          }
+        }
+        state.interactiveMode = !state.interactiveMode;
+        // Drop annotate/pen overlays — they only make sense in static
+        // preview mode (the iframe is interactive now, so clicks should
+        // go to it, not to our annotation layer).
+        if (state.interactiveMode) {
+          state.annotateMode = false;
+          state.penMode = false;
+          state.pendingPin = null;
+        }
+        render();
+      };
+    }
     const toggleBtn = document.getElementById('ap-annotate-toggle');
     if (toggleBtn) {
       toggleBtn.onclick = () => {
@@ -3057,7 +3105,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-18.3 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.4 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
