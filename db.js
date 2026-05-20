@@ -1799,6 +1799,123 @@ async function init() {
     }
   }
 
+  // ── Flavor Reviews ──────────────────────────────────────────────────────
+  // Separate catalog from flavors_v2 — flavors_v2 is for launching new
+  // flavors (UPC / SKU / label pipeline); fr_flavors is the in-market list
+  // the reviewer checks every cycle. Bulk-pasted from a sheet.
+  //
+  //   fr_flavors        — the catalog
+  //   fr_flavor_links   — where each flavor is sold (URL per channel,
+  //                       so the reviewer can pull up reviews)
+  //   fr_reviews        — one row per review the reviewer logs; sentiment +
+  //                       ai_summary populated when AI runs
+  //   fr_issues         — actionable bad-review issue. status flows
+  //                       open → fixed (with resolution + fixed_at) or
+  //                       open → ignored or open → merged (into another
+  //                       still-open issue, e.g. when the fix is in
+  //                       flight and the same complaint keeps coming in)
+  //   fr_review_issues  — many-to-many: a review can attach to an issue;
+  //                       a single issue collects many reviews
+  //   fr_cycles         — the scheduler. One row per (flavor, due date).
+  //                       AI bumps the priority on flavors with recent
+  //                       bad reviews so the calendar can sort by it
+  //   fr_settings       — single-row global config (cadence, threshold)
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_flavors (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'coffee',
+    variant TEXT NOT NULL DEFAULT 'regular',
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_fr_flavors_name_variant ON fr_flavors (LOWER(name), variant)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_flavors_status ON fr_flavors (status)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_flavor_links (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_flavor_links_flavor ON fr_flavor_links (flavor_id, position)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_issues (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT 'medium',
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT NOT NULL DEFAULT '',
+    merged_into_id INTEGER REFERENCES fr_issues(id) ON DELETE SET NULL,
+    fixed_at TEXT,
+    fixed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ignored_at TEXT,
+    ignored_reason TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_issues_flavor ON fr_issues (flavor_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_issues_status ON fr_issues (status)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_reviews (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    source TEXT NOT NULL DEFAULT '',
+    source_review_id TEXT NOT NULL DEFAULT '',
+    rating INTEGER NOT NULL DEFAULT 0,
+    reviewer_name TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    posted_at TEXT NOT NULL DEFAULT '',
+    sentiment TEXT NOT NULL DEFAULT '',
+    ai_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    issue_id INTEGER REFERENCES fr_issues(id) ON DELETE SET NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_flavor ON fr_reviews (flavor_id, posted_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_status ON fr_reviews (status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_issue ON fr_reviews (issue_id)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_cycles (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    scheduled_for TEXT NOT NULL DEFAULT '',
+    assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    priority INTEGER NOT NULL DEFAULT 3,
+    ai_priority_bump INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_cycles_flavor ON fr_cycles (flavor_id, scheduled_for)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_cycles_due ON fr_cycles (status, scheduled_for)`);
+
+  // Singleton settings row (id=1 always). Upsert pattern in the route.
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    cadence_months INTEGER NOT NULL DEFAULT 3,
+    default_reviewer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    bad_review_threshold INTEGER NOT NULL DEFAULT 2,
+    auto_schedule INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`INSERT INTO fr_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+
   // Seed a real Syruvia listing as the starter row in
   // flavor_listing_examples so the admin has something to clone + edit per
   // type combo instead of staring at an empty grid. Only fires when the
