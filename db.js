@@ -1085,6 +1085,83 @@ async function init() {
   await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN checklist_json TEXT NOT NULL DEFAULT '[]'");
   await safeAlter("ALTER TABLE recurring_task_items ADD COLUMN due_offset_days INTEGER NOT NULL DEFAULT 7");
 
+  // ── Marketing post templates (social media + ads scheduling) ───────────
+  // Mirrors the recurring-task pattern, anchored on a POST date instead of
+  // a "run date". Each template owns a list of prep tasks; an hourly cron
+  // materialises upcoming post dates into `marketing_posts` rows and spawns
+  // one ticket per prep task with due = post_date - days_before_post.
+  await pool.query(`CREATE TABLE IF NOT EXISTS marketing_post_templates (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT 'instagram',
+    post_kind TEXT NOT NULL DEFAULT 'post',
+    start_date TEXT NOT NULL DEFAULT '',
+    post_time TEXT NOT NULL DEFAULT '',
+    recur_type TEXT NOT NULL DEFAULT 'weekly',
+    recur_day INTEGER,
+    recur_weekday INTEGER,
+    recur_interval INTEGER,
+    next_post_date TEXT NOT NULL DEFAULT '',
+    last_materialized_date TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_templates_active ON marketing_post_templates (active, next_post_date)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS marketing_post_template_tasks (
+    id SERIAL PRIMARY KEY,
+    template_id INTEGER NOT NULL REFERENCES marketing_post_templates(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    assignee TEXT NOT NULL DEFAULT '',
+    assignees_json TEXT NOT NULL DEFAULT '[]',
+    reporter TEXT NOT NULL DEFAULT '',
+    priority TEXT NOT NULL DEFAULT 'Medium',
+    dept TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    checklist_json TEXT NOT NULL DEFAULT '[]',
+    days_before_post INTEGER NOT NULL DEFAULT 1,
+    reminder_offset_hours INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_tasks_template ON marketing_post_template_tasks (template_id, position)`);
+
+  // Materialised occurrences. One row per (template, post_date). status
+  // tracks the lifecycle from "planned" through "posted" or "skipped".
+  await pool.query(`CREATE TABLE IF NOT EXISTS marketing_posts (
+    id SERIAL PRIMARY KEY,
+    template_id INTEGER REFERENCES marketing_post_templates(id) ON DELETE SET NULL,
+    name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    post_kind TEXT NOT NULL DEFAULT '',
+    post_date TEXT NOT NULL DEFAULT '',
+    post_time TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'planned',
+    notes TEXT NOT NULL DEFAULT '',
+    actual_posted_at TEXT,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_posts_date ON marketing_posts (post_date)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_posts_template ON marketing_posts (template_id, post_date)`);
+
+  // Link rows tying each materialised post to the prep tickets it spawned.
+  // Survives template/task deletes because we don't FK to template_task_id.
+  await pool.query(`CREATE TABLE IF NOT EXISTS marketing_post_tickets (
+    id SERIAL PRIMARY KEY,
+    post_id INTEGER NOT NULL REFERENCES marketing_posts(id) ON DELETE CASCADE,
+    ticket_id TEXT NOT NULL,
+    template_task_id INTEGER,
+    task_title TEXT NOT NULL DEFAULT '',
+    due_date TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_post_tickets_post ON marketing_post_tickets (post_id)`);
+
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
   // Same for the new feedback / announcement parents — voice notes, screen
