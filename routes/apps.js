@@ -434,21 +434,47 @@ module.exports = function attach(app, deps) {
       } else {
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       }
-      // CSP: no scripts, no external sources, no form submissions, no top
-      // navigation. The designer HTML is treated as untrusted (it might
-      // call random APIs or include trackers); this strips it down to
-      // visual rendering only.
-      res.setHeader('Content-Security-Policy',
-        "default-src 'self' data: blob:; " +
-        "img-src 'self' data: blob: https:; " +
-        "style-src 'self' 'unsafe-inline' https:; " +
-        "font-src 'self' data: https:; " +
-        "script-src 'none'; " +
-        "frame-src 'none'; " +
-        "object-src 'none'; " +
-        "form-action 'none'; " +
-        "base-uri 'none'"
-      );
+
+      // "Interactive" preview mode — caller has opted in to actually
+      // running the design's scripts so buttons / form handlers /
+      // navigation work for hands-on testing. Loosens the CSP to allow
+      // inline scripts. The client pairs this with sandbox="allow-scripts
+      // allow-same-origin" on the iframe so the design runs against the
+      // real session (needed for API calls back to /api/...). This is
+      // off by default and opt-in per page from the UI.
+      const interactive = !!(req.query && req.query.interactive);
+      if (interactive) {
+        // Inline scripts allowed; everything else stays locked down so
+        // the design can't be redirected away or pull in foreign code.
+        res.setHeader('Content-Security-Policy',
+          "default-src 'self' data: blob:; " +
+          "img-src 'self' data: blob: https:; " +
+          "style-src 'self' 'unsafe-inline' https:; " +
+          "font-src 'self' data: https:; " +
+          "script-src 'self' 'unsafe-inline'; " +
+          "connect-src 'self' https:; " +
+          "frame-src 'none'; " +
+          "object-src 'none'; " +
+          "form-action 'self'; " +
+          "base-uri 'none'"
+        );
+      } else {
+        // CSP: no scripts, no external sources, no form submissions, no
+        // top navigation. The designer HTML is treated as untrusted in
+        // this mode — useful for pages from third parties or any
+        // content you don't want running JS on your origin.
+        res.setHeader('Content-Security-Policy',
+          "default-src 'self' data: blob:; " +
+          "img-src 'self' data: blob: https:; " +
+          "style-src 'self' 'unsafe-inline' https:; " +
+          "font-src 'self' data: https:; " +
+          "script-src 'none'; " +
+          "frame-src 'none'; " +
+          "object-src 'none'; " +
+          "form-action 'none'; " +
+          "base-uri 'none'"
+        );
+      }
       res.send(result.page.html_content || '<!doctype html><html><body><p style="font:14px sans-serif;color:#666;padding:24px">No HTML for this page yet.</p></body></html>');
     } catch (e) { res.status(500).send('Preview failed'); }
   });
