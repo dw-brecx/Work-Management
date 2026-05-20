@@ -61,17 +61,25 @@ a { color:inherit; }
 #mk-app { flex: 1; min-width: 0; overflow-x: hidden; }
 
 #mk-sidebar {
+  /* Match index.html's sidebar — white gradient with cool-blue accents.
+     Tokens copied so the look stays in sync if either side ever changes. */
+  --sidebar-line:#dce8f2;
+  --sidebar-text:#31465a;
+  --sidebar-muted:#7d91a3;
+  --sidebar-active-bg:#e8f4fb;
+  --sidebar-active-bg2:#f3f9fd;
   width: 210px;
   min-width: 210px;
-  background: var(--nav);
+  background: linear-gradient(180deg,#ffffff 0%,#f7fbff 100%);
   display: flex; flex-direction: column;
   height: 100vh;
   position: sticky; top: 0;
-  border-right: 1px solid rgba(255,255,255,.05);
+  border-right: 1px solid var(--sidebar-line);
 }
 .mk-sb-logo {
   padding: 18px 14px 14px;
-  border-bottom: 1px solid rgba(255,255,255,.07);
+  border-bottom: 1px solid var(--sidebar-line);
+  background: linear-gradient(180deg,#ffffff 0%,#f8fbfe 100%);
   display: flex; align-items: center;
 }
 .mk-sb-logo-link { display: inline-flex; align-items: center; flex: 1; min-width: 0; }
@@ -79,32 +87,40 @@ a { color:inherit; }
 .mk-sb-nav { padding: 10px 8px; flex: 1; overflow-y: auto; }
 .mk-sb-section {
   font-size: 9.5px; font-weight: 700;
-  color: #94a3b8;
+  color: var(--sidebar-muted);
   text-transform: uppercase; letter-spacing: .08em;
   padding: 10px 14px 4px; line-height: 1.4;
 }
 .mk-sb-divider {
-  height: 1px; background: rgba(255,255,255,.07);
+  height: 1px; background: var(--sidebar-line);
   margin: 8px 6px 0;
 }
 .mk-sb-item {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 10px; margin-bottom: 2px;
   border-radius: 8px;
-  color: #64748b; font-size: 12px;
+  color: var(--sidebar-text);
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 12px;
   text-decoration: none; user-select: none;
-  transition: background .15s, color .15s, transform .12s;
+  transition: background .15s, color .15s, border-color .15s, transform .12s;
 }
+.mk-sb-item svg { flex-shrink: 0; color: #6f879b; opacity: .9; transition: color .15s; }
 .mk-sb-item:hover {
-  background: rgba(255,255,255,.05);
-  color: #94a3b8;
+  background: #f0f7fc;
+  color: #004874;
+  border-color: #d7e9f4;
   transform: translateX(2px);
 }
+.mk-sb-item:hover svg { color: #004874; }
 .mk-sb-item.active {
-  background: rgba(59,130,246,.18);
-  color: #93c5fd;
+  background: linear-gradient(135deg, var(--sidebar-active-bg), var(--sidebar-active-bg2));
+  color: #004874;
+  border: 1px solid #cfe5f3;
+  box-shadow: 0 10px 22px rgba(0,72,116,.08);
 }
-.mk-sb-item svg { flex-shrink: 0; opacity: .9; }
+.mk-sb-item.active svg { color: #004874; }
 
 /* Collapse to a slim icon-rail on narrow screens. Keep nav reachable but
    give the calendar more horizontal space. */
