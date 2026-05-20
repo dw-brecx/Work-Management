@@ -535,6 +535,7 @@
               ${assigneeRow('Manager', a.manager_name)}
               ${assigneeRow('Developer', a.developer_name)}
             </div>
+            ${renderDevelopersSection(a)}
             <div class="ap-sb-toggle">
               <button class="ap-sb-toggle-btn ${state.sidebarSection === 'pages' ? 'active' : ''}" data-section="pages">Pages (${a.pages ? a.pages.length : 0})</button>
               <button class="ap-sb-toggle-btn ${state.sidebarSection === 'tickets' ? 'active' : ''}" data-section="tickets">Tickets (${state.tickets.length})</button>
@@ -571,6 +572,130 @@
     `;
     bindDetailEvents();
     bindTopbarEvents();
+  }
+
+  // Multi-user developers section in the App detail sidebar.
+  // Chip-style avatars for everyone on the dev roster, an inline picker
+  // popover (search the workspace team, click to add) for the creator
+  // and admins, and a small × on each chip to remove. Wired to the
+  // /api/apps/:id/developers granular endpoints so individual changes
+  // don't need a full PATCH round-trip.
+  function canManageDevelopers(app) {
+    if (!app || !state.me) return false;
+    if (state.me.id === app.created_by) return true;
+    return state.me.permRole === 'Admin' || state.me.perm_role === 'Admin';
+  }
+  function devInitials(name) {
+    return String(name || '?').trim().split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase() || '?';
+  }
+  function renderDevelopersSection(app) {
+    const devs = Array.isArray(app.developers) ? app.developers : [];
+    const canEdit = canManageDevelopers(app);
+    const chips = devs.length
+      ? devs.map(d => {
+          const color = d.color || '#6366f1';
+          const removeBtn = canEdit
+            ? `<button class="ap-dev-x" data-action="remove-dev" data-uid="${d.id}" aria-label="Remove ${escapeHtml(d.name)}">×</button>`
+            : '';
+          return `<span class="ap-dev-chip" title="${escapeHtml(d.email || d.name)}">
+            <span class="ap-dev-avatar" style="background:linear-gradient(135deg,${color},${color}aa)">${escapeHtml(devInitials(d.name))}</span>
+            <span class="ap-dev-name">${escapeHtml(d.name)}</span>
+            ${removeBtn}
+          </span>`;
+        }).join('')
+      : `<span class="ap-dev-empty">${canEdit ? 'No developers yet — click + Add to invite teammates.' : 'No developers assigned.'}</span>`;
+    const addBtn = canEdit
+      ? `<button class="ap-dev-add-btn" data-action="dev-open-picker" title="Add a developer">+ Add</button>`
+      : '';
+    return `
+      <div class="ap-developers-section" data-developers-section>
+        <div class="ap-dev-head">
+          <span class="ap-dev-label">Developers</span>
+          ${addBtn}
+        </div>
+        <div class="ap-dev-chips">${chips}</div>
+        <div class="ap-dev-picker" data-dev-picker style="display:none">
+          <input type="text" class="ap-dev-search" data-dev-search placeholder="Search team…" autocomplete="off"/>
+          <div class="ap-dev-results" data-dev-results></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function bindDeveloperEvents(root) {
+    if (!state.app) return;
+    const section = root.querySelector('[data-developers-section]');
+    if (!section) return;
+    const picker  = section.querySelector('[data-dev-picker]');
+    const search  = section.querySelector('[data-dev-search]');
+    const results = section.querySelector('[data-dev-results]');
+
+    function renderResults(q) {
+      const taken = new Set((state.app.developers || []).map(d => d.id));
+      const ql = String(q || '').toLowerCase();
+      const matches = (state.team || [])
+        .filter(m => !taken.has(m.id))
+        .filter(m => !ql || (m.name || '').toLowerCase().includes(ql) || (m.email || '').toLowerCase().includes(ql))
+        .slice(0, 12);
+      if (!matches.length) {
+        results.innerHTML = '<div class="ap-dev-empty" style="padding:8px 10px">No matches.</div>';
+        return;
+      }
+      results.innerHTML = matches.map(m => {
+        const color = m.color || '#6366f1';
+        return `<div class="ap-dev-result" data-uid="${m.id}">
+          <span class="ap-dev-avatar" style="background:linear-gradient(135deg,${color},${color}aa)">${escapeHtml(devInitials(m.name))}</span>
+          <span class="ap-dev-result-text">
+            <span class="ap-dev-result-name">${escapeHtml(m.name)}</span>
+            ${m.email ? `<span class="ap-dev-result-email">${escapeHtml(m.email)}</span>` : ''}
+          </span>
+        </div>`;
+      }).join('');
+    }
+
+    section.addEventListener('click', async (e) => {
+      const tgt = e.target.closest('[data-action]');
+      const result = e.target.closest('[data-uid]');
+      if (tgt && tgt.dataset.action === 'dev-open-picker') {
+        const willOpen = picker.style.display === 'none';
+        picker.style.display = willOpen ? 'block' : 'none';
+        if (willOpen) {
+          search.value = '';
+          renderResults('');
+          setTimeout(() => search.focus(), 30);
+        }
+        return;
+      }
+      if (tgt && tgt.dataset.action === 'remove-dev') {
+        const uid = Number(tgt.dataset.uid);
+        if (!uid) return;
+        try {
+          await api('DELETE', `/api/apps/${state.app.id}/developers/${uid}`);
+          state.app.developers = (state.app.developers || []).filter(d => d.id !== uid);
+          renderDetail();
+          toast('Removed', 'ok');
+        } catch (err) { toast('Could not remove: ' + err.message, 'err'); }
+        return;
+      }
+      if (result && results.contains(result)) {
+        const uid = Number(result.dataset.uid);
+        if (!uid) return;
+        try {
+          const dev = await api('POST', `/api/apps/${state.app.id}/developers`, { user_id: uid });
+          state.app.developers = [...(state.app.developers || []), dev]
+            .sort((a, b) => (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase()));
+          renderDetail();
+          toast('Added ' + (dev.name || 'developer'), 'ok');
+        } catch (err) { toast('Could not add: ' + err.message, 'err'); }
+      }
+    });
+
+    if (search) {
+      search.addEventListener('input', () => renderResults(search.value));
+      search.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { picker.style.display = 'none'; }
+      });
+    }
   }
 
   function assigneeRow(role, name) {
@@ -1274,6 +1399,8 @@
 
   // ── Event wiring (detail view) ─────────────────────────────────────────
   function bindDetailEvents() {
+    // Multi-user Developers picker in the sidebar — chips + search popover.
+    bindDeveloperEvents(document);
     const editBtn = document.getElementById('ap-edit-app');
     if (editBtn) editBtn.onclick = () => openAppModal(state.app);
     const addBtn = document.getElementById('ap-add-page');

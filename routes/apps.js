@@ -36,8 +36,11 @@ module.exports = function attach(app, deps) {
   const FN_STATUSES = new Set(['pending', 'working', 'broken', 'na']);
 
   // ── Access helpers ─────────────────────────────────────────────────────
-  // An app is visible to: designer, manager, developer, creator, or admin.
-  // We hand the loaded row back so callers don't re-query.
+  // An app is visible to: designer, manager, developer slot, creator,
+  // admin, or anyone listed in app_developers (the multi-user roster the
+  // owner curates from the App detail page). The legacy single
+  // developer_id column is kept for back-compat; new code should rely
+  // on app_developers.
   async function loadAppForUser(appId, userId) {
     const id = Number(appId);
     if (!Number.isFinite(id) || id < 1) return { error: { status: 400, message: 'Invalid app id' } };
@@ -45,10 +48,14 @@ module.exports = function attach(app, deps) {
     if (!appRow) return { error: { status: 404, message: 'App not found' } };
     const me = await get('SELECT perm_role FROM users WHERE id=?', userId);
     const isAdmin = me && (me.perm_role === 'Admin');
-    const isMember = appRow.created_by === userId
+    let isMember = appRow.created_by === userId
       || appRow.designer_id === userId
       || appRow.manager_id === userId
       || appRow.developer_id === userId;
+    if (!isMember && !isAdmin) {
+      const dev = await get('SELECT 1 AS hit FROM app_developers WHERE app_id=? AND user_id=?', id, userId);
+      if (dev) isMember = true;
+    }
     if (!isAdmin && !isMember) return { error: { status: 403, message: 'No access to this app' } };
     return { app: appRow, isAdmin };
   }
@@ -65,7 +72,9 @@ module.exports = function attach(app, deps) {
   }
 
   // Hydrate an app row with assignee names so the UI can render avatars
-  // without a follow-up /api/team lookup.
+  // without a follow-up /api/team lookup. Also returns the full
+  // developers roster (id + name + color) so the detail sidebar can
+  // render chips without a second round-trip.
   async function shapeApp(appRow, extras) {
     const ids = [appRow.designer_id, appRow.manager_id, appRow.developer_id, appRow.created_by]
       .filter(v => Number.isFinite(Number(v)) && Number(v) > 0);
@@ -75,6 +84,14 @@ module.exports = function attach(app, deps) {
       const rows = await all(`SELECT id, name FROM users WHERE id IN (${placeholders})`, ...ids);
       nameMap = new Map(rows.map(r => [r.id, r.name]));
     }
+    const devs = await all(
+      `SELECT u.id, u.name, u.email, u.color
+         FROM app_developers d
+         JOIN users u ON u.id = d.user_id
+        WHERE d.app_id = ?
+        ORDER BY LOWER(u.name) ASC`,
+      appRow.id
+    );
     return Object.assign({
       id: appRow.id,
       name: appRow.name,
@@ -87,6 +104,10 @@ module.exports = function attach(app, deps) {
       manager_name: nameMap.get(appRow.manager_id) || null,
       developer_id: appRow.developer_id,
       developer_name: nameMap.get(appRow.developer_id) || null,
+      // Full multi-user roster — what the new UI uses. Legacy
+      // developer_id stays around for back-compat; in new code
+      // prefer this list.
+      developers: devs.map(d => ({ id: d.id, name: d.name, email: d.email, color: d.color || '' })),
       repo_url: appRow.repo_url,
       deploy_url: appRow.deploy_url,
       created_by: appRow.created_by,
@@ -123,10 +144,18 @@ module.exports = function attach(app, deps) {
       const userId = req.session.userId;
       const me = await get('SELECT perm_role FROM users WHERE id=?', userId);
       const isAdmin = me && me.perm_role === 'Admin';
+      // For non-admins: show apps where the user is the creator, in one
+      // of the legacy single-slot roles, OR listed in the multi-user
+      // developers roster (app_developers). Subquery keeps the WHERE
+      // clause short and lets Postgres reuse the idx_app_developers_user
+      // index.
       const whereClause = isAdmin
         ? 'a.deleted_at IS NULL'
-        : 'a.deleted_at IS NULL AND (a.created_by=? OR a.designer_id=? OR a.manager_id=? OR a.developer_id=?)';
-      const args = isAdmin ? [] : [userId, userId, userId, userId];
+        : `a.deleted_at IS NULL AND (
+             a.created_by=? OR a.designer_id=? OR a.manager_id=? OR a.developer_id=?
+             OR EXISTS (SELECT 1 FROM app_developers d WHERE d.app_id = a.id AND d.user_id = ?)
+           )`;
+      const args = isAdmin ? [] : [userId, userId, userId, userId, userId];
       const rows = await all(
         `SELECT a.*,
                 (SELECT COUNT(*) FROM app_pages p WHERE p.app_id = a.id) AS page_count,
@@ -173,7 +202,19 @@ module.exports = function attach(app, deps) {
         String(deploy_url || '').trim(),
         userId
       );
-      const appRow = await get('SELECT * FROM apps WHERE id=?', ins.lastInsertRowid);
+      const appId = ins.lastInsertRowid;
+      // Optional multi-user developers list on create. Each entry can
+      // be a numeric id or anything normaliseUserId() recognises.
+      const initialDevs = Array.isArray(req.body?.developers) ? req.body.developers : [];
+      for (const raw of initialDevs) {
+        const uid = normaliseUserId(raw);
+        if (!uid) continue;
+        await run(
+          `INSERT INTO app_developers (app_id, user_id, added_by) VALUES (?,?,?) ON CONFLICT DO NOTHING`,
+          appId, uid, userId
+        );
+      }
+      const appRow = await get('SELECT * FROM apps WHERE id=?', appId);
       const shaped = await shapeApp(appRow, { page_count: 0, fn_working: 0, fn_total: 0 });
       res.status(201).json(shaped);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -243,6 +284,67 @@ module.exports = function attach(app, deps) {
       const updated = await get('SELECT * FROM apps WHERE id=?', result.app.id);
       const shaped = await shapeApp(updated);
       res.json(shaped);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Multi-user developers roster ────────────────────────────────────────
+  // The chip-picker on the App detail page uses these. Add/remove is
+  // restricted to creator + admin, matching the PATCH rule for the
+  // single-slot fields. The list endpoint is open to anyone with app
+  // access so every viewer can see who's on the team.
+
+  app.get('/api/apps/:id/developers', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const rows = await all(
+        `SELECT u.id, u.name, u.email, u.color
+           FROM app_developers d
+           JOIN users u ON u.id = d.user_id
+          WHERE d.app_id = ?
+          ORDER BY LOWER(u.name) ASC`,
+        result.app.id
+      );
+      res.json(rows.map(r => ({ id: r.id, name: r.name, email: r.email, color: r.color || '' })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/apps/:id/developers', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const isCreator = result.app.created_by === req.session.userId;
+      if (!isCreator && !result.isAdmin) {
+        return res.status(403).json({ error: 'Only the creator or an admin can manage developers' });
+      }
+      const uid = normaliseUserId(req.body?.user_id ?? req.body?.userId ?? req.body?.id);
+      if (!uid) return res.status(400).json({ error: 'user_id required' });
+      const exists = await get('SELECT id FROM users WHERE id=?', uid);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      await run(
+        `INSERT INTO app_developers (app_id, user_id, added_by) VALUES (?,?,?) ON CONFLICT DO NOTHING`,
+        result.app.id, uid, req.session.userId
+      );
+      // Touch updated_at so the dashboard re-sorts.
+      await run("UPDATE apps SET updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", result.app.id);
+      const u = await get('SELECT id, name, email, color FROM users WHERE id=?', uid);
+      res.status(201).json({ id: u.id, name: u.name, email: u.email, color: u.color || '' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/apps/:id/developers/:userId', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const isCreator = result.app.created_by === req.session.userId;
+      if (!isCreator && !result.isAdmin) {
+        return res.status(403).json({ error: 'Only the creator or an admin can manage developers' });
+      }
+      const uid = Number(req.params.userId);
+      if (!Number.isFinite(uid) || uid < 1) return res.status(400).json({ error: 'Invalid user id' });
+      await run('DELETE FROM app_developers WHERE app_id=? AND user_id=?', result.app.id, uid);
+      await run("UPDATE apps SET updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?", result.app.id);
+      res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 

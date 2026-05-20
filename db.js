@@ -998,6 +998,22 @@ async function init() {
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_ticket_comments_ticket ON app_ticket_comments (ticket_id, id)`);
 
+  // Per-app multi-developer roster. The legacy `apps.developer_id` column
+  // is one slot for the "primary" developer; this table lets the app
+  // owner add any number of teammates as developers so they can see the
+  // app when they log in and collaborate on it. Each row is one user
+  // assignment; UNIQUE prevents the same user being added twice.
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_developers (
+    id SERIAL PRIMARY KEY,
+    app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    UNIQUE (app_id, user_id)
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_developers_app  ON app_developers (app_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_app_developers_user ON app_developers (user_id)`);
+
   // Recurring Tasks: a schedule + a list of ticket templates. When the
   // hourly cron sees `next_run_date <= today`, it materializes every
   // template as a real workspace ticket and advances the schedule.
