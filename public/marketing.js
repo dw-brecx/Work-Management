@@ -46,15 +46,98 @@
   const WEEKDAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
+  // Static US holiday list with marketing-relevant retail/cultural days.
+  // Embedded here (not server-side) because the calendar is the only place
+  // that uses them and the data is small + slow-changing. Add more years
+  // by appending to the array. Each row: YYYY-MM-DD, label, emoji.
+  const HOLIDAYS = [
+    // 2026
+    { date:'2026-01-01', name:"New Year's Day",            emoji:'🎉' },
+    { date:'2026-01-19', name:'MLK Day',                   emoji:'✊' },
+    { date:'2026-02-02', name:'Groundhog Day',             emoji:'🐹' },
+    { date:'2026-02-14', name:"Valentine's Day",           emoji:'💝' },
+    { date:'2026-02-16', name:"Presidents' Day",           emoji:'🇺🇸' },
+    { date:'2026-03-17', name:"St. Patrick's Day",         emoji:'🍀' },
+    { date:'2026-04-01', name:"April Fool's Day",          emoji:'🤡' },
+    { date:'2026-04-05', name:'Easter Sunday',             emoji:'🐰' },
+    { date:'2026-04-22', name:'Earth Day',                 emoji:'🌎' },
+    { date:'2026-05-05', name:'Cinco de Mayo',             emoji:'🌮' },
+    { date:'2026-05-10', name:"Mother's Day",              emoji:'🌷' },
+    { date:'2026-05-25', name:'Memorial Day',              emoji:'🇺🇸' },
+    { date:'2026-06-19', name:'Juneteenth',                emoji:'🎆' },
+    { date:'2026-06-21', name:"Father's Day",              emoji:'👨‍👧' },
+    { date:'2026-07-04', name:'Independence Day',          emoji:'🎆' },
+    { date:'2026-09-07', name:'Labor Day',                 emoji:'👷' },
+    { date:'2026-10-12', name:'Columbus / Indigenous Day', emoji:'🌎' },
+    { date:'2026-10-31', name:'Halloween',                 emoji:'🎃' },
+    { date:'2026-11-11', name:'Veterans Day',              emoji:'🎖️' },
+    { date:'2026-11-26', name:'Thanksgiving',              emoji:'🦃' },
+    { date:'2026-11-27', name:'Black Friday',              emoji:'🛍️' },
+    { date:'2026-11-30', name:'Cyber Monday',              emoji:'💻' },
+    { date:'2026-12-24', name:'Christmas Eve',             emoji:'🎄' },
+    { date:'2026-12-25', name:'Christmas Day',             emoji:'🎄' },
+    { date:'2026-12-31', name:"New Year's Eve",            emoji:'🥂' },
+    // 2027
+    { date:'2027-01-01', name:"New Year's Day",            emoji:'🎉' },
+    { date:'2027-01-18', name:'MLK Day',                   emoji:'✊' },
+    { date:'2027-02-02', name:'Groundhog Day',             emoji:'🐹' },
+    { date:'2027-02-14', name:"Valentine's Day",           emoji:'💝' },
+    { date:'2027-02-15', name:"Presidents' Day",           emoji:'🇺🇸' },
+    { date:'2027-03-17', name:"St. Patrick's Day",         emoji:'🍀' },
+    { date:'2027-03-28', name:'Easter Sunday',             emoji:'🐰' },
+    { date:'2027-04-01', name:"April Fool's Day",          emoji:'🤡' },
+    { date:'2027-04-22', name:'Earth Day',                 emoji:'🌎' },
+    { date:'2027-05-05', name:'Cinco de Mayo',             emoji:'🌮' },
+    { date:'2027-05-09', name:"Mother's Day",              emoji:'🌷' },
+    { date:'2027-05-31', name:'Memorial Day',              emoji:'🇺🇸' },
+    { date:'2027-06-19', name:'Juneteenth',                emoji:'🎆' },
+    { date:'2027-06-20', name:"Father's Day",              emoji:'👨‍👧' },
+    { date:'2027-07-04', name:'Independence Day',          emoji:'🎆' },
+    { date:'2027-09-06', name:'Labor Day',                 emoji:'👷' },
+    { date:'2027-10-11', name:'Columbus / Indigenous Day', emoji:'🌎' },
+    { date:'2027-10-31', name:'Halloween',                 emoji:'🎃' },
+    { date:'2027-11-11', name:'Veterans Day',              emoji:'🎖️' },
+    { date:'2027-11-25', name:'Thanksgiving',              emoji:'🦃' },
+    { date:'2027-11-26', name:'Black Friday',              emoji:'🛍️' },
+    { date:'2027-11-29', name:'Cyber Monday',              emoji:'💻' },
+    { date:'2027-12-24', name:'Christmas Eve',             emoji:'🎄' },
+    { date:'2027-12-25', name:'Christmas Day',             emoji:'🎄' },
+    { date:'2027-12-31', name:"New Year's Eve",            emoji:'🥂' },
+    // 2028
+    { date:'2028-01-01', name:"New Year's Day",            emoji:'🎉' },
+    { date:'2028-01-17', name:'MLK Day',                   emoji:'✊' },
+    { date:'2028-02-14', name:"Valentine's Day",           emoji:'💝' },
+    { date:'2028-02-21', name:"Presidents' Day",           emoji:'🇺🇸' },
+    { date:'2028-03-17', name:"St. Patrick's Day",         emoji:'🍀' },
+    { date:'2028-04-16', name:'Easter Sunday',             emoji:'🐰' },
+    { date:'2028-05-14', name:"Mother's Day",              emoji:'🌷' },
+    { date:'2028-05-29', name:'Memorial Day',              emoji:'🇺🇸' },
+    { date:'2028-06-18', name:"Father's Day",              emoji:'👨‍👧' },
+    { date:'2028-06-19', name:'Juneteenth',                emoji:'🎆' },
+    { date:'2028-07-04', name:'Independence Day',          emoji:'🎆' },
+    { date:'2028-09-04', name:'Labor Day',                 emoji:'👷' },
+    { date:'2028-10-31', name:'Halloween',                 emoji:'🎃' },
+    { date:'2028-11-11', name:'Veterans Day',              emoji:'🎖️' },
+    { date:'2028-11-23', name:'Thanksgiving',              emoji:'🦃' },
+    { date:'2028-11-24', name:'Black Friday',              emoji:'🛍️' },
+    { date:'2028-11-27', name:'Cyber Monday',              emoji:'💻' },
+    { date:'2028-12-24', name:'Christmas Eve',             emoji:'🎄' },
+    { date:'2028-12-25', name:'Christmas Day',             emoji:'🎄' },
+    { date:'2028-12-31', name:"New Year's Eve",            emoji:'🥂' },
+  ];
+  const HOLIDAYS_BY_DATE = HOLIDAYS.reduce((m, h) => { (m[h.date] = m[h.date] || []).push(h); return m; }, {});
+
   // Mutable page state. Single source of truth for what the UI shows.
+  // calVisible.platforms is the set of *enabled* platforms — empty means
+  // "all hidden", null means "no filter" (initial). We default-fill it on
+  // first calendar render so every platform is visible.
   const state = {
     me: null,
     isAdmin: false,
     tab: 'calendar',         // 'calendar' | 'templates' | 'posts'
     calMode: 'month',        // 'month' | 'week'
     calCursor: null,         // a Date pinned to UTC midnight
-    calFilterPlatform: '',
-    calFilterStatus: '',
+    calVisible: null,        // { platforms: Set<string>, holidays: bool, status: '' }
     templates: [],
     posts: [],               // posts for the current calendar window
     users: [],               // workspace users for assignee dropdowns
@@ -186,20 +269,27 @@
     return { start, end, label: `${MONTH_NAMES[cursor.getUTCMonth()]} ${cursor.getUTCFullYear()}` };
   }
 
+  // Lazily fill the calendar visibility bitmask on first render. All platforms
+  // visible, holidays on, no status filter.
+  function ensureCalVisible() {
+    if (state.calVisible) return;
+    state.calVisible = {
+      platforms: new Set(PLATFORMS.map(p => p.value)),
+      holidays: true,
+      status: '',
+    };
+  }
+
   async function renderCalendar() {
     const root = $('#mk-tab-calendar');
     if (!root) return;
     if (!state.calCursor) state.calCursor = todayUtc();
+    ensureCalVisible();
     const { start, end, label } = calendarRange();
+    const vis = state.calVisible;
 
-    // Toolbar — keep static during fetch so the user sees the structure.
     root.innerHTML = '';
-    const platOpts = [el('option', { value: '' }, 'All platforms'),
-      ...PLATFORMS.map(p => el('option', { value: p.value, selected: state.calFilterPlatform === p.value ? '' : null }, `${p.icon} ${p.label}`))
-    ];
-    const statOpts = [el('option', { value: '' }, 'All statuses'),
-      ...STATUSES.map(s => el('option', { value: s.value, selected: state.calFilterStatus === s.value ? '' : null }, s.label))
-    ];
+    // Top toolbar — month/week nav + status dropdown.
     const toolbar = el('div', { class: 'mk-cal-toolbar' },
       el('div', { class: 'mk-cal-nav' },
         el('button', { title: 'Previous', onclick: () => navCal(-1) }, '‹'),
@@ -212,26 +302,63 @@
         el('button', { class: state.calMode === 'week'  ? 'active' : '', onclick: () => { state.calMode = 'week';  renderCalendar(); } }, 'Week'),
       ),
       el('div', { class: 'mk-cal-filters' },
-        el('select', { onchange: (e) => { state.calFilterPlatform = e.target.value; renderCalendar(); } }, ...platOpts),
-        el('select', { onchange: (e) => { state.calFilterStatus = e.target.value; renderCalendar(); } }, ...statOpts),
+        el('select', { onchange: (e) => { vis.status = e.target.value; renderCalendar(); } },
+          el('option', { value: '' }, 'All statuses'),
+          ...STATUSES.map(s => el('option', { value: s.value, selected: vis.status === s.value ? '' : null }, s.label))
+        ),
       ),
     );
     root.appendChild(toolbar);
+
+    // Multi-select chip row — toggles per platform + holidays. Chip-style so
+    // users can hide just "Instagram" or just "Holidays" without losing the
+    // others.
+    const chipRow = el('div', { class: 'mk-cal-chips' },
+      el('button', {
+        class: 'mk-chip mk-chip-allnone',
+        onclick: () => {
+          const allOn = vis.platforms.size === PLATFORMS.length && vis.holidays;
+          if (allOn) { vis.platforms.clear(); vis.holidays = false; }
+          else { vis.platforms = new Set(PLATFORMS.map(p => p.value)); vis.holidays = true; }
+          renderCalendar();
+        },
+        title: 'Toggle all'
+      }, (vis.platforms.size === PLATFORMS.length && vis.holidays) ? 'Hide all' : 'Show all'),
+      ...PLATFORMS.map(p => el('button', {
+        class: 'mk-chip mk-chip-' + p.value + (vis.platforms.has(p.value) ? ' active' : ''),
+        onclick: () => {
+          if (vis.platforms.has(p.value)) vis.platforms.delete(p.value);
+          else vis.platforms.add(p.value);
+          renderCalendar();
+        }
+      }, `${p.icon} ${p.label}`)),
+      el('button', {
+        class: 'mk-chip mk-chip-holiday' + (vis.holidays ? ' active' : ''),
+        onclick: () => { vis.holidays = !vis.holidays; renderCalendar(); }
+      }, '🎉 Holidays'),
+    );
+    root.appendChild(chipRow);
 
     const gridHost = el('div', { class: 'mk-cal-grid' + (state.calMode === 'week' ? ' mk-week' : '') });
     root.appendChild(gridHost);
     gridHost.innerHTML = '<div class="mk-cal-headcell">Loading…</div>';
 
-    // Load posts for the visible range.
+    // Server-side filter for any *checked* platform; if nothing is checked we
+    // still send the request so the empty list comes back fast.
     const params = new URLSearchParams({ from: fmtYmd(start), to: fmtYmd(end) });
-    if (state.calFilterPlatform) params.set('platform', state.calFilterPlatform);
-    if (state.calFilterStatus)   params.set('status', state.calFilterStatus);
+    const platformList = Array.from(vis.platforms);
+    if (platformList.length && platformList.length < PLATFORMS.length) {
+      params.set('platform', platformList.join(','));
+    } else if (!platformList.length) {
+      params.set('platform', '__none__'); // matches nothing
+    }
+    if (vis.status) params.set('status', vis.status);
+
     let posts = [];
     try { posts = await api('GET', '/api/marketing/posts?' + params.toString()); }
     catch (e) { gridHost.innerHTML = `<div class="mk-cal-headcell">Failed to load: ${esc(e.message)}</div>`; return; }
     state.posts = posts;
 
-    // Group by date.
     const byDate = new Map();
     for (const p of posts) {
       const k = p.post_date;
@@ -240,7 +367,6 @@
     }
 
     gridHost.innerHTML = '';
-    // Header row
     for (let i = 0; i < 7; i++) gridHost.appendChild(el('div', { class: 'mk-cal-headcell' }, WEEKDAYS[i]));
 
     const days = state.calMode === 'week' ? 7 : 42;
@@ -250,11 +376,36 @@
       const ymd = fmtYmd(d);
       const dim = state.calMode === 'month' && d.getUTCMonth() !== state.calCursor.getUTCMonth();
       const cell = el('div', { class: 'mk-cal-cell' + (dim ? ' dim' : '') + (ymd === today ? ' today' : '') });
-      cell.appendChild(el('span', { class: 'mk-cal-daynum' }, String(d.getUTCDate())));
+
+      // Day-num row with optional "+" button on hover (admin only).
+      const dayHead = el('div', { class: 'mk-cal-dayhead' },
+        el('span', { class: 'mk-cal-daynum' }, String(d.getUTCDate())),
+        state.isAdmin ? el('button', {
+          class: 'mk-cal-plus',
+          title: 'Create one-off post on this day',
+          onclick: (e) => { e.stopPropagation(); openOneOffDrawer(ymd); }
+        }, '+') : null,
+      );
+      cell.appendChild(dayHead);
+
+      // Holiday chip(s) — render first so they're visible above posts.
+      if (vis.holidays) {
+        const hols = HOLIDAYS_BY_DATE[ymd] || [];
+        for (const h of hols) cell.appendChild(renderHolidayChip(h, ymd));
+      }
+
       const chips = byDate.get(ymd) || [];
       for (const p of chips) cell.appendChild(renderPostChip(p));
       gridHost.appendChild(cell);
     }
+  }
+
+  function renderHolidayChip(h, ymd) {
+    return el('div', {
+      class: 'mk-holiday-chip',
+      title: `${h.name}\nClick to plan a post for this holiday`,
+      onclick: () => state.isAdmin && openOneOffDrawer(ymd, { name: h.name, notes: `Holiday-tie-in for ${h.name}` })
+    }, `${h.emoji} ${h.name}`);
   }
 
   function navCal(step) {
@@ -528,6 +679,144 @@
     } catch (e) { uiAlert('Could not skip: ' + e.message); }
   }
 
+  // ── One-off post drawer ────────────────────────────────────────
+  // Triggered by the "+" button on a calendar cell. Lets the user create a
+  // single-occurrence post (no recurrence) and optionally pull prep tasks
+  // from an existing template — typical use is "I want an extra Instagram
+  // post this Saturday for [holiday]; same prep checklist as my weekly
+  // Instagram template".
+  async function openOneOffDrawer(dateYmd, prefill) {
+    prefill = prefill || {};
+    // Make sure we have the templates list (for the copy-tasks-from dropdown).
+    if (!state.templates.length) {
+      try { state.templates = await api('GET', '/api/marketing/templates'); } catch {}
+    }
+    const draft = {
+      name: prefill.name || '',
+      platform: prefill.platform || 'instagram',
+      post_kind: prefill.post_kind || 'post',
+      post_date: dateYmd,
+      post_time: prefill.post_time || '',
+      notes: prefill.notes || '',
+      copy_from_template_id: '',
+      tasks: [],
+    };
+
+    const nameInput = el('input', { type: 'text', value: draft.name, placeholder: 'e.g. Memorial Day flash sale' });
+    const platSel = el('select', null, ...PLATFORMS.map(p => el('option', { value: p.value, selected: draft.platform === p.value ? '' : null }, `${p.icon} ${p.label}`)));
+    const kindSel = el('select', null, ...POST_KINDS.map(k => el('option', { value: k.value, selected: draft.post_kind === k.value ? '' : null }, k.label)));
+    const dateInp = el('input', { type: 'date', value: draft.post_date });
+    const timeInp = el('input', { type: 'time', value: draft.post_time });
+    const notesArea = el('textarea', { placeholder: 'Caption draft, asset links, anything…' }, draft.notes);
+
+    // Copy-tasks-from-template dropdown. Re-ranked whenever platform changes
+    // so the platform-matching templates float to the top, with a hint label.
+    const copySel = el('select');
+    const copyHint = el('div', { style: 'font-size:11px;color:var(--text2);margin-top:4px' });
+    function rebuildCopyDropdown() {
+      copySel.innerHTML = '';
+      copySel.appendChild(el('option', { value: '' }, '— Empty (no prep tasks) —'));
+      // Two groups: matching platform first, then others.
+      const matching = state.templates.filter(t => t.platform === platSel.value && t.tasks && t.tasks.length);
+      const others   = state.templates.filter(t => t.platform !== platSel.value && t.tasks && t.tasks.length);
+      if (matching.length) {
+        const og = el('optgroup', { label: `Same platform (${platSel.value})` });
+        for (const t of matching) og.appendChild(el('option', { value: t.id }, `${t.name} · ${t.tasks.length} task${t.tasks.length === 1 ? '' : 's'}`));
+        copySel.appendChild(og);
+      }
+      if (others.length) {
+        const og = el('optgroup', { label: 'Other templates' });
+        for (const t of others) og.appendChild(el('option', { value: t.id }, `${t.name} (${t.platform}) · ${t.tasks.length} task${t.tasks.length === 1 ? '' : 's'}`));
+        copySel.appendChild(og);
+      }
+      // Auto-select first matching template as a hint, but don't override an
+      // explicit choice the user already made.
+      if (matching.length && !draft.copy_from_template_id) {
+        copySel.value = String(matching[0].id);
+        draft.copy_from_template_id = String(matching[0].id);
+      } else if (draft.copy_from_template_id) {
+        copySel.value = draft.copy_from_template_id;
+      }
+      // Update the hint preview
+      const chosen = state.templates.find(t => String(t.id) === String(copySel.value));
+      copyHint.innerHTML = '';
+      if (chosen) {
+        copyHint.appendChild(document.createTextNode(`Will create ${chosen.tasks.length} prep ticket(s): ` +
+          chosen.tasks.map(t => `${t.title} (${t.days_before_post}d before)`).join(', ')));
+      } else {
+        copyHint.appendChild(document.createTextNode('No prep tickets will be spawned. You can still mark this post manually.'));
+      }
+    }
+    copySel.addEventListener('change', () => {
+      draft.copy_from_template_id = copySel.value;
+      rebuildCopyDropdown();
+    });
+    platSel.addEventListener('change', () => {
+      draft.platform = platSel.value;
+      // Reset the auto-suggestion when platform changes.
+      draft.copy_from_template_id = '';
+      rebuildCopyDropdown();
+    });
+    rebuildCopyDropdown();
+
+    const holidayHint = HOLIDAYS_BY_DATE[dateYmd]
+      ? el('div', { style: 'background:var(--warn-bg);color:var(--warn);padding:8px 12px;border-radius:8px;font-size:12px;margin-bottom:12px' },
+          `🎉 ${HOLIDAYS_BY_DATE[dateYmd].map(h => h.name).join(', ')} — good day for a tie-in`)
+      : null;
+
+    const body = el('div', null,
+      holidayHint,
+      el('div', { class: 'mk-field' }, el('label', null, 'Post name'), nameInput),
+      el('div', { class: 'mk-grid-2' },
+        el('div', { class: 'mk-field' }, el('label', null, 'Platform'), platSel),
+        el('div', { class: 'mk-field' }, el('label', null, 'Kind'), kindSel),
+      ),
+      el('div', { class: 'mk-grid-2' },
+        el('div', { class: 'mk-field' }, el('label', null, 'Post date'), dateInp),
+        el('div', { class: 'mk-field' }, el('label', null, 'Post time'), timeInp),
+      ),
+      el('div', { class: 'mk-field' },
+        el('label', null, 'Use prep tasks from'),
+        copySel,
+        copyHint,
+      ),
+      el('div', { class: 'mk-field' }, el('label', null, 'Notes'), notesArea),
+    );
+
+    async function save() {
+      const name = nameInput.value.trim();
+      if (!name && !draft.copy_from_template_id) {
+        // Still allow nameless one-offs to seed quickly with a default.
+      }
+      const payload = {
+        name: name || `${platSel.value} ${kindSel.value}`,
+        platform: platSel.value,
+        post_kind: kindSel.value,
+        post_date: dateInp.value,
+        post_time: timeInp.value,
+        notes: notesArea.value,
+        copy_from_template_id: copySel.value || null,
+      };
+      if (!payload.post_date) return uiAlert('Pick a date.');
+      try {
+        const r = await api('POST', '/api/marketing/posts', payload);
+        closeDrawer();
+        if (state.tab === 'calendar') renderCalendar();
+        if (state.tab === 'posts')    renderPostsList();
+        if (Array.isArray(r.ticketIds) && r.ticketIds.length) {
+          uiAlert(`Created post on ${payload.post_date} with ${r.ticketIds.length} prep ticket(s).`);
+        }
+      } catch (e) { uiAlert('Could not create: ' + e.message); }
+    }
+
+    const foot = el('div', null,
+      el('button', { class: 'mk-btn', onclick: closeDrawer }, 'Cancel'),
+      el('button', { class: 'mk-btn mk-btn-primary', onclick: save }, 'Create post'),
+    );
+
+    openDrawer(`New post on ${dateYmd}`, body, foot);
+  }
+
   // ── Template editor drawer ─────────────────────────────────────
   function openNewTemplate() { openTemplateEditor(null); }
   async function openEditTemplate(id) {
@@ -551,9 +840,16 @@
       recur_day: null,
       recur_weekday: 5,  // Friday — matches the user's example
       recur_interval: 7,
+      end_type: 'never',
+      end_count: 10,
+      end_date: '',
       active: 1,
       tasks: [],
     };
+    // Defensive defaults for templates created before end_type existed.
+    draft.end_type  = draft.end_type  || 'never';
+    draft.end_count = draft.end_count || 10;
+    draft.end_date  = draft.end_date  || '';
 
     const nameInput = el('input', { type: 'text', value: draft.name, placeholder: 'e.g. Friday Special of the Week' });
     const descInput = el('textarea', { placeholder: 'What is this post about?' }, draft.description || '');
@@ -578,6 +874,31 @@
       recurChild('monthly_day',  el('span', null, 'on day ', recurDayInp)),
       recurChild('every_n_days', el('span', null, 'every ', recurIntInp, ' days')),
     );
+
+    // End-condition controls. "Never" auto-extends a rolling 13-month window,
+    // "After N" caps occurrences, "On date" cuts off after the given date.
+    const endTypeSel = el('select', null,
+      el('option', { value: 'never', selected: draft.end_type === 'never' ? '' : null }, 'Never (keeps going)'),
+      el('option', { value: 'count', selected: draft.end_type === 'count' ? '' : null }, 'After N times'),
+      el('option', { value: 'date',  selected: draft.end_type === 'date'  ? '' : null }, 'On a specific date'),
+    );
+    const endCountInp = el('input', { type: 'number', min: 1, max: 500, value: draft.end_count || 10, style: 'width:80px' });
+    const endDateInp  = el('input', { type: 'date', value: draft.end_date || '' });
+    function endChild(type, node) {
+      node.style.display = draft.end_type === type ? '' : 'none';
+      node.dataset.endType = type;
+      return node;
+    }
+    const endRow = el('div', { class: 'mk-recur-row' }, endTypeSel,
+      endChild('count', el('span', null, 'after ', endCountInp, ' posts')),
+      endChild('date',  el('span', null, 'on ', endDateInp)),
+    );
+    endTypeSel.addEventListener('change', () => {
+      draft.end_type = endTypeSel.value;
+      Array.from(endRow.children).forEach(c => {
+        if (c.dataset && c.dataset.endType) c.style.display = c.dataset.endType === draft.end_type ? '' : 'none';
+      });
+    });
     function recurChild(type, node) {
       node.style.display = draft.recur_type === type ? '' : 'none';
       node.dataset.recurType = type;
@@ -664,6 +985,7 @@
         el('div', { class: 'mk-field' }, el('label', null, 'Post time (optional)'), timeInp),
       ),
       el('div', { class: 'mk-field' }, el('label', null, 'Recurrence'), recurRow),
+      el('div', { class: 'mk-field' }, el('label', null, 'Ends'), endRow),
       el('div', { class: 'mk-field' },
         el('label', null, 'Prep tasks'),
         el('div', { style: 'font-size:11.5px;color:var(--text2);margin-bottom:8px' },
@@ -687,6 +1009,9 @@
         recur_weekday: recurTypeSel.value === 'weekly' ? Number(recurWeekdaySel.value) : null,
         recur_day:     recurTypeSel.value === 'monthly_day' ? Number(recurDayInp.value) : null,
         recur_interval:recurTypeSel.value === 'every_n_days' ? Number(recurIntInp.value) : null,
+        end_type:  endTypeSel.value,
+        end_count: endTypeSel.value === 'count' ? Number(endCountInp.value) : null,
+        end_date:  endTypeSel.value === 'date'  ? endDateInp.value : '',
         active: draft.active ? 1 : 0,
         tasks: draft.tasks.filter(t => t.title && t.title.trim()),
       };
