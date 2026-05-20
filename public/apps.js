@@ -53,6 +53,9 @@
     blueprintBn: '', // cached BN translation, fetched on demand
     dashboard: null,  // loaded by loadDashboard
     dashAllTab: 'comments',
+    // Default the help card to expanded when no repo is connected — that's
+    // the most useful moment to see the walkthrough.
+    dashGithubHelp: false,
     // Tickets — per-app ticket system, surfaced on the sidebar.
     tickets: [],
     ticketFilter: 'all', // 'all' | 'open' | 'closed'
@@ -981,6 +984,163 @@
     `;
   }
 
+  // Full GitHub setup walkthrough surfaced on the app dashboard. Auto-
+  // expands when there's no repo connected (that's the moment the
+  // instructions matter most); collapses to a one-line link once the
+  // user has a repo wired up.
+  function renderGithubHelpCard() {
+    const a = state.app;
+    const connected = !!(a && a.repo_url);
+    // First time on this app + no repo → start expanded so the user
+    // sees the steps without having to discover a click.
+    const expanded = state.dashGithubHelp || (!connected && state.dashGithubHelp !== false);
+    const arrow = expanded ? '▾' : '▸';
+    return `
+      <div class="ap-section ap-help-card ${connected ? '' : 'ap-help-card-pulse'}">
+        <button type="button" class="ap-help-toggle" id="ap-help-toggle">
+          <span>${arrow} 📘 How to connect a GitHub repo &mdash; pull all files live</span>
+          <span style="font-size:11px;color:#64748b;font-weight:400">${connected ? 'Already connected · ' + escapeHtml(parseRepoUrlForUi(a.repo_url)) : 'Not connected yet'}</span>
+        </button>
+        ${expanded ? `
+        <div class="ap-help-body">
+          <div class="ap-help-intro">
+            Once a repo is connected, every <code>.html</code> page becomes a page in this app,
+            and supporting files (CSS, JS, images, fonts, SVG, JSON) are pulled too so the
+            preview renders like a real local copy. Pages stay in sync &mdash; auto-pulled every
+            5 minutes, or on demand with <strong>Sync now</strong>.
+          </div>
+
+          <ol class="ap-help-steps">
+            <li>
+              <div class="ap-help-step-head">Open app settings</div>
+              <div class="ap-help-step-body">
+                Click the <button class="btn btn-secondary btn-small" id="ap-help-open-settings" style="vertical-align:middle">⚙ Settings</button> button at the top of this app
+                (next to the breadcrumb), then scroll to the <strong>🔗 GitHub sync</strong>
+                section near the bottom.
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Paste the repo URL</div>
+              <div class="ap-help-step-body">
+                Fill in <strong>Repo URL</strong> with the GitHub address, e.g.
+                <code>https://github.com/your-org/your-app</code>. Works for both public and
+                private repos.
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Set the branch</div>
+              <div class="ap-help-step-body">
+                <strong>Branch</strong> defaults to <code>main</code> &mdash; change if your
+                designs live on a different branch (e.g. <code>master</code>, <code>design</code>,
+                <code>preview</code>).
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Set the folder (very important!)</div>
+              <div class="ap-help-step-body">
+                If your frontend files are inside a subdirectory, set <strong>Folder</strong> to
+                that path &mdash; otherwise the sync walks the whole repo and may miss the design
+                files (or pull server code we deliberately skip).
+                <div class="ap-help-examples">
+                  <div><strong>Common values:</strong></div>
+                  <div><code>public</code> &mdash; for repos like <em>work-management</em> where the frontend is in <code>/public/</code></div>
+                  <div><code>src</code> or <code>dist</code> &mdash; for Vite / Webpack apps</div>
+                  <div><code>design</code> &mdash; for repos where HTML mockups live in a dedicated design folder</div>
+                  <div>Leave blank to sync everything in the repo root</div>
+                </div>
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Personal Access Token <span class="ap-help-tag">private repos only</span></div>
+              <div class="ap-help-step-body">
+                Skip this for public repos. For private:
+                <ol class="ap-help-substeps">
+                  <li>Open <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></li>
+                  <li>Click <strong>Generate new token (classic)</strong></li>
+                  <li>Name it something like &quot;Syruvia App sync&quot;, set expiry to whatever you like (90 days is fine)</li>
+                  <li>Scope: tick <strong>repo</strong> (Full control of private repositories)</li>
+                  <li>Click <strong>Generate token</strong> and copy the value (starts with <code>ghp_</code>)</li>
+                  <li>Paste it into the <strong>Personal Access Token</strong> field here</li>
+                </ol>
+                The token is stored encrypted and never shown back to the browser &mdash; you'll
+                see the placeholder &quot;saved &mdash; leave blank to keep&quot; when re-editing.
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Turn on auto-sync</div>
+              <div class="ap-help-step-body">
+                Tick <strong>Auto-sync every 5 minutes</strong> so any push to the configured
+                branch pulls into this app on its own. You can also click <strong>Sync now</strong>
+                at any time for an immediate pull.
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Test and sync</div>
+              <div class="ap-help-step-body">
+                Click <strong>Test connection</strong> to verify the repo/branch/token are valid.
+                Then <strong>Sync now</strong> to pull every page and asset. The status line shows:
+                <pre class="ap-help-pre">✓ pages: +5 added · 0 updated · 0 unchanged
+  assets: +42 added · 0 updated · 0 unchanged of 42 total</pre>
+              </div>
+            </li>
+
+            <li>
+              <div class="ap-help-step-head">Open a page &mdash; click ▶ Interactive</div>
+              <div class="ap-help-step-body">
+                Open any synced page from the sidebar. By default the iframe runs in
+                <strong>Static</strong> mode (scripts blocked) for safety. Click
+                <strong>▶ Interactive</strong> in the preview toolbar to run the page's
+                JavaScript so buttons, forms, and navigation actually work.
+              </div>
+            </li>
+          </ol>
+
+          <div class="ap-help-troubleshoot">
+            <div class="ap-help-troubleshoot-title">Troubleshooting</div>
+            <dl class="ap-help-dl">
+              <dt>Sync says "no supporting assets found"</dt>
+              <dd>The <strong>Folder</strong> setting is wrong. Set it to the directory that
+                  contains your <code>.html</code>, <code>.css</code>, and <code>.js</code> files
+                  (e.g. <code>public</code>).</dd>
+
+              <dt>Preview is blank or unstyled</dt>
+              <dd>Either the assets weren't synced (see above) or the page uses absolute URLs
+                  we couldn't rewrite. Open DevTools &rarr; Network and look for failing
+                  requests &mdash; anything 404 needs to be in the synced folder.</dd>
+
+              <dt>Buttons in the preview don't do anything</dt>
+              <dd>Flip the preview toolbar from <strong>⏸ Static</strong> to
+                  <strong>▶ Interactive</strong>. Static mode blocks scripts.</dd>
+
+              <dt>Sync fails with "rate limit hit"</dt>
+              <dd>You're using anonymous access (60 requests/hour cap). Add a Personal Access
+                  Token to raise it to 5000/hour.</dd>
+
+              <dt>Sync says "404 repo or branch not found"</dt>
+              <dd>Double-check the URL and branch spelling. For private repos, also confirm
+                  the PAT has <strong>repo</strong> scope and hasn't expired.</dd>
+
+              <dt>A page was deleted in the repo but it's still here</dt>
+              <dd>That's on purpose &mdash; we mark removed files with a ⚠ badge in the sidebar
+                  instead of deleting, so any pins / Q&amp;A / todos attached to it aren't lost.
+                  Open the page and click <strong>Delete</strong> to remove it for good.</dd>
+            </dl>
+          </div>
+
+          <div class="ap-help-foot">
+            <button class="btn btn-primary btn-small" id="ap-help-open-settings-2">⚙ Open settings to connect now</button>
+          </div>
+        </div>` : ''}
+      </div>
+    `;
+  }
+
   // Small GitHub-sync chip shown on the dashboard head. Hidden when no
   // repo is configured. Click "Sync now" → manual pull. The last-sync
   // timestamp updates live whenever the user runs Sync.
@@ -1085,6 +1245,8 @@
       </div>
       <div class="ap-dash-body">
         <div class="ap-stat-grid">${statCards}</div>
+
+        ${renderGithubHelpCard()}
 
         <div class="ap-section">
           <h3>Per-page progress</h3>
@@ -1465,6 +1627,23 @@
         render();
       };
     });
+    // GitHub help card — toggle + the two "open settings" shortcuts.
+    const helpToggle = document.getElementById('ap-help-toggle');
+    if (helpToggle) {
+      helpToggle.onclick = () => {
+        // Tri-state flag (false / true / null=auto) so the auto-expand
+        // when disconnected still works after the user manually closes.
+        const cur = state.dashGithubHelp;
+        const isCurrentlyOpen = cur || (!state.app.repo_url && cur !== false);
+        state.dashGithubHelp = !isCurrentlyOpen;
+        render();
+      };
+    }
+    ['ap-help-open-settings', 'ap-help-open-settings-2'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.onclick = () => openAppModal(state.app);
+    });
+
     // GitHub sync chip.
     const connectBtn = document.getElementById('ap-gh-connect');
     if (connectBtn) connectBtn.onclick = () => openAppModal(state.app);
@@ -3134,7 +3313,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-18.6 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.7 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
