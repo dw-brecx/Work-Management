@@ -123,6 +123,38 @@ a { color:inherit; }
   background:var(--card); color:var(--text); font-size:12px;
 }
 
+/* Multi-select chip row for the calendar (platforms + holidays). Each chip
+   toggles visibility. Active = filled with the platform's brand colour;
+   inactive = outlined and muted. */
+.mk-cal-chips {
+  display:flex; flex-wrap:wrap; gap:6px;
+  margin-bottom:12px;
+}
+.mk-chip {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:5px 10px; border-radius:99px;
+  background:var(--card); border:1px solid var(--border);
+  color:var(--text2); font-size:11.5px; font-weight:600;
+  cursor:pointer; user-select:none;
+  transition:filter .12s, background .12s, color .12s, border-color .12s;
+  opacity:.55;
+}
+.mk-chip:hover { opacity:1; }
+.mk-chip.active { opacity:1; }
+.mk-chip-allnone { background:var(--bg2); }
+/* Active state per platform — use the bg variants for a soft fill. */
+.mk-chip-instagram.active   { background:var(--p-instagram-bg);   color:var(--p-instagram);   border-color:var(--p-instagram); }
+.mk-chip-facebook.active    { background:var(--p-facebook-bg);    color:var(--p-facebook);    border-color:var(--p-facebook); }
+.mk-chip-tiktok.active      { background:var(--p-tiktok-bg);      color:var(--p-tiktok);      border-color:var(--p-tiktok); }
+.mk-chip-x.active           { background:var(--p-x-bg);           color:var(--p-x);           border-color:var(--p-x); }
+.mk-chip-linkedin.active    { background:var(--p-linkedin-bg);    color:var(--p-linkedin);    border-color:var(--p-linkedin); }
+.mk-chip-youtube.active     { background:var(--p-youtube-bg);     color:var(--p-youtube);     border-color:var(--p-youtube); }
+.mk-chip-email.active       { background:var(--p-email-bg);       color:var(--p-email);       border-color:var(--p-email); }
+.mk-chip-ad-facebook.active { background:var(--p-ad-facebook-bg); color:var(--p-ad-facebook); border-color:var(--p-ad-facebook); }
+.mk-chip-ad-instagram.active{ background:var(--p-ad-instagram-bg);color:var(--p-ad-instagram);border-color:var(--p-ad-instagram); }
+.mk-chip-other.active       { background:var(--p-other-bg);       color:var(--p-other);       border-color:var(--p-other); }
+.mk-chip-holiday.active     { background:var(--warn-bg);          color:var(--warn);          border-color:var(--warn); }
+
 .mk-cal-grid {
   display:grid; grid-template-columns:repeat(7, 1fr); gap:1px;
   background:var(--border); border:1px solid var(--border); border-radius:12px;
@@ -142,12 +174,40 @@ a { color:inherit; }
   background:var(--accent); color:#fff;
 }
 .mk-cal-daynum {
-  align-self:flex-start; font-size:11px; font-weight:700; color:var(--text2);
+  font-size:11px; font-weight:700; color:var(--text2);
   width:22px; height:22px; border-radius:50%;
   display:inline-flex; align-items:center; justify-content:center;
-  margin-bottom:2px;
 }
 .mk-cal-cell.dim .mk-cal-daynum { color:var(--text3); }
+
+/* Day header row — day number on the left, "+" admin-only on the right
+   (visible on hover so the calendar stays clean by default). */
+.mk-cal-dayhead {
+  display:flex; align-items:center; justify-content:space-between;
+  margin-bottom:2px;
+}
+.mk-cal-plus {
+  width:20px; height:20px; border-radius:6px;
+  border:1px dashed var(--border2); background:transparent;
+  color:var(--text3); font-size:13px; line-height:1; cursor:pointer;
+  opacity:0; transition:opacity .15s, background .15s, color .15s, border-color .15s;
+  padding:0; display:flex; align-items:center; justify-content:center;
+}
+.mk-cal-cell:hover .mk-cal-plus { opacity:1; }
+.mk-cal-plus:hover { background:var(--accent); color:#fff; border-color:var(--accent); border-style:solid; }
+
+/* Holiday chip — sits above post chips, warm-toned, non-interactive feel
+   (but clickable to prefill a one-off post drawer). */
+.mk-holiday-chip {
+  display:flex; align-items:center; gap:4px;
+  padding:2px 6px; border-radius:4px;
+  background:var(--warn-bg); color:var(--warn);
+  font-size:10.5px; font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  cursor:pointer;
+  border-left:3px solid var(--warn);
+}
+.mk-holiday-chip:hover { filter:brightness(.95); }
 
 .mk-post-chip {
   display:flex; flex-direction:column; gap:1px;

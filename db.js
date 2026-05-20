@@ -1162,6 +1162,17 @@ async function init() {
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_marketing_post_tickets_post ON marketing_post_tickets (post_id)`);
 
+  // Schedule end conditions: 'never' (auto-extend horizon), 'count' (stop
+  // after end_count occurrences), or 'date' (stop on/before end_date).
+  await safeAlter("ALTER TABLE marketing_post_templates ADD COLUMN end_type TEXT NOT NULL DEFAULT 'never'");
+  await safeAlter("ALTER TABLE marketing_post_templates ADD COLUMN end_count INTEGER");
+  await safeAlter("ALTER TABLE marketing_post_templates ADD COLUMN end_date TEXT NOT NULL DEFAULT ''");
+  // Marketing posts: pre-created up front (status='planned', tickets_spawned=0)
+  // and the cron flips tickets_spawned=1 once prep tickets exist. One-off
+  // posts (created via "+ on calendar") have template_id NULL and is_one_off=1.
+  await safeAlter("ALTER TABLE marketing_posts ADD COLUMN tickets_spawned INTEGER NOT NULL DEFAULT 0");
+  await safeAlter("ALTER TABLE marketing_posts ADD COLUMN is_one_off INTEGER NOT NULL DEFAULT 0");
+
   // Add subtask linkage to attachments (existing installs)
   await safeAlter('ALTER TABLE attachments ADD COLUMN subtask_id INTEGER');
   // Same for the new feedback / announcement parents — voice notes, screen
