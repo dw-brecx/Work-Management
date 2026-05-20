@@ -131,6 +131,9 @@
   // calVisible.platforms is the set of *enabled* platforms — empty means
   // "all hidden", null means "no filter" (initial). We default-fill it on
   // first calendar render so every platform is visible.
+  // openDrawer = { kind: 'template'|'post'|'new-template'|'one-off', id, date }
+  // captures whatever is currently visible above the tab so URL routing and
+  // breadcrumbs can describe it.
   const state = {
     me: null,
     isAdmin: false,
@@ -143,6 +146,8 @@
     users: [],               // workspace users for assignee dropdowns
     postsListFilters: { platform: '', status: '', from: '', to: '' },
     postsList: [],
+    openDrawer: null,        // { kind, id?, date?, prefill? } for current drawer
+    drawerEntity: null,      // hydrated entity (template or post) for breadcrumb labels
   };
 
   // ── DOM helpers ────────────────────────────────────────────────
@@ -201,17 +206,103 @@
     return r.json();
   }
 
+  // ── Routing ────────────────────────────────────────────────────
+  // URLs:
+  //   /marketing                         → calendar
+  //   /marketing/calendar                → calendar (canonical)
+  //   /marketing/templates               → templates list
+  //   /marketing/templates/new           → templates list + new-template drawer
+  //   /marketing/templates/:id           → templates list + edit-template drawer
+  //   /marketing/posts                   → posts list
+  //   /marketing/posts/:id               → posts list + post-detail drawer
+  //   /marketing/calendar/new/:YYYY-MM-DD → calendar + one-off-post drawer for date
+  function urlFor(target) {
+    if (!target) return '/marketing/calendar';
+    if (target.kind === 'calendar')    return '/marketing/calendar';
+    if (target.kind === 'templates')   return '/marketing/templates';
+    if (target.kind === 'posts')       return '/marketing/posts';
+    if (target.kind === 'template')    return '/marketing/templates/' + target.id;
+    if (target.kind === 'new-template') return '/marketing/templates/new';
+    if (target.kind === 'post')        return '/marketing/posts/' + target.id;
+    if (target.kind === 'one-off' && target.date) return '/marketing/calendar/new/' + target.date;
+    return '/marketing/calendar';
+  }
+
+  // Apply a URL to state, without re-rendering. Returns the parsed target so
+  // the caller can decide what to do (initial boot vs. popstate).
+  function parseUrl(p) {
+    p = String(p || '').replace(/\/+$/, '');
+    let m;
+    if ((m = /^\/marketing\/templates\/new$/.exec(p))) return { tab: 'templates', drawer: { kind: 'new-template' } };
+    if ((m = /^\/marketing\/templates\/(\d+)$/.exec(p))) return { tab: 'templates', drawer: { kind: 'template', id: Number(m[1]) } };
+    if (/^\/marketing\/templates$/.test(p)) return { tab: 'templates', drawer: null };
+    if ((m = /^\/marketing\/posts\/(\d+)$/.exec(p))) return { tab: 'posts', drawer: { kind: 'post', id: Number(m[1]) } };
+    if (/^\/marketing\/posts$/.test(p)) return { tab: 'posts', drawer: null };
+    if ((m = /^\/marketing\/calendar\/new\/(\d{4}-\d{2}-\d{2})$/.exec(p))) return { tab: 'calendar', drawer: { kind: 'one-off', date: m[1] } };
+    return { tab: 'calendar', drawer: null };
+  }
+
+  // Update the URL + state to reflect a tab/drawer change. mode='push' adds
+  // a history entry (default); mode='replace' rewrites the current entry
+  // (used for state nudges that shouldn't grow the back stack).
+  function navTo(target, mode) {
+    const url = urlFor(target);
+    if (mode === 'replace') history.replaceState({ target }, '', url);
+    else history.pushState({ target }, '', url);
+    applyTarget(target);
+    renderShell();
+  }
+
+  function applyTarget(target) {
+    if (!target) target = { tab: 'calendar' };
+    state.tab = target.tab || (target.kind === 'template' || target.kind === 'new-template' ? 'templates'
+                              : target.kind === 'post' ? 'posts'
+                              : target.kind === 'one-off' ? 'calendar'
+                              : target.kind || 'calendar');
+    // Drawer descriptor: anything but a plain tab landing.
+    if (target.drawer) state.openDrawer = target.drawer;
+    else if (['template','new-template','post','one-off'].includes(target.kind)) state.openDrawer = target;
+    else state.openDrawer = null;
+  }
+
+  window.addEventListener('popstate', () => {
+    const parsed = parseUrl(location.pathname);
+    state.tab = parsed.tab;
+    state.openDrawer = parsed.drawer;
+    state.drawerEntity = null;
+    renderShell();
+    if (state.openDrawer) {
+      reopenDrawerFromState();
+    } else {
+      // Active drawer needs to be closed without re-touching the URL (popstate
+      // already updated it).
+      const back = $('#mk-drawer-back'); const dr = $('#mk-drawer');
+      if (back) back.classList.remove('open');
+      if (dr)   dr.classList.remove('open');
+    }
+  });
+
+  // Used after popstate or a deep link — open whatever drawer the URL says.
+  async function reopenDrawerFromState() {
+    const d = state.openDrawer;
+    if (!d) return;
+    if (d.kind === 'template')      return openTemplateDrawerById(d.id);
+    if (d.kind === 'new-template')  return openTemplateEditor(null, { fromUrl: true });
+    if (d.kind === 'post')          return openPostDrawerById(d.id);
+    if (d.kind === 'one-off')       return openOneOffDrawer(d.date, d.prefill || {}, { fromUrl: true });
+  }
+
   // ── Page shell ─────────────────────────────────────────────────
   function renderShell() {
     const root = $('#mk-app');
     root.innerHTML = '';
     root.appendChild(
       el('div', { class: 'mk-page' },
+        renderCrumbs(),
         el('div', { class: 'mk-header' },
-          el('a', { class: 'mk-back', href: '/dashboard' }, '← Back'),
           el('h1', { class: 'mk-title' }, '📣 Marketing'),
           state.isAdmin
-            ? el('button', { class: 'mk-btn mk-btn-primary', onclick: openNewTemplate }, '+ New post template')
+            ? el('button', { class: 'mk-btn mk-btn-primary', onclick: () => navTo({ kind: 'new-template' }) }, '+ New post template')
             : null,
         ),
         el('p', { class: 'mk-lede' },
@@ -230,16 +321,71 @@
     );
     // Drawer container (filled on demand)
     if (!$('#mk-drawer-back')) {
-      document.body.appendChild(el('div', { id: 'mk-drawer-back', class: 'mk-drawer-back', onclick: closeDrawer }));
+      document.body.appendChild(el('div', { id: 'mk-drawer-back', class: 'mk-drawer-back', onclick: () => closeDrawer({ updateUrl: true }) }));
       document.body.appendChild(el('div', { id: 'mk-drawer',      class: 'mk-drawer' }));
     }
     renderActiveTab();
   }
 
+  // Breadcrumb above the page header. The first crumb doubles as a "back to
+  // calendar" jump button. Every parent crumb is clickable; the current
+  // location is plain text.
+  function renderCrumbs() {
+    const crumbs = [];
+    const d = state.openDrawer;
+    // Always show "Marketing" as the root jump-back link unless we're already there.
+    const atRoot = state.tab === 'calendar' && !d;
+    crumbs.push({ label: '📣 Marketing', href: '/marketing/calendar', current: atRoot });
+    if (state.tab === 'templates') {
+      crumbs.push({ label: 'Templates', href: '/marketing/templates', current: !d });
+      if (d && d.kind === 'template') {
+        const entity = state.drawerEntity;
+        crumbs.push({ label: entity?.name ? entity.name : `Template #${d.id}`, current: true });
+      } else if (d && d.kind === 'new-template') {
+        crumbs.push({ label: 'New template', current: true });
+      }
+    } else if (state.tab === 'posts') {
+      crumbs.push({ label: 'Posts', href: '/marketing/posts', current: !d });
+      if (d && d.kind === 'post') {
+        const entity = state.drawerEntity;
+        crumbs.push({ label: entity?.name ? `${entity.name} · ${entity.post_date}` : `Post #${d.id}`, current: true });
+      }
+    } else if (state.tab === 'calendar') {
+      if (d && d.kind === 'one-off') {
+        crumbs.push({ label: 'Calendar', href: '/marketing/calendar', current: false });
+        crumbs.push({ label: `New post · ${d.date}`, current: true });
+      }
+    }
+    const nodes = [];
+    if (!atRoot) {
+      nodes.push(el('a', {
+        class: 'crumb-back',
+        href: '/marketing/calendar',
+        onclick: (e) => { e.preventDefault(); navTo({ kind: 'calendar' }); }
+      }, '← Back to Calendar'));
+    }
+    crumbs.forEach((c, i) => {
+      if (i > 0) nodes.push(el('span', { class: 'crumb-sep' }, '/'));
+      if (c.current || !c.href) {
+        nodes.push(el('span', { class: 'crumb-current' }, c.label));
+      } else {
+        nodes.push(el('a', {
+          href: c.href,
+          onclick: (e) => {
+            e.preventDefault();
+            const t = parseUrl(c.href);
+            navTo(t.drawer ? Object.assign({ tab: t.tab }, t.drawer) : { kind: t.tab });
+          }
+        }, c.label));
+      }
+    });
+    return el('nav', { class: 'mk-crumbs', 'aria-label': 'Breadcrumb' }, ...nodes);
+  }
+
   function tabBtn(id, label) {
     return el('div', {
       class: 'mk-tab' + (state.tab === id ? ' active' : ''),
-      onclick: () => { state.tab = id; renderShell(); }
+      onclick: () => navTo({ kind: id })
     }, label);
   }
 
@@ -589,24 +735,60 @@
     drawer.innerHTML = '';
     drawer.appendChild(el('div', { class: 'mk-drawer-head' },
       el('h3', null, title),
-      el('button', { class: 'mk-drawer-close', onclick: closeDrawer, 'aria-label': 'Close' }, '×'),
+      el('button', { class: 'mk-drawer-close', onclick: () => closeDrawer({ updateUrl: true }), 'aria-label': 'Close' }, '×'),
     ));
     drawer.appendChild(el('div', { class: 'mk-drawer-body' }, bodyNode));
     if (footNode) drawer.appendChild(el('div', { class: 'mk-drawer-foot' }, footNode));
     back.classList.add('open');
     drawer.classList.add('open');
   }
-  function closeDrawer() {
+  // closeDrawer({ updateUrl }): pops the URL back to the parent tab so the
+  // browser back button stays in sync. opts.updateUrl=false skips the push
+  // (used when navTo just changed the URL itself).
+  function closeDrawer(opts) {
     $('#mk-drawer-back').classList.remove('open');
     $('#mk-drawer').classList.remove('open');
+    state.drawerEntity = null;
+    if (opts && opts.updateUrl !== false && state.openDrawer) {
+      state.openDrawer = null;
+      navTo({ kind: state.tab });
+    } else {
+      state.openDrawer = null;
+    }
+  }
+
+  // Used by the popstate handler + initial boot when the URL contains a
+  // template id. Fetches the template, sets it as the drawer entity so the
+  // breadcrumb has a name to show, then opens the editor.
+  async function openTemplateDrawerById(id) {
+    try {
+      const t = await api('GET', '/api/marketing/templates/' + id);
+      state.drawerEntity = t;
+      renderShell(); // refresh breadcrumb with the name
+      openTemplateEditor(t, { fromUrl: true });
+    } catch (e) { uiAlert('Could not load template: ' + e.message); navTo({ kind: 'templates' }); }
+  }
+
+  async function openPostDrawerById(id) {
+    try {
+      const p = await api('GET', '/api/marketing/posts/' + id);
+      state.drawerEntity = p;
+      renderShell();
+      renderPostDrawerBody(p);
+    } catch (e) { uiAlert('Could not load post: ' + e.message); navTo({ kind: 'posts' }); }
   }
 
   // ── Post detail drawer ─────────────────────────────────────────
-  async function openPostDrawer(postId) {
-    openDrawer('Loading post…', el('div', null, 'Loading…'));
-    let p;
-    try { p = await api('GET', '/api/marketing/posts/' + postId); }
-    catch (e) { openDrawer('Error', el('div', null, 'Could not load: ' + e.message)); return; }
+  // Public entry: updates URL + state, then loads + renders.
+  function openPostDrawer(postId) {
+    navTo({ kind: 'post', id: postId });
+    openPostDrawerById(postId);
+  }
+
+  // Renders the drawer body for a hydrated post. Used by openPostDrawerById
+  // (which fetches first) so the same code can run for both new opens and
+  // popstate re-opens.
+  function renderPostDrawerBody(p) {
     const plat = PLATFORMS.find(pp => pp.value === p.platform) || PLATFORMS[PLATFORMS.length - 1];
 
     const statusSel = el('select', null, ...STATUSES.map(s => el('option', { value: s.value, selected: p.status === s.value ? '' : null }, s.label)));
@@ -649,11 +831,11 @@
 
     const foot = el('div', null,
       state.isAdmin ? el('button', { class: 'mk-btn mk-btn-danger', onclick: () => skipPost(p) }, 'Skip / cancel') : null,
-      el('button', { class: 'mk-btn', onclick: closeDrawer }, 'Close'),
+      el('button', { class: 'mk-btn', onclick: () => closeDrawer({ updateUrl: true }) }, 'Close'),
       el('button', { class: 'mk-btn mk-btn-primary', onclick: async () => {
         try {
           await api('PUT', '/api/marketing/posts/' + p.id, { status: statusSel.value, notes: notesArea.value });
-          closeDrawer();
+          closeDrawer({ updateUrl: true });
           if (state.tab === 'calendar') renderCalendar();
           if (state.tab === 'posts')    renderPostsList();
         } catch (e) { uiAlert('Save failed: ' + e.message); }
@@ -673,7 +855,7 @@
     if (!ok) return;
     try {
       await api('DELETE', `/api/marketing/posts/${p.id}?deleteTickets=${ticketCount ? 1 : 0}`);
-      closeDrawer();
+      closeDrawer({ updateUrl: true });
       if (state.tab === 'calendar') renderCalendar();
       if (state.tab === 'posts')    renderPostsList();
     } catch (e) { uiAlert('Could not skip: ' + e.message); }
@@ -685,8 +867,12 @@
   // from an existing template — typical use is "I want an extra Instagram
   // post this Saturday for [holiday]; same prep checklist as my weekly
   // Instagram template".
-  async function openOneOffDrawer(dateYmd, prefill) {
+  // opts.fromUrl=true is set when this is being re-opened via popstate or a
+  // deep link, so we don't push the URL again.
+  async function openOneOffDrawer(dateYmd, prefill, opts) {
     prefill = prefill || {};
+    opts = opts || {};
+    if (!opts.fromUrl) navTo({ kind: 'one-off', date: dateYmd, prefill });
     // Make sure we have the templates list (for the copy-tasks-from dropdown).
     if (!state.templates.length) {
       try { state.templates = await api('GET', '/api/marketing/templates'); } catch {}
@@ -800,7 +986,7 @@
       if (!payload.post_date) return uiAlert('Pick a date.');
       try {
         const r = await api('POST', '/api/marketing/posts', payload);
-        closeDrawer();
+        closeDrawer({ updateUrl: true });
         if (state.tab === 'calendar') renderCalendar();
         if (state.tab === 'posts')    renderPostsList();
         if (Array.isArray(r.ticketIds) && r.ticketIds.length) {
@@ -810,7 +996,7 @@
     }
 
     const foot = el('div', null,
-      el('button', { class: 'mk-btn', onclick: closeDrawer }, 'Cancel'),
+      el('button', { class: 'mk-btn', onclick: () => closeDrawer({ updateUrl: true }) }, 'Cancel'),
       el('button', { class: 'mk-btn mk-btn-primary', onclick: save }, 'Create post'),
     );
 
@@ -818,15 +1004,23 @@
   }
 
   // ── Template editor drawer ─────────────────────────────────────
-  function openNewTemplate() { openTemplateEditor(null); }
-  async function openEditTemplate(id) {
-    try {
-      const t = await api('GET', '/api/marketing/templates/' + id);
-      openTemplateEditor(t);
-    } catch (e) { uiAlert('Could not load: ' + e.message); }
+  // Entry points all funnel through navTo so URLs stay correct, then
+  // open the drawer. The URL-driven re-opens (popstate / deep link)
+  // skip navTo and go straight to the builder via openTemplateDrawerById.
+  function openNewTemplate() {
+    navTo({ kind: 'new-template' });
+    openTemplateEditor(null, { fromUrl: true });
+  }
+  function openEditTemplate(id) {
+    navTo({ kind: 'template', id });
+    openTemplateDrawerById(id);
   }
 
-  function openTemplateEditor(existing) {
+  // opts.fromUrl=true is set when we're rebuilding the drawer because
+  // a popstate / deep-link asked for it. In that case the URL is already
+  // correct and we don't push a new history entry.
+  function openTemplateEditor(existing, opts) {
+    opts = opts || {};
     // Local mutable draft. Tasks live here as plain JS objects so we can
     // add/remove rows without round-tripping to the server until "Save".
     const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
@@ -1020,9 +1214,11 @@
       try {
         if (existing) await api('PUT', '/api/marketing/templates/' + existing.id, payload);
         else          await api('POST', '/api/marketing/templates', payload);
-        closeDrawer();
-        renderTemplates();
-        if (state.tab === 'calendar') renderCalendar();
+        closeDrawer({ updateUrl: true });
+        // navTo above pushed us back to /marketing/templates — re-render that
+        // tab so the user sees the fresh list.
+        if (state.tab === 'templates') renderTemplates();
+        if (state.tab === 'calendar')  renderCalendar();
       } catch (e) { uiAlert('Save failed: ' + e.message); }
     }
 
@@ -1031,11 +1227,11 @@
         if (!await uiConfirm(`Delete template "${existing.name}"? Already-spawned posts and tickets are kept.`, { danger: true })) return;
         try {
           await api('DELETE', '/api/marketing/templates/' + existing.id);
-          closeDrawer();
+          closeDrawer({ updateUrl: true });
           renderTemplates();
         } catch (e) { uiAlert('Delete failed: ' + e.message); }
       } }, 'Delete') : null,
-      el('button', { class: 'mk-btn', onclick: closeDrawer }, 'Cancel'),
+      el('button', { class: 'mk-btn', onclick: () => closeDrawer({ updateUrl: true }) }, 'Cancel'),
       el('button', { class: 'mk-btn mk-btn-primary', onclick: save }, existing ? 'Save changes' : 'Create template'),
     );
 
@@ -1063,6 +1259,15 @@
       state.users = await api('GET', '/api/team');
     } catch { state.users = []; }
     state.calCursor = todayUtc();
+
+    // Seed state from URL so a refresh / shared link lands on the right view.
+    const parsed = parseUrl(location.pathname);
+    state.tab = parsed.tab;
+    state.openDrawer = parsed.drawer;
+    // Make sure the initial entry has a target object so popstate can read it.
+    history.replaceState({ target: parsed.drawer ? Object.assign({ tab: parsed.tab }, parsed.drawer) : { kind: parsed.tab } }, '', location.pathname);
+
     renderShell();
+    if (state.openDrawer) reopenDrawerFromState();
   });
 })();

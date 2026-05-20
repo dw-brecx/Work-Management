@@ -8266,6 +8266,19 @@ app.get(/^\/apps(?:\/.*)?$/, (req, res, next) => {
   } catch (e) { next(); }
 });
 
+// /marketing and /marketing/* — same pattern as /apps. Lets the client-side
+// router produce proper URLs like /marketing/templates/12 and /marketing/posts/5
+// that survive reloads / right-click "open in new tab". Static assets like
+// /marketing.css / /marketing.js are still served by express.static.
+const marketingHtmlPath = path.join(__dirname, 'public', 'marketing.html');
+app.get(/^\/marketing(?:\/.*)?$/, (req, res, next) => {
+  try {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.send(fs.readFileSync(marketingHtmlPath, 'utf8'));
+  } catch (e) { next(); }
+});
+
 // ── Recurring Tasks ──────────────────────────────────────────────────────────
 // A "recurring task" is a schedule + a list of ticket templates. The hourly
 // `runRecurringTasksJob` materializes every template into a fresh ticket
