@@ -966,6 +966,26 @@ async function init() {
   // ticket / feedback attachments and reuse the /uploads static route.
   await safeAlter('ALTER TABLE attachments ADD COLUMN annotation_id INTEGER');
 
+  // Apps: GitHub sync. apps.repo_url already exists from the original
+  // create — these flesh it out into a full sync config. repo_last_sha
+  // is the branch HEAD commit SHA at last sync, so we can short-circuit
+  // identical pulls. repo_last_status carries the human-readable result
+  // of the most recent attempt (ok / error message) for the UI to show.
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_branch TEXT DEFAULT 'main'");
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_path TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_token TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_auto_sync INTEGER DEFAULT 0");
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_last_sync TEXT");
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_last_sha TEXT");
+  await safeAlter("ALTER TABLE apps ADD COLUMN repo_last_status TEXT DEFAULT ''");
+  // Per-page provenance. source = 'manual' (pasted/uploaded) or 'github'.
+  // repo_path is the file path inside the repo, used to match files
+  // across syncs. repo_file_sha lets us skip unchanged files.
+  await safeAlter("ALTER TABLE app_pages ADD COLUMN source TEXT DEFAULT 'manual'");
+  await safeAlter("ALTER TABLE app_pages ADD COLUMN repo_path TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE app_pages ADD COLUMN repo_file_sha TEXT DEFAULT ''");
+  await safeAlter("ALTER TABLE app_pages ADD COLUMN repo_removed INTEGER DEFAULT 0");
+
   // Apps: per-app ticket system, separate from the global /api/tickets so
   // app-development chatter stays out of the main work queue. Each ticket
   // belongs to one app, has a status flow (open → in_progress → resolved

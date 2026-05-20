@@ -88,6 +88,15 @@ module.exports = function attach(app, deps) {
       developer_id: appRow.developer_id,
       developer_name: nameMap.get(appRow.developer_id) || null,
       repo_url: appRow.repo_url,
+      repo_branch: appRow.repo_branch || 'main',
+      repo_path: appRow.repo_path || '',
+      // Never echo the raw token back to the client — just a flag for the
+      // UI to show "token set, edit to change" instead of the value.
+      repo_token_set: !!(appRow.repo_token && appRow.repo_token.length > 0),
+      repo_auto_sync: !!appRow.repo_auto_sync,
+      repo_last_sync: appRow.repo_last_sync || null,
+      repo_last_sha: appRow.repo_last_sha || null,
+      repo_last_status: appRow.repo_last_status || '',
       deploy_url: appRow.deploy_url,
       created_by: appRow.created_by,
       created_by_name: nameMap.get(appRow.created_by) || null,
@@ -108,6 +117,10 @@ module.exports = function attach(app, deps) {
       has_blueprint_bn: !!(row.blueprint_bn && row.blueprint_bn.trim()),
       status: row.status,
       position: row.position,
+      // GitHub provenance — surfaces the 🔗 / ⚠ badges in the sidebar.
+      source: row.source || 'manual',
+      repo_path: row.repo_path || '',
+      repo_removed: !!row.repo_removed,
       created_by: row.created_by,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -187,7 +200,8 @@ module.exports = function attach(app, deps) {
       const result = await loadAppForUser(req.params.id, req.session.userId);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
       const pages = await all(
-        `SELECT p.id, p.app_id, p.name, p.file_name, p.blueprint, p.status, p.position,
+        `SELECT p.id, p.app_id, p.name, p.file_name, p.blueprint, p.blueprint_bn, p.status, p.position,
+                p.source, p.repo_path, p.repo_removed,
                 p.created_by, p.created_at, p.updated_at,
                 (SELECT COUNT(*) FROM app_page_comments c WHERE c.page_id = p.id) AS comment_count,
                 (SELECT COUNT(*) FROM app_page_functions f WHERE f.page_id = p.id) AS fn_total,
@@ -218,7 +232,8 @@ module.exports = function attach(app, deps) {
       if (!isCreator && !result.isAdmin) {
         return res.status(403).json({ error: 'Only the creator or an admin can edit app settings' });
       }
-      const { name, description, status, cover_color, designer_id, manager_id, developer_id, repo_url, deploy_url } = req.body || {};
+      const { name, description, status, cover_color, designer_id, manager_id, developer_id, repo_url, deploy_url,
+              repo_branch, repo_path, repo_token, repo_auto_sync } = req.body || {};
       const cols = []; const args = [];
       if (name !== undefined) {
         const clean = String(name).trim();
@@ -236,6 +251,13 @@ module.exports = function attach(app, deps) {
       if (developer_id !== undefined) { cols.push('developer_id=?'); args.push(normaliseUserId(developer_id)); }
       if (repo_url !== undefined) { cols.push('repo_url=?'); args.push(String(repo_url || '').trim()); }
       if (deploy_url !== undefined) { cols.push('deploy_url=?'); args.push(String(deploy_url || '').trim()); }
+      if (repo_branch !== undefined) { cols.push('repo_branch=?'); args.push(String(repo_branch || 'main').trim() || 'main'); }
+      if (repo_path !== undefined) { cols.push('repo_path=?'); args.push(String(repo_path || '').trim().replace(/^\/|\/$/g, '')); }
+      // The token is write-only — the client can clear it by sending '',
+      // set a new one by sending a non-empty string, or leave it alone
+      // by not sending the field at all.
+      if (repo_token !== undefined) { cols.push('repo_token=?'); args.push(String(repo_token || '')); }
+      if (repo_auto_sync !== undefined) { cols.push('repo_auto_sync=?'); args.push(repo_auto_sync ? 1 : 0); }
       if (cols.length) {
         cols.push("updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')");
         await run(`UPDATE apps SET ${cols.join(',')} WHERE id=?`, ...args, result.app.id);
@@ -1284,6 +1306,78 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── GitHub sync ────────────────────────────────────────────────────────
+  // POST /api/apps/:id/github/test — validate the repo URL + branch +
+  // optional PAT before saving. Returns { ok, owner, repo, branch,
+  // head_sha, file_count } on success, or { error } on failure.
+  app.post('/api/apps/:id/github/test', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const repoUrl = String((req.body && req.body.repo_url) || result.app.repo_url || '');
+      const branch = String((req.body && req.body.repo_branch) || result.app.repo_branch || 'main');
+      const repoPath = String((req.body && req.body.repo_path) || result.app.repo_path || '');
+      const token = (req.body && req.body.repo_token !== undefined)
+        ? String(req.body.repo_token || '')
+        : String(result.app.repo_token || '');
+      const parsed = parseRepoUrl(repoUrl);
+      if (!parsed) return res.status(400).json({ error: 'Invalid GitHub repo URL — expected https://github.com/<owner>/<repo>' });
+      const branchInfo = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(branch)}`, token);
+      const headSha = branchInfo.commit && branchInfo.commit.sha;
+      const tree = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/git/trees/${headSha}?recursive=1`, token);
+      const htmlFiles = (tree.tree || []).filter(n => n.type === 'blob' && /\.html?$/i.test(n.path) && (!repoPath || n.path.startsWith(repoPath.replace(/^\/|\/$/g, '') + '/')));
+      res.json({
+        ok: true,
+        owner: parsed.owner,
+        repo: parsed.repo,
+        branch,
+        head_sha: headSha,
+        file_count: htmlFiles.length,
+        files: htmlFiles.slice(0, 20).map(f => ({ path: f.path, sha: f.sha, size: f.size })),
+      });
+    } catch (e) {
+      console.warn('[apps/github] test failed:', e && e.message);
+      res.status(e.statusCode || 400).json({ error: e.message || 'GitHub check failed' });
+    }
+  });
+
+  // POST /api/apps/:id/github/sync — pull HTML files from the configured
+  // repo and upsert them as app_pages. GitHub is treated as the source
+  // of truth: content + file_name + page name get overwritten, but
+  // pin annotations, Q&A comments, todos, function checklists and
+  // tickets all stay attached to their page row because we match by
+  // repo_path (so the page id is stable across syncs).
+  app.post('/api/apps/:id/github/sync', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      const out = await syncAppFromGithub(result.app, { manual: true });
+      res.json(out);
+    } catch (e) {
+      console.warn('[apps/github] sync failed:', e && e.message);
+      res.status(e.statusCode || 500).json({ error: e.message || 'Sync failed' });
+    }
+  });
+
+  // GET /api/apps/:id/github/status — last sync info for the dashboard.
+  app.get('/api/apps/:id/github/status', requireAuth, async (req, res) => {
+    try {
+      const result = await loadAppForUser(req.params.id, req.session.userId);
+      if (result.error) return res.status(result.error.status).json({ error: result.error.message });
+      res.json({
+        connected: !!result.app.repo_url,
+        repo_url: result.app.repo_url || '',
+        repo_branch: result.app.repo_branch || 'main',
+        repo_path: result.app.repo_path || '',
+        repo_token_set: !!(result.app.repo_token && result.app.repo_token.length > 0),
+        repo_auto_sync: !!result.app.repo_auto_sync,
+        last_sync: result.app.repo_last_sync || null,
+        last_sha: result.app.repo_last_sha || null,
+        last_status: result.app.repo_last_status || '',
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Helpers ────────────────────────────────────────────────────────────
   const ANNOTATION_TYPES = new Set(['question', 'issue', 'broken', 'note']);
   const TICKET_STATUSES = new Set(['open', 'in_progress', 'review', 'resolved', 'closed']);
@@ -1421,5 +1515,241 @@ module.exports = function attach(app, deps) {
       "UPDATE app_pages SET blueprint=?, blueprint_bn='', updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=? AND COALESCE(blueprint, '') = ''",
       draft, pageId
     );
+  }
+
+  // ── GitHub helpers ─────────────────────────────────────────────────────
+  // Parse a github.com URL (with or without .git suffix, with or without
+  // trailing path) into { owner, repo }. Returns null on anything that
+  // doesn't look like a github URL.
+  function parseRepoUrl(url) {
+    if (!url) return null;
+    // Accept formats: https://github.com/o/r, https://github.com/o/r.git,
+    // git@github.com:o/r.git, github.com/o/r
+    const m = String(url).trim().match(/(?:github\.com[\/:])([^\/]+)\/([^\/\.?#\s]+)(?:\.git)?(?:[\/?#]|$)/i);
+    if (!m) return null;
+    return { owner: m[1], repo: m[2] };
+  }
+
+  // Fire a single request against the GitHub REST API. Token is optional
+  // (anonymous requests work for public repos at 60/hr). Errors carry an
+  // HTTP-style statusCode so route handlers can pass it through.
+  async function ghFetch(path, token, opts) {
+    const url = path.startsWith('http') ? path : ('https://api.github.com' + path);
+    const headers = {
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'syruvia-apps-sync',
+    };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const r = await fetch(url, Object.assign({ headers }, opts || {}));
+    if (!r.ok) {
+      let msg = 'GitHub API ' + r.status;
+      try {
+        const j = await r.json();
+        if (j && j.message) msg = j.message;
+        // Surface rate-limit hits with a useful next-step.
+        if (r.status === 403 && /rate limit/i.test(j && j.message || '')) {
+          msg = 'GitHub rate limit hit. Add a Personal Access Token to raise the cap from 60/hr to 5000/hr.';
+        }
+        if (r.status === 404) msg = 'Repo or branch not found (check URL, branch name, and token permissions).';
+      } catch {}
+      const err = new Error(msg);
+      err.statusCode = r.status;
+      throw err;
+    }
+    return r.json();
+  }
+
+  // The core sync. Idempotent: re-runs over the same repo state are a
+  // no-op (we short-circuit when the branch head SHA matches what we
+  // saw last time, and per-file we skip when the blob SHA hasn't moved).
+  // Returns a summary { ok, head_sha, added, updated, unchanged, removed,
+  // skipped, files: [...] } for the caller to surface.
+  async function syncAppFromGithub(appRow, opts) {
+    opts = opts || {};
+    const parsed = parseRepoUrl(appRow.repo_url || '');
+    if (!parsed) {
+      await recordSync(appRow.id, 'No repo URL configured', null);
+      const err = new Error('No repo URL configured for this app');
+      err.statusCode = 400;
+      throw err;
+    }
+    const branch = appRow.repo_branch || 'main';
+    const repoPath = String(appRow.repo_path || '').replace(/^\/|\/$/g, '');
+    const token = appRow.repo_token || '';
+
+    let branchInfo;
+    try {
+      branchInfo = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/branches/${encodeURIComponent(branch)}`, token);
+    } catch (e) {
+      await recordSync(appRow.id, e.message, appRow.repo_last_sha || null);
+      throw e;
+    }
+    const headSha = branchInfo.commit && branchInfo.commit.sha;
+    if (!headSha) {
+      await recordSync(appRow.id, 'No HEAD commit on branch', null);
+      const err = new Error('Could not resolve branch HEAD'); err.statusCode = 500; throw err;
+    }
+
+    // Branch hasn't moved since last sync → nothing to do. Only short
+    // circuit when this isn't a manual sync request, so a "Sync now"
+    // click can still verify the connection works.
+    if (!opts.manual && appRow.repo_last_sha === headSha) {
+      await recordSync(appRow.id, 'ok (no changes)', headSha);
+      return { ok: true, head_sha: headSha, unchanged_branch: true, added: 0, updated: 0, unchanged: 0, removed: 0 };
+    }
+
+    const tree = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/git/trees/${headSha}?recursive=1`, token);
+    const htmlNodes = (tree.tree || []).filter(n =>
+      n.type === 'blob' &&
+      /\.html?$/i.test(n.path) &&
+      (!repoPath || n.path === repoPath || n.path.startsWith(repoPath + '/'))
+    );
+    // Truncated trees on huge repos: warn the user up-front instead of
+    // silently syncing a partial set.
+    if (tree.truncated) {
+      console.warn('[apps/github] tree truncated for app', appRow.id, '— some files may be missing');
+    }
+
+    const existing = await all(
+      'SELECT id, repo_path, repo_file_sha, source FROM app_pages WHERE app_id=?',
+      appRow.id
+    );
+    const byRepoPath = new Map();
+    for (const p of existing) {
+      if (p.repo_path) byRepoPath.set(p.repo_path, p);
+    }
+    const seen = new Set();
+    let added = 0, updated = 0, unchanged = 0;
+    const detail = [];
+    for (const node of htmlNodes) {
+      seen.add(node.path);
+      const prev = byRepoPath.get(node.path);
+      if (prev && prev.repo_file_sha === node.sha) {
+        unchanged++;
+        detail.push({ path: node.path, action: 'unchanged' });
+        // Page already exists with this exact blob; make sure it's not
+        // marked as repo_removed (in case it was removed-then-re-added).
+        await run('UPDATE app_pages SET repo_removed=0 WHERE id=?', prev.id);
+        continue;
+      }
+      let blob;
+      try {
+        blob = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/git/blobs/${node.sha}`, token);
+      } catch (e) {
+        detail.push({ path: node.path, action: 'error', error: e.message });
+        continue;
+      }
+      const content = blob.encoding === 'base64'
+        ? Buffer.from(blob.content || '', 'base64').toString('utf8')
+        : (blob.content || '');
+      // Soft cap matches the manual-create endpoint.
+      if (content.length > 2 * 1024 * 1024) {
+        detail.push({ path: node.path, action: 'error', error: 'File too large (>2MB)' });
+        continue;
+      }
+      // File name = basename of the path. Page name = a cleaned-up
+      // version (drop extension, replace separators with spaces).
+      const baseName = node.path.split('/').pop();
+      const niceName = baseName.replace(/\.html?$/i, '').replace(/[-_]+/g, ' ').trim() || baseName;
+
+      if (prev) {
+        // GitHub wins: overwrite content + names + invalidate blueprint
+        // cache. Comments / pins / todos / functions / tickets stay
+        // because they FK to the page id, which doesn't change.
+        await run(
+          `UPDATE app_pages SET
+             html_content=?,
+             file_name=?,
+             name=?,
+             blueprint='',
+             blueprint_bn='',
+             source='github',
+             repo_file_sha=?,
+             repo_removed=0,
+             updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?`,
+          content, baseName, niceName, node.sha, prev.id
+        );
+        updated++;
+        detail.push({ path: node.path, action: 'updated', id: prev.id });
+        // Re-run auto-blueprint in the background — fresh HTML means a
+        // fresh draft.
+        if (ANTHROPIC_API_KEY) {
+          autoGenerateBlueprint(prev.id).catch(e => console.warn('[apps/github] auto-blueprint failed for page ' + prev.id + ':', e.message));
+        }
+      } else {
+        const nextPos = await get('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM app_pages WHERE app_id=?', appRow.id);
+        const ins = await run(
+          `INSERT INTO app_pages (app_id, name, file_name, html_content, position, source, repo_path, repo_file_sha, created_by)
+           VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`,
+          appRow.id, niceName, baseName, content, Number(nextPos?.next || 0), 'github', node.path, node.sha, appRow.created_by
+        );
+        added++;
+        detail.push({ path: node.path, action: 'added', id: ins.lastInsertRowid });
+        if (ANTHROPIC_API_KEY) {
+          autoGenerateBlueprint(ins.lastInsertRowid).catch(e => console.warn('[apps/github] auto-blueprint failed for page ' + ins.lastInsertRowid + ':', e.message));
+        }
+      }
+    }
+
+    // Mark previously-synced files that are no longer in the repo. We
+    // don't delete them — pin comments / todos / tickets may still be
+    // useful — just flag them so the UI can render a "removed from repo"
+    // badge and the user can clean up manually.
+    let removed = 0;
+    for (const p of existing) {
+      if (p.source === 'github' && p.repo_path && !seen.has(p.repo_path)) {
+        await run('UPDATE app_pages SET repo_removed=1 WHERE id=?', p.id);
+        removed++;
+      }
+    }
+
+    await touchApp(appRow.id);
+    await recordSync(appRow.id, 'ok', headSha);
+    return { ok: true, head_sha: headSha, added, updated, unchanged, removed, total: htmlNodes.length, truncated: !!tree.truncated, detail };
+  }
+
+  async function recordSync(appId, status, sha) {
+    const cols = ["repo_last_sync=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')", 'repo_last_status=?'];
+    const args = [String(status || '').slice(0, 500)];
+    if (sha !== null && sha !== undefined) { cols.push('repo_last_sha=?'); args.push(sha); }
+    await run(`UPDATE apps SET ${cols.join(',')} WHERE id=?`, ...args, appId);
+  }
+
+  // ── Background poller ─────────────────────────────────────────────────
+  // Every 5 minutes, sync each app that has repo_auto_sync = 1. Apps
+  // sync serially with a tiny delay between them so a workspace with
+  // many connected repos doesn't burst the GitHub API. Each sync is
+  // independently guarded — one failure doesn't stop the rest.
+  //
+  // We only start the loop once per process (guarded with a global flag
+  // on the app object) because routes/apps.js is required exactly once
+  // by server.js but the hot-reload pattern in development can re-run
+  // the attach function.
+  if (!app.__appsPollerStarted) {
+    app.__appsPollerStarted = true;
+    const POLL_INTERVAL_MS = 5 * 60 * 1000;
+    setInterval(runPollerOnce, POLL_INTERVAL_MS).unref?.();
+    // Run shortly after boot too, so users don't have to wait the full
+    // 5 minutes after a deploy for the first auto-sync.
+    setTimeout(runPollerOnce, 30 * 1000).unref?.();
+  }
+  async function runPollerOnce() {
+    try {
+      const apps = await all("SELECT * FROM apps WHERE deleted_at IS NULL AND COALESCE(repo_auto_sync, 0) = 1 AND COALESCE(repo_url, '') <> ''");
+      for (const a of apps) {
+        try {
+          await syncAppFromGithub(a, { manual: false });
+        } catch (e) {
+          console.warn('[apps/github] poll sync failed for app', a.id, ':', e && e.message);
+        }
+        // Tiny breather between apps so a workspace with many connected
+        // repos doesn't fire GitHub calls back-to-back-to-back.
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    } catch (e) {
+      console.warn('[apps/github] poller error:', e && e.message);
+    }
   }
 };

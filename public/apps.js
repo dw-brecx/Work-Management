@@ -501,11 +501,17 @@
       const meta = [];
       if (p.fn_total) meta.push(`${p.fn_working}/${p.fn_total} fn`);
       if (p.comment_count) meta.push(`${p.comment_count} 💬`);
+      // Provenance badge: 🔗 = synced from GitHub, ⚠ = file deleted in repo.
+      const ghBadge = p.source === 'github'
+        ? (p.repo_removed
+            ? '<span class="ap-page-src ap-page-src-removed" title="File removed from repo">⚠</span>'
+            : '<span class="ap-page-src ap-page-src-github" title="Synced from GitHub">🔗</span>')
+        : '';
       return `
-        <div class="ap-page-item ${isActive ? 'active' : ''}" data-page-id="${p.id}">
+        <div class="ap-page-item ${isActive ? 'active' : ''} ${p.repo_removed ? 'removed' : ''}" data-page-id="${p.id}">
           <span class="ap-page-item-dot ${escapeHtml(p.status || 'pending')}" title="${escapeHtml(p.status || 'pending')}"></span>
           <div class="ap-page-item-text">
-            <div class="ap-page-item-title">${escapeHtml(p.name)}</div>
+            <div class="ap-page-item-title">${ghBadge}${escapeHtml(p.name)}</div>
             <div class="ap-page-item-meta">${escapeHtml(meta.join(' · '))}</div>
           </div>
         </div>
@@ -955,6 +961,34 @@
     `;
   }
 
+  // Small GitHub-sync chip shown on the dashboard head. Hidden when no
+  // repo is configured. Click "Sync now" → manual pull. The last-sync
+  // timestamp updates live whenever the user runs Sync.
+  function renderGithubChip() {
+    const a = state.app;
+    if (!a || !a.repo_url) {
+      return `
+        <div class="ap-gh-chip ap-gh-chip-off">
+          <span>🔗 No GitHub repo connected</span>
+          <button class="btn btn-secondary btn-small" id="ap-gh-connect">Connect…</button>
+        </div>
+      `;
+    }
+    const last = a.repo_last_sync ? formatTime(a.repo_last_sync) : 'never';
+    const statusOk = !a.repo_last_status || a.repo_last_status === 'ok' || a.repo_last_status.startsWith('ok ');
+    return `
+      <div class="ap-gh-chip ${statusOk ? '' : 'ap-gh-chip-err'}">
+        <span title="${escapeHtml(a.repo_url)}">🔗 ${escapeHtml(parseRepoUrlForUi(a.repo_url))} @ ${escapeHtml(a.repo_branch || 'main')}</span>
+        <span class="ap-gh-chip-meta">${a.repo_auto_sync ? 'auto-sync · ' : ''}last sync ${escapeHtml(last)}${statusOk ? '' : ' · ⚠ ' + escapeHtml(a.repo_last_status || '')}</span>
+        <button class="btn btn-primary btn-small" id="ap-gh-sync">Sync now</button>
+      </div>
+    `;
+  }
+  function parseRepoUrlForUi(url) {
+    const m = String(url || '').match(/github\.com[\/:]([^\/]+\/[^\/\.?#\s]+)/i);
+    return m ? m[1] : url;
+  }
+
   // Dashboard view — replaces the page detail pane when no page is
   // selected. Renders rolled-up stats, per-page progress, recent activity,
   // and a flat list of every comment / annotation / todo across the app.
@@ -1023,8 +1057,11 @@
         : renderAllItems(d.all_todos, 'todo');
     return `
       <div class="ap-dash-head">
-        <h2>${escapeHtml(state.app.name)}</h2>
-        <span style="color:#64748b;font-size:13px">${escapeHtml(state.app.description || 'No description')}</span>
+        <div style="flex:1;min-width:0">
+          <h2>${escapeHtml(state.app.name)}</h2>
+          <span style="color:#64748b;font-size:13px">${escapeHtml(state.app.description || 'No description')}</span>
+        </div>
+        ${renderGithubChip()}
       </div>
       <div class="ap-dash-body">
         <div class="ap-stat-grid">${statCards}</div>
@@ -1408,6 +1445,27 @@
         render();
       };
     });
+    // GitHub sync chip.
+    const connectBtn = document.getElementById('ap-gh-connect');
+    if (connectBtn) connectBtn.onclick = () => openAppModal(state.app);
+    const syncBtn = document.getElementById('ap-gh-sync');
+    if (syncBtn) {
+      syncBtn.onclick = async () => {
+        syncBtn.disabled = true; syncBtn.textContent = 'Syncing…';
+        try {
+          const r = await api('POST', '/api/apps/' + state.app.id + '/github/sync');
+          toast(`Sync: +${r.added || 0} added, ${r.updated || 0} updated, ${r.unchanged || 0} unchanged${r.removed ? ', ' + r.removed + ' removed' : ''}`, 'ok');
+          // Reload app + dashboard so the new pages + last_sync timestamp appear.
+          const fresh = await api('GET', '/api/apps/' + state.app.id);
+          state.app = fresh;
+          await loadDashboard();
+        } catch (e) {
+          toast('Sync failed: ' + e.message, 'err');
+          syncBtn.disabled = false;
+          syncBtn.textContent = 'Sync now';
+        }
+      };
+    }
   }
 
   // Targeted refresh: only updates the overlay + side panel + popup so the
@@ -2709,8 +2767,35 @@
             <div class="ap-field"><label>Developer</label><select id="m-developer">${userOpts(a.developer_id)}</select></div>
           </div>
           <div class="ap-field-row">
-            <div class="ap-field"><label>Repo URL</label><input id="m-repo" value="${escapeHtml(a.repo_url || '')}" placeholder="https://github.com/…"/></div>
+            <div class="ap-field"><label>Repo URL</label><input id="m-repo" value="${escapeHtml(a.repo_url || '')}" placeholder="https://github.com/owner/repo"/></div>
             <div class="ap-field"><label>Deploy URL</label><input id="m-deploy" value="${escapeHtml(a.deploy_url || '')}" placeholder="https://…"/></div>
+          </div>
+
+          <div class="ap-gh-section">
+            <div class="ap-gh-section-head">
+              <span>🔗 GitHub sync</span>
+              <span style="font-size:11px;color:#94a3b8;font-weight:400">Pull HTML pages from your repo automatically</span>
+            </div>
+            <div class="ap-field-row">
+              <div class="ap-field"><label>Branch</label><input id="m-repo-branch" value="${escapeHtml(a.repo_branch || 'main')}" placeholder="main"/></div>
+              <div class="ap-field"><label>Folder (optional)</label><input id="m-repo-path" value="${escapeHtml(a.repo_path || '')}" placeholder="e.g. designs/"/></div>
+            </div>
+            <div class="ap-field">
+              <label>Personal Access Token (for private repos)</label>
+              <input id="m-repo-token" type="password" value="" placeholder="${a.repo_token_set ? '••••••••• (saved — leave blank to keep)' : 'ghp_... (leave blank for public repos)'}" autocomplete="new-password"/>
+            </div>
+            <div class="ap-field" style="display:flex;align-items:center;gap:8px;margin-top:4px">
+              <label style="display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:#1e293b;cursor:pointer;text-transform:none;letter-spacing:0">
+                <input type="checkbox" id="m-repo-auto" ${a.repo_auto_sync ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer;accent-color:#22c55e"/>
+                Auto-sync every 5 minutes
+              </label>
+            </div>
+            ${editing ? `
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button type="button" class="btn btn-secondary btn-small" id="m-repo-test">Test connection</button>
+              <button type="button" class="btn btn-secondary btn-small" id="m-repo-sync">Sync now</button>
+              <span id="m-repo-status" style="font-size:12px;color:#64748b;align-self:center"></span>
+            </div>` : ''}
           </div>
         </div>
         <div class="ap-modal-foot">
@@ -2742,8 +2827,11 @@
         } catch (e) { toast(e.message, 'err'); }
       };
     }
-    document.getElementById('m-save').onclick = async () => {
-      const payload = {
+    // Helper to build the payload from the form — used by both the Save
+    // button and the GitHub Test/Sync buttons so the user gets feedback
+    // against whatever they've typed in, not the last-saved values.
+    const buildPayload = () => {
+      const p = {
         name: document.getElementById('m-name').value.trim(),
         description: document.getElementById('m-desc').value.trim(),
         cover_color: pickedColor,
@@ -2753,7 +2841,63 @@
         repo_url: document.getElementById('m-repo').value.trim(),
         deploy_url: document.getElementById('m-deploy').value.trim(),
         status: document.getElementById('m-status').value,
+        repo_branch: (document.getElementById('m-repo-branch').value.trim() || 'main'),
+        repo_path: document.getElementById('m-repo-path').value.trim(),
+        repo_auto_sync: document.getElementById('m-repo-auto').checked,
       };
+      // Only send repo_token when the user typed something — otherwise
+      // omit so the server keeps the existing value (write-only field).
+      const tokenVal = document.getElementById('m-repo-token').value;
+      if (tokenVal !== '') p.repo_token = tokenVal;
+      return p;
+    };
+
+    // GitHub: Test connection + Sync now (only present when editing).
+    const testBtn = document.getElementById('m-repo-test');
+    const syncBtn = document.getElementById('m-repo-sync');
+    const statusEl = document.getElementById('m-repo-status');
+    const setRepoStatus = (text, color) => {
+      if (!statusEl) return;
+      statusEl.textContent = text;
+      statusEl.style.color = color || '#64748b';
+    };
+    if (testBtn) {
+      testBtn.onclick = async () => {
+        const p = buildPayload();
+        if (!p.repo_url) { toast('Add a repo URL first', 'err'); return; }
+        testBtn.disabled = true; setRepoStatus('Testing…');
+        try {
+          const r = await api('POST', '/api/apps/' + existing.id + '/github/test', p);
+          setRepoStatus(`✓ ${r.owner}/${r.repo} @ ${r.branch} — ${r.file_count} HTML file${r.file_count === 1 ? '' : 's'}`, '#16a34a');
+        } catch (e) { setRepoStatus('✗ ' + e.message, '#dc2626'); }
+        testBtn.disabled = false;
+      };
+    }
+    if (syncBtn) {
+      syncBtn.onclick = async () => {
+        const p = buildPayload();
+        if (!p.repo_url) { toast('Add a repo URL first', 'err'); return; }
+        syncBtn.disabled = true; setRepoStatus('Saving config + syncing…');
+        try {
+          // Save first so the sync uses the freshest config (URL, branch,
+          // path, token, auto-sync toggle).
+          await api('PATCH', '/api/apps/' + existing.id, p);
+          const r = await api('POST', '/api/apps/' + existing.id + '/github/sync');
+          setRepoStatus(
+            `✓ +${r.added || 0} added · ${r.updated || 0} updated · ${r.unchanged || 0} unchanged${r.removed ? ' · ' + r.removed + ' removed from repo' : ''}`,
+            '#16a34a'
+          );
+          // Refresh the local app + pages so the new pages show up
+          // immediately in the sidebar.
+          const fresh = await api('GET', '/api/apps/' + existing.id);
+          state.app = fresh;
+        } catch (e) { setRepoStatus('✗ ' + e.message, '#dc2626'); }
+        syncBtn.disabled = false;
+      };
+    }
+
+    document.getElementById('m-save').onclick = async () => {
+      const payload = buildPayload();
       if (!payload.name) { toast('Name is required', 'err'); return; }
       try {
         if (editing) {
@@ -2909,7 +3053,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-18.1 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.2 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
