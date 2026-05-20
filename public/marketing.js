@@ -723,7 +723,10 @@
       const me = await fetch('/api/auth/me', { credentials: 'same-origin' });
       if (me.status === 401) { location.href = '/login.html'; return; }
       state.me = await me.json();
-      state.isAdmin = ['Admin','Manager'].includes(state.me?.perm_role);
+      // /api/auth/me returns the role as `permRole` (camelCase). Accept the
+      // snake_case form too in case the endpoint ever changes shape.
+      const role = state.me?.permRole || state.me?.perm_role;
+      state.isAdmin = ['Admin','Manager'].includes(role);
     } catch {
       location.href = '/login.html';
       return;
