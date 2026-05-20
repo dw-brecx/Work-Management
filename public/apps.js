@@ -2850,10 +2850,10 @@
               </label>
             </div>
             ${editing ? `
-            <div style="display:flex;gap:8px;margin-top:8px">
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:flex-start">
               <button type="button" class="btn btn-secondary btn-small" id="m-repo-test">Test connection</button>
               <button type="button" class="btn btn-secondary btn-small" id="m-repo-sync">Sync now</button>
-              <span id="m-repo-status" style="font-size:12px;color:#64748b;align-self:center"></span>
+              <span id="m-repo-status" style="font-size:12px;color:#64748b;white-space:pre-wrap;line-height:1.5;flex:1;min-width:200px"></span>
             </div>` : ''}
           </div>
         </div>
@@ -2942,10 +2942,32 @@
           // path, token, auto-sync toggle).
           await api('PATCH', '/api/apps/' + existing.id, p);
           const r = await api('POST', '/api/apps/' + existing.id + '/github/sync');
+          // Log the full response so the user can paste it back if
+          // something doesn't look right (e.g. assets staying at 0).
+          console.log('[apps/github] sync result:', r);
+          const a = r.assets || {};
+          const pageParts = [`+${r.added || 0} added`, `${r.updated || 0} updated`, `${r.unchanged || 0} unchanged`];
+          if (r.removed) pageParts.push(`${r.removed} removed`);
+          const assetParts = [`+${a.added || 0} added`, `${a.updated || 0} updated`, `${a.unchanged || 0} unchanged`];
+          if (a.removed) assetParts.push(`${a.removed} removed`);
+          if (a.skipped) assetParts.push(`${a.skipped} skipped (>5MB)`);
+          const assetCountTotal = (a.added || 0) + (a.updated || 0) + (a.unchanged || 0);
+          const assetLine = a.total === undefined
+            ? '  (assets: deploy may still be running the old sync code)'
+            : `  assets: ${assetParts.join(' · ')} of ${a.total} total`;
           setRepoStatus(
-            `✓ +${r.added || 0} added · ${r.updated || 0} updated · ${r.unchanged || 0} unchanged${r.removed ? ' · ' + r.removed + ' removed from repo' : ''}`,
+            `✓ pages: ${pageParts.join(' · ')}\n${assetLine}`,
             '#16a34a'
           );
+          if (a.total === 0) {
+            // Nothing under the configured folder matched the asset
+            // allowlist — flag it explicitly so the user knows why the
+            // preview is still missing styles/scripts.
+            setRepoStatus(
+              `✓ pages: ${pageParts.join(' · ')}\n  ⚠ no supporting assets (css/js/img) found in this folder — check the Folder setting (e.g. "public/")`,
+              '#b45309'
+            );
+          }
           // Refresh the local app + pages so the new pages show up
           // immediately in the sidebar.
           const fresh = await api('GET', '/api/apps/' + existing.id);
@@ -3112,7 +3134,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-18.5 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.6 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
