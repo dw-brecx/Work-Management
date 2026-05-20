@@ -986,6 +986,23 @@ async function init() {
   await safeAlter("ALTER TABLE app_pages ADD COLUMN repo_file_sha TEXT DEFAULT ''");
   await safeAlter("ALTER TABLE app_pages ADD COLUMN repo_removed INTEGER DEFAULT 0");
 
+  // Apps: non-HTML files synced from a repo (CSS, JS, images, fonts,
+  // maps, manifests, etc.). Stored on disk under UPLOADS_DIR/apps/<id>/
+  // so the /serve endpoint can stream them with correct MIME types
+  // without bloating the database with binary blobs.
+  await pool.query(`CREATE TABLE IF NOT EXISTS app_assets (
+    id SERIAL PRIMARY KEY,
+    app_id INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    storage_path TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+    size INTEGER NOT NULL DEFAULT 0,
+    repo_file_sha TEXT DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_app_assets_path ON app_assets (app_id, file_path)`);
+
   // Apps: per-app ticket system, separate from the global /api/tickets so
   // app-development chatter stays out of the main work queue. Each ticket
   // belongs to one app, has a status flow (open → in_progress → resolved

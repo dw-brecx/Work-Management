@@ -475,7 +475,25 @@ module.exports = function attach(app, deps) {
           "base-uri 'none'"
         );
       }
-      res.send(result.page.html_content || '<!doctype html><html><body><p style="font:14px sans-serif;color:#666;padding:24px">No HTML for this page yet.</p></body></html>');
+      // Optionally inject a <base href> + rewrite absolute paths so the
+      // page can pull supporting files (CSS, JS, images, fonts) that
+      // were synced from the same repo. Only kicks in when the app has
+      // assets — otherwise we leave the HTML alone.
+      let html = result.page.html_content || '<!doctype html><html><body><p style="font:14px sans-serif;color:#666;padding:24px">No HTML for this page yet.</p></body></html>';
+      try {
+        const assets = await all('SELECT file_path FROM app_assets WHERE app_id=?', result.app.id);
+        if (assets.length > 0) {
+          const assetSet = new Set(assets.map(a => a.file_path));
+          const baseHref = '/api/apps/' + result.app.id + '/serve/';
+          html = injectAssetWiring(html, baseHref, assetSet);
+        }
+      } catch (assetErr) {
+        // Non-fatal — fall back to raw HTML. Worst case the user sees
+        // unstyled content, same as before assets existed.
+        console.warn('[apps/preview] asset wiring failed:', assetErr && assetErr.message);
+      }
+
+      res.send(html);
     } catch (e) { res.status(500).send('Preview failed'); }
   });
 
@@ -1353,6 +1371,38 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Asset serve endpoint ───────────────────────────────────────────────
+  // Streams any non-HTML file the GitHub sync pulled into UPLOADS_DIR.
+  // Paired with the <base href> + path rewrite the /preview endpoint
+  // injects, so the user's CSS, JS, images, fonts, etc. all load when
+  // the page renders in the iframe.
+  //
+  // Auth: requires the same access as the rest of /api/apps/:id/* —
+  // we never expose synced repo content to anyone outside the app.
+  app.get(/^\/api\/apps\/(\d+)\/serve\/(.+)$/, requireAuth, async (req, res) => {
+    try {
+      const appId = Number(req.params[0]);
+      const filePath = String(req.params[1] || '').replace(/^\/+/, '');
+      if (!filePath || filePath.includes('..')) return res.status(400).send('Invalid path');
+      const result = await loadAppForUser(appId, req.session.userId);
+      if (result.error) return res.status(result.error.status).send('Access denied');
+      const asset = await get('SELECT * FROM app_assets WHERE app_id=? AND file_path=?', appId, filePath);
+      if (!asset) return res.status(404).send('Not found');
+      const full = path.join(UPLOADS_DIR, asset.storage_path);
+      // Defense-in-depth: ensure the resolved path is inside UPLOADS_DIR
+      // even if storage_path somehow got tampered with at write time.
+      const resolved = path.resolve(full);
+      const root = path.resolve(UPLOADS_DIR);
+      if (!resolved.startsWith(root + path.sep)) return res.status(400).send('Invalid path');
+      res.setHeader('Content-Type', asset.mime_type || 'application/octet-stream');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.sendFile(resolved, (err) => {
+        if (err && !res.headersSent) res.status(404).send('File not found');
+      });
+    } catch (e) { res.status(500).send(e.message || 'Serve failed'); }
+  });
+
   // ── GitHub sync ────────────────────────────────────────────────────────
   // POST /api/apps/:id/github/test — validate the repo URL + branch +
   // optional PAT before saving. Returns { ok, owner, repo, branch,
@@ -1438,6 +1488,94 @@ module.exports = function attach(app, deps) {
 
   function tryUnlink(p) {
     try { fs.unlinkSync(p); } catch { /* already gone */ }
+  }
+
+  // File extensions worth pulling as supporting assets for the preview.
+  // We deliberately exclude server-side languages (.py, .rb, .go, .php),
+  // build artifacts (.lock, .log), and infra (.env, Dockerfile) so the
+  // sync stays focused on what the iframe needs to render the design.
+  const ASSET_EXT_RE = /\.(css|js|mjs|cjs|map|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|eot|json|webmanifest|txt|csv|xml|md)$/i;
+
+  function stripPathPrefix(fullPath, prefix) {
+    if (!prefix) return fullPath;
+    const p = prefix.replace(/^\/|\/$/g, '');
+    if (fullPath === p) return path.basename(fullPath);
+    if (fullPath.startsWith(p + '/')) return fullPath.slice(p.length + 1);
+    return fullPath;
+  }
+
+  function mimeForPath(p) {
+    const ext = path.extname(p).toLowerCase();
+    const map = {
+      '.html': 'text/html; charset=utf-8',
+      '.htm': 'text/html; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.mjs': 'application/javascript; charset=utf-8',
+      '.cjs': 'application/javascript; charset=utf-8',
+      '.map': 'application/json; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.webmanifest': 'application/manifest+json; charset=utf-8',
+      '.svg': 'image/svg+xml',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.avif': 'image/avif',
+      '.ico': 'image/x-icon',
+      '.woff': 'font/woff',
+      '.woff2': 'font/woff2',
+      '.ttf': 'font/ttf',
+      '.otf': 'font/otf',
+      '.eot': 'application/vnd.ms-fontobject',
+      '.txt': 'text/plain; charset=utf-8',
+      '.csv': 'text/csv; charset=utf-8',
+      '.xml': 'application/xml; charset=utf-8',
+      '.md': 'text/markdown; charset=utf-8',
+    };
+    return map[ext] || 'application/octet-stream';
+  }
+
+  // Wire up the HTML returned by /preview so its supporting assets
+  // (CSS, JS, images) resolve through our /serve endpoint:
+  //   * inject <base href="/api/apps/<id>/serve/"> in <head> so any
+  //     relative URL ("styles.css", "./js/app.js") resolves under
+  //     /serve instead of /api/apps/<id>/pages/<pid>/
+  //   * rewrite absolute root-relative paths ('/styles.css') to point
+  //     at /serve when the file actually exists in app_assets — leaves
+  //     anything else (/api/..., absolute external URLs) untouched
+  // Both passes are best-effort regex on HTML; common-case correct,
+  // and we don't break anything we can't rewrite.
+  function injectAssetWiring(html, baseHref, assetSet) {
+    let out = html;
+    // 1. Base href: skip if the page already declares one.
+    if (!/<base\s[^>]*>/i.test(out)) {
+      if (/<head[^>]*>/i.test(out)) {
+        out = out.replace(/<head([^>]*)>/i, (m, attrs) => `<head${attrs}><base href="${baseHref}">`);
+      } else if (/<html[^>]*>/i.test(out)) {
+        out = out.replace(/<html([^>]*)>/i, (m, attrs) => `<html${attrs}><head><base href="${baseHref}"></head>`);
+      } else {
+        out = `<base href="${baseHref}">` + out;
+      }
+    }
+    // 2. Rewrite root-relative href/src to point at /serve when the
+    //    target is one of the synced assets. Skip anything starting
+    //    with /api (our own backend routes) or //... (protocol-relative
+    //    URLs to a different origin).
+    out = out.replace(
+      /(\s(?:href|src)\s*=\s*["'])\/([^"'?#\s/][^"'?#\s]*)([?#][^"']*)?(["'])/gi,
+      (match, prefix, pathPart, queryHash, quote) => {
+        if (pathPart.startsWith('api/')) return match;
+        // Try to match either the exact path or the path without any
+        // querystring/hash. Both are common patterns in production HTML.
+        if (assetSet.has(pathPart)) {
+          return `${prefix}${baseHref}${pathPart}${queryHash || ''}${quote}`;
+        }
+        return match;
+      }
+    );
+    return out;
   }
 
   function shapeTicket(r) {
@@ -1740,10 +1878,95 @@ module.exports = function attach(app, deps) {
       }
     }
 
-    // Mark previously-synced files that are no longer in the repo. We
-    // don't delete them — pin comments / todos / tickets may still be
-    // useful — just flag them so the UI can render a "removed from repo"
-    // badge and the user can clean up manually.
+    // Non-HTML files (CSS, JS, images, fonts, etc.) — pulled so the
+    // preview can render them as a real working page. We strip the
+    // repo_path prefix so the stored file_path matches what the HTML
+    // references (a page at "public/index.html" pointing at
+    // "spaces.css" wants the asset to be at /serve/spaces.css, not
+    // /serve/public/spaces.css).
+    const assetNodes = (tree.tree || []).filter(n =>
+      n.type === 'blob' &&
+      !/\.html?$/i.test(n.path) &&
+      ASSET_EXT_RE.test(n.path) &&
+      (!repoPath || n.path === repoPath || n.path.startsWith(repoPath + '/'))
+    );
+    const existingAssets = await all(
+      'SELECT id, file_path, repo_file_sha, storage_path FROM app_assets WHERE app_id=?',
+      appRow.id
+    );
+    const byAssetPath = new Map(existingAssets.map(a => [a.file_path, a]));
+    const seenAssets = new Set();
+    let assetAdded = 0, assetUpdated = 0, assetUnchanged = 0, assetRemoved = 0, assetSkipped = 0;
+    for (const node of assetNodes) {
+      // Soft cap on individual asset size. Anything bigger almost
+      // certainly isn't a frontend file (binary build artifact, etc.)
+      // — skip to keep storage + sync time bounded.
+      if (Number(node.size || 0) > 5 * 1024 * 1024) {
+        assetSkipped++;
+        continue;
+      }
+      const stripped = stripPathPrefix(node.path, repoPath);
+      if (!stripped) continue;
+      seenAssets.add(stripped);
+      const prev = byAssetPath.get(stripped);
+      if (prev && prev.repo_file_sha === node.sha) {
+        assetUnchanged++;
+        continue;
+      }
+      let blob;
+      try {
+        blob = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/git/blobs/${node.sha}`, token);
+      } catch (e) {
+        console.warn('[apps/github] asset blob failed', node.path, ':', e && e.message);
+        continue;
+      }
+      const buf = blob.encoding === 'base64'
+        ? Buffer.from(blob.content || '', 'base64')
+        : Buffer.from(blob.content || '', 'utf8');
+      // Write to UPLOADS_DIR/apps/<id>/<stripped path>. Directories are
+      // created lazily. We never trust the path on disk — only the
+      // serve endpoint, which re-validates against UPLOADS_DIR.
+      const storageRel = path.join('apps', String(appRow.id), stripped);
+      const fullPath = path.join(UPLOADS_DIR, storageRel);
+      try {
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        fs.writeFileSync(fullPath, buf);
+      } catch (e) {
+        console.warn('[apps/github] asset write failed', stripped, ':', e && e.message);
+        continue;
+      }
+      const mime = mimeForPath(stripped);
+      // Postgres-style upsert keyed on (app_id, file_path). The unique
+      // index on that pair makes this atomic.
+      await run(
+        `INSERT INTO app_assets (app_id, file_path, storage_path, mime_type, size, repo_file_sha)
+         VALUES (?,?,?,?,?,?)
+         ON CONFLICT (app_id, file_path) DO UPDATE SET
+           storage_path=EXCLUDED.storage_path,
+           mime_type=EXCLUDED.mime_type,
+           size=EXCLUDED.size,
+           repo_file_sha=EXCLUDED.repo_file_sha,
+           updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`,
+        appRow.id, stripped, storageRel, mime, buf.length, node.sha
+      );
+      if (prev) assetUpdated++; else assetAdded++;
+    }
+    // Delete assets that vanished from the repo — these are pure
+    // resources (no comments/pins attached), safe to remove.
+    for (const a of existingAssets) {
+      if (seenAssets.has(a.file_path)) continue;
+      try {
+        const fullPath = path.join(UPLOADS_DIR, a.storage_path || '');
+        if (a.storage_path) tryUnlink(fullPath);
+      } catch {}
+      await run('DELETE FROM app_assets WHERE id=?', a.id);
+      assetRemoved++;
+    }
+
+    // Mark previously-synced HTML pages that are no longer in the repo.
+    // We don't delete them — pin comments / todos / tickets may still
+    // be useful — just flag them so the UI can render a "removed from
+    // repo" badge and the user can clean up manually.
     let removed = 0;
     for (const p of existing) {
       if (p.source === 'github' && p.repo_path && !seen.has(p.repo_path)) {
@@ -1754,7 +1977,18 @@ module.exports = function attach(app, deps) {
 
     await touchApp(appRow.id);
     await recordSync(appRow.id, 'ok', headSha);
-    return { ok: true, head_sha: headSha, added, updated, unchanged, removed, total: htmlNodes.length, truncated: !!tree.truncated, detail };
+    return {
+      ok: true,
+      head_sha: headSha,
+      added, updated, unchanged, removed,
+      total: htmlNodes.length,
+      truncated: !!tree.truncated,
+      detail,
+      assets: {
+        added: assetAdded, updated: assetUpdated, unchanged: assetUnchanged,
+        removed: assetRemoved, skipped: assetSkipped, total: assetNodes.length,
+      },
+    };
   }
 
   async function recordSync(appId, status, sha) {
