@@ -654,7 +654,7 @@
     }).join('');
     return `
       <div class="ap-preview-toolbar">
-        <span>Sandboxed preview of <strong>${escapeHtml(p.file_name || p.name)}</strong>${p.html_content ? ` · ${(p.html_content.length / 1024).toFixed(1)} KB` : ''}</span>
+        <span>Sandboxed preview of <strong>${escapeHtml(p.file_name || p.name)}</strong>${p.html_size ? ` · ${(p.html_size / 1024).toFixed(1)} KB` : ''}</span>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn ${state.annotateMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-annotate-toggle" title="Click on the design to drop a pin">
             ${state.annotateMode ? '✓ Annotating' : 'Annotate'}
@@ -667,7 +667,11 @@
       </div>
       <div class="ap-preview-layout">
         <div class="ap-preview-wrap" id="ap-preview-wrap">
-          <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="allow-same-origin" title="Page preview"></iframe>
+          <div class="ap-preview-loading" id="ap-preview-loading">
+            <div class="ap-spinner"></div>
+            <span>Loading design…</span>
+          </div>
+          <iframe class="ap-preview-frame" src="${previewUrl}" sandbox="allow-same-origin" title="Page preview" onload="(function(f){var l=document.getElementById('ap-preview-loading');if(l)l.style.display='none';})(this)"></iframe>
           <div class="ap-pin-overlay ${state.annotateMode && !state.penMode ? 'active' : ''}" id="ap-pin-overlay">
             ${pins}
             ${state.pendingPin ? `<div class="ap-pin ap-pin-pending" style="left:${state.pendingPin.x_pct}%;top:${state.pendingPin.y_pct}%">+</div>` : ''}
@@ -3053,7 +3057,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-18.2 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.3 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();

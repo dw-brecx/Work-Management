@@ -115,6 +115,11 @@ module.exports = function attach(app, deps) {
       // blueprint_bn is the cached Bengali translation. Empty until the
       // translate endpoint runs (or invalidated on English edit).
       has_blueprint_bn: !!(row.blueprint_bn && row.blueprint_bn.trim()),
+      // Cheap on-the-wire stat for the preview toolbar — saves shipping
+      // the full html_content on every page-detail fetch (typical
+      // Claude pages are 30-300KB, occasionally 1MB+). The actual HTML
+      // is served separately through /preview which the iframe loads.
+      html_size: typeof row.html_content === 'string' ? row.html_content.length : 0,
       status: row.status,
       position: row.position,
       // GitHub provenance — surfaces the 🔗 / ⚠ badges in the sidebar.
@@ -333,9 +338,11 @@ module.exports = function attach(app, deps) {
       const result = await loadPageForUser(req.params.pageId, req.session.userId);
       if (result.error) return res.status(result.error.status).json({ error: result.error.message });
       if (result.page.app_id !== Number(req.params.id)) return res.status(404).json({ error: 'Page not in this app' });
-      const out = shapePage(result.page);
-      out.html_content = result.page.html_content;
-      res.json(out);
+      // html_content intentionally omitted — only the iframe needs it,
+      // and the iframe fetches it through /preview. Keeping it out of
+      // the JSON cuts page-detail responses from "tens to hundreds of
+      // KB" down to a couple of KB.
+      res.json(shapePage(result.page));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -379,9 +386,9 @@ module.exports = function attach(app, deps) {
         await touchApp(result.app.id);
       }
       const row = await get('SELECT * FROM app_pages WHERE id=?', result.page.id);
-      const out = shapePage(row);
-      out.html_content = row.html_content;
-      res.json(out);
+      // See GET handler — html_content lives in /preview, not in the
+      // JSON response.
+      res.json(shapePage(row));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -411,8 +418,22 @@ module.exports = function attach(app, deps) {
       if (result.error) return res.status(result.error.status).send('Access denied');
       if (result.page.app_id !== Number(req.params.id)) return res.status(404).send('Page not found');
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('X-Content-Type-Options', 'nosniff');
+      // Cache strategy hinges on whether the URL carries a ?ts=
+      // cache-buster. The client builds preview URLs as
+      //   /preview?ts=<page.updated_at>
+      // so the URL itself changes whenever the page is re-edited or
+      // re-synced from GitHub. That makes the URL effectively immutable
+      // for its lifetime and we can let the browser keep it cached —
+      // night-and-day faster than re-fetching ~100KB of HTML on every
+      // tab toggle / pane re-render. URLs without ?ts (typed by hand,
+      // server-to-server fetches, etc.) get the conservative no-store
+      // policy so they always see fresh content.
+      if (req.query && req.query.ts) {
+        res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+      } else {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
       // CSP: no scripts, no external sources, no form submissions, no top
       // navigation. The designer HTML is treated as untrusted (it might
       // call random APIs or include trackers); this strips it down to
