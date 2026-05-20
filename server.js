@@ -8238,6 +8238,12 @@ require('./routes/flavors')(app, {
   UPLOADS_DIR,
 });
 
+// ── Flavor Reviews ────────────────────────────────────────────────────────
+// In-market flavor catalog + customer-review tracking + scheduled review
+// cycles. Lives in routes/flavor-reviews.js and is served on
+// /flavor-reviews.html (standalone page outside the SPA shell).
+require('./routes/flavor-reviews')(app, { get, all, run, requireAuth });
+
 // Unauthenticated standalone HTML for the public share viewer (rendered at
 // /p/:token). Lives outside the SPA shell so it works without a session.
 const publicSpacePath = path.join(__dirname, 'public', 'public-space.html');
