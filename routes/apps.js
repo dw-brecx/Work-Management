@@ -1785,10 +1785,19 @@ module.exports = function attach(app, deps) {
     }
 
     const tree = await ghFetch(`/repos/${parsed.owner}/${parsed.repo}/git/trees/${headSha}?recursive=1`, token);
-    const htmlNodes = (tree.tree || []).filter(n =>
-      n.type === 'blob' &&
-      /\.html?$/i.test(n.path) &&
-      (!repoPath || n.path === repoPath || n.path.startsWith(repoPath + '/'))
+    const allBlobs = (tree.tree || []).filter(n => n.type === 'blob');
+    const inScopeBlobs = allBlobs.filter(n =>
+      !repoPath || n.path === repoPath || n.path.startsWith(repoPath + '/')
+    );
+    const htmlNodes = inScopeBlobs.filter(n => /\.html?$/i.test(n.path));
+    // High-signal log so a "0 assets synced" outcome is easy to diagnose
+    // by checking the server log: did we even SEE any candidate files?
+    console.log(
+      '[apps/github] sync app', appRow.id, 'repo', parsed.owner + '/' + parsed.repo,
+      'branch', branch, 'path', JSON.stringify(repoPath),
+      '— tree blobs', allBlobs.length,
+      ', in-scope', inScopeBlobs.length,
+      ', html', htmlNodes.length
     );
     // Truncated trees on huge repos: warn the user up-front instead of
     // silently syncing a partial set.
@@ -1884,12 +1893,12 @@ module.exports = function attach(app, deps) {
     // references (a page at "public/index.html" pointing at
     // "spaces.css" wants the asset to be at /serve/spaces.css, not
     // /serve/public/spaces.css).
-    const assetNodes = (tree.tree || []).filter(n =>
-      n.type === 'blob' &&
+    const assetNodes = inScopeBlobs.filter(n =>
       !/\.html?$/i.test(n.path) &&
-      ASSET_EXT_RE.test(n.path) &&
-      (!repoPath || n.path === repoPath || n.path.startsWith(repoPath + '/'))
+      ASSET_EXT_RE.test(n.path)
     );
+    console.log('[apps/github] asset candidates:', assetNodes.length,
+      assetNodes.length > 0 ? '— first few: ' + assetNodes.slice(0, 5).map(n => n.path).join(', ') : '(none matched ASSET_EXT_RE in scope)');
     const existingAssets = await all(
       'SELECT id, file_path, repo_file_sha, storage_path FROM app_assets WHERE app_id=?',
       appRow.id
