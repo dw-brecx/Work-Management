@@ -669,7 +669,7 @@
       <div class="ap-preview-toolbar">
         <span>Sandboxed preview of <strong>${escapeHtml(p.file_name || p.name)}</strong>${p.html_size ? ` · ${(p.html_size / 1024).toFixed(1)} KB` : ''}</span>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn ${state.interactiveMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-interactive-toggle" title="${state.interactiveMode ? 'Scripts and buttons in the design are active. Click to disable.' : 'Run the design's JavaScript so buttons and form handlers work. Only enable for pages you trust.'}">
+          <button class="btn ${state.interactiveMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-interactive-toggle" title="${state.interactiveMode ? 'Scripts and buttons are active. Click to disable.' : 'Run the page JavaScript so buttons and form handlers work. Only enable for pages you trust.'}">
             ${state.interactiveMode ? '▶ Interactive' : '⏸ Static'}
           </button>
           <button class="btn ${state.annotateMode ? 'btn-primary' : 'btn-secondary'} btn-small" id="ap-annotate-toggle" title="Click on the design to drop a pin">
