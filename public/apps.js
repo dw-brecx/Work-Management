@@ -1474,7 +1474,14 @@
         syncBtn.disabled = true; syncBtn.textContent = 'Syncing…';
         try {
           const r = await api('POST', '/api/apps/' + state.app.id + '/github/sync');
-          toast(`Sync: +${r.added || 0} added, ${r.updated || 0} updated, ${r.unchanged || 0} unchanged${r.removed ? ', ' + r.removed + ' removed' : ''}`, 'ok');
+          const a = r.assets || {};
+          const assetSummary = (a.added || a.updated || a.removed)
+            ? ` · assets: +${a.added || 0}/${a.updated || 0} updated`
+            : '';
+          toast(
+            `Pages: +${r.added || 0} added, ${r.updated || 0} updated, ${r.unchanged || 0} unchanged${r.removed ? ', ' + r.removed + ' removed' : ''}${assetSummary}`,
+            'ok'
+          );
           // Reload app + dashboard so the new pages + last_sync timestamp appear.
           const fresh = await api('GET', '/api/apps/' + state.app.id);
           state.app = fresh;
@@ -3105,7 +3112,7 @@
     // Version stamp + html2canvas availability check, logged on every
     // load so it's easy to confirm the right build is running when
     // diagnosing pen-snippet issues from the browser console.
-    console.log('[apps] build 2026-05-18.4 — html2canvas:', !!window.html2canvas);
+    console.log('[apps] build 2026-05-18.5 — html2canvas:', !!window.html2canvas);
     await Promise.all([loadMe(), loadTeam()]);
     handleRoute();
   })();
