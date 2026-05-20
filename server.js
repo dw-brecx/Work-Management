@@ -8768,6 +8768,605 @@ app.post('/api/recurring-tasks/:id/run-now', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Marketing post templates ────────────────────────────────────────────────
+// Recurrence math is identical to recurring tasks (reuse rtComputeNextRunDate
+// / rtInitialNextRunDate / rtParseUTC / rtFormatUTC), anchored on a "post
+// date" instead of a "run date". An hourly cron looks ahead at every active
+// template, materialises any upcoming post_date that doesn't yet have a
+// marketing_posts row, and spawns one prep ticket per template task with
+// due_date = post_date - days_before_post (clamped to today). When a task
+// has a reminder_offset_hours > 0, a ticket_reminders row is also inserted
+// for the primary assignee at due_date - offset.
+
+const MKT_PLATFORMS = ['instagram','facebook','tiktok','x','linkedin','youtube','email','ad-facebook','ad-instagram','other'];
+const MKT_POST_KINDS = ['post','story','reel','ad','video','carousel'];
+const MKT_STATUSES = ['planned','in_progress','ready','posted','skipped'];
+
+function mktParseJsonArray(s) {
+  try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+
+// Same shape as rtCleanItem but with days_before_post + reminder_offset_hours
+// instead of due_offset_days. Returns null if the row has no title.
+function mktCleanTask(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const title = String(raw.title || '').trim();
+  if (!title) return null;
+  const description = String(raw.description || '');
+  let assignees = Array.isArray(raw.assignees)
+    ? raw.assignees.map(s => String(s || '').trim()).filter(Boolean)
+    : [];
+  if (!assignees.length && raw.assignee) {
+    const a = String(raw.assignee).trim();
+    if (a) assignees = [a];
+  }
+  assignees = Array.from(new Set(assignees));
+  const reporter = String(raw.reporter || '').trim();
+  const dept = String(raw.dept || '').trim();
+  const allowedPriority = ['Urgent','High','Medium','Low'];
+  const priority = allowedPriority.includes(raw.priority) ? raw.priority : 'Medium';
+  const tags = Array.isArray(raw.tags)
+    ? raw.tags.map(s => String(s || '').trim()).filter(Boolean)
+    : [];
+  const checklist = Array.isArray(raw.checklist)
+    ? raw.checklist.map(c => {
+        if (typeof c === 'string') return { text: c.trim(), done: false };
+        return { text: String((c && c.text) || '').trim(), done: !!(c && c.done) };
+      }).filter(c => c.text)
+    : [];
+  const dbpRaw = parseInt(raw.days_before_post, 10);
+  const days_before_post = Number.isFinite(dbpRaw) && dbpRaw >= 0 && dbpRaw <= 365 ? dbpRaw : 1;
+  const remRaw = parseInt(raw.reminder_offset_hours, 10);
+  const reminder_offset_hours = Number.isFinite(remRaw) && remRaw >= 0 && remRaw <= 24 * 30 ? remRaw : 0;
+  return { title, description, assignees, reporter, priority, dept, tags, checklist, days_before_post, reminder_offset_hours };
+}
+
+function mktHydrateTask(r) {
+  let assignees = mktParseJsonArray(r.assignees_json);
+  if (!assignees.length && r.assignee) assignees = [r.assignee];
+  return {
+    id: r.id,
+    position: r.position,
+    title: r.title || '',
+    description: r.description || '',
+    assignees,
+    assignee: assignees[0] || '',
+    reporter: r.reporter || '',
+    priority: r.priority || 'Medium',
+    dept: r.dept || '',
+    tags: mktParseJsonArray(r.tags_json),
+    checklist: mktParseJsonArray(r.checklist_json),
+    days_before_post: r.days_before_post == null ? 1 : Number(r.days_before_post),
+    reminder_offset_hours: r.reminder_offset_hours == null ? 0 : Number(r.reminder_offset_hours),
+  };
+}
+
+async function mktInsertTask(templateId, position, c) {
+  const ins = await run(
+    `INSERT INTO marketing_post_template_tasks (template_id, position, title, description, assignee, assignees_json, reporter, priority, dept, tags_json, checklist_json, days_before_post, reminder_offset_hours)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    templateId, position, c.title, c.description,
+    c.assignees[0] || '', JSON.stringify(c.assignees),
+    c.reporter, c.priority, c.dept,
+    JSON.stringify(c.tags), JSON.stringify(c.checklist),
+    c.days_before_post, c.reminder_offset_hours
+  );
+  return Number(ins.lastInsertRowid);
+}
+
+function mktCleanTemplateFields(body) {
+  const platform = MKT_PLATFORMS.includes(body.platform) ? body.platform : 'instagram';
+  const post_kind = MKT_POST_KINDS.includes(body.post_kind) ? body.post_kind : 'post';
+  const post_time = /^\d{2}:\d{2}$/.test(String(body.post_time || '')) ? String(body.post_time) : '';
+  return { platform, post_kind, post_time };
+}
+
+async function mktHydrateTemplate(t) {
+  const rows = await all('SELECT * FROM marketing_post_template_tasks WHERE template_id=? ORDER BY position ASC, id ASC', t.id);
+  const tasks = rows.map(mktHydrateTask);
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    platform: t.platform,
+    post_kind: t.post_kind,
+    start_date: t.start_date,
+    post_time: t.post_time,
+    recur_type: t.recur_type,
+    recur_day: t.recur_day,
+    recur_weekday: t.recur_weekday,
+    recur_interval: t.recur_interval,
+    next_post_date: t.next_post_date,
+    last_materialized_date: t.last_materialized_date,
+    active: t.active ? 1 : 0,
+    created_by: t.created_by,
+    tasks,
+    // Convenience: longest lead time across tasks, so the client can
+    // surface "needs X days prep" in the list.
+    lead_time_days: tasks.reduce((m, t) => Math.max(m, t.days_before_post || 0), 0),
+  };
+}
+
+// Spawn one prep ticket for a materialised post. Schema mirrors
+// rtSpawnOneTicket but the due date is anchored to the post date (already
+// pre-computed by the caller as `dueStr` in the "MMM D, YYYY" shape that
+// other ticket dates use). When `reminderAtUtc` is set, also insert a
+// ticket_reminders row for each named assignee so the existing
+// runTicketReminderJob can fire it.
+async function mktSpawnOneTicket(item, ctx, dueStr, reminderAtUtc) {
+  let id = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+    let nextNum = 1000;
+    if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+    const candidate = 'TKT-' + (nextNum + 1);
+    if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
+  }
+  if (!id) throw new Error('could not allocate ticket id');
+
+  const createdStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const assignees = Array.isArray(item.assignees) ? item.assignees : (item.assignee ? [item.assignee] : []);
+  const primaryAssignee = assignees[0] || '';
+  const assigneeUid = primaryAssignee ? await resolveUserIdByName(primaryAssignee) : null;
+  const reporterName = item.reporter || ctx.creatorName || '';
+  const reporterUid = reporterName ? await resolveUserIdByName(reporterName) : null;
+  const requesterName = ctx.creatorName || '';
+  const requesterUid = ctx.creatorId || null;
+
+  // Tag every prep ticket with "Marketing" + the platform so they're easy
+  // to filter on the tickets page. User-provided tags are kept too.
+  const tags = Array.isArray(item.tags) ? item.tags.slice() : [];
+  if (!tags.includes('Marketing')) tags.unshift('Marketing');
+  if (ctx.platform && !tags.includes(ctx.platform)) tags.push(ctx.platform);
+
+  await run(
+    `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)`,
+    id, item.title, requesterName, primaryAssignee, reporterName,
+    item.priority || 'Medium', 'Open', item.dept || '',
+    dueStr, createdStr, 0, JSON.stringify(tags),
+    ctx.creatorId || null, assigneeUid, reporterUid, requesterUid
+  );
+  const fullDescription = (item.description || '') +
+    (ctx.postLabel ? `\n\n— prep task for ${ctx.postLabel}` : '');
+  await run(
+    `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+       ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+    id, fullDescription
+  );
+
+  for (const name of assignees) {
+    if (!name) continue;
+    const uid = await resolveUserIdByName(name);
+    await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, name, uid);
+    if (uid && uid !== ctx.creatorId) {
+      await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        uid, 'assigned', '📣', `Marketing post "${ctx.templateName || ''}" assigned "${item.title}" to you`, id);
+    }
+    // One reminder row per assignee — runTicketReminderJob will send each.
+    if (reminderAtUtc && uid) {
+      await run(
+        `INSERT INTO ticket_reminders (ticket_id, user_id, remind_at, note) VALUES (?,?,?,?)`,
+        id, uid, reminderAtUtc, `Prep for ${ctx.postLabel || ctx.templateName || 'marketing post'}`
+      );
+    }
+  }
+
+  const checklist = Array.isArray(item.checklist) ? item.checklist : [];
+  let pos = 1;
+  for (const c of checklist) {
+    const text = (typeof c === 'string' ? c : (c && c.text) || '').trim();
+    if (!text) continue;
+    await run(
+      `INSERT INTO ticket_subtasks (ticket_id, position, text, done, assignee) VALUES (?,?,?,?,?)`,
+      id, pos++, text, c && c.done ? 1 : 0, primaryAssignee
+    );
+  }
+  try {
+    writeTimeline(id, TL.create,
+      `Ticket spawned by marketing template "${ctx.templateName || ''}" for ${ctx.postLabel || 'upcoming post'}${primaryAssignee ? ` · assigned to ${primaryAssignee}` : ''}`
+    );
+  } catch {}
+  return id;
+}
+
+// Convert a YYYY-MM-DD date to the "Mon D, YYYY" string that ticket dates
+// use elsewhere. Falls back to today on bad input.
+function mktDateToTicketStr(yyyymmdd) {
+  const d = rtParseUTC(yyyymmdd);
+  if (!d) return new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+// Build the "YYYY-MM-DD HH:MM:SS" UTC string that ticket_reminders.remind_at
+// expects, given a YYYY-MM-DD due date and a "hours before due" offset.
+// We anchor the due time at 09:00 UTC (matches the date-only path in
+// /api/tickets/:id/reminders).
+function mktReminderAtUtc(dueYmd, offsetHours) {
+  const d = rtParseUTC(dueYmd);
+  if (!d) return null;
+  d.setUTCHours(9, 0, 0, 0);
+  d.setUTCHours(d.getUTCHours() - Math.max(0, Number(offsetHours) || 0));
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:00`;
+}
+
+// Spawn the marketing_posts row + every prep ticket for a single (template,
+// post_date). Returns { postId, ticketIds }. Safe to skip if a post for the
+// same (template_id, post_date) already exists.
+async function mktMaterializeOnePost(template, postYmd) {
+  const existing = await get(
+    'SELECT id FROM marketing_posts WHERE template_id=? AND post_date=?',
+    template.id, postYmd
+  );
+  if (existing) return { postId: existing.id, ticketIds: [], skipped: true };
+
+  const tasks = (await all(
+    'SELECT * FROM marketing_post_template_tasks WHERE template_id=? ORDER BY position ASC, id ASC',
+    template.id
+  )).map(mktHydrateTask);
+
+  const postLabel = `${template.name || 'post'} · ${postYmd}`;
+  const insPost = await run(
+    `INSERT INTO marketing_posts (template_id, name, platform, post_kind, post_date, post_time, status, notes)
+     VALUES (?, ?, ?, ?, ?, ?, 'planned', '') RETURNING id`,
+    template.id, template.name || '', template.platform || '', template.post_kind || '',
+    postYmd, template.post_time || ''
+  );
+  const postId = Number(insPost.lastInsertRowid);
+
+  const creator = template.created_by ? await getUser(template.created_by) : null;
+  const ctx = {
+    creatorId: template.created_by || null,
+    creatorName: creator?.name || '',
+    templateName: template.name || '',
+    platform: template.platform || '',
+    postLabel,
+  };
+
+  // Compute today once so every task is clamped against the same reference,
+  // regardless of how long the loop takes.
+  const todayYmd = rtTodayUTC();
+  const ticketIds = [];
+
+  for (const task of tasks) {
+    // Due date: post_date - days_before_post, but never earlier than today.
+    const postD = rtParseUTC(postYmd);
+    if (!postD) continue;
+    const dueD = new Date(postD);
+    dueD.setUTCDate(dueD.getUTCDate() - Math.max(0, task.days_before_post || 0));
+    const todayD = rtParseUTC(todayYmd);
+    if (dueD < todayD) dueD.setTime(todayD.getTime());
+    const dueYmd = rtFormatUTC(dueD);
+    const dueStr = mktDateToTicketStr(dueYmd);
+    const reminderAt = task.reminder_offset_hours > 0 ? mktReminderAtUtc(dueYmd, task.reminder_offset_hours) : null;
+
+    const ticketId = await mktSpawnOneTicket(task, ctx, dueStr, reminderAt);
+    await run(
+      `INSERT INTO marketing_post_tickets (post_id, ticket_id, template_task_id, task_title, due_date) VALUES (?,?,?,?,?)`,
+      postId, ticketId, task.id, task.title, dueYmd
+    );
+    ticketIds.push(ticketId);
+  }
+  return { postId, ticketIds, skipped: false };
+}
+
+// Process one active template: materialise every upcoming post_date that's
+// still within today + look-ahead window (max days_before_post across tasks,
+// plus a 1-day buffer so a task with 0 lead time still gets spawned the day
+// before / day of). Rolls next_post_date forward each time we materialise.
+async function mktProcessTemplate(template) {
+  try {
+    if (!template.active) return 0;
+    if (!template.next_post_date) return 0;
+
+    // Look-ahead = max days_before_post across this template's tasks (+ 1).
+    // If the template has no tasks yet, we still materialise on the day of.
+    const taskRows = await all(
+      'SELECT days_before_post FROM marketing_post_template_tasks WHERE template_id=?',
+      template.id
+    );
+    const leadDays = taskRows.reduce((m, r) => Math.max(m, Number(r.days_before_post) || 0), 0);
+    const lookAheadDays = leadDays + 1;
+
+    const today = rtParseUTC(rtTodayUTC());
+    const horizon = new Date(today);
+    horizon.setUTCDate(horizon.getUTCDate() + lookAheadDays);
+
+    let materialized = 0;
+    let cursor = template.next_post_date;
+    // Safety cap: never materialise more than 26 cycles in one cron pass
+    // (a quarter of weekly posts) — prevents a runaway loop if next_post_date
+    // somehow goes stale.
+    for (let i = 0; i < 26; i++) {
+      const d = rtParseUTC(cursor);
+      if (!d || d > horizon) break;
+      const r = await mktMaterializeOnePost(template, cursor);
+      if (!r.skipped) materialized++;
+      // Advance the schedule. last_materialized_date tracks what we just did
+      // so the calendar UI can show "last spawned …".
+      await run(
+        `UPDATE marketing_post_templates SET last_materialized_date=? WHERE id=?`,
+        cursor, template.id
+      );
+      const nextYmd = rtComputeNextRunDate(template, cursor);
+      await run(
+        `UPDATE marketing_post_templates SET next_post_date=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
+        nextYmd, template.id
+      );
+      cursor = nextYmd;
+    }
+    if (materialized) console.log(`[marketing] template #${template.id} "${template.name}" → ${materialized} post(s) materialised`);
+    return materialized;
+  } catch (e) {
+    console.error(`[marketing] template #${template.id} failed:`, e.message);
+    return 0;
+  }
+}
+
+async function runMarketingPostsJob() {
+  try {
+    const today = rtTodayUTC();
+    const due = await all(
+      `SELECT * FROM marketing_post_templates WHERE active=1 AND next_post_date <> '' ORDER BY next_post_date ASC, id ASC`
+    );
+    if (!due.length) return;
+    for (const t of due) await mktProcessTemplate(t);
+  } catch (e) { console.error('[cron:marketing]', e.message); }
+}
+
+// ── Marketing routes ────────────────────────────────────────────────────────
+// Calendar GETs are open to any authed user. Template / post mutations are
+// admin/manager only (the "team's marketing plan", not individual to-dos).
+
+app.get('/api/marketing/templates', requireAuth, async (req, res) => {
+  try {
+    const rows = await all('SELECT * FROM marketing_post_templates ORDER BY active DESC, next_post_date ASC, id DESC');
+    const out = [];
+    for (const r of rows) out.push(await mktHydrateTemplate(r));
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/marketing/templates/:id', requireAuth, async (req, res) => {
+  try {
+    const row = await get('SELECT * FROM marketing_post_templates WHERE id=?', req.params.id);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+    res.json(await mktHydrateTemplate(row));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/marketing/templates', requireAdmin, async (req, res) => {
+  try {
+    const { name, description, start_date, tasks } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(start_date || ''))) return res.status(400).json({ error: 'start_date required (YYYY-MM-DD)' });
+    const r = rtCleanRecurFields(req.body);
+    const m = mktCleanTemplateFields(req.body);
+    const next_post_date = rtInitialNextRunDate({ start_date, ...r });
+    const ins = await run(
+      `INSERT INTO marketing_post_templates (name, description, platform, post_kind, start_date, post_time, recur_type, recur_day, recur_weekday, recur_interval, next_post_date, active, created_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+       RETURNING id`,
+      String(name).trim(), String(description || '').trim(),
+      m.platform, m.post_kind, start_date, m.post_time,
+      r.recur_type, r.recur_day, r.recur_weekday, r.recur_interval,
+      next_post_date, req.session.userId
+    );
+    const id = Number(ins.lastInsertRowid);
+    if (Array.isArray(tasks)) {
+      let pos = 1;
+      for (const raw of tasks) {
+        const c = mktCleanTask(raw);
+        if (c) await mktInsertTask(id, pos++, c);
+      }
+    }
+    const row = await get('SELECT * FROM marketing_post_templates WHERE id=?', id);
+    res.status(201).json(await mktHydrateTemplate(row));
+  } catch (e) { console.error('[marketing:create]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/marketing/templates/:id', requireAdmin, async (req, res) => {
+  try {
+    const existing = await get('SELECT * FROM marketing_post_templates WHERE id=?', req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const name        = b.name        !== undefined ? String(b.name).trim()         : existing.name;
+    const description = b.description !== undefined ? String(b.description).trim()  : existing.description;
+    const start_date  = b.start_date  !== undefined ? String(b.start_date)          : existing.start_date;
+    const active      = b.active      !== undefined ? (b.active ? 1 : 0)            : (existing.active ? 1 : 0);
+    let { platform, post_kind, post_time } = existing;
+    if (b.platform !== undefined || b.post_kind !== undefined || b.post_time !== undefined) {
+      const m = mktCleanTemplateFields({
+        platform:  b.platform  !== undefined ? b.platform  : existing.platform,
+        post_kind: b.post_kind !== undefined ? b.post_kind : existing.post_kind,
+        post_time: b.post_time !== undefined ? b.post_time : existing.post_time,
+      });
+      platform = m.platform; post_kind = m.post_kind; post_time = m.post_time;
+    }
+    let { recur_type, recur_day, recur_weekday, recur_interval } = existing;
+    if (b.recur_type !== undefined) {
+      const r = rtCleanRecurFields(b);
+      recur_type = r.recur_type; recur_day = r.recur_day;
+      recur_weekday = r.recur_weekday; recur_interval = r.recur_interval;
+    }
+    let next_post_date = existing.next_post_date;
+    const scheduleChanged = b.start_date !== undefined || b.recur_type !== undefined || b.recur_day !== undefined || b.recur_weekday !== undefined || b.recur_interval !== undefined;
+    if (scheduleChanged) {
+      next_post_date = rtInitialNextRunDate({ start_date, recur_type, recur_day, recur_weekday, recur_interval });
+    }
+    await run(
+      `UPDATE marketing_post_templates SET name=?, description=?, platform=?, post_kind=?, start_date=?, post_time=?, recur_type=?, recur_day=?, recur_weekday=?, recur_interval=?, next_post_date=?, active=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
+      name, description, platform, post_kind, start_date, post_time,
+      recur_type, recur_day, recur_weekday, recur_interval,
+      next_post_date, active, existing.id
+    );
+    if (Array.isArray(b.tasks)) {
+      await run('DELETE FROM marketing_post_template_tasks WHERE template_id=?', existing.id);
+      let pos = 1;
+      for (const raw of b.tasks) {
+        const c = mktCleanTask(raw);
+        if (c) await mktInsertTask(existing.id, pos++, c);
+      }
+    }
+    const row = await get('SELECT * FROM marketing_post_templates WHERE id=?', existing.id);
+    res.json(await mktHydrateTemplate(row));
+  } catch (e) { console.error('[marketing:update]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/marketing/templates/:id', requireAdmin, async (req, res) => {
+  try {
+    await run('DELETE FROM marketing_post_templates WHERE id=?', req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Granular task endpoints — same shape as the recurring-task item endpoints.
+app.post('/api/marketing/templates/:id/tasks', requireAdmin, async (req, res) => {
+  try {
+    const t = await get('SELECT id FROM marketing_post_templates WHERE id=?', req.params.id);
+    if (!t) return res.status(404).json({ error: 'Not found' });
+    const c = mktCleanTask(req.body);
+    if (!c) return res.status(400).json({ error: 'title required' });
+    const maxRow = await get('SELECT COALESCE(MAX(position),0) AS p FROM marketing_post_template_tasks WHERE template_id=?', t.id);
+    const pos = Number(maxRow?.p || 0) + 1;
+    const taskId = await mktInsertTask(t.id, pos, c);
+    const row = await get('SELECT * FROM marketing_post_template_tasks WHERE id=?', taskId);
+    res.status(201).json(mktHydrateTask(row));
+  } catch (e) { console.error('[marketing:task-create]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/marketing/templates/:id/tasks/:taskId', requireAdmin, async (req, res) => {
+  try {
+    const existing = await get('SELECT * FROM marketing_post_template_tasks WHERE id=? AND template_id=?', req.params.taskId, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const c = mktCleanTask(req.body);
+    if (!c) return res.status(400).json({ error: 'title required' });
+    await run(
+      `UPDATE marketing_post_template_tasks SET title=?, description=?, assignee=?, assignees_json=?, reporter=?, priority=?, dept=?, tags_json=?, checklist_json=?, days_before_post=?, reminder_offset_hours=? WHERE id=?`,
+      c.title, c.description, c.assignees[0] || '', JSON.stringify(c.assignees),
+      c.reporter, c.priority, c.dept,
+      JSON.stringify(c.tags), JSON.stringify(c.checklist),
+      c.days_before_post, c.reminder_offset_hours, existing.id
+    );
+    const row = await get('SELECT * FROM marketing_post_template_tasks WHERE id=?', existing.id);
+    res.json(mktHydrateTask(row));
+  } catch (e) { console.error('[marketing:task-update]', e); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/marketing/templates/:id/tasks/:taskId', requireAdmin, async (req, res) => {
+  try {
+    await run('DELETE FROM marketing_post_template_tasks WHERE id=? AND template_id=?', req.params.taskId, req.params.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Manual fire — materialise the *next* upcoming post immediately (ignores
+// the lead-time look-ahead window). Useful when the user just finished
+// authoring a template and wants to see tickets show up right now.
+app.post('/api/marketing/templates/:id/materialize-now', requireAdmin, async (req, res) => {
+  try {
+    const t = await get('SELECT * FROM marketing_post_templates WHERE id=?', req.params.id);
+    if (!t) return res.status(404).json({ error: 'Not found' });
+    if (!t.next_post_date) return res.status(400).json({ error: 'template has no upcoming post date' });
+    const r = await mktMaterializeOnePost(t, t.next_post_date);
+    // Roll the schedule forward even on manual fires so we don't double-spawn.
+    if (!r.skipped) {
+      const nextYmd = rtComputeNextRunDate(t, t.next_post_date);
+      await run(
+        `UPDATE marketing_post_templates SET last_materialized_date=?, next_post_date=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
+        t.next_post_date, nextYmd, t.id
+      );
+    }
+    res.json({ ok: true, postId: r.postId, ticketIds: r.ticketIds, alreadyExisted: !!r.skipped });
+  } catch (e) { console.error('[marketing:materialize]', e); res.status(500).json({ error: e.message }); }
+});
+
+// Calendar feed: every materialised post in a date range. Used by month
+// + week views. Each row includes its linked ticket ids so the drawer can
+// fetch ticket detail without a second round-trip.
+app.get('/api/marketing/posts', requireAuth, async (req, res) => {
+  try {
+    const { from, to, platform, status } = req.query;
+    const where = [];
+    const params = [];
+    if (from && /^\d{4}-\d{2}-\d{2}$/.test(String(from))) { where.push('post_date >= ?'); params.push(from); }
+    if (to   && /^\d{4}-\d{2}-\d{2}$/.test(String(to)))   { where.push('post_date <= ?'); params.push(to); }
+    if (platform) { where.push('platform = ?'); params.push(String(platform)); }
+    if (status)   { where.push('status = ?');   params.push(String(status));   }
+    const sql = `SELECT * FROM marketing_posts ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY post_date ASC, id ASC`;
+    const posts = await all(sql, ...params);
+    if (!posts.length) return res.json([]);
+    const ids = posts.map(p => p.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const links = await all(
+      `SELECT post_id, ticket_id, task_title, due_date FROM marketing_post_tickets WHERE post_id IN (${placeholders}) ORDER BY due_date ASC, id ASC`,
+      ...ids
+    );
+    const byPost = new Map();
+    for (const l of links) {
+      if (!byPost.has(l.post_id)) byPost.set(l.post_id, []);
+      byPost.get(l.post_id).push(l);
+    }
+    res.json(posts.map(p => ({ ...p, tickets: byPost.get(p.id) || [] })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/marketing/posts/:id', requireAuth, async (req, res) => {
+  try {
+    const p = await get('SELECT * FROM marketing_posts WHERE id=?', req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    const links = await all('SELECT * FROM marketing_post_tickets WHERE post_id=? ORDER BY due_date ASC, id ASC', p.id);
+    // Pull live status of each ticket so the drawer can render badges.
+    const tickets = [];
+    for (const l of links) {
+      const t = await get('SELECT id, title, status, due, assignee FROM tickets WHERE id=?', l.ticket_id);
+      tickets.push({ ...l, ticket: t || null });
+    }
+    res.json({ ...p, tickets });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/marketing/posts/:id', requireAuth, async (req, res) => {
+  try {
+    const p = await get('SELECT * FROM marketing_posts WHERE id=?', req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    const b = req.body || {};
+    const status = b.status && MKT_STATUSES.includes(b.status) ? b.status : p.status;
+    const notes = b.notes !== undefined ? String(b.notes).slice(0, 4000) : p.notes;
+    const actual = b.status === 'posted' && !p.actual_posted_at
+      ? new Date().toISOString().replace('T', ' ').replace(/\..*$/, '')
+      : (b.actual_posted_at !== undefined ? b.actual_posted_at : p.actual_posted_at);
+    await run(
+      `UPDATE marketing_posts SET status=?, notes=?, actual_posted_at=?, updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`,
+      status, notes, actual, p.id
+    );
+    const row = await get('SELECT * FROM marketing_posts WHERE id=?', p.id);
+    res.json(row);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Skip / cancel a single materialised occurrence. When ?deleteTickets=1 is
+// passed, the spawned prep tickets are soft-deleted (status='Deleted')
+// rather than hard-removed — that keeps the existing trash flow consistent.
+app.delete('/api/marketing/posts/:id', requireAdmin, async (req, res) => {
+  try {
+    const p = await get('SELECT * FROM marketing_posts WHERE id=?', req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    const deleteTickets = String(req.query.deleteTickets || '') === '1';
+    if (deleteTickets) {
+      const links = await all('SELECT ticket_id FROM marketing_post_tickets WHERE post_id=?', p.id);
+      for (const l of links) {
+        try { await run(`UPDATE tickets SET status='Deleted' WHERE id=?`, l.ticket_id); } catch {}
+      }
+    }
+    await run('DELETE FROM marketing_posts WHERE id=?', p.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 // Registered last, after every API route, so it doesn't intercept genuine
 // /api/* GETs (which previously returned a fake 404 because this handler ran
@@ -8919,6 +9518,9 @@ app.get('*', (req, res) => {
     // Every hour: spawn tickets for any recurring task whose next_run_date
     // is at or before today's UTC date.
     setInterval(runRecurringTasksJob, 60 * 60 * 1000);
+    // Every hour: materialise upcoming marketing posts within their lead-time
+    // window and spawn the prep tickets.
+    setInterval(runMarketingPostsJob, 60 * 60 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
@@ -8931,6 +9533,7 @@ app.get('*', (req, res) => {
       chatPurgeOldClosedGroups();
       runTicketAttachmentRetentionJob();
       runRecurringTasksJob();
+      runMarketingPostsJob();
     }, 30 * 1000);
     console.log('✅  Email cron loops scheduled (meeting/ticket/personal reminders, deadline, overdue-digest).');
   } catch(e) {
