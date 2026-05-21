@@ -1940,6 +1940,52 @@ async function init() {
   // Claude parses them on demand. Stored as TEXT — captures can be
   // several MB (esp. 10-page review walks); PG handles that fine.
   await safeAlter("ALTER TABLE fr_settings ADD COLUMN scraper_token TEXT NOT NULL DEFAULT ''");
+
+  // Strict review dedup: a normalized key on (reviewer_name, posted_at, body)
+  // catches re-imports and Claude double-emitting the same row. Computed in
+  // JS at insert time (see routes); we mirror the normalization here for the
+  // one-time backfill + retroactive cleanup below. Indexed on
+  // (flavor_id, dedup_key) so the runtime lookup is O(log N).
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''");
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_dedup
+    ON fr_reviews(flavor_id, dedup_key) WHERE dedup_key <> ''`);
+
+  // One-time: backfill dedup_key for existing rows, then delete duplicates
+  // (keep MIN(id) per (flavor_id, dedup_key) group, skipping rows whose body
+  // is empty since their key would collapse other empty-body rows together).
+  // Gated by a fr_settings flag so it runs exactly once per install — even
+  // if the server restarts mid-cleanup, idempotency comes from the flag.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN dedup_v1_done BOOLEAN NOT NULL DEFAULT FALSE");
+  try {
+    const flag = await pool.query("SELECT dedup_v1_done FROM fr_settings WHERE id=1");
+    if (flag.rows[0] && !flag.rows[0].dedup_v1_done) {
+      // Backfill keys. Empty-body rows get an empty key so they're never
+      // deduped against each other.
+      await pool.query(`
+        UPDATE fr_reviews
+        SET dedup_key = CASE
+          WHEN BTRIM(COALESCE(body, '')) = '' THEN ''
+          ELSE LOWER(BTRIM(COALESCE(reviewer_name, '')))
+               || E'\\x01' || COALESCE(posted_at, '')
+               || E'\\x01' || LOWER(REGEXP_REPLACE(BTRIM(body), E'\\s+', ' ', 'g'))
+        END
+        WHERE dedup_key = ''`);
+      // Retroactive cleanup. Keeps the earliest (lowest-id) row in each
+      // duplicate group. Logs the count so the operator can verify.
+      const del = await pool.query(`
+        DELETE FROM fr_reviews
+        WHERE dedup_key <> ''
+          AND id NOT IN (
+            SELECT MIN(id) FROM fr_reviews
+            WHERE dedup_key <> ''
+            GROUP BY flavor_id, dedup_key
+          )`);
+      console.log('[flavor-reviews] dedup_v1 cleanup: removed ' + (del.rowCount || 0) + ' duplicate review row(s)');
+      await pool.query("UPDATE fr_settings SET dedup_v1_done=TRUE WHERE id=1");
+    }
+  } catch (e) {
+    console.warn('[flavor-reviews] dedup_v1 cleanup skipped:', e.message);
+  }
   await pool.query(`CREATE TABLE IF NOT EXISTS fr_scraper_inbox (
     id BIGSERIAL PRIMARY KEY,
     kind TEXT NOT NULL,                 -- 'product' | 'reviews'

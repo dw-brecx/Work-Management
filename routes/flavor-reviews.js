@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth } = deps;
+  const { get, all, run, requireAuth, pool } = deps;
   const { randomBytes } = require('crypto');
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
   const aiReady = !!ANTHROPIC_API_KEY;
@@ -358,6 +358,19 @@ module.exports = function attach(app, deps) {
   });
 
   // ── Reviews ──────────────────────────────────────────────────────────────
+  // Strict review dedup key. Two reviews on the same flavor with identical
+  // normalized reviewer_name + posted_at + body are treated as the same
+  // review and the later one is dropped silently. Empty body → empty key
+  // (we don't dedupe rating-only rows since their key would collapse all
+  // anonymous "5-star, no body" entries into one).
+  function computeDedupKey(reviewer_name, posted_at, body) {
+    const b = String(body || '').trim().replace(/\s+/g, ' ');
+    if (!b) return '';
+    const n = String(reviewer_name || '').trim().toLowerCase();
+    const d = String(posted_at || '').trim();
+    return n + '' + d + '' + b.toLowerCase();
+  }
+
   function classifySentiment(rating) {
     if (!rating) return '';
     if (rating <= 2) return 'negative';
@@ -409,12 +422,22 @@ module.exports = function attach(app, deps) {
       const { errors, clean } = validateReview(req.body || {});
       if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
-      // Soft dedup against an already-addressed identical review
-      // (same source + reviewer_name + body for the same flavor).
+      // Dedup pass 1: stable source-side review ID (rare — only when the
+      // caller supplied one). Cheap exact match.
       if (clean.source_review_id) {
         const dup = await get(
           'SELECT id, status, issue_id FROM fr_reviews WHERE flavor_id=? AND source=? AND source_review_id=?',
           flavorId, clean.source, clean.source_review_id
+        );
+        if (dup) return res.status(200).json({ duplicate: true, existing_id: dup.id, existing_status: dup.status });
+      }
+      // Dedup pass 2: strict content-based key. Catches the case where the
+      // same review lands without a source_review_id (e.g. paste, bookmarklet).
+      const dedupKey = computeDedupKey(clean.reviewer_name, clean.posted_at, clean.body);
+      if (dedupKey) {
+        const dup = await get(
+          'SELECT id, status FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1',
+          flavorId, dedupKey
         );
         if (dup) return res.status(200).json({ duplicate: true, existing_id: dup.id, existing_status: dup.status });
       }
@@ -425,11 +448,11 @@ module.exports = function attach(app, deps) {
       // The dedicated "find duplicates" AI endpoint covers the harder cases.
       const ins = await run(
         `INSERT INTO fr_reviews
-           (flavor_id, source, source_review_id, rating, reviewer_name, title, body, url, posted_at, sentiment, created_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+           (flavor_id, source, source_review_id, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
         flavorId, clean.source, clean.source_review_id, clean.rating,
         clean.reviewer_name, clean.title, clean.body, clean.url, clean.posted_at,
-        sentiment, req.session.userId
+        sentiment, dedupKey, req.session.userId
       );
       const row = await get('SELECT * FROM fr_reviews WHERE id=?', ins.lastInsertRowid);
 
@@ -1765,6 +1788,9 @@ module.exports = function attach(app, deps) {
       if (!flavor) return res.status(404).json({ error: 'Flavor not found' });
 
       const created = []; const skipped = []; const errors = [];
+      // Intra-batch dedup: catches Claude double-emitting the same row OR
+      // a user pasting the same review twice within one import.
+      const seenInBatch = new Set();
       for (let i = 0; i < items.length; i++) {
         const r = items[i];
         try {
@@ -1774,24 +1800,33 @@ module.exports = function attach(app, deps) {
           const reviewer_name = String(r.reviewer_name || '').slice(0, 120);
           const posted_at = /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '';
 
-          // Soft dedup: same flavor + source + body (case-insensitive) within
-          // a 60-char prefix. Avoids re-importing the same review on a refetch.
-          if (body) {
-            const prefix = body.slice(0, 60);
+          // Strict dedup by reviewer_name + posted_at + body (normalized).
+          // Empty-body rows aren't dedupable (key collapses across all
+          // anonymous rating-only reviews), so they always insert.
+          const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+          if (dedupKey) {
+            if (seenInBatch.has(dedupKey)) {
+              skipped.push({ index: i, reason: 'duplicate-in-batch' });
+              continue;
+            }
             const dup = await get(
-              `SELECT id FROM fr_reviews WHERE flavor_id=? AND source=? AND LOWER(LEFT(body, 60))=LOWER(?)`,
-              flavorId, source, prefix
+              `SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1`,
+              flavorId, dedupKey
             );
-            if (dup) { skipped.push({ index: i, reason: 'duplicate' }); continue; }
+            if (dup) {
+              skipped.push({ index: i, reason: 'duplicate', existing_id: dup.id });
+              continue;
+            }
+            seenInBatch.add(dedupKey);
           }
 
           const sentiment = classifySentiment(rating);
           const ins = await run(
             `INSERT INTO fr_reviews
-               (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, created_by)
-             VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+               (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
             flavorId, source, rating, reviewer_name, title, body, sourceUrl, posted_at,
-            sentiment, req.session.userId
+            sentiment, dedupKey, req.session.userId
           );
           created.push({ index: i, id: ins.lastInsertRowid });
           if (sentiment === 'negative') {
@@ -2092,6 +2127,286 @@ module.exports = function attach(app, deps) {
 })();`;
     return 'javascript:' + encodeURIComponent(body);
   }
+
+  // ── Manual dedup pass ───────────────────────────────────────────────────
+  // The startup cleanup runs once via fr_settings.dedup_v1_done. Use this
+  // endpoint to dedupe again on demand (after a bad import, or if
+  // duplicates somehow snuck in via a different path).
+  app.post('/api/flavor-reviews/reviews/dedupe', requireAuth, async (req, res) => {
+    try {
+      // 1) Backfill any rows missing a key (defensive — every insert path
+      //    now stamps it, but a stray INSERT or restore could leave gaps).
+      await pool.query(`
+        UPDATE fr_reviews
+        SET dedup_key = CASE
+          WHEN BTRIM(COALESCE(body, '')) = '' THEN ''
+          ELSE LOWER(BTRIM(COALESCE(reviewer_name, '')))
+               || E'\\x01' || COALESCE(posted_at, '')
+               || E'\\x01' || LOWER(REGEXP_REPLACE(BTRIM(body), E'\\s+', ' ', 'g'))
+        END
+        WHERE dedup_key = ''
+          AND BTRIM(COALESCE(body, '')) <> ''`);
+      // 2) Delete duplicates, keeping the earliest (MIN id) per group.
+      const del = await pool.query(`
+        DELETE FROM fr_reviews
+        WHERE dedup_key <> ''
+          AND id NOT IN (
+            SELECT MIN(id) FROM fr_reviews
+            WHERE dedup_key <> ''
+            GROUP BY flavor_id, dedup_key
+          )`);
+      res.json({ deleted: Number(del.rowCount || 0) });
+    } catch (e) {
+      console.error('[fr] manual dedupe failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Smart Import Agent ──────────────────────────────────────────────────
+  // One URL in, one structured proposal out. The agent:
+  //   1. Classifies the URL by path (product vs reviews vs unknown).
+  //   2. Resolves content: bookmarklet inbox item by id > Claude web_fetch
+  //      > server-side fetch. First one that succeeds wins.
+  //   3. Runs the matching extraction (variations OR reviews).
+  //   4. For product URLs: ALSO tries the derived /product-reviews/<asin>/
+  //      URL in the same call so the user gets a "32 reviews waiting" hint
+  //      and can save them to the right flavor after approval.
+  //   5. For reviews URLs: looks up which flavor owns this ASIN
+  //      (fr_flavor_links.asin), pre-fills the approval grid so the user
+  //      doesn't have to pick a target.
+  // Nothing writes to the DB — the existing /confirm + /reviews-confirm
+  // endpoints handle that after the user approves. Keeps the agent safe.
+
+  function classifyAmazonUrl(url) {
+    const s = String(url || '');
+    if (!/amazon\./i.test(s)) {
+      // Allow paths even when host isn't amazon (some mirrors / shortened URLs).
+      const revHit = /\/product-reviews\/([A-Z0-9]{10})/i.exec(s);
+      if (revHit) return { kind: 'reviews', asin: revHit[1].toUpperCase() };
+      const prodHit = /\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/i.exec(s);
+      if (prodHit) return { kind: 'product', asin: prodHit[1].toUpperCase() };
+      return { kind: 'unsupported', asin: '' };
+    }
+    const revMatch = /\/product-reviews\/([A-Z0-9]{10})/i.exec(s);
+    if (revMatch) return { kind: 'reviews', asin: revMatch[1].toUpperCase() };
+    const prodMatch = /\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/i.exec(s);
+    if (prodMatch) return { kind: 'product', asin: prodMatch[1].toUpperCase() };
+    return { kind: 'unknown', asin: '' };
+  }
+
+  // Run extraction directly from raw HTML (used for inbox-sourced content).
+  async function extractFromHtml(html, urlContext, expectedKind) {
+    const trimmed = stripHtmlNoise(html).slice(0, 120000);
+    if (expectedKind === 'reviews') {
+      const raw = await anthropicCall({
+        system: REVIEW_EXTRACT_SYSTEM,
+        userText: `Captured from ${urlContext}. The HTML may contain multiple paginated review pages concatenated with <!--PAGEBREAK--> markers; treat them as one continuous stream and don't duplicate.\n\nHTML:\n${trimmed}`,
+        maxTokens: 8000,
+      });
+      return parseReviewsJSON(raw);
+    }
+    const raw = await anthropicCall({
+      system: EXTRACT_SYSTEM,
+      userText: `Captured from ${urlContext}. Extract every flavor variation per your instructions.\n\nHTML:\n${trimmed}`,
+      maxTokens: 3500,
+    });
+    return parseExtractJSON(raw);
+  }
+
+  // Try web_fetch then server_fetch for a URL. Returns the parsed extraction
+  // and which path succeeded, or null if both fail.
+  async function fetchAndExtract(url, expectedKind) {
+    // A) Claude web_fetch — handles both fetch and extract in one call.
+    try {
+      const raw = await anthropicCall({
+        system: expectedKind === 'reviews' ? REVIEW_EXTRACT_SYSTEM : EXTRACT_SYSTEM,
+        userText: expectedKind === 'reviews'
+          ? `Fetch this reviews page and extract every review. URL: ${url}`
+          : `Fetch this Amazon URL and extract every flavor variation.\n\nURL: ${url}\n\nUse the web_fetch tool to read the page, then output the JSON described.`,
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3 }],
+        maxTokens: expectedKind === 'reviews' ? 8000 : 3500,
+        betaHeader: 'web-fetch-2025-09-10',
+      });
+      const parsed = expectedKind === 'reviews' ? parseReviewsJSON(raw) : parseExtractJSON(raw);
+      const ok = expectedKind === 'reviews' ? parsed.reviews.length : parsed.variations.length;
+      if (ok) return { extraction: parsed, source: 'claude_web_fetch' };
+    } catch (e) {
+      console.warn('[fr agent web_fetch]', e.message);
+    }
+    // B) Server-side fetch with realistic UA.
+    try {
+      const html = await serverFetchHtml(url);
+      const parsed = await extractFromHtml(html, url, expectedKind);
+      const ok = expectedKind === 'reviews' ? parsed.reviews.length : parsed.variations.length;
+      if (ok) return { extraction: parsed, source: 'server_fetch' };
+    } catch (e) {
+      console.warn('[fr agent server_fetch]', e.message);
+    }
+    return null;
+  }
+
+  app.post('/api/flavor-reviews/import/agent', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const url = String(req.body?.url || '').trim();
+      const inboxId = Number(req.body?.inbox_id || 0);
+      if (!url && !inboxId) return res.status(400).json({ error: 'Provide a URL or pick an inbox capture.' });
+
+      // 1. Resolve URL + classification (inbox source URL wins over passed URL).
+      let urlToUse = url;
+      let inboxRow = null;
+      if (inboxId) {
+        inboxRow = await get('SELECT id, html, source_url, kind FROM fr_scraper_inbox WHERE id=?', inboxId);
+        if (!inboxRow) return res.status(404).json({ error: 'Inbox capture not found' });
+        if (inboxRow.source_url) urlToUse = inboxRow.source_url;
+      }
+      const detected = classifyAmazonUrl(urlToUse);
+      if (detected.kind === 'unsupported') {
+        return res.json({
+          ok: false,
+          action: 'unsupported',
+          source_url: urlToUse,
+          message: `Only Amazon URLs are supported right now. Got: ${urlToUse}`,
+        });
+      }
+
+      // Decide what kind to extract for. Inbox row already declares its kind;
+      // for raw URLs we use the detected path. "unknown" defaults to product.
+      const expectedKind = inboxRow ? inboxRow.kind
+        : (detected.kind === 'reviews' ? 'reviews' : 'product');
+
+      // 2. Get extraction
+      let extraction = null;
+      let source = null;
+      if (inboxRow) {
+        try {
+          extraction = await extractFromHtml(inboxRow.html, urlToUse, expectedKind);
+          source = 'bookmarklet_inbox';
+        } catch (e) {
+          console.warn('[fr agent inbox extract]', e.message);
+        }
+      }
+      if (!extraction || (expectedKind === 'reviews' ? !extraction.reviews.length : !extraction.variations.length)) {
+        if (urlToUse) {
+          const got = await fetchAndExtract(urlToUse, expectedKind);
+          if (got) { extraction = got.extraction; source = got.source; }
+        }
+      }
+
+      if (!extraction || (expectedKind === 'reviews' ? !extraction.reviews.length : !extraction.variations.length)) {
+        // Couldn't get anything useful. Tell the user to use the bookmarklet.
+        return res.json({
+          ok: false,
+          action: 'needs_capture',
+          source_url: urlToUse,
+          detected,
+          expected_kind: expectedKind,
+          message: 'Couldn\'t auto-fetch the page (Amazon usually blocks server-side scrapes). Click the bookmarklet on this URL in your browser — it\'ll land in the inbox and you can re-run the agent picking that capture.',
+        });
+      }
+
+      // 3. Branch on kind
+      if (expectedKind === 'reviews') {
+        // Look up flavor by ASIN — first via fr_flavor_links, fall back to fr_flavors.amazon_asin
+        let flavor = null;
+        if (detected.asin) {
+          flavor = await get(
+            `SELECT f.id, f.name, f.variant FROM fr_flavors f
+             JOIN fr_flavor_links l ON l.flavor_id=f.id
+             WHERE l.asin=? LIMIT 1`, detected.asin);
+          if (!flavor) {
+            flavor = await get('SELECT id, name, variant FROM fr_flavors WHERE amazon_asin=? LIMIT 1', detected.asin);
+          }
+        }
+        return res.json({
+          ok: true,
+          action: 'reviews-proposal',
+          kind: 'reviews',
+          source_url: urlToUse,
+          source,
+          detected,
+          flavor,            // null if no match — UI will ask user to pick
+          reviews: extraction.reviews,
+        });
+      }
+
+      // Product path
+      // Backfill ASINs from URL if Claude missed any
+      for (const v of extraction.variations) {
+        if (!v.asin && detected.asin) v.asin = detected.asin;
+      }
+
+      // Match against existing catalog. Same simple two-pass as match-batch:
+      // exact case-insensitive name, then AI fuzzy if anything's left.
+      const flavors = await all('SELECT id, name, variant, kind FROM fr_flavors');
+      const matches = extraction.variations.map((v, idx) => {
+        const name = String(v.flavor_name || '').trim().toLowerCase();
+        if (!name) return { variation_index: idx, suggested_flavor_id: null, confidence: 0 };
+        const hit = flavors.find(f => f.name.toLowerCase() === name);
+        if (hit) return { variation_index: idx, suggested_flavor_id: hit.id, suggested_flavor_name: hit.name, confidence: 1.0 };
+        return { variation_index: idx, suggested_flavor_id: null, confidence: 0 };
+      });
+      const unmatched = matches.filter(m => m.suggested_flavor_id === null);
+      if (unmatched.length && flavors.length) {
+        try {
+          const system = "You match candidate flavor names against an existing catalog. " +
+            "Return ONLY JSON: { \"<index>\": <existing_flavor_id or null>, ... }. " +
+            "Match only when confident. Ignore size/pack qualifiers.";
+          const userText =
+            `Existing flavors:\n` + flavors.map(f => `id=${f.id} ${f.name} (${f.variant})`).join('\n') +
+            `\n\nCandidates:\n` + unmatched.map(m => `index=${m.variation_index} ${extraction.variations[m.variation_index].flavor_name} — ${extraction.variations[m.variation_index].title}`).join('\n');
+          const raw = await anthropicCall({ system, userText, maxTokens: 600 });
+          const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+          const scores = JSON.parse(cleaned);
+          for (const m of unmatched) {
+            const v = scores[String(m.variation_index)];
+            if (v != null && Number.isFinite(Number(v))) {
+              const flav = flavors.find(f => f.id === Number(v));
+              if (flav) { m.suggested_flavor_id = flav.id; m.suggested_flavor_name = flav.name; m.confidence = 0.6; }
+            }
+          }
+        } catch (e) {
+          console.warn('[fr agent fuzzy match]', e.message);
+        }
+      }
+
+      // 4. Opportunistic reviews pull from /product-reviews/<asin>/.
+      // Best-effort. If Amazon blocks (typical), we just skip and the user can
+      // re-run the agent on the reviews URL via the bookmarklet inbox.
+      let bonusReviews = null;
+      if (detected.asin && expectedKind === 'product') {
+        const reviewsUrl = 'https://www.amazon.com/product-reviews/' + detected.asin + '/';
+        try {
+          const got = await fetchAndExtract(reviewsUrl, 'reviews');
+          if (got && got.extraction.reviews.length) {
+            bonusReviews = {
+              url: reviewsUrl,
+              reviews: got.extraction.reviews,
+              fetched_via: got.source,
+            };
+          }
+        } catch (e) {
+          console.warn('[fr agent bonus reviews]', e.message);
+        }
+      }
+
+      return res.json({
+        ok: true,
+        action: 'product-proposal',
+        kind: 'product',
+        source_url: urlToUse,
+        source,
+        detected,
+        page_summary: extraction.page_summary,
+        variations: extraction.variations,
+        matches,
+        bonus_reviews: bonusReviews,
+      });
+    } catch (e) {
+      console.error('[fr agent] failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   console.log('[flavor-reviews] mounted (' + (aiReady ? 'AI enabled' : 'AI disabled — set ANTHROPIC_API_KEY') + ')');
 };

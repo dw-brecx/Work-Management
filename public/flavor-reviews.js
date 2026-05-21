@@ -94,6 +94,7 @@
     const m7 = /^\/calendar\/(\d{4}-\d{2})\/?$/.exec(h); if (m7) return { view: 'calendar', month: m7[1] };
     if (h === '/bulk-import') return { view: 'bulk-import' };
     if (h === '/import')      return { view: 'import' };
+    if (h === '/agent')       return { view: 'agent' };
     if (h === '/settings')    return { view: 'settings' };
     const m8 = /^\/flavor\/(\d+)\/reviews-import\/?$/.exec(h);
     if (m8) return { view: 'reviews-import', id: Number(m8[1]) };
@@ -198,7 +199,7 @@
           <button class="btn-sec" onclick="window.location.hash='/calendar'">📅 Calendar</button>
           <button class="btn-sec" onclick="window.location.hash='/flavors'">All flavors</button>
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" id="dash-refresh-ai">✨ Refresh AI priority</button>` : ''}
-          ${data.ai_enabled ? `<button class="btn-sec btn-ai" onclick="window.location.hash='/import'">✨ Import from Amazon URL</button>` : ''}
+          ${data.ai_enabled ? `<button class="btn-sec btn-ai" onclick="window.location.hash='/agent'">🤖 Smart Import (paste any URL)</button>` : ''}
           <button class="btn-primary" onclick="window.location.hash='/bulk-import'">+ Add flavors</button>
         </div>
       </div>
@@ -293,7 +294,7 @@
           <p class="fr-lede">Your in-market flavor catalog. Click into one to log a new review, open an issue, or see the history.</p>
         </div>
         <div class="fr-header-actions">
-          <button class="btn-sec btn-ai" onclick="window.location.hash='/import'">✨ Import from Amazon URL</button>
+          <button class="btn-sec btn-ai" onclick="window.location.hash='/agent'">🤖 Smart Import</button>
           <button class="btn-sec" onclick="window.location.hash='/bulk-import'">+ Bulk paste</button>
           <button class="btn-primary" id="fl-add">+ Add flavor</button>
         </div>
@@ -505,7 +506,7 @@
             ${f.links.length ? f.links.map(linkRow).join('') : '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}
             <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
               <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
-              <button class="btn-tiny" onclick="window.location.hash='/import'">✨ Add via URL</button>
+              <button class="btn-tiny" onclick="window.location.hash='/agent'">🤖 Add via URL</button>
             </div>
           </div>
 
@@ -1234,6 +1235,392 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       toast(e.message, 'err');
       $('imp-confirm').disabled = false;
       $('imp-confirm').textContent = 'Import selected';
+    }
+  }
+
+  // ── Smart Import Agent: one URL → agent figures out what to do ─────────
+  // Replaces the dashboard's "Import from Amazon URL" button. Single URL
+  // input, optional inbox picker. Backend classifies product/reviews,
+  // fetches via web_fetch → server → inbox, extracts, and for products
+  // also tries to pull reviews from /product-reviews/<asin>/ in one call.
+  // We dispatch on action: 'product-proposal' / 'reviews-proposal' /
+  // 'needs_capture' / 'unsupported'. The two proposal actions feed the
+  // SAME approval grids the older /import and /flavor/:id/reviews-import
+  // pages use — so nothing here re-implements that UI.
+
+  async function renderAgent() {
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/', 'Dashboard')}
+        ${breadcrumb([{ label: 'Dashboard', href: '/' }, { label: 'Smart Import' }])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">🤖</span> Smart Import</h1>
+          <p class="fr-lede">Paste any Amazon URL — product page or reviews page. The agent classifies it, fetches the content (or pulls from your bookmarklet inbox), extracts whatever's relevant, and for product URLs also opportunistically grabs the corresponding reviews. You always confirm before anything writes.</p>
+        </div>
+      </div>
+
+      <div id="ag-inbox" style="max-width:760px;margin-bottom:14px"></div>
+
+      <div id="ag-step-1" class="card" style="max-width:760px">
+        <div class="card-head"><h3>Paste a URL</h3></div>
+        <div class="form-row">
+          <label class="fr-label">Amazon URL</label>
+          <input type="url" id="ag-url" placeholder="https://www.amazon.com/dp/B0… OR https://www.amazon.com/product-reviews/B0…">
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">Examples: a parent product URL (extracts all variations + reviews), a single product URL, or a reviews URL (auto-matches to the flavor if we already have that ASIN).</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary" id="ag-go">🤖 Run agent</button>
+          <button class="btn-sec" onclick="window.location.hash='/settings'">📥 Set up bookmarklet</button>
+        </div>
+        <div id="ag-status"></div>
+      </div>
+
+      <div id="ag-result" style="display:none"></div>
+    `);
+
+    $('ag-go').addEventListener('click', () => runAgent({ url: $('ag-url').value.trim() }));
+    // Pressing Enter in the URL field also runs.
+    $('ag-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ag-go').click(); });
+    // Render the inbox picker — clicking an item runs the agent against it.
+    renderAgentInbox();
+  }
+
+  async function renderAgentInbox() {
+    const host = $('ag-inbox');
+    if (!host) return;
+    try {
+      const { items } = await apiGet('/api/flavor-reviews/scraper/inbox');
+      if (!items.length) {
+        host.innerHTML = `
+          <div class="card" style="border-style:dashed;background:transparent">
+            <div style="display:flex;gap:10px;align-items:center">
+              <div style="font-size:22px">📥</div>
+              <div style="flex:1">
+                <div style="font-size:13px;font-weight:650">Bookmarklet inbox is empty</div>
+                <div style="font-size:11.5px;color:var(--text3);margin-top:2px">When auto-fetch is blocked, set up the <a onclick="window.location.hash='/settings'" style="color:var(--accent);cursor:pointer">bookmarklet</a> and click it on the Amazon page — captures land here and the agent picks them up.</div>
+              </div>
+            </div>
+          </div>`;
+        return;
+      }
+      host.innerHTML = `
+        <div class="card" style="background:linear-gradient(135deg,#faf5ff,#fff);border-color:#e9d5ff">
+          <div class="card-head" style="border-bottom:1px solid #e9d5ff;padding-bottom:8px;margin-bottom:10px">
+            <h3>📥 Or pick a bookmarklet capture · ${items.length}</h3>
+            <div style="font-size:11px;color:var(--text3)">The agent extracts and routes them the same way as a URL.</div>
+          </div>
+          ${items.map(it => `
+            <div style="display:flex;gap:10px;align-items:center;padding:10px;border:1px solid var(--border);border-radius:9px;margin-bottom:6px;background:white">
+              <span class="pill" style="background:${it.kind === 'reviews' ? 'var(--info-bg)' : 'var(--ok-bg)'};color:${it.kind === 'reviews' ? 'var(--info)' : 'var(--ok)'}">${it.kind}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.page_title || it.source_url || '(no title)')}</div>
+                <div style="font-size:10.5px;color:var(--text3)">${escapeHtml(prettyDate(it.created_at))} · ${(it.bytes / 1024).toFixed(0)} KB${it.page_count > 1 ? ' · ' + it.page_count + ' pages' : ''}</div>
+              </div>
+              <button class="btn-tiny btn-primary" onclick="FR.runAgentFromInbox(${it.id})">🤖 Run agent →</button>
+              <button class="btn-tiny btn-danger" onclick="FR.deleteInbox(${it.id});setTimeout(()=>FR.refreshAgentInbox(),300)">×</button>
+            </div>`).join('')}
+        </div>`;
+    } catch (e) {
+      host.innerHTML = `<div class="card" style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function runAgent(opts) {
+    const status = $('ag-status');
+    if (!opts.url && !opts.inbox_id) { toast('Paste a URL or pick an inbox capture', 'err'); return; }
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">🤖 Classifying URL → fetching → extracting${opts.url ? ' (this can take 20–60s for Amazon)' : ''}…</div></div>`;
+    $('ag-go').disabled = true;
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/agent', opts);
+      $('ag-go').disabled = false;
+      status.innerHTML = '';
+      dispatchAgentResult(r);
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+      $('ag-go').disabled = false;
+    }
+  }
+
+  function dispatchAgentResult(r) {
+    if (r.action === 'unsupported') {
+      $('ag-status').innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px">
+        ${escapeHtml(r.message)}
+      </div>`;
+      return;
+    }
+    if (r.action === 'needs_capture') {
+      $('ag-status').innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px">
+        <strong>Amazon blocked the auto-fetch.</strong>
+        <div style="margin-top:6px;font-size:12.5px">Open <code style="font-size:11px">${escapeHtml(r.source_url)}</code> in your browser and click the bookmarklet — captures land in the inbox and you can pick this URL again from there. <a onclick="window.location.hash='/settings'" style="color:var(--accent);cursor:pointer">Set up the bookmarklet</a> if you haven't yet.</div>
+      </div>`;
+      return;
+    }
+    if (r.action === 'product-proposal') {
+      // Stash bonus reviews so the product confirm flow can write them
+      // straight into the right flavor after creation/linking.
+      IMPORT_STATE = {
+        source_url: r.source_url,
+        page_summary: r.page_summary,
+        variations: r.variations.map(v => ({ ...v, action: 'create', kind: 'coffee', variant: 'regular' })),
+        fetched_via: r.source + ' (agent)',
+        bonus_reviews: r.bonus_reviews, // null or { url, reviews, fetched_via }
+      };
+      // Apply matches the same way finishExtract did.
+      for (const m of r.matches || []) {
+        const v = IMPORT_STATE.variations[m.variation_index];
+        if (v && m.suggested_flavor_id) {
+          v.suggested_flavor_id = m.suggested_flavor_id;
+          v.suggested_flavor_name = m.suggested_flavor_name;
+          v.confidence = m.confidence;
+          v.action = 'link';
+          v.existing_flavor_id = m.suggested_flavor_id;
+        }
+      }
+      // Need the flavor list for the "link to existing" selector.
+      apiGet('/api/flavor-reviews/flavors')
+        .then(list => { IMPORT_STATE.all_flavors = list; renderAgentProductProposal(); })
+        .catch(() => { IMPORT_STATE.all_flavors = []; renderAgentProductProposal(); });
+      return;
+    }
+    if (r.action === 'reviews-proposal') {
+      // Set up RVI_STATE the same way finishReviewsExtract did, with the
+      // matched flavor (or a placeholder if unmatched).
+      const flavor = r.flavor; // {id,name,variant} or null
+      RVI_STATE = {
+        flavor_id: flavor ? flavor.id : null,
+        reviews: r.reviews.map(rev => ({ ...rev, include: true })),
+        url: r.source_url,
+        source: detectSourceFromUrl(r.source_url),
+        detected_asin: r.detected?.asin || '',
+      };
+      renderAgentReviewsProposal(flavor);
+      return;
+    }
+    $('ag-status').innerHTML = `<div class="card" style="margin-top:12px;color:var(--text2)">Unknown action: ${escapeHtml(r.action)}</div>`;
+  }
+
+  function detectSourceFromUrl(url) {
+    if (/amazon\./i.test(url)) return 'Amazon';
+    if (/walmart\./i.test(url)) return 'Walmart';
+    if (/tiktok\./i.test(url)) return 'TikTok';
+    return 'Other';
+  }
+
+  function renderAgentProductProposal() {
+    $('ag-step-1').style.display = 'none';
+    const result = $('ag-result');
+    result.style.display = '';
+    const s = IMPORT_STATE;
+    const br = s.bonus_reviews;
+    result.innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3>🤖 Found ${s.variations.length} variation${s.variations.length === 1 ? '' : 's'}</h3>
+          <div style="font-size:11.5px;color:var(--text3)">Fetched via ${escapeHtml(s.fetched_via || '?')}</div>
+        </div>
+        ${s.page_summary ? `<div class="ai-panel"><h4>✨ AI summary</h4><div class="ai-body">${escapeHtml(s.page_summary)}</div></div>` : ''}
+        ${br ? `
+          <div class="ai-panel" style="background:linear-gradient(135deg,#ecfdf5,#fff);border-color:#bbf7d0">
+            <h4>🎁 Bonus: ${br.reviews.length} reviews also pulled</h4>
+            <div class="ai-body">
+              <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:12.5px;color:var(--text)">
+                <input type="checkbox" id="ag-save-bonus" checked> Save these reviews after creating the flavor (target: the variation that owns the ASIN in this URL, or first-created if no match).
+              </label>
+              <div style="font-size:11px;color:var(--text3);margin-top:6px">Source: ${escapeHtml(br.url)} · via ${escapeHtml(br.fetched_via)}</div>
+            </div>
+          </div>` : ''}
+        <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+          <button class="btn-tiny" id="ag-all-create">All → Create new</button>
+          <button class="btn-tiny" id="ag-all-skip">All → Skip</button>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn-tiny" id="ag-set-kind">Set kind for all…</button>
+        </div>
+        <div id="imp-cards"></div>
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+          <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Cancel</button>
+          <button class="btn-primary" id="ag-confirm">Import selected${br ? ' + ' + br.reviews.length + ' reviews' : ''}</button>
+        </div>
+      </div>
+    `;
+    renderImportCards();
+    $('ag-all-create').addEventListener('click', () => { s.variations.forEach(v => { v.action = 'create'; }); renderImportCards(); });
+    $('ag-all-skip').addEventListener('click', () => { s.variations.forEach(v => { v.action = 'skip'; }); renderImportCards(); });
+    $('ag-set-kind').addEventListener('click', () => {
+      const k = prompt('Set kind for ALL (coffee / cocktail / fruit / tea / latte / smoothie / unique / other):', 'coffee');
+      if (k && ['coffee','cocktail','fruit','tea','latte','smoothie','unique','other'].includes(k.trim())) {
+        s.variations.forEach(v => { v.kind = k.trim(); });
+        renderImportCards();
+      }
+    });
+    $('ag-confirm').addEventListener('click', confirmAgentProductImport);
+  }
+
+  async function confirmAgentProductImport() {
+    const items = IMPORT_STATE.variations.map(v => ({
+      action: v.action,
+      name: v.flavor_name,
+      kind: v.kind,
+      variant: v.variant,
+      asin: v.asin,
+      title: v.title,
+      image_url: v.image_url,
+      listing_type: v.listing_type,
+      pack_size: v.pack_size,
+      channel: 'Amazon',
+      url: IMPORT_STATE.source_url,
+      existing_flavor_id: v.action === 'link' ? Number(v.existing_flavor_id) : undefined,
+    }));
+    const bad = items.find(it => it.action === 'link' && !Number.isFinite(it.existing_flavor_id));
+    if (bad) return toast('Pick a target flavor for every "Add as link" row.', 'err');
+
+    $('ag-confirm').disabled = true;
+    $('ag-confirm').textContent = 'Importing…';
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/confirm', {
+        source_url: IMPORT_STATE.source_url,
+        items,
+      });
+
+      // If we have bonus reviews and the user kept the checkbox on, write them now.
+      let bonusOut = null;
+      const saveBonus = !!($('ag-save-bonus') && $('ag-save-bonus').checked);
+      if (saveBonus && IMPORT_STATE.bonus_reviews) {
+        const br = IMPORT_STATE.bonus_reviews;
+        // Pick target flavor: prefer the one whose link was just created
+        // with the ASIN matching the URL we pasted; fall back to first
+        // created/linked in this batch.
+        const urlAsin = (IMPORT_STATE.source_url.match(/\/(?:dp|gp\/product|product|product-reviews)\/([A-Z0-9]{10})/i) || [])[1] || '';
+        const recent = [...r.created, ...r.linked];
+        let target = null;
+        if (urlAsin) {
+          const matchVar = IMPORT_STATE.variations.find(v => (v.asin || '').toUpperCase() === urlAsin.toUpperCase());
+          if (matchVar) {
+            const idx = IMPORT_STATE.variations.indexOf(matchVar);
+            const out = (r.created || []).find(x => x.index === idx) || (r.linked || []).find(x => x.index === idx);
+            if (out) target = out.flavor_id;
+          }
+        }
+        if (!target && recent.length) target = recent[0].flavor_id;
+
+        if (target) {
+          try {
+            bonusOut = await apiPost('/api/flavor-reviews/import/reviews-confirm', {
+              flavor_id: target,
+              source: 'Amazon',
+              url: br.url,
+              reviews: br.reviews,
+            });
+          } catch (e) {
+            bonusOut = { error: e.message };
+          }
+        }
+      }
+
+      $('ag-result').innerHTML = `
+        <div class="card">
+          <div class="card-head"><h3>✓ Done</h3></div>
+          <div class="import-result">
+            <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${r.created.length}</div><div class="l">Flavors created</div></div>
+            <div class="pill-stat" style="border-color:#dbeafe;background:var(--info-bg)"><div class="v" style="color:var(--info)">${r.linked.length}</div><div class="l">Linked to existing</div></div>
+            ${bonusOut && bonusOut.created ? `<div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${bonusOut.created.length}</div><div class="l">Reviews saved</div></div>` : ''}
+            ${r.errors.length ? `<div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${r.errors.length}</div><div class="l">Errors</div></div>` : ''}
+          </div>
+          ${bonusOut && bonusOut.error ? `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:10px;font-size:12px">Reviews import errored: ${escapeHtml(bonusOut.error)}</div>` : ''}
+          ${r.errors.length ? `<details style="margin-top:14px"><summary style="cursor:pointer;font-size:12px;color:var(--danger)">View ${r.errors.length} error${r.errors.length === 1 ? '' : 's'}</summary><pre style="margin-top:8px;font-size:11px;background:var(--bg2);padding:10px;border-radius:8px;white-space:pre-wrap">${escapeHtml(JSON.stringify(r.errors, null, 2))}</pre></details>` : ''}
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-primary" onclick="window.location.hash='/flavors'">View all flavors →</button>
+            <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Import another URL</button>
+          </div>
+        </div>
+      `;
+      toast(`Created ${r.created.length}, linked ${r.linked.length}${bonusOut && bonusOut.created ? `, saved ${bonusOut.created.length} reviews` : ''}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+      $('ag-confirm').disabled = false;
+      $('ag-confirm').textContent = 'Import selected';
+    }
+  }
+
+  function renderAgentReviewsProposal(flavor) {
+    $('ag-step-1').style.display = 'none';
+    const result = $('ag-result');
+    result.style.display = '';
+    const s = RVI_STATE;
+    const flavorPicker = flavor
+      ? `<div class="ai-panel" style="background:linear-gradient(135deg,#ecfdf5,#fff);border-color:#bbf7d0"><h4>✓ Matched flavor by ASIN</h4><div class="ai-body">Target: <strong>${escapeHtml(flavor.name)}</strong> (${escapeHtml(flavor.variant.replace('_','-'))}) — auto-detected because this ASIN is already a sell-link on that flavor.</div></div>`
+      : `<div class="ai-panel" style="background:linear-gradient(135deg,#fef3c7,#fff);border-color:#fde68a"><h4>⚠ No flavor matches ASIN ${escapeHtml(s.detected_asin || '?')}</h4><div class="ai-body">Pick a flavor below to save these reviews to:</div><div style="margin-top:8px"><select id="ag-pick-flavor" style="width:100%;font-size:12px"><option value="">— pick a flavor —</option></select></div></div>`;
+
+    result.innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3>🤖 ${s.reviews.length} review${s.reviews.length === 1 ? '' : 's'} extracted</h3>
+          <div style="font-size:11.5px;color:var(--text3)">${escapeHtml(s.url)}</div>
+        </div>
+        ${flavorPicker}
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn-tiny" id="ag-rv-on">Select all</button>
+          <button class="btn-tiny" id="ag-rv-off">Select none</button>
+        </div>
+        <div id="rvi-list"></div>
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+          <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Cancel</button>
+          <button class="btn-primary" id="ag-rv-save">Save selected</button>
+        </div>
+      </div>
+    `;
+    renderReviewsImportList();
+    $('ag-rv-on').addEventListener('click', () => { s.reviews.forEach(r => r.include = true); renderReviewsImportList(); });
+    $('ag-rv-off').addEventListener('click', () => { s.reviews.forEach(r => r.include = false); renderReviewsImportList(); });
+    $('ag-rv-save').addEventListener('click', confirmAgentReviewsImport);
+
+    // If unmatched, populate the flavor picker.
+    const pick = $('ag-pick-flavor');
+    if (pick) {
+      apiGet('/api/flavor-reviews/flavors').then(list => {
+        pick.innerHTML = '<option value="">— pick a flavor —</option>' + list.map(f =>
+          `<option value="${f.id}">${escapeHtml(f.name)} (${escapeHtml(f.variant.replace('_','-'))})</option>`
+        ).join('');
+        pick.addEventListener('change', () => { s.flavor_id = pick.value ? Number(pick.value) : null; });
+      }).catch(() => {});
+    }
+  }
+
+  async function confirmAgentReviewsImport() {
+    const s = RVI_STATE;
+    if (!s.flavor_id) return toast('Pick a flavor first', 'err');
+    const chosen = s.reviews.filter(r => r.include);
+    if (!chosen.length) return toast('Pick at least one review', 'err');
+    $('ag-rv-save').disabled = true;
+    $('ag-rv-save').textContent = 'Saving…';
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/reviews-confirm', {
+        flavor_id: s.flavor_id,
+        source: s.source || 'Amazon',
+        url: s.url,
+        reviews: chosen,
+      });
+      $('ag-result').innerHTML = `
+        <div class="card">
+          <div class="card-head"><h3>✓ Done</h3></div>
+          <div class="import-result">
+            <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${r.created.length}</div><div class="l">Saved</div></div>
+            <div class="pill-stat" style="border-color:#fde68a;background:var(--warn-bg)"><div class="v" style="color:var(--warn)">${r.skipped.length}</div><div class="l">Skipped (duplicate)</div></div>
+            ${r.errors.length ? `<div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${r.errors.length}</div><div class="l">Errors</div></div>` : ''}
+          </div>
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-primary" onclick="window.location.hash='/flavor/${s.flavor_id}/reviews'">View reviews →</button>
+            <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Import more</button>
+          </div>
+        </div>
+      `;
+      toast(`Saved ${r.created.length} review${r.created.length === 1 ? '' : 's'}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+      $('ag-rv-save').disabled = false;
+      $('ag-rv-save').textContent = 'Save selected';
     }
   }
 
@@ -2090,6 +2477,8 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       } catch (e) { toast(e.message, 'err'); }
     },
     refreshInbox(hostId, kind) { renderInboxPanel(hostId, kind); },
+    refreshAgentInbox() { renderAgentInbox(); },
+    runAgentFromInbox(inboxId) { runAgent({ inbox_id: inboxId }); },
     async pickInbox(id, kind) {
       // Called from inside the /import or /flavor/:id/reviews-import flow.
       // Parse the capture, then jump into the same approval grid as paste-mode.
@@ -2197,6 +2586,7 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     if (r.view === 'calendar')       return renderCalendar(r.month);
     if (r.view === 'bulk-import')    return renderBulkImport();
     if (r.view === 'import')         return renderImport();
+    if (r.view === 'agent')          return renderAgent();
     if (r.view === 'reviews-import') return renderReviewsImport(r.id);
     if (r.view === 'settings')       return renderSettings();
     return renderDashboard();
