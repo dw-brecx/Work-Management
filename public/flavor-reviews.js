@@ -93,7 +93,10 @@
     const m6 = /^\/calendar\/?$/.exec(h);            if (m6) return { view: 'calendar' };
     const m7 = /^\/calendar\/(\d{4}-\d{2})\/?$/.exec(h); if (m7) return { view: 'calendar', month: m7[1] };
     if (h === '/bulk-import') return { view: 'bulk-import' };
+    if (h === '/import')      return { view: 'import' };
     if (h === '/settings')    return { view: 'settings' };
+    const m8 = /^\/flavor\/(\d+)\/reviews-import\/?$/.exec(h);
+    if (m8) return { view: 'reviews-import', id: Number(m8[1]) };
     return { view: 'dashboard' };
   }
   function goto(hash) { location.hash = hash; }
@@ -195,6 +198,7 @@
           <button class="btn-sec" onclick="window.location.hash='/calendar'">📅 Calendar</button>
           <button class="btn-sec" onclick="window.location.hash='/flavors'">All flavors</button>
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" id="dash-refresh-ai">✨ Refresh AI priority</button>` : ''}
+          ${data.ai_enabled ? `<button class="btn-sec btn-ai" onclick="window.location.hash='/import'">✨ Import from Amazon URL</button>` : ''}
           <button class="btn-primary" onclick="window.location.hash='/bulk-import'">+ Add flavors</button>
         </div>
       </div>
@@ -289,7 +293,8 @@
           <p class="fr-lede">Your in-market flavor catalog. Click into one to log a new review, open an issue, or see the history.</p>
         </div>
         <div class="fr-header-actions">
-          <button class="btn-sec" onclick="window.location.hash='/bulk-import'">+ Bulk import</button>
+          <button class="btn-sec btn-ai" onclick="window.location.hash='/import'">✨ Import from Amazon URL</button>
+          <button class="btn-sec" onclick="window.location.hash='/bulk-import'">+ Bulk paste</button>
           <button class="btn-primary" id="fl-add">+ Add flavor</button>
         </div>
       </div>
@@ -414,7 +419,8 @@
         <div class="fr-header-actions">
           <button class="btn-sec" id="fd-edit">Edit flavor</button>
           <button class="btn-sec" id="fd-add-link">+ Sell-link</button>
-          <button class="btn-sec" id="fd-add-review">+ Log review</button>
+          <button class="btn-sec btn-ai" onclick="window.location.hash='/flavor/${f.id}/reviews-import'">✨ Import reviews</button>
+          <button class="btn-sec" id="fd-add-review">+ Log one</button>
           <button class="btn-primary" id="fd-new-issue">+ New issue</button>
         </div>
       </div>
@@ -493,10 +499,14 @@
         </div>
 
         <div>
+          ${f.image_url ? `<div class="side-card" style="padding:0;overflow:hidden"><img src="${escapeAttr(f.image_url)}" alt="${escapeAttr(f.name)}" style="width:100%;display:block" referrerpolicy="no-referrer" onerror="this.parentElement.style.display='none'"></div>` : ''}
           <div class="side-card">
-            <h4>Sell-links</h4>
+            <h4>Sell-links${f.amazon_asin ? ` · <span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0">ASIN ${escapeHtml(f.amazon_asin)}</span>` : ''}</h4>
             ${f.links.length ? f.links.map(linkRow).join('') : '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}
-            <button class="btn-tiny" style="margin-top:8px" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+              <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
+              <button class="btn-tiny" onclick="window.location.hash='/import'">✨ Add via URL</button>
+            </div>
           </div>
 
           <div class="side-card">
@@ -612,9 +622,17 @@
   }
 
   function linkRow(l) {
+    const ltLabel = ({ single: 'Single', with_pump: '+Pump', '4_pack': '4-pack', '6_pack': '6-pack', other: 'Other' })[l.listing_type] || l.listing_type;
     return `<div class="link-row" id="link-${l.id}">
-      <span class="channel">${escapeHtml(l.channel)}</span>
-      <a href="${escapeAttr(l.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(l.url)}</a>
+      ${l.image_url ? `<img src="${escapeAttr(l.image_url)}" alt="" referrerpolicy="no-referrer" style="width:34px;height:34px;border-radius:6px;object-fit:cover;background:var(--bg2)" onerror="this.style.display='none'">` : ''}
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span class="channel">${escapeHtml(l.channel)}</span>
+          <span class="pill" style="background:var(--bg2);color:var(--text2);text-transform:none;letter-spacing:0">${escapeHtml(ltLabel)}</span>
+          ${l.asin ? `<span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text3)">${escapeHtml(l.asin)}</span>` : ''}
+        </div>
+        <a href="${escapeAttr(l.url)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--accent);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">${escapeHtml(l.url)}</a>
+      </div>
       <button class="btn-tiny" onclick="FR.editLink(${l.id})">✎</button>
       <button class="btn-tiny btn-danger" onclick="FR.deleteLink(${l.id})">×</button>
     </div>`;
@@ -884,6 +902,501 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         ev.target.textContent = 'Import';
       }
     });
+  }
+
+  // ── Import from Amazon URL (AI-driven) ─────────────────────────────────
+  // Multi-step wizard:
+  //   1. Paste URL → server tries Claude web_fetch, then server-side fetch.
+  //      On success → proposal. On failure → flip to "paste page content".
+  //   2. Render extracted variations as cards. Each card has:
+  //        • image preview, ASIN, listing_type pill, flavor_name (editable),
+  //        • action: "Create new" / "Add to existing X" / "Skip"
+  //      Match suggestions come from /match-batch.
+  //   3. Submit → /confirm creates flavors + links, shows result summary.
+  let IMPORT_STATE = null;
+
+  async function renderImport() {
+    IMPORT_STATE = null;
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/', 'Dashboard')}
+        ${breadcrumb([{ label: 'Dashboard', href: '/' }, { label: 'Import from URL' }])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">✨</span> Import from Amazon URL</h1>
+          <p class="fr-lede">Paste an Amazon product URL. AI extracts every flavor variation it finds (ASIN, title, flavor name, image, pack size) so you can approve them in one go. If the URL is for a single listing with no variations, you'll see one entry and can either create a new flavor or link it to an existing one (e.g. add a <em>with-pump</em> variant to an existing Vanilla).</p>
+        </div>
+      </div>
+
+      <div id="imp-step-1" class="card" style="max-width:760px">
+        <div class="card-head"><h3>Step 1 — Paste the URL</h3></div>
+        <div class="form-row">
+          <label class="fr-label">Amazon product URL</label>
+          <input type="url" id="imp-url" placeholder="https://www.amazon.com/dp/B0XXXXXXXX/…">
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">Tip: paste the canonical product page URL (the one with all the flavor variation buttons), not the search-results URL.</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" id="imp-fetch">✨ Fetch &amp; extract</button>
+          <button class="btn-sec" id="imp-paste-mode">Or paste page content instead</button>
+        </div>
+        <div id="imp-paste-block" style="display:none;margin-top:14px">
+          <label class="fr-label">Paste page content</label>
+          <textarea id="imp-paste-content" placeholder="Open the Amazon product page in your browser, Cmd+A to select all, Cmd+C to copy, then paste here. Claude will parse the same way as auto-fetch." style="min-height:200px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px"></textarea>
+          <div style="margin-top:8px"><button class="btn-primary" id="imp-paste-go">Extract from pasted content</button></div>
+        </div>
+        <div id="imp-fetch-status"></div>
+      </div>
+
+      <div id="imp-step-2" style="display:none"></div>
+      <div id="imp-step-3" style="display:none"></div>
+    `);
+
+    $('imp-fetch').addEventListener('click', () => doImportFetch());
+    $('imp-paste-mode').addEventListener('click', () => {
+      $('imp-paste-block').style.display = '';
+      $('imp-paste-mode').style.display = 'none';
+    });
+    $('imp-paste-go').addEventListener('click', () => doImportPaste());
+  }
+
+  async function doImportFetch() {
+    const url = $('imp-url').value.trim();
+    if (!url) return toast('Paste a URL first', 'err');
+    const status = $('imp-fetch-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">✨ Asking Claude to fetch and read the page… this can take 20–40 seconds for Amazon.</div></div>`;
+    $('imp-fetch').disabled = true;
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/amazon-url', { url });
+      if (r.ok) return finishExtract(r);
+      // needs_paste
+      status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px">
+        <strong>Amazon blocked the auto-fetch.</strong> This happens. Open the URL in your browser, select-all (Cmd+A), copy, and paste below — Claude will extract the same way.
+      </div>`;
+      $('imp-paste-block').style.display = '';
+      $('imp-paste-mode').style.display = 'none';
+      $('imp-fetch').disabled = false;
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+      $('imp-fetch').disabled = false;
+    }
+  }
+
+  async function doImportPaste() {
+    const url = $('imp-url').value.trim();
+    const content = $('imp-paste-content').value;
+    if (!content.trim()) return toast('Paste the page content first', 'err');
+    const status = $('imp-fetch-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">✨ Claude is parsing… ~10 seconds.</div></div>`;
+    $('imp-paste-go').disabled = true;
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/amazon-paste', { url, content });
+      if (r.ok) return finishExtract(r);
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(r.error || 'No variations found in that content.')}</div>`;
+      $('imp-paste-go').disabled = false;
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+      $('imp-paste-go').disabled = false;
+    }
+  }
+
+  async function finishExtract(r) {
+    IMPORT_STATE = {
+      source_url: r.source_url || $('imp-url').value.trim(),
+      page_summary: r.page_summary,
+      variations: r.variations.map(v => ({ ...v, action: 'create', kind: 'coffee', variant: 'regular' })),
+      fetched_via: r.fetched_via,
+    };
+    // Ask the server to suggest matches against existing flavors.
+    try {
+      const m = await apiPost('/api/flavor-reviews/import/match-batch', { variations: IMPORT_STATE.variations });
+      for (const match of m.matches || []) {
+        const v = IMPORT_STATE.variations[match.variation_index];
+        if (v && match.suggested_flavor_id) {
+          v.suggested_flavor_id = match.suggested_flavor_id;
+          v.suggested_flavor_name = match.suggested_flavor_name;
+          v.confidence = match.confidence;
+          v.action = 'link';
+          v.existing_flavor_id = match.suggested_flavor_id;
+        }
+      }
+    } catch (e) {
+      console.warn('match-batch failed:', e.message);
+    }
+    // Need the flavor list for the "link to existing" selector.
+    try { IMPORT_STATE.all_flavors = await apiGet('/api/flavor-reviews/flavors'); }
+    catch { IMPORT_STATE.all_flavors = []; }
+    $('imp-step-1').style.display = 'none';
+    renderImportReview();
+  }
+
+  function renderImportReview() {
+    const s = IMPORT_STATE;
+    const step2 = $('imp-step-2');
+    step2.style.display = '';
+    step2.innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3>Step 2 — Review ${s.variations.length} extracted variation${s.variations.length === 1 ? '' : 's'}</h3>
+          <div style="font-size:11.5px;color:var(--text3)">Fetched via ${escapeHtml(s.fetched_via || '?')}</div>
+        </div>
+        ${s.page_summary ? `<div class="ai-panel"><h4>✨ AI summary</h4><div class="ai-body">${escapeHtml(s.page_summary)}</div></div>` : ''}
+        <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+          <button class="btn-tiny" id="imp-all-create">All → Create new</button>
+          <button class="btn-tiny" id="imp-all-skip">All → Skip</button>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn-tiny" id="imp-set-kind">Set kind for all…</button>
+        </div>
+        <div id="imp-cards"></div>
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+          <button class="btn-sec" onclick="window.location.hash='/import';location.reload()">Cancel</button>
+          <button class="btn-primary" id="imp-confirm">Import selected</button>
+        </div>
+      </div>
+    `;
+    renderImportCards();
+    $('imp-all-create').addEventListener('click', () => {
+      s.variations.forEach(v => { v.action = 'create'; });
+      renderImportCards();
+    });
+    $('imp-all-skip').addEventListener('click', () => {
+      s.variations.forEach(v => { v.action = 'skip'; });
+      renderImportCards();
+    });
+    $('imp-set-kind').addEventListener('click', () => {
+      const k = prompt('Set kind for ALL (coffee / cocktail / fruit / tea / latte / smoothie / unique / other):', 'coffee');
+      if (k && ['coffee','cocktail','fruit','tea','latte','smoothie','unique','other'].includes(k.trim())) {
+        s.variations.forEach(v => { v.kind = k.trim(); });
+        renderImportCards();
+      }
+    });
+    $('imp-confirm').addEventListener('click', confirmImport);
+  }
+
+  function renderImportCards() {
+    const s = IMPORT_STATE;
+    const flavors = s.all_flavors || [];
+    const cards = $('imp-cards');
+    cards.innerHTML = s.variations.map((v, idx) => {
+      const ltLabel = ({ single: 'Single', with_pump: 'Single + Pump', '4_pack': '4-pack', '6_pack': '6-pack', other: 'Other' })[v.listing_type] || v.listing_type;
+      const matchHint = v.suggested_flavor_name
+        ? `<div style="margin-top:6px;font-size:11.5px;color:#7c3aed;font-weight:600">✨ AI suggests linking to: ${escapeHtml(v.suggested_flavor_name)}</div>`
+        : '';
+      return `
+        <div class="import-card" data-idx="${idx}" style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:10px;display:grid;grid-template-columns:64px 1fr auto;gap:12px;align-items:flex-start;background:var(--card-soft)">
+          ${v.image_url ? `<img src="${escapeAttr(v.image_url)}" alt="" referrerpolicy="no-referrer" style="width:64px;height:64px;border-radius:8px;object-fit:cover;background:var(--bg2)" onerror="this.style.display='none'">` : `<div style="width:64px;height:64px;border-radius:8px;background:var(--bg2);display:flex;align-items:center;justify-content:center;font-size:22px">${kindEmoji(v.kind)}</div>`}
+          <div style="min-width:0">
+            <div style="font-size:13px;font-weight:650">${escapeHtml(v.flavor_name || '(no flavor name)')}</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(v.title || '')}</div>
+            <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center;font-size:10px">
+              <span class="pill" style="background:var(--bg2);color:var(--text2);text-transform:none;letter-spacing:0">${escapeHtml(ltLabel)}</span>
+              ${v.asin ? `<span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text3)">${escapeHtml(v.asin)}</span>` : '<span style="color:var(--danger);font-size:10px">(no ASIN)</span>'}
+              <span style="color:var(--text3)">pack ${v.pack_size}</span>
+            </div>
+            ${matchHint}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+              <input type="text" data-bind="flavor_name" value="${escapeAttr(v.flavor_name || '')}" placeholder="Flavor name (Vanilla…)" style="font-size:12px">
+              <select data-bind="kind" style="font-size:12px">
+                ${['coffee','cocktail','fruit','tea','latte','smoothie','unique','other'].map(k => `<option value="${k}" ${v.kind === k ? 'selected' : ''}>${cap(k)}</option>`).join('')}
+              </select>
+              <select data-bind="variant" style="font-size:12px">
+                <option value="regular"    ${v.variant === 'regular' ? 'selected' : ''}>Regular</option>
+                <option value="sugar_free" ${v.variant === 'sugar_free' ? 'selected' : ''}>Sugar-free</option>
+              </select>
+              <select data-bind="listing_type" style="font-size:12px">
+                ${['single','with_pump','4_pack','6_pack','other'].map(t => `<option value="${t}" ${v.listing_type === t ? 'selected' : ''}>${t === 'single' ? 'Single' : t === 'with_pump' ? 'Single + Pump' : t === '4_pack' ? '4-pack' : t === '6_pack' ? '6-pack' : 'Other'}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+            <select data-bind="action" style="font-size:11.5px;width:160px">
+              <option value="create" ${v.action === 'create' ? 'selected' : ''}>+ Create new flavor</option>
+              <option value="link"   ${v.action === 'link'   ? 'selected' : ''}>↳ Add as link to…</option>
+              <option value="skip"   ${v.action === 'skip'   ? 'selected' : ''}>× Skip</option>
+            </select>
+            <select data-bind="existing_flavor_id" style="font-size:11.5px;width:160px;display:${v.action === 'link' ? 'block' : 'none'}">
+              <option value="">— pick a flavor —</option>
+              ${flavors.map(f => `<option value="${f.id}" ${v.existing_flavor_id == f.id ? 'selected' : ''}>${escapeHtml(f.name)} (${escapeHtml(f.variant.replace('_','-'))})</option>`).join('')}
+            </select>
+          </div>
+        </div>`;
+    }).join('');
+    // Wire inputs to mutate IMPORT_STATE
+    cards.querySelectorAll('.import-card').forEach(card => {
+      const idx = Number(card.dataset.idx);
+      card.querySelectorAll('[data-bind]').forEach(el => {
+        el.addEventListener('change', () => {
+          const key = el.dataset.bind;
+          IMPORT_STATE.variations[idx][key] = el.value;
+          if (key === 'action') {
+            const existSel = card.querySelector('[data-bind="existing_flavor_id"]');
+            if (existSel) existSel.style.display = (el.value === 'link') ? 'block' : 'none';
+          }
+        });
+        if (el.tagName === 'INPUT') el.addEventListener('input', () => {
+          IMPORT_STATE.variations[idx][el.dataset.bind] = el.value;
+        });
+      });
+    });
+  }
+
+  async function confirmImport() {
+    const items = IMPORT_STATE.variations.map(v => ({
+      action: v.action,
+      name: v.flavor_name,
+      kind: v.kind,
+      variant: v.variant,
+      asin: v.asin,
+      title: v.title,
+      image_url: v.image_url,
+      listing_type: v.listing_type,
+      pack_size: v.pack_size,
+      channel: 'Amazon',
+      url: IMPORT_STATE.source_url,
+      existing_flavor_id: v.action === 'link' ? Number(v.existing_flavor_id) : undefined,
+    }));
+    const bad = items.find(it => it.action === 'link' && !Number.isFinite(it.existing_flavor_id));
+    if (bad) return toast('Pick a target flavor for every "Add as link" row.', 'err');
+
+    $('imp-confirm').disabled = true;
+    $('imp-confirm').textContent = 'Importing…';
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/confirm', {
+        source_url: IMPORT_STATE.source_url,
+        items,
+      });
+      $('imp-step-2').style.display = 'none';
+      const step3 = $('imp-step-3');
+      step3.style.display = '';
+      step3.innerHTML = `
+        <div class="card">
+          <div class="card-head"><h3>Step 3 — Done</h3></div>
+          <div class="import-result">
+            <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${r.created.length}</div><div class="l">Created</div></div>
+            <div class="pill-stat" style="border-color:#dbeafe;background:var(--info-bg)"><div class="v" style="color:var(--info)">${r.linked.length}</div><div class="l">Linked to existing</div></div>
+            <div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${r.errors.length}</div><div class="l">Errors</div></div>
+          </div>
+          ${r.errors.length ? `<details style="margin-top:14px"><summary style="cursor:pointer;font-size:12px;color:var(--danger)">View ${r.errors.length} error${r.errors.length === 1 ? '' : 's'}</summary><div style="margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px;background:var(--bg2);padding:10px;border-radius:8px;white-space:pre-wrap">${escapeHtml(JSON.stringify(r.errors, null, 2))}</div></details>` : ''}
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-primary" onclick="window.location.hash='/flavors'">View all flavors →</button>
+            <button class="btn-sec" onclick="window.location.hash='/import';location.reload()">Import another URL</button>
+          </div>
+        </div>
+      `;
+      toast(`Imported ${r.created.length} new, linked ${r.linked.length}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+      $('imp-confirm').disabled = false;
+      $('imp-confirm').textContent = 'Import selected';
+    }
+  }
+
+  // ── Reviews import (fetch URL or paste) ────────────────────────────────
+  let RVI_STATE = null;
+
+  async function renderReviewsImport(flavorId) {
+    RVI_STATE = { flavor_id: flavorId, reviews: [] };
+    loadingShell();
+    let flavor;
+    try { flavor = await apiGet('/api/flavor-reviews/flavors/' + flavorId); }
+    catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
+
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/flavor/' + flavorId, 'Back to flavor')}
+        ${breadcrumb([
+          { label: 'Dashboard', href: '/' },
+          { label: 'Flavors', href: '/flavors' },
+          { label: flavor.name, href: '/flavor/' + flavorId },
+          { label: 'Import reviews' }
+        ])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">✨</span> Import reviews for ${escapeHtml(flavor.name)}</h1>
+          <p class="fr-lede">Paste a reviews page URL (Amazon's <code>/product-reviews/&lt;ASIN&gt;</code>, a Walmart product page, a TikTok video) and Claude will try to fetch + parse. If the source blocks scrapers (Amazon often does), you can paste the visible reviews text and it'll parse that the same way.</p>
+        </div>
+      </div>
+
+      <div id="rvi-step-1" class="card" style="max-width:760px">
+        <div class="form-grid">
+          <div class="form-row">
+            <label class="fr-label">Source</label>
+            <select id="rvi-source">
+              <option value="Amazon">Amazon</option>
+              <option value="Walmart">Walmart</option>
+              <option value="TikTok">TikTok</option>
+              <option value="Website">Website</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="fr-label">URL (optional for paste mode)</label>
+            <input type="url" id="rvi-url" placeholder="https://www.amazon.com/product-reviews/B0…">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary" id="rvi-fetch">✨ Fetch &amp; parse</button>
+          <button class="btn-sec" id="rvi-paste-mode">Or paste review text</button>
+        </div>
+        <div id="rvi-paste-block" style="display:none;margin-top:14px">
+          <label class="fr-label">Paste the reviews</label>
+          <textarea id="rvi-paste-content" placeholder="Paste anything: copied review text, the visible portion of a TikTok comment thread, a screenshot's OCR — Claude will extract every distinct review." style="min-height:200px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px"></textarea>
+          <div style="margin-top:8px"><button class="btn-primary" id="rvi-paste-go">Parse pasted content</button></div>
+        </div>
+        <div id="rvi-status"></div>
+      </div>
+
+      <div id="rvi-step-2" style="display:none"></div>
+      <div id="rvi-step-3" style="display:none"></div>
+    `);
+
+    $('rvi-fetch').addEventListener('click', () => doReviewsFetch());
+    $('rvi-paste-mode').addEventListener('click', () => {
+      $('rvi-paste-block').style.display = '';
+      $('rvi-paste-mode').style.display = 'none';
+    });
+    $('rvi-paste-go').addEventListener('click', () => doReviewsPaste());
+  }
+
+  async function doReviewsFetch() {
+    const url = $('rvi-url').value.trim();
+    if (!url) return toast('Paste a URL first (or use paste mode)', 'err');
+    const status = $('rvi-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">✨ Fetching and parsing… 20–60 seconds.</div></div>`;
+    $('rvi-fetch').disabled = true;
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/reviews-fetch', { url });
+      if (r.ok && r.reviews.length) return finishReviewsExtract(r.reviews, url);
+      status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px">
+        <strong>Couldn't auto-fetch reviews.</strong> The source probably blocked the scrape (Amazon does this most of the time). Open the URL in your browser, select the visible reviews, copy + paste below.
+      </div>`;
+      $('rvi-paste-block').style.display = '';
+      $('rvi-paste-mode').style.display = 'none';
+      $('rvi-fetch').disabled = false;
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+      $('rvi-fetch').disabled = false;
+    }
+  }
+
+  async function doReviewsPaste() {
+    const content = $('rvi-paste-content').value;
+    if (!content.trim()) return toast('Paste the review text first', 'err');
+    const status = $('rvi-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">✨ Claude is parsing…</div></div>`;
+    $('rvi-paste-go').disabled = true;
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/reviews-paste', { content });
+      if (r.ok && r.reviews.length) return finishReviewsExtract(r.reviews, $('rvi-url').value.trim());
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(r.error || 'No reviews found in that content.')}</div>`;
+      $('rvi-paste-go').disabled = false;
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+      $('rvi-paste-go').disabled = false;
+    }
+  }
+
+  function finishReviewsExtract(reviews, url) {
+    RVI_STATE.reviews = reviews.map(r => ({ ...r, include: true }));
+    RVI_STATE.url = url;
+    RVI_STATE.source = $('rvi-source').value;
+    $('rvi-step-1').style.display = 'none';
+    const step2 = $('rvi-step-2');
+    step2.style.display = '';
+    renderReviewsImportReview();
+  }
+
+  function renderReviewsImportReview() {
+    const s = RVI_STATE;
+    $('rvi-step-2').innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3>Step 2 — ${s.reviews.length} review${s.reviews.length === 1 ? '' : 's'} extracted</h3>
+          <div style="font-size:11.5px;color:var(--text3)">Source: ${escapeHtml(s.source)}</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn-tiny" id="rvi-all-on">Select all</button>
+          <button class="btn-tiny" id="rvi-all-off">Select none</button>
+        </div>
+        <div id="rvi-list"></div>
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+          <button class="btn-sec" onclick="window.location.hash='/flavor/${s.flavor_id}/reviews-import';location.reload()">Start over</button>
+          <button class="btn-primary" id="rvi-save">Save selected</button>
+        </div>
+      </div>
+    `;
+    renderReviewsImportList();
+    $('rvi-all-on').addEventListener('click', () => { s.reviews.forEach(r => r.include = true); renderReviewsImportList(); });
+    $('rvi-all-off').addEventListener('click', () => { s.reviews.forEach(r => r.include = false); renderReviewsImportList(); });
+    $('rvi-save').addEventListener('click', confirmReviewsImport);
+  }
+
+  function renderReviewsImportList() {
+    const s = RVI_STATE;
+    $('rvi-list').innerHTML = s.reviews.map((r, idx) => {
+      const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(5 - (r.rating || 0));
+      return `<label style="display:grid;grid-template-columns:auto 1fr;gap:12px;padding:11px;border:1px solid var(--border);border-radius:10px;margin-bottom:7px;background:var(--card);cursor:pointer">
+        <input type="checkbox" class="rvi-cb" data-idx="${idx}" ${r.include ? 'checked' : ''}>
+        <div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span style="color:#facc15;font-size:13px">${stars}</span>
+            <span class="pill sentiment-${r.rating >= 4 ? 'positive' : r.rating <= 2 ? 'negative' : 'neutral'}">${r.rating ? r.rating + '★' : 'no rating'}</span>
+            ${r.verified ? '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">verified</span>' : ''}
+            ${r.posted_at ? `<span style="font-size:10.5px;color:var(--text3)">${escapeHtml(prettyDate(r.posted_at))}</span>` : ''}
+            ${r.reviewer_name ? `<span style="font-size:10.5px;color:var(--text3)">— ${escapeHtml(r.reviewer_name)}</span>` : ''}
+          </div>
+          ${r.title ? `<div style="font-size:12.5px;font-weight:650;margin-top:4px">${escapeHtml(r.title)}</div>` : ''}
+          <div style="font-size:12px;color:var(--text2);margin-top:3px;line-height:1.5;white-space:pre-wrap">${escapeHtml((r.body || '').slice(0, 600))}${(r.body || '').length > 600 ? '…' : ''}</div>
+        </div>
+      </label>`;
+    }).join('');
+    $('rvi-list').querySelectorAll('.rvi-cb').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const idx = Number(cb.dataset.idx);
+        s.reviews[idx].include = cb.checked;
+      });
+    });
+  }
+
+  async function confirmReviewsImport() {
+    const s = RVI_STATE;
+    const chosen = s.reviews.filter(r => r.include);
+    if (!chosen.length) return toast('Pick at least one review to save', 'err');
+    $('rvi-save').disabled = true;
+    $('rvi-save').textContent = 'Saving…';
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/reviews-confirm', {
+        flavor_id: s.flavor_id,
+        source: s.source,
+        url: s.url,
+        reviews: chosen,
+      });
+      $('rvi-step-2').style.display = 'none';
+      const step3 = $('rvi-step-3');
+      step3.style.display = '';
+      step3.innerHTML = `
+        <div class="card">
+          <div class="card-head"><h3>Done</h3></div>
+          <div class="import-result">
+            <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${r.created.length}</div><div class="l">Saved</div></div>
+            <div class="pill-stat" style="border-color:#fde68a;background:var(--warn-bg)"><div class="v" style="color:var(--warn)">${r.skipped.length}</div><div class="l">Skipped (duplicate)</div></div>
+            <div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${r.errors.length}</div><div class="l">Errors</div></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-primary" onclick="window.location.hash='/flavor/${s.flavor_id}/reviews'">View reviews →</button>
+            <button class="btn-sec" onclick="window.location.hash='/flavor/${s.flavor_id}/reviews-import';location.reload()">Import more</button>
+          </div>
+        </div>
+      `;
+      toast(`Saved ${r.created.length} review${r.created.length === 1 ? '' : 's'}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+      $('rvi-save').disabled = false;
+      $('rvi-save').textContent = 'Save selected';
+    }
   }
 
   // ── Settings ───────────────────────────────────────────────────────────
@@ -1499,13 +2012,15 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
   // ── Route dispatcher ───────────────────────────────────────────────────
   function renderRoute() {
     const r = currentRoute();
-    if (r.view === 'dashboard')   return renderDashboard();
-    if (r.view === 'flavors')     return renderFlavors();
-    if (r.view === 'flavor')      return renderFlavor(r.id, r.tab);
-    if (r.view === 'issue')       return renderIssue(r.id);
-    if (r.view === 'calendar')    return renderCalendar(r.month);
-    if (r.view === 'bulk-import') return renderBulkImport();
-    if (r.view === 'settings')    return renderSettings();
+    if (r.view === 'dashboard')      return renderDashboard();
+    if (r.view === 'flavors')        return renderFlavors();
+    if (r.view === 'flavor')         return renderFlavor(r.id, r.tab);
+    if (r.view === 'issue')          return renderIssue(r.id);
+    if (r.view === 'calendar')       return renderCalendar(r.month);
+    if (r.view === 'bulk-import')    return renderBulkImport();
+    if (r.view === 'import')         return renderImport();
+    if (r.view === 'reviews-import') return renderReviewsImport(r.id);
+    if (r.view === 'settings')       return renderSettings();
     return renderDashboard();
   }
 
