@@ -1595,6 +1595,75 @@ module.exports = function attach(app, deps) {
     }
   }
 
+  // Deterministic parser for the "--- Review N ---" structured format
+  // (and a few near-variants). When AI agents or humans pre-format reviews
+  // into this shape there's no reason to spend AI tokens re-parsing them:
+  // the regex pass is instant, free, and exact. Returns null if the format
+  // isn't recognized so callers can fall back to Claude.
+  function tryStructuredReviewParse(content) {
+    const text = String(content || '');
+    // Split on "--- Review N ---" / "--- Review ---" / "=== Review N ===" markers.
+    const splitRe = /(?:^|\n)\s*[-=]{2,}\s*Review\s*\d*\s*[-=]{2,}\s*(?:\n|$)/i;
+    const blocks = text.split(splitRe).map(b => b.trim()).filter(Boolean);
+    if (blocks.length < 2) return null; // need ≥2 to be confident
+
+    const MONTHS = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+    function parseLooseDate(s) {
+      if (!s) return '';
+      // "May 18, 2026", "Reviewed in the US on May 18, 2026", etc.
+      let m = /([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/.exec(s);
+      if (m) {
+        const mo = MONTHS[m[1].toLowerCase().slice(0, 3)];
+        if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${String(Number(m[2])).padStart(2,'0')}`;
+      }
+      // ISO already
+      m = /(\d{4})-(\d{2})-(\d{2})/.exec(s);
+      if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+      return '';
+    }
+
+    const reviews = [];
+    for (const block of blocks) {
+      const reviewer    = (block.match(/^\s*Reviewer\s*:\s*(.+?)\s*$/im)        || [])[1] || '';
+      const ratingLine  = (block.match(/^\s*Rating\s*:\s*([0-9](?:\.\d+)?)\s*(?:out of\s*5|\/\s*5|stars?)?/im) || []);
+      const titleMatch  = (block.match(/^\s*Title\s*:\s*(.+?)\s*$/im)           || [])[1] || '';
+      const dateLine    = (block.match(/^\s*Date\s*:\s*(.+?)\s*$/im)            || [])[1] || '';
+      // Body = everything after "Review:" through end of block. /m so ^ matches line start.
+      let body = '';
+      const reviewIdx = block.search(/^\s*Review\s*:\s*/im);
+      if (reviewIdx >= 0) {
+        body = block.slice(reviewIdx).replace(/^\s*Review\s*:\s*/i, '').trim();
+      } else {
+        // Fallback: if no explicit "Review:" field, treat anything after the
+        // last labelled line as the body. Skip if we can't find a reasonable
+        // chunk so we don't accept garbage.
+        const lastLabelEnd = Math.max(
+          block.lastIndexOf('Date:'),
+          block.lastIndexOf('Title:'),
+          block.lastIndexOf('Rating:'),
+          block.lastIndexOf('Reviewer:')
+        );
+        if (lastLabelEnd >= 0) {
+          const tail = block.slice(lastLabelEnd);
+          const nl = tail.indexOf('\n');
+          if (nl >= 0) body = tail.slice(nl + 1).trim();
+        }
+      }
+      if (!body && !titleMatch) continue;
+
+      const rating = ratingLine[1] ? Math.max(0, Math.min(5, Math.round(parseFloat(ratingLine[1])))) : 0;
+      reviews.push({
+        rating,
+        title: titleMatch.slice(0, 200),
+        body: body.slice(0, 10000),
+        reviewer_name: reviewer.slice(0, 120),
+        posted_at: parseLooseDate(dateLine),
+        verified: /verified/i.test(dateLine),
+      });
+    }
+    return reviews.length ? reviews : null;
+  }
+
   app.post('/api/flavor-reviews/import/reviews-fetch', requireAuth, async (req, res) => {
     try {
       if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
@@ -1609,7 +1678,7 @@ module.exports = function attach(app, deps) {
           system: REVIEW_EXTRACT_SYSTEM,
           userText: `Fetch this reviews page and extract every review. URL: ${url}`,
           tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3 }],
-          maxTokens: 3500,
+          maxTokens: 8000,
           betaHeader: 'web-fetch-2025-09-10',
         });
         const r = parseReviewsJSON(raw);
@@ -1626,7 +1695,7 @@ module.exports = function attach(app, deps) {
           const raw = await anthropicCall({
             system: REVIEW_EXTRACT_SYSTEM,
             userText: `I fetched this reviews page on the server. URL: ${url}\n\nHTML:\n${trimmed}`,
-            maxTokens: 3500,
+            maxTokens: 8000,
           });
           const r = parseReviewsJSON(raw);
           if (r.reviews.length) { reviews = r.reviews; fetchedVia = 'server_fetch'; }
@@ -1645,20 +1714,36 @@ module.exports = function attach(app, deps) {
 
   app.post('/api/flavor-reviews/import/reviews-paste', requireAuth, async (req, res) => {
     try {
-      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
       const content = String(req.body?.content || '').trim();
       if (!content) return res.status(400).json({ error: 'Paste the review content first.' });
       if (content.length > 200000) return res.status(400).json({ error: 'Pasted content too large (max 200k chars).' });
+
+      // Fast path: structured "--- Review N ---" / similar format. Instant,
+      // free, deterministic. This is what other AI agents tend to output
+      // when asked to scrape reviews, so it's worth handling without AI.
+      const direct = tryStructuredReviewParse(content);
+      if (direct && direct.length) {
+        return res.json({ ok: true, reviews: direct, parsed_via: 'deterministic' });
+      }
+
+      // Fall back to Claude for unstructured content. maxTokens bumped to
+      // 8000 so 50+ reviews of typical length don't get truncated mid-JSON.
+      if (!aiReady) {
+        return res.status(503).json({
+          error: 'AI disabled and the content isn\'t in the structured "--- Review N ---" format. ' +
+                 'Re-paste in that format, or set ANTHROPIC_API_KEY on the server.'
+        });
+      }
       const raw = await anthropicCall({
         system: REVIEW_EXTRACT_SYSTEM,
         userText: `Here is pasted content with one or more reviews. Extract them.\n\n${content}`,
-        maxTokens: 3500,
+        maxTokens: 8000,
       });
       const r = parseReviewsJSON(raw);
       if (!r.reviews.length) {
         return res.json({ ok: false, reviews: [], error: 'No reviews recognised in that content.', parse_error: r.parse_error || null });
       }
-      res.json({ ok: true, reviews: r.reviews });
+      res.json({ ok: true, reviews: r.reviews, parsed_via: 'ai' });
     } catch (e) {
       console.error('[fr] reviews-paste failed:', e.message);
       res.status(502).json({ error: e.message });
@@ -1900,7 +1985,7 @@ module.exports = function attach(app, deps) {
         const raw = await anthropicCall({
           system: REVIEW_EXTRACT_SYSTEM,
           userText: `Captured from ${row.source_url}. The HTML may contain multiple paginated review pages concatenated together (separated by <!--PAGEBREAK--> markers — treat each as continuing the same review stream and DON'T duplicate).\n\nHTML:\n${cleaned}`,
-          maxTokens: 4000,
+          maxTokens: 8000,
         });
         const result = parseReviewsJSON(raw);
         const payload = {
