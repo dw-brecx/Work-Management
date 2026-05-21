@@ -1934,6 +1934,30 @@ async function init() {
   await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN title TEXT NOT NULL DEFAULT ''");
   await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN pack_size INTEGER NOT NULL DEFAULT 1");
 
+  // Bookmarklet scraper: a shared workspace token lets the user's own
+  // browser POST captured HTML back to us from amazon.com (bypassing
+  // every server-side bot wall). The inbox queues raw captures until
+  // Claude parses them on demand. Stored as TEXT — captures can be
+  // several MB (esp. 10-page review walks); PG handles that fine.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN scraper_token TEXT NOT NULL DEFAULT ''");
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_scraper_inbox (
+    id BIGSERIAL PRIMARY KEY,
+    kind TEXT NOT NULL,                 -- 'product' | 'reviews'
+    source_url TEXT NOT NULL DEFAULT '',
+    page_title TEXT NOT NULL DEFAULT '',
+    html TEXT NOT NULL DEFAULT '',
+    bytes INTEGER NOT NULL DEFAULT 0,
+    page_count INTEGER NOT NULL DEFAULT 1,
+    parsed_json TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'raw', -- raw | parsed | consumed
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    parsed_at TEXT,
+    consumed_at TEXT
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_scraper_inbox_status_created
+    ON fr_scraper_inbox(status, created_at DESC)`);
+
   // Seed a real Syruvia listing as the starter row in
   // flavor_listing_examples so the admin has something to clone + edit per
   // type combo instead of staring at an empty grid. Only fires when the
