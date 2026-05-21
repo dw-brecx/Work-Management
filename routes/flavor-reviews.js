@@ -13,6 +13,7 @@
 
 module.exports = function attach(app, deps) {
   const { get, all, run, requireAuth } = deps;
+  const { randomBytes } = require('crypto');
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
   const aiReady = !!ANTHROPIC_API_KEY;
 
@@ -1721,6 +1722,291 @@ module.exports = function attach(app, deps) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // ── Bookmarklet scraper ──────────────────────────────────────────────────
+  // The user drags a bookmarklet to their browser bar. On any Amazon page
+  // they click it; the bookmarklet runs INSIDE the page (so it passes every
+  // bot wall — it IS a real browser) and POSTs the rendered HTML to us
+  // with a workspace bearer token. We queue the raw HTML in fr_scraper_inbox
+  // and parse on demand with Claude (same pipeline as paste-mode), so cost
+  // is incurred only on items the user actually wants to import.
+
+  function corsScraper(res) {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.set('Access-Control-Max-Age', '86400');
+  }
+
+  async function getOrCreateToken() {
+    let row = await get('SELECT scraper_token FROM fr_settings WHERE id=1');
+    if (!row?.scraper_token) {
+      const tok = 'fr_' + randomBytes(24).toString('hex');
+      await run('UPDATE fr_settings SET scraper_token=? WHERE id=1', tok);
+      row = { scraper_token: tok };
+    }
+    return row.scraper_token;
+  }
+
+  // Token + bookmarklet snippet
+  app.get('/api/flavor-reviews/scraper/config', requireAuth, async (req, res) => {
+    try {
+      const token = await getOrCreateToken();
+      // The bookmarklet is generated server-side so it bakes in the right
+      // origin (works in dev + prod without hand-editing).
+      const origin = req.protocol + '://' + req.get('host');
+      res.json({
+        token,
+        origin,
+        bookmarklet: buildBookmarklet(origin, token),
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/flavor-reviews/scraper/rotate-token', requireAuth, async (req, res) => {
+    try {
+      const tok = 'fr_' + randomBytes(24).toString('hex');
+      await run('UPDATE fr_settings SET scraper_token=? WHERE id=1', tok);
+      const origin = req.protocol + '://' + req.get('host');
+      res.json({ token: tok, origin, bookmarklet: buildBookmarklet(origin, tok) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Ingest (the bookmarklet posts here from amazon.com) ─────────────────
+  // Auth via Bearer token only — no session cookie. CORS open so the call
+  // from amazon.com origin lands. Body size is governed by server.js's
+  // 50mb express.json limit, which comfortably fits a 10-page review walk.
+  app.options('/api/flavor-reviews/scraper/ingest', (req, res) => {
+    corsScraper(res);
+    res.sendStatus(204);
+  });
+  app.post('/api/flavor-reviews/scraper/ingest', async (req, res) => {
+    corsScraper(res);
+    try {
+      const auth = String(req.get('Authorization') || '');
+      const bearer = /^Bearer\s+(\S+)/i.exec(auth);
+      if (!bearer) return res.status(401).json({ error: 'Missing Bearer token' });
+      const token = bearer[1];
+      const expected = await getOrCreateToken();
+      if (token !== expected) return res.status(401).json({ error: 'Invalid token' });
+
+      const kind = (req.body?.kind === 'reviews') ? 'reviews' : 'product';
+      const sourceUrl = String(req.body?.url || '').slice(0, 2000);
+      const pageTitle = String(req.body?.page_title || '').slice(0, 500);
+      const html = String(req.body?.html || '');
+      const pageCount = Math.max(1, Math.min(50, parseInt(req.body?.page_count, 10) || 1));
+      const ua = String(req.body?.user_agent || req.get('User-Agent') || '').slice(0, 300);
+      if (!html || html.length < 100) return res.status(400).json({ error: 'Empty or tiny html payload' });
+
+      const ins = await run(
+        `INSERT INTO fr_scraper_inbox (kind, source_url, page_title, html, bytes, page_count, user_agent)
+         VALUES (?,?,?,?,?,?,?) RETURNING id`,
+        kind, sourceUrl, pageTitle, html, html.length, pageCount, ua
+      );
+      // Opportunistic cleanup of old/consumed items so the table doesn't
+      // grow forever. Cheap query, runs on each ingest.
+      run(`DELETE FROM fr_scraper_inbox
+           WHERE consumed_at IS NOT NULL
+             AND created_at < TO_CHAR(NOW() - INTERVAL '7 days' AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`).catch(()=>{});
+      res.json({ ok: true, id: ins.lastInsertRowid, bytes: html.length });
+    } catch (e) {
+      console.error('[fr] scraper ingest failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Inbox listing for the UI. Excludes the HTML body to keep responses small.
+  app.get('/api/flavor-reviews/scraper/inbox', requireAuth, async (req, res) => {
+    try {
+      const kind = req.query.kind === 'reviews' ? 'reviews' : (req.query.kind === 'product' ? 'product' : null);
+      const sql = `SELECT id, kind, source_url, page_title, bytes, page_count, status,
+                          parsed_json, user_agent, created_at, parsed_at, consumed_at
+                   FROM fr_scraper_inbox
+                   WHERE consumed_at IS NULL ${kind ? 'AND kind=?' : ''}
+                   ORDER BY created_at DESC LIMIT 50`;
+      const rows = kind ? await all(sql, kind) : await all(sql);
+      res.json({ items: rows });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/flavor-reviews/scraper/inbox/:id', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      await run('DELETE FROM fr_scraper_inbox WHERE id=?', id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Mark consumed (after the user has accepted the parsed proposal). We
+  // keep the row for 7d for debugging then auto-cleanup picks it up.
+  app.post('/api/flavor-reviews/scraper/inbox/:id/consume', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      await run(`UPDATE fr_scraper_inbox SET consumed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id=?`, id);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Parse a queued capture with Claude. Caches the result on the row so a
+  // second click is free. Returns the same shape as /amazon-paste or
+  // /reviews-paste depending on `kind`.
+  app.post('/api/flavor-reviews/scraper/parse/:id', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const row = await get('SELECT id, kind, source_url, html, parsed_json, status FROM fr_scraper_inbox WHERE id=?', id);
+      if (!row) return res.status(404).json({ error: 'Not found' });
+
+      // Cache hit — return the previously-parsed JSON without another AI call.
+      if (row.parsed_json && !req.query.force) {
+        try {
+          const j = JSON.parse(row.parsed_json);
+          return res.json({ ok: true, ...j, cached: true });
+        } catch {}
+      }
+
+      // Trim aggressively — bookmarklet captures full DOM which can be 1-3MB.
+      // Strip <script> / <style> / SVG paths to focus the model on text + product data.
+      const cleaned = stripHtmlNoise(row.html).slice(0, 120000);
+
+      if (row.kind === 'product') {
+        const raw = await anthropicCall({
+          system: EXTRACT_SYSTEM,
+          userText: `Captured from ${row.source_url}.\n\nHTML:\n${cleaned}`,
+          maxTokens: 3500,
+        });
+        const result = parseExtractJSON(raw);
+        const urlAsin = asinFromUrl(row.source_url);
+        for (const v of result.variations || []) if (!v.asin && urlAsin) v.asin = urlAsin;
+        const payload = {
+          source_url: row.source_url,
+          page_summary: result.page_summary,
+          variations: result.variations || [],
+          fetched_via: 'bookmarklet',
+        };
+        await run(
+          `UPDATE fr_scraper_inbox SET parsed_json=?, status='parsed',
+              parsed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?`,
+          JSON.stringify(payload), id
+        );
+        return res.json({ ok: true, ...payload });
+      } else {
+        const raw = await anthropicCall({
+          system: REVIEW_EXTRACT_SYSTEM,
+          userText: `Captured from ${row.source_url}. The HTML may contain multiple paginated review pages concatenated together (separated by <!--PAGEBREAK--> markers — treat each as continuing the same review stream and DON'T duplicate).\n\nHTML:\n${cleaned}`,
+          maxTokens: 4000,
+        });
+        const result = parseReviewsJSON(raw);
+        const payload = {
+          source_url: row.source_url,
+          reviews: result.reviews || [],
+          fetched_via: 'bookmarklet',
+        };
+        await run(
+          `UPDATE fr_scraper_inbox SET parsed_json=?, status='parsed',
+              parsed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+           WHERE id=?`,
+          JSON.stringify(payload), id
+        );
+        return res.json({ ok: true, ...payload });
+      }
+    } catch (e) {
+      console.error('[fr] scraper parse failed:', e.message);
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // Trim a captured DOM so Claude sees product data, not 80% noise.
+  // Cheap regex pass — does NOT need to be perfect, just smaller.
+  function stripHtmlNoise(html) {
+    return String(html || '')
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '')
+      .replace(/<!--(?!PAGEBREAK)[\s\S]*?-->/g, '') // keep our own PAGEBREAK markers
+      .replace(/\s+/g, ' ');
+  }
+
+  // ── Bookmarklet payload generator ─────────────────────────────────────
+  // Returns a `javascript:` URL the user can drag to their bookmark bar.
+  // The script:
+  //   1. Detects whether it's on a product page or a reviews page
+  //   2. If reviews: walks pageNumber=1..10 same-origin fetch(), bundles
+  //      them as one payload (separated by PAGEBREAK markers our backend
+  //      tells the AI to ignore as duplicates)
+  //   3. POSTs to the ingest endpoint with the bearer token
+  //   4. Pops a floating confirmation div in the page
+  function buildBookmarklet(origin, token) {
+    // The function below runs inside Amazon's page context. Anything that
+    // would conflict with a page's globals is namespaced. Returns minified
+    // javascript: URL — the caller URI-encodes the whole script body.
+    const body = `(async function(){
+  try {
+    var APP = ${JSON.stringify(origin)};
+    var TOK = ${JSON.stringify(token)};
+    function flash(msg, ok) {
+      var d = document.createElement('div');
+      d.style.cssText = 'position:fixed;top:20px;right:20px;background:'+(ok?'#7c3aed':'#dc2626')+';color:#fff;padding:14px 22px;border-radius:10px;z-index:2147483647;font:14px system-ui,-apple-system,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.25);max-width:360px;line-height:1.4';
+      d.textContent = msg; document.body.appendChild(d);
+      setTimeout(function(){ d.style.transition='opacity .4s'; d.style.opacity='0'; setTimeout(function(){d.remove();}, 500); }, 4500);
+    }
+    var here = location.href;
+    var isReviews = /\\/product-reviews\\//.test(here);
+    var html, pageCount = 1;
+    if (isReviews) {
+      flash('✨ Collecting up to 10 review pages...', true);
+      // Walk pageNumber=1..10. We fetch as text from inside amazon.com so
+      // there's no CORS and Amazon's bot defenses see a real session.
+      var baseUrl = here.replace(/([?&])pageNumber=\\d+/g, '$1').replace(/[?&]$/, '');
+      var pages = [];
+      // page 1 = the current DOM (no extra fetch needed)
+      pages.push(document.documentElement.outerHTML);
+      for (var i = 2; i <= 10; i++) {
+        try {
+          var sep = baseUrl.indexOf('?') >= 0 ? '&' : '?';
+          var resp = await fetch(baseUrl + sep + 'pageNumber=' + i, { credentials: 'include' });
+          if (!resp.ok) break;
+          var t = await resp.text();
+          if (!t || !/(review|customer)/i.test(t)) break;
+          // Stop if Amazon serves the same page twice (we hit the end).
+          if (pages[pages.length-1].length === t.length) break;
+          pages.push(t);
+          pageCount = i;
+          // small jitter to be polite
+          await new Promise(function(r){ setTimeout(r, 350 + Math.random()*250); });
+        } catch (e) { break; }
+      }
+      html = pages.join('\\n<!--PAGEBREAK-->\\n');
+    } else {
+      html = document.documentElement.outerHTML;
+    }
+    flash('✨ Sending ' + Math.round(html.length/1024) + ' KB' + (isReviews ? ' from ' + pageCount + ' page' + (pageCount===1?'':'s') : '') + '...', true);
+    var r = await fetch(APP + '/api/flavor-reviews/scraper/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOK },
+      body: JSON.stringify({
+        kind: isReviews ? 'reviews' : 'product',
+        url: here,
+        page_title: document.title,
+        html: html,
+        page_count: pageCount,
+        user_agent: navigator.userAgent
+      })
+    });
+    if (r.ok) flash('✓ Sent to Syruvia. Open the Import wizard to approve.', true);
+    else flash('✗ Failed (' + r.status + '). Check the token in Settings.', false);
+  } catch (e) {
+    alert('Bookmarklet error: ' + e.message);
+  }
+})();`;
+    return 'javascript:' + encodeURIComponent(body);
+  }
 
   console.log('[flavor-reviews] mounted (' + (aiReady ? 'AI enabled' : 'AI disabled — set ANTHROPIC_API_KEY') + ')');
 };

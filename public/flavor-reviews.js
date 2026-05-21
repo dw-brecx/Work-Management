@@ -930,6 +930,8 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         </div>
       </div>
 
+      <div id="imp-inbox" style="max-width:760px;margin-bottom:14px"></div>
+
       <div id="imp-step-1" class="card" style="max-width:760px">
         <div class="card-head"><h3>Step 1 — Paste the URL</h3></div>
         <div class="form-row">
@@ -937,9 +939,10 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
           <input type="url" id="imp-url" placeholder="https://www.amazon.com/dp/B0XXXXXXXX/…">
           <div style="font-size:11px;color:var(--text3);margin-top:5px">Tip: paste the canonical product page URL (the one with all the flavor variation buttons), not the search-results URL.</div>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary" id="imp-fetch">✨ Fetch &amp; extract</button>
-          <button class="btn-sec" id="imp-paste-mode">Or paste page content instead</button>
+          <button class="btn-sec" id="imp-paste-mode">Or paste page content</button>
+          <button class="btn-sec" onclick="window.location.hash='/settings'">📥 Set up bookmarklet</button>
         </div>
         <div id="imp-paste-block" style="display:none;margin-top:14px">
           <label class="fr-label">Paste page content</label>
@@ -959,6 +962,48 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       $('imp-paste-mode').style.display = 'none';
     });
     $('imp-paste-go').addEventListener('click', () => doImportPaste());
+    renderInboxPanel('imp-inbox', 'product');
+  }
+
+  // Render an "inbox picker" inside an existing import page. Used by both
+  // /import (kind=product) and /flavor/:id/reviews-import (kind=reviews).
+  async function renderInboxPanel(hostId, kind) {
+    const host = $(hostId);
+    if (!host) return;
+    try {
+      const { items } = await apiGet('/api/flavor-reviews/scraper/inbox?kind=' + kind);
+      if (!items.length) {
+        host.innerHTML = `
+          <div class="card" style="border-style:dashed;background:transparent">
+            <div style="display:flex;gap:10px;align-items:center">
+              <div style="font-size:22px">📥</div>
+              <div style="flex:1">
+                <div style="font-size:13px;font-weight:650">No bookmarklet captures yet</div>
+                <div style="font-size:11.5px;color:var(--text3);margin-top:2px">Set up the bookmarklet in <a onclick="window.location.hash='/settings'" style="color:var(--accent);cursor:pointer">Settings</a> to scrape Amazon pages from your own browser — bypasses every bot wall.</div>
+              </div>
+            </div>
+          </div>`;
+        return;
+      }
+      host.innerHTML = `
+        <div class="card" style="background:linear-gradient(135deg,#faf5ff,#fff);border-color:#e9d5ff">
+          <div class="card-head" style="border-bottom:1px solid #e9d5ff;padding-bottom:8px;margin-bottom:10px">
+            <h3>📥 Bookmarklet inbox · ${items.length} capture${items.length === 1 ? '' : 's'}</h3>
+            <div style="font-size:11px;color:var(--text3)">Click one to parse + start the approval flow.</div>
+          </div>
+          ${items.map(it => `
+            <div style="display:flex;gap:10px;align-items:center;padding:10px;border:1px solid var(--border);border-radius:9px;margin-bottom:6px;background:white">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.page_title || it.source_url || '(no title)')}</div>
+                <div style="font-size:10.5px;color:var(--text3)">${escapeHtml(prettyDate(it.created_at))} · ${(it.bytes / 1024).toFixed(0)} KB${it.page_count > 1 ? ' · ' + it.page_count + ' pages' : ''}${it.status === 'parsed' ? ' · already parsed (free)' : ''}</div>
+              </div>
+              <button class="btn-tiny btn-primary" onclick="FR.pickInbox(${it.id}, '${kind}')">${it.status === 'parsed' ? 'Use →' : '✨ Parse →'}</button>
+              <button class="btn-tiny btn-danger" onclick="FR.deleteInbox(${it.id});setTimeout(()=>FR.refreshInbox('${hostId}','${kind}'),300)">×</button>
+            </div>`).join('')}
+        </div>`;
+    } catch (e) {
+      host.innerHTML = `<div class="card" style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    }
   }
 
   async function doImportFetch() {
@@ -1220,6 +1265,8 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         </div>
       </div>
 
+      <div id="rvi-inbox" style="max-width:760px;margin-bottom:14px"></div>
+
       <div id="rvi-step-1" class="card" style="max-width:760px">
         <div class="form-grid">
           <div class="form-row">
@@ -1240,6 +1287,7 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary" id="rvi-fetch">✨ Fetch &amp; parse</button>
           <button class="btn-sec" id="rvi-paste-mode">Or paste review text</button>
+          <button class="btn-sec" onclick="window.location.hash='/settings'">📥 Set up bookmarklet</button>
         </div>
         <div id="rvi-paste-block" style="display:none;margin-top:14px">
           <label class="fr-label">Paste the reviews</label>
@@ -1259,6 +1307,7 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       $('rvi-paste-mode').style.display = 'none';
     });
     $('rvi-paste-go').addEventListener('click', () => doReviewsPaste());
+    renderInboxPanel('rvi-inbox', 'reviews');
   }
 
   async function doReviewsFetch() {
@@ -1454,6 +1503,18 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
           <button class="btn-sec" onclick="window.location.hash='/'">Cancel</button>
         </div>
       </div>
+
+      <div class="card" style="max-width:760px;margin-top:16px">
+        <div class="card-head">
+          <h3>📥 Scraper bookmarklet</h3>
+        </div>
+        <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin:0 0 12px">
+          Amazon blocks most automated scrapes. The bookmarklet sidesteps that by running inside <em>your</em> browser
+          tab — your real Amazon session does the work. One click captures the rendered page (including JS-injected
+          variations and reviews) and sends it here, then Claude parses it on demand.
+        </p>
+        <div id="scr-setup-body" style="min-height:80px;font-size:12px;color:var(--text3)">Loading…</div>
+      </div>
     `);
 
     $('set-save').addEventListener('click', async () => {
@@ -1468,6 +1529,97 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         toast('Settings saved', 'ok');
       } catch (e) { toast(e.message, 'err'); }
     });
+
+    loadScraperSetup();
+  }
+
+  async function loadScraperSetup() {
+    const host = $('scr-setup-body');
+    if (!host) return;
+    try {
+      const c = await apiGet('/api/flavor-reviews/scraper/config');
+      renderScraperSetup(c);
+    } catch (e) {
+      host.innerHTML = `<div style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderScraperSetup(c) {
+    const host = $('scr-setup-body');
+    // We render the bookmarklet as an <a href="javascript:..."> — the
+    // backend has already URI-encoded the JS body, so the browser treats
+    // the whole thing as a draggable link. The visible label is what the
+    // user will see in their bookmark bar.
+    host.innerHTML = `
+      <ol style="padding-left:18px;margin:0 0 10px;line-height:1.7;font-size:12.5px;color:var(--text2)">
+        <li>Show your browser's bookmark bar if it's hidden (View → Show Bookmarks Bar in most browsers).</li>
+        <li><strong>Drag</strong> the button below onto your bookmark bar. (Right-clicking → "Bookmark this link" also works.)</li>
+        <li>Go to any Amazon product or reviews page and click the bookmark. A floating "✓ Sent to Syruvia" appears when it lands.</li>
+        <li>Come back here to <a onclick="window.location.hash='/import'" style="color:var(--accent);cursor:pointer">Import</a> (for products) or to a flavor's <em>Import reviews</em> (for reviews) — your capture is at the top of the inbox.</li>
+      </ol>
+
+      ${c.origin.startsWith('http://') && !c.origin.includes('localhost') ? `
+        <div class="card" style="border-color:#fde68a;background:var(--warn-bg);padding:11px;margin:10px 0;font-size:11.5px">
+          ⚠️ Your app origin is <code>${escapeHtml(c.origin)}</code> (plain HTTP). Amazon is HTTPS, so the browser will block the bookmarklet's POST as mixed content. Serve the app over HTTPS for the bookmarklet to work from amazon.com.
+        </div>` : ''}
+
+      <div style="background:var(--bg2);padding:14px;border-radius:10px;margin:14px 0 8px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <a href="${c.bookmarklet}" id="scr-drag"
+           style="background:linear-gradient(135deg,#7c3aed,#a855f7);color:white;padding:10px 16px;border-radius:8px;font-weight:650;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:6px;cursor:grab"
+           draggable="true"
+           onclick="event.preventDefault();alert('Drag this link to your browser bookmark bar — don\\'t click it here.')"
+          >📥 Send to Syruvia</a>
+        <div style="font-size:11.5px;color:var(--text3);flex:1;min-width:200px">
+          ↑ Drag this purple button to your bookmark bar. Clicking it here won't do anything useful — it's meant to live on the bookmark bar so it can run on amazon.com.
+        </div>
+      </div>
+
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text3)">Bookmarklet not working? Show the raw URL / token</summary>
+        <div style="margin-top:10px;font-size:11.5px;color:var(--text2)">
+          <div style="margin-bottom:6px"><strong>Origin:</strong> <code>${escapeHtml(c.origin)}</code></div>
+          <div style="margin-bottom:6px"><strong>Token:</strong> <code style="font-family:ui-monospace,Menlo,monospace">${escapeHtml(c.token)}</code></div>
+          <div style="margin-bottom:10px">If you ever paste your token somewhere insecure, rotate it. The old bookmarklet stops working immediately and the new one needs to be re-dragged.</div>
+          <button class="btn-sec btn-tiny" id="scr-rotate">Rotate token (invalidates current bookmarklet)</button>
+        </div>
+      </details>
+
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text3)">Recent inbox captures</summary>
+        <div id="scr-inbox" style="margin-top:10px;font-size:12px">Loading…</div>
+      </details>
+    `;
+    const rot = $('scr-rotate');
+    if (rot) rot.addEventListener('click', async () => {
+      if (!confirm('Rotate the workspace scraper token? The current bookmarklet will stop working until you re-drag the new one.')) return;
+      try {
+        const c2 = await apiPost('/api/flavor-reviews/scraper/rotate-token', {});
+        renderScraperSetup(c2);
+        toast('Token rotated. Re-drag the bookmarklet.', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    loadScraperInbox();
+  }
+
+  async function loadScraperInbox() {
+    const host = $('scr-inbox');
+    if (!host) return;
+    try {
+      const { items } = await apiGet('/api/flavor-reviews/scraper/inbox');
+      if (!items.length) { host.innerHTML = '<em style="color:var(--text3)">Nothing in the inbox yet. Click your bookmarklet on an Amazon page to send the first capture.</em>'; return; }
+      host.innerHTML = items.map(it => `
+        <div style="display:flex;gap:10px;align-items:center;padding:9px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+          <span class="pill" style="background:${it.kind === 'reviews' ? 'var(--info-bg)' : 'var(--ok-bg)'};color:${it.kind === 'reviews' ? 'var(--info)' : 'var(--ok)'}">${it.kind}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.page_title || it.source_url || '(no title)')}</div>
+            <div style="font-size:10.5px;color:var(--text3)">${escapeHtml(prettyDate(it.created_at))} · ${(it.bytes / 1024).toFixed(1)} KB · ${it.page_count} page${it.page_count === 1 ? '' : 's'} · ${escapeHtml(it.status)}</div>
+          </div>
+          <button class="btn-tiny btn-danger" onclick="FR.deleteInbox(${it.id})">×</button>
+        </div>
+      `).join('');
+    } catch (e) {
+      host.innerHTML = `<div style="color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    }
   }
 
   // ── Modals ─────────────────────────────────────────────────────────────
@@ -1929,6 +2081,32 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
   // ── Public hooks (used by inline handlers in row HTML) ─────────────────
   window.FR = {
     openLinkModal,
+    async deleteInbox(id) {
+      if (!confirm('Delete this capture from the inbox?')) return;
+      try {
+        await apiDel('/api/flavor-reviews/scraper/inbox/' + id);
+        // Re-render whichever inbox view is open right now.
+        if (document.getElementById('scr-inbox')) loadScraperInbox();
+      } catch (e) { toast(e.message, 'err'); }
+    },
+    refreshInbox(hostId, kind) { renderInboxPanel(hostId, kind); },
+    async pickInbox(id, kind) {
+      // Called from inside the /import or /flavor/:id/reviews-import flow.
+      // Parse the capture, then jump into the same approval grid as paste-mode.
+      try {
+        toast('Parsing capture with Claude…', 'ok');
+        const r = await apiPost('/api/flavor-reviews/scraper/parse/' + id, {});
+        if (kind === 'reviews') {
+          if (!r.reviews || !r.reviews.length) { toast('No reviews parsed from that capture.', 'err'); return; }
+          await apiPost('/api/flavor-reviews/scraper/inbox/' + id + '/consume', {});
+          finishReviewsExtract(r.reviews, r.source_url);
+        } else {
+          if (!r.variations || !r.variations.length) { toast('No variations parsed from that capture.', 'err'); return; }
+          await apiPost('/api/flavor-reviews/scraper/inbox/' + id + '/consume', {});
+          finishExtract({ ok: true, ...r });
+        }
+      } catch (e) { toast(e.message, 'err'); }
+    },
     async editLink(id) {
       const link = CURRENT_FLAVOR.links.find(l => l.id === id);
       if (link) openLinkModal(CURRENT_FLAVOR.id, link);
