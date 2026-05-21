@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth } = deps;
+  const { get, all, run, requireAuth, pool } = deps;
   const { randomBytes } = require('crypto');
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
   const aiReady = !!ANTHROPIC_API_KEY;
@@ -358,6 +358,19 @@ module.exports = function attach(app, deps) {
   });
 
   // ── Reviews ──────────────────────────────────────────────────────────────
+  // Strict review dedup key. Two reviews on the same flavor with identical
+  // normalized reviewer_name + posted_at + body are treated as the same
+  // review and the later one is dropped silently. Empty body → empty key
+  // (we don't dedupe rating-only rows since their key would collapse all
+  // anonymous "5-star, no body" entries into one).
+  function computeDedupKey(reviewer_name, posted_at, body) {
+    const b = String(body || '').trim().replace(/\s+/g, ' ');
+    if (!b) return '';
+    const n = String(reviewer_name || '').trim().toLowerCase();
+    const d = String(posted_at || '').trim();
+    return n + '' + d + '' + b.toLowerCase();
+  }
+
   function classifySentiment(rating) {
     if (!rating) return '';
     if (rating <= 2) return 'negative';
@@ -409,12 +422,22 @@ module.exports = function attach(app, deps) {
       const { errors, clean } = validateReview(req.body || {});
       if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
-      // Soft dedup against an already-addressed identical review
-      // (same source + reviewer_name + body for the same flavor).
+      // Dedup pass 1: stable source-side review ID (rare — only when the
+      // caller supplied one). Cheap exact match.
       if (clean.source_review_id) {
         const dup = await get(
           'SELECT id, status, issue_id FROM fr_reviews WHERE flavor_id=? AND source=? AND source_review_id=?',
           flavorId, clean.source, clean.source_review_id
+        );
+        if (dup) return res.status(200).json({ duplicate: true, existing_id: dup.id, existing_status: dup.status });
+      }
+      // Dedup pass 2: strict content-based key. Catches the case where the
+      // same review lands without a source_review_id (e.g. paste, bookmarklet).
+      const dedupKey = computeDedupKey(clean.reviewer_name, clean.posted_at, clean.body);
+      if (dedupKey) {
+        const dup = await get(
+          'SELECT id, status FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1',
+          flavorId, dedupKey
         );
         if (dup) return res.status(200).json({ duplicate: true, existing_id: dup.id, existing_status: dup.status });
       }
@@ -425,11 +448,11 @@ module.exports = function attach(app, deps) {
       // The dedicated "find duplicates" AI endpoint covers the harder cases.
       const ins = await run(
         `INSERT INTO fr_reviews
-           (flavor_id, source, source_review_id, rating, reviewer_name, title, body, url, posted_at, sentiment, created_by)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+           (flavor_id, source, source_review_id, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
         flavorId, clean.source, clean.source_review_id, clean.rating,
         clean.reviewer_name, clean.title, clean.body, clean.url, clean.posted_at,
-        sentiment, req.session.userId
+        sentiment, dedupKey, req.session.userId
       );
       const row = await get('SELECT * FROM fr_reviews WHERE id=?', ins.lastInsertRowid);
 
@@ -1765,6 +1788,9 @@ module.exports = function attach(app, deps) {
       if (!flavor) return res.status(404).json({ error: 'Flavor not found' });
 
       const created = []; const skipped = []; const errors = [];
+      // Intra-batch dedup: catches Claude double-emitting the same row OR
+      // a user pasting the same review twice within one import.
+      const seenInBatch = new Set();
       for (let i = 0; i < items.length; i++) {
         const r = items[i];
         try {
@@ -1774,24 +1800,33 @@ module.exports = function attach(app, deps) {
           const reviewer_name = String(r.reviewer_name || '').slice(0, 120);
           const posted_at = /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '';
 
-          // Soft dedup: same flavor + source + body (case-insensitive) within
-          // a 60-char prefix. Avoids re-importing the same review on a refetch.
-          if (body) {
-            const prefix = body.slice(0, 60);
+          // Strict dedup by reviewer_name + posted_at + body (normalized).
+          // Empty-body rows aren't dedupable (key collapses across all
+          // anonymous rating-only reviews), so they always insert.
+          const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+          if (dedupKey) {
+            if (seenInBatch.has(dedupKey)) {
+              skipped.push({ index: i, reason: 'duplicate-in-batch' });
+              continue;
+            }
             const dup = await get(
-              `SELECT id FROM fr_reviews WHERE flavor_id=? AND source=? AND LOWER(LEFT(body, 60))=LOWER(?)`,
-              flavorId, source, prefix
+              `SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1`,
+              flavorId, dedupKey
             );
-            if (dup) { skipped.push({ index: i, reason: 'duplicate' }); continue; }
+            if (dup) {
+              skipped.push({ index: i, reason: 'duplicate', existing_id: dup.id });
+              continue;
+            }
+            seenInBatch.add(dedupKey);
           }
 
           const sentiment = classifySentiment(rating);
           const ins = await run(
             `INSERT INTO fr_reviews
-               (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, created_by)
-             VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+               (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
             flavorId, source, rating, reviewer_name, title, body, sourceUrl, posted_at,
-            sentiment, req.session.userId
+            sentiment, dedupKey, req.session.userId
           );
           created.push({ index: i, id: ins.lastInsertRowid });
           if (sentiment === 'negative') {
@@ -2092,6 +2127,40 @@ module.exports = function attach(app, deps) {
 })();`;
     return 'javascript:' + encodeURIComponent(body);
   }
+
+  // ── Manual dedup pass ───────────────────────────────────────────────────
+  // The startup cleanup runs once via fr_settings.dedup_v1_done. Use this
+  // endpoint to dedupe again on demand (after a bad import, or if
+  // duplicates somehow snuck in via a different path).
+  app.post('/api/flavor-reviews/reviews/dedupe', requireAuth, async (req, res) => {
+    try {
+      // 1) Backfill any rows missing a key (defensive — every insert path
+      //    now stamps it, but a stray INSERT or restore could leave gaps).
+      await pool.query(`
+        UPDATE fr_reviews
+        SET dedup_key = CASE
+          WHEN BTRIM(COALESCE(body, '')) = '' THEN ''
+          ELSE LOWER(BTRIM(COALESCE(reviewer_name, '')))
+               || E'\\x01' || COALESCE(posted_at, '')
+               || E'\\x01' || LOWER(REGEXP_REPLACE(BTRIM(body), E'\\s+', ' ', 'g'))
+        END
+        WHERE dedup_key = ''
+          AND BTRIM(COALESCE(body, '')) <> ''`);
+      // 2) Delete duplicates, keeping the earliest (MIN id) per group.
+      const del = await pool.query(`
+        DELETE FROM fr_reviews
+        WHERE dedup_key <> ''
+          AND id NOT IN (
+            SELECT MIN(id) FROM fr_reviews
+            WHERE dedup_key <> ''
+            GROUP BY flavor_id, dedup_key
+          )`);
+      res.json({ deleted: Number(del.rowCount || 0) });
+    } catch (e) {
+      console.error('[fr] manual dedupe failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // ── Smart Import Agent ──────────────────────────────────────────────────
   // One URL in, one structured proposal out. The agent:
