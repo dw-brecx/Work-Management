@@ -2093,5 +2093,251 @@ module.exports = function attach(app, deps) {
     return 'javascript:' + encodeURIComponent(body);
   }
 
+  // ── Smart Import Agent ──────────────────────────────────────────────────
+  // One URL in, one structured proposal out. The agent:
+  //   1. Classifies the URL by path (product vs reviews vs unknown).
+  //   2. Resolves content: bookmarklet inbox item by id > Claude web_fetch
+  //      > server-side fetch. First one that succeeds wins.
+  //   3. Runs the matching extraction (variations OR reviews).
+  //   4. For product URLs: ALSO tries the derived /product-reviews/<asin>/
+  //      URL in the same call so the user gets a "32 reviews waiting" hint
+  //      and can save them to the right flavor after approval.
+  //   5. For reviews URLs: looks up which flavor owns this ASIN
+  //      (fr_flavor_links.asin), pre-fills the approval grid so the user
+  //      doesn't have to pick a target.
+  // Nothing writes to the DB — the existing /confirm + /reviews-confirm
+  // endpoints handle that after the user approves. Keeps the agent safe.
+
+  function classifyAmazonUrl(url) {
+    const s = String(url || '');
+    if (!/amazon\./i.test(s)) {
+      // Allow paths even when host isn't amazon (some mirrors / shortened URLs).
+      const revHit = /\/product-reviews\/([A-Z0-9]{10})/i.exec(s);
+      if (revHit) return { kind: 'reviews', asin: revHit[1].toUpperCase() };
+      const prodHit = /\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/i.exec(s);
+      if (prodHit) return { kind: 'product', asin: prodHit[1].toUpperCase() };
+      return { kind: 'unsupported', asin: '' };
+    }
+    const revMatch = /\/product-reviews\/([A-Z0-9]{10})/i.exec(s);
+    if (revMatch) return { kind: 'reviews', asin: revMatch[1].toUpperCase() };
+    const prodMatch = /\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/i.exec(s);
+    if (prodMatch) return { kind: 'product', asin: prodMatch[1].toUpperCase() };
+    return { kind: 'unknown', asin: '' };
+  }
+
+  // Run extraction directly from raw HTML (used for inbox-sourced content).
+  async function extractFromHtml(html, urlContext, expectedKind) {
+    const trimmed = stripHtmlNoise(html).slice(0, 120000);
+    if (expectedKind === 'reviews') {
+      const raw = await anthropicCall({
+        system: REVIEW_EXTRACT_SYSTEM,
+        userText: `Captured from ${urlContext}. The HTML may contain multiple paginated review pages concatenated with <!--PAGEBREAK--> markers; treat them as one continuous stream and don't duplicate.\n\nHTML:\n${trimmed}`,
+        maxTokens: 8000,
+      });
+      return parseReviewsJSON(raw);
+    }
+    const raw = await anthropicCall({
+      system: EXTRACT_SYSTEM,
+      userText: `Captured from ${urlContext}. Extract every flavor variation per your instructions.\n\nHTML:\n${trimmed}`,
+      maxTokens: 3500,
+    });
+    return parseExtractJSON(raw);
+  }
+
+  // Try web_fetch then server_fetch for a URL. Returns the parsed extraction
+  // and which path succeeded, or null if both fail.
+  async function fetchAndExtract(url, expectedKind) {
+    // A) Claude web_fetch — handles both fetch and extract in one call.
+    try {
+      const raw = await anthropicCall({
+        system: expectedKind === 'reviews' ? REVIEW_EXTRACT_SYSTEM : EXTRACT_SYSTEM,
+        userText: expectedKind === 'reviews'
+          ? `Fetch this reviews page and extract every review. URL: ${url}`
+          : `Fetch this Amazon URL and extract every flavor variation.\n\nURL: ${url}\n\nUse the web_fetch tool to read the page, then output the JSON described.`,
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3 }],
+        maxTokens: expectedKind === 'reviews' ? 8000 : 3500,
+        betaHeader: 'web-fetch-2025-09-10',
+      });
+      const parsed = expectedKind === 'reviews' ? parseReviewsJSON(raw) : parseExtractJSON(raw);
+      const ok = expectedKind === 'reviews' ? parsed.reviews.length : parsed.variations.length;
+      if (ok) return { extraction: parsed, source: 'claude_web_fetch' };
+    } catch (e) {
+      console.warn('[fr agent web_fetch]', e.message);
+    }
+    // B) Server-side fetch with realistic UA.
+    try {
+      const html = await serverFetchHtml(url);
+      const parsed = await extractFromHtml(html, url, expectedKind);
+      const ok = expectedKind === 'reviews' ? parsed.reviews.length : parsed.variations.length;
+      if (ok) return { extraction: parsed, source: 'server_fetch' };
+    } catch (e) {
+      console.warn('[fr agent server_fetch]', e.message);
+    }
+    return null;
+  }
+
+  app.post('/api/flavor-reviews/import/agent', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const url = String(req.body?.url || '').trim();
+      const inboxId = Number(req.body?.inbox_id || 0);
+      if (!url && !inboxId) return res.status(400).json({ error: 'Provide a URL or pick an inbox capture.' });
+
+      // 1. Resolve URL + classification (inbox source URL wins over passed URL).
+      let urlToUse = url;
+      let inboxRow = null;
+      if (inboxId) {
+        inboxRow = await get('SELECT id, html, source_url, kind FROM fr_scraper_inbox WHERE id=?', inboxId);
+        if (!inboxRow) return res.status(404).json({ error: 'Inbox capture not found' });
+        if (inboxRow.source_url) urlToUse = inboxRow.source_url;
+      }
+      const detected = classifyAmazonUrl(urlToUse);
+      if (detected.kind === 'unsupported') {
+        return res.json({
+          ok: false,
+          action: 'unsupported',
+          source_url: urlToUse,
+          message: `Only Amazon URLs are supported right now. Got: ${urlToUse}`,
+        });
+      }
+
+      // Decide what kind to extract for. Inbox row already declares its kind;
+      // for raw URLs we use the detected path. "unknown" defaults to product.
+      const expectedKind = inboxRow ? inboxRow.kind
+        : (detected.kind === 'reviews' ? 'reviews' : 'product');
+
+      // 2. Get extraction
+      let extraction = null;
+      let source = null;
+      if (inboxRow) {
+        try {
+          extraction = await extractFromHtml(inboxRow.html, urlToUse, expectedKind);
+          source = 'bookmarklet_inbox';
+        } catch (e) {
+          console.warn('[fr agent inbox extract]', e.message);
+        }
+      }
+      if (!extraction || (expectedKind === 'reviews' ? !extraction.reviews.length : !extraction.variations.length)) {
+        if (urlToUse) {
+          const got = await fetchAndExtract(urlToUse, expectedKind);
+          if (got) { extraction = got.extraction; source = got.source; }
+        }
+      }
+
+      if (!extraction || (expectedKind === 'reviews' ? !extraction.reviews.length : !extraction.variations.length)) {
+        // Couldn't get anything useful. Tell the user to use the bookmarklet.
+        return res.json({
+          ok: false,
+          action: 'needs_capture',
+          source_url: urlToUse,
+          detected,
+          expected_kind: expectedKind,
+          message: 'Couldn\'t auto-fetch the page (Amazon usually blocks server-side scrapes). Click the bookmarklet on this URL in your browser — it\'ll land in the inbox and you can re-run the agent picking that capture.',
+        });
+      }
+
+      // 3. Branch on kind
+      if (expectedKind === 'reviews') {
+        // Look up flavor by ASIN — first via fr_flavor_links, fall back to fr_flavors.amazon_asin
+        let flavor = null;
+        if (detected.asin) {
+          flavor = await get(
+            `SELECT f.id, f.name, f.variant FROM fr_flavors f
+             JOIN fr_flavor_links l ON l.flavor_id=f.id
+             WHERE l.asin=? LIMIT 1`, detected.asin);
+          if (!flavor) {
+            flavor = await get('SELECT id, name, variant FROM fr_flavors WHERE amazon_asin=? LIMIT 1', detected.asin);
+          }
+        }
+        return res.json({
+          ok: true,
+          action: 'reviews-proposal',
+          kind: 'reviews',
+          source_url: urlToUse,
+          source,
+          detected,
+          flavor,            // null if no match — UI will ask user to pick
+          reviews: extraction.reviews,
+        });
+      }
+
+      // Product path
+      // Backfill ASINs from URL if Claude missed any
+      for (const v of extraction.variations) {
+        if (!v.asin && detected.asin) v.asin = detected.asin;
+      }
+
+      // Match against existing catalog. Same simple two-pass as match-batch:
+      // exact case-insensitive name, then AI fuzzy if anything's left.
+      const flavors = await all('SELECT id, name, variant, kind FROM fr_flavors');
+      const matches = extraction.variations.map((v, idx) => {
+        const name = String(v.flavor_name || '').trim().toLowerCase();
+        if (!name) return { variation_index: idx, suggested_flavor_id: null, confidence: 0 };
+        const hit = flavors.find(f => f.name.toLowerCase() === name);
+        if (hit) return { variation_index: idx, suggested_flavor_id: hit.id, suggested_flavor_name: hit.name, confidence: 1.0 };
+        return { variation_index: idx, suggested_flavor_id: null, confidence: 0 };
+      });
+      const unmatched = matches.filter(m => m.suggested_flavor_id === null);
+      if (unmatched.length && flavors.length) {
+        try {
+          const system = "You match candidate flavor names against an existing catalog. " +
+            "Return ONLY JSON: { \"<index>\": <existing_flavor_id or null>, ... }. " +
+            "Match only when confident. Ignore size/pack qualifiers.";
+          const userText =
+            `Existing flavors:\n` + flavors.map(f => `id=${f.id} ${f.name} (${f.variant})`).join('\n') +
+            `\n\nCandidates:\n` + unmatched.map(m => `index=${m.variation_index} ${extraction.variations[m.variation_index].flavor_name} — ${extraction.variations[m.variation_index].title}`).join('\n');
+          const raw = await anthropicCall({ system, userText, maxTokens: 600 });
+          const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+          const scores = JSON.parse(cleaned);
+          for (const m of unmatched) {
+            const v = scores[String(m.variation_index)];
+            if (v != null && Number.isFinite(Number(v))) {
+              const flav = flavors.find(f => f.id === Number(v));
+              if (flav) { m.suggested_flavor_id = flav.id; m.suggested_flavor_name = flav.name; m.confidence = 0.6; }
+            }
+          }
+        } catch (e) {
+          console.warn('[fr agent fuzzy match]', e.message);
+        }
+      }
+
+      // 4. Opportunistic reviews pull from /product-reviews/<asin>/.
+      // Best-effort. If Amazon blocks (typical), we just skip and the user can
+      // re-run the agent on the reviews URL via the bookmarklet inbox.
+      let bonusReviews = null;
+      if (detected.asin && expectedKind === 'product') {
+        const reviewsUrl = 'https://www.amazon.com/product-reviews/' + detected.asin + '/';
+        try {
+          const got = await fetchAndExtract(reviewsUrl, 'reviews');
+          if (got && got.extraction.reviews.length) {
+            bonusReviews = {
+              url: reviewsUrl,
+              reviews: got.extraction.reviews,
+              fetched_via: got.source,
+            };
+          }
+        } catch (e) {
+          console.warn('[fr agent bonus reviews]', e.message);
+        }
+      }
+
+      return res.json({
+        ok: true,
+        action: 'product-proposal',
+        kind: 'product',
+        source_url: urlToUse,
+        source,
+        detected,
+        page_summary: extraction.page_summary,
+        variations: extraction.variations,
+        matches,
+        bonus_reviews: bonusReviews,
+      });
+    } catch (e) {
+      console.error('[fr agent] failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   console.log('[flavor-reviews] mounted (' + (aiReady ? 'AI enabled' : 'AI disabled — set ANTHROPIC_API_KEY') + ')');
 };
