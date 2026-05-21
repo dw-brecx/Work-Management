@@ -50,6 +50,8 @@ module.exports = function attach(app, deps) {
       variant: row.variant,
       notes: row.notes || '',
       status: row.status,
+      image_url: row.image_url || '',
+      amazon_asin: row.amazon_asin || '',
       created_at: row.created_at,
       updated_at: row.updated_at,
       ...(extras || {}),
@@ -293,6 +295,11 @@ module.exports = function attach(app, deps) {
     return {
       id: row.id, flavor_id: row.flavor_id,
       channel: row.channel, url: row.url, notes: row.notes,
+      asin: row.asin || '',
+      listing_type: row.listing_type || 'single',
+      image_url: row.image_url || '',
+      title: row.title || '',
+      pack_size: Number(row.pack_size || 1),
       position: row.position, created_at: row.created_at,
     };
   }
@@ -1143,6 +1150,575 @@ module.exports = function attach(app, deps) {
     } catch (e) {
       console.error('[fr] ai prioritize failed:', e.message);
       res.status(502).json({ error: 'AI call failed: ' + e.message });
+    }
+  });
+
+  // ── Amazon URL import ─────────────────────────────────────────────────
+  // The user pastes an Amazon product URL. We try TWO methods to grab the
+  // page (Claude's web_fetch tool, then a server-side fetch with a polite
+  // browser-y UA); whichever returns usable content gets sent to Claude
+  // for structured extraction. If both fail we return needs_paste=true so
+  // the UI can flip to a "paste page content" textarea.
+
+  const LISTING_TYPES_FR = ['single', 'with_pump', '4_pack', '6_pack', 'other'];
+  const EXTRACT_SCHEMA = `{
+  "variations": [
+    {
+      "asin": "10-char Amazon product ID",
+      "title": "full Amazon product title for this variation",
+      "flavor_name": "the human flavor name only, e.g. \\"Vanilla\\" or \\"Caramel\\"",
+      "image_url": "https://m.media-amazon.com/... high-res hero image",
+      "listing_type": "single | with_pump | 4_pack | 6_pack | other",
+      "pack_size": 1
+    }
+  ],
+  "page_summary": "one-sentence description of what this listing is"
+}`;
+
+  const EXTRACT_SYSTEM =
+    "You extract product data from Amazon listings for a syrup brand's catalog. " +
+    "Given EITHER a URL to fetch OR raw page content, return ONLY a JSON object " +
+    "with this exact schema:\n" + EXTRACT_SCHEMA + "\n\n" +
+    "Rules:\n" +
+    "- If the page has a flavor-variations widget (dropdown of multiple flavors), " +
+    "list EVERY variation. One variation per flavor. Use the variation label as flavor_name.\n" +
+    "- If there are NO variations, return ONE entry in `variations` for the main product.\n" +
+    "- ASIN is the 10-char alphanumeric Amazon ID (parsed from URL paths like /dp/ASIN/ or /product/ASIN/).\n" +
+    "- listing_type:\n" +
+    "  • 'single' = one bottle, no pump\n" +
+    "  • 'with_pump' = single bottle that ships with a pump\n" +
+    "  • '4_pack' = 4 bottles in one listing\n" +
+    "  • '6_pack' = 6 bottles in one listing\n" +
+    "  • 'other' = anything else (gift set, sampler, …)\n" +
+    "  Detect from title or pack-quantity hints. Default 'single'.\n" +
+    "- pack_size: 1 / 4 / 6 / N based on listing_type.\n" +
+    "- image_url: the highest-resolution hero image URL you can find.\n" +
+    "- flavor_name should be the bare flavor only — strip \"Syrup\", \"Coffee Syrup\", " +
+    "\"25 fl oz\", brand names, sizes. Just \"Vanilla\", \"Caramel\", \"Hazelnut\", etc.\n" +
+    "- Return ONLY JSON. No markdown, no code fences, no prose.";
+
+  function parseExtractJSON(raw) {
+    const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    try {
+      const j = JSON.parse(cleaned);
+      const variations = Array.isArray(j.variations) ? j.variations.map(v => ({
+        asin: String(v.asin || '').trim().slice(0, 20),
+        title: String(v.title || '').trim().slice(0, 500),
+        flavor_name: String(v.flavor_name || '').trim().slice(0, 120),
+        image_url: String(v.image_url || '').trim().slice(0, 1000),
+        listing_type: LISTING_TYPES_FR.includes(v.listing_type) ? v.listing_type : 'single',
+        pack_size: Math.max(1, Math.min(99, parseInt(v.pack_size, 10) || 1)),
+      })).filter(v => v.flavor_name || v.title) : [];
+      return { variations, page_summary: String(j.page_summary || '').slice(0, 500) };
+    } catch (e) {
+      console.warn('[fr] extract JSON parse failed:', e.message, 'raw:', cleaned.slice(0, 400));
+      return { variations: [], page_summary: '', parse_error: e.message };
+    }
+  }
+
+  function asinFromUrl(url) {
+    const m = /\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/i.exec(String(url || ''));
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  // Anthropic API — message with optional tools. We don't use the existing
+  // callClaude because we sometimes want tool use (web_fetch).
+  async function anthropicCall({ system, userText, tools, maxTokens, betaHeader }) {
+    if (!aiReady) throw new Error('AI disabled — ANTHROPIC_API_KEY not set');
+    const headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    };
+    if (betaHeader) headers['anthropic-beta'] = betaHeader;
+    const body = {
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: maxTokens || 2048,
+      system,
+      messages: [{ role: 'user', content: userText }],
+    };
+    if (tools && tools.length) body.tools = tools;
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      throw new Error('Anthropic ' + r.status + ': ' + t.slice(0, 300));
+    }
+    const data = await r.json();
+    // Find the last text block in content[]
+    const blocks = data.content || [];
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i].type === 'text' && blocks[i].text) return blocks[i].text;
+    }
+    return '';
+  }
+
+  // Strategy A: ask Claude to fetch the URL itself (web_fetch tool).
+  async function extractViaWebFetch(url) {
+    const userText =
+      `Fetch this Amazon product URL and extract every flavor variation.\n\n` +
+      `URL: ${url}\n\n` +
+      `Use the web_fetch tool to read the page, then output the JSON described in your instructions.`;
+    const raw = await anthropicCall({
+      system: EXTRACT_SYSTEM,
+      userText,
+      tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3 }],
+      maxTokens: 3000,
+      betaHeader: 'web-fetch-2025-09-10',
+    });
+    return parseExtractJSON(raw);
+  }
+
+  // Strategy B: server-side fetch with realistic headers; send the HTML
+  // (trimmed) to Claude for extraction. Amazon often returns the page to
+  // server-side requests when the UA looks like a real browser.
+  async function serverFetchHtml(url) {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'identity', // no gzip — we want raw text
+        'Cache-Control': 'no-cache',
+      },
+      redirect: 'follow',
+    });
+    if (!r.ok) throw new Error('server fetch ' + r.status);
+    const html = await r.text();
+    // Cheap CAPTCHA sniff — Amazon's "Robot Check" page is small and has
+    // distinctive markers. Treat as a soft-fail so we return needs_paste.
+    if (/Type the characters you see in this image/i.test(html) ||
+        /api-services-support@amazon\.com/i.test(html) && html.length < 30000) {
+      throw new Error('captcha');
+    }
+    return html;
+  }
+
+  async function extractViaServerFetch(url) {
+    const html = await serverFetchHtml(url);
+    // Trim to ~80k chars — enough to capture the variations widget without
+    // blowing out the model's context.
+    const trimmed = html.slice(0, 80000);
+    const userText =
+      `I fetched this Amazon URL on the server and am pasting the raw HTML.\n\n` +
+      `URL: ${url}\n\n` +
+      `PAGE HTML (may be truncated):\n${trimmed}`;
+    const raw = await anthropicCall({
+      system: EXTRACT_SYSTEM,
+      userText,
+      maxTokens: 3000,
+    });
+    return parseExtractJSON(raw);
+  }
+
+  app.post('/api/flavor-reviews/import/amazon-url', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const url = String(req.body?.url || '').trim();
+      if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Valid URL required' });
+
+      // Try web_fetch first, then server fetch. Either path either returns
+      // a variations array (success) or throws.
+      let result = null;
+      let fetchedVia = null;
+      try {
+        result = await extractViaWebFetch(url);
+        if (result.variations.length) fetchedVia = 'claude_web_fetch';
+      } catch (e) {
+        console.warn('[fr] web_fetch path failed:', e.message);
+      }
+      if (!result || !result.variations.length) {
+        try {
+          result = await extractViaServerFetch(url);
+          if (result.variations.length) fetchedVia = 'server_fetch';
+        } catch (e) {
+          console.warn('[fr] server fetch path failed:', e.message);
+        }
+      }
+
+      if (!result || !result.variations.length) {
+        // Neither path worked. Tell the client to paste the page content.
+        return res.json({ ok: false, needs_paste: true, source_url: url });
+      }
+
+      // Backfill ASIN from URL if Claude missed one (single-variation cases)
+      const urlAsin = asinFromUrl(url);
+      for (const v of result.variations) {
+        if (!v.asin && urlAsin) v.asin = urlAsin;
+      }
+
+      res.json({
+        ok: true,
+        source_url: url,
+        page_summary: result.page_summary,
+        variations: result.variations,
+        fetched_via: fetchedVia,
+      });
+    } catch (e) {
+      console.error('[fr] amazon-url failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/flavor-reviews/import/amazon-paste', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const url = String(req.body?.url || '').trim();
+      const content = String(req.body?.content || '').trim();
+      if (!content) return res.status(400).json({ error: 'Paste the Amazon page content first.' });
+      if (content.length > 200000) return res.status(400).json({ error: 'Pasted content too large (max 200k chars).' });
+
+      const userText =
+        `Here is the content of an Amazon product page (URL ${url || 'unknown'}). ` +
+        `Extract every flavor variation per your instructions.\n\n${content}`;
+      const raw = await anthropicCall({
+        system: EXTRACT_SYSTEM,
+        userText,
+        maxTokens: 3000,
+      });
+      const result = parseExtractJSON(raw);
+      if (!result.variations.length) {
+        return res.json({
+          ok: false,
+          source_url: url,
+          error: 'Nothing extractable in that content. Did you paste the product page itself?',
+          parse_error: result.parse_error || null,
+        });
+      }
+      const urlAsin = asinFromUrl(url);
+      for (const v of result.variations) if (!v.asin && urlAsin) v.asin = urlAsin;
+      res.json({
+        ok: true,
+        source_url: url,
+        page_summary: result.page_summary,
+        variations: result.variations,
+        fetched_via: 'paste',
+      });
+    } catch (e) {
+      console.error('[fr] amazon-paste failed:', e.message);
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // ── Match-batch: for each extracted variation, suggest an existing flavor
+  // (or "create new"). The user can override per-row in the approval UI.
+  // Uses simple lowercase exact match first, then asks AI to break ties or
+  // resolve fuzzy matches across the remaining candidates.
+  app.post('/api/flavor-reviews/import/match-batch', requireAuth, async (req, res) => {
+    try {
+      const vars = Array.isArray(req.body?.variations) ? req.body.variations : [];
+      if (!vars.length) return res.json({ matches: [] });
+      const flavors = await all('SELECT id, name, variant, kind FROM fr_flavors');
+
+      // Pass 1: exact case-insensitive name match.
+      const matches = vars.map((v, idx) => {
+        const name = String(v.flavor_name || '').trim().toLowerCase();
+        if (!name) return { variation_index: idx, suggested_flavor_id: null, confidence: 0 };
+        const hit = flavors.find(f => f.name.toLowerCase() === name);
+        if (hit) return { variation_index: idx, suggested_flavor_id: hit.id, suggested_flavor_name: hit.name, confidence: 1.0 };
+        return { variation_index: idx, suggested_flavor_id: null, confidence: 0 };
+      });
+
+      // Pass 2 (optional, AI): if anything still unmatched AND there are
+      // existing flavors, ask Claude to fuzzy-match the leftovers.
+      const unmatched = matches.filter(m => m.suggested_flavor_id === null);
+      if (aiReady && unmatched.length && flavors.length) {
+        try {
+          const system =
+            "You match candidate flavor names against an existing catalog. " +
+            "Return ONLY a JSON object: { \"<candidate_index>\": <existing_flavor_id or null>, ... }. " +
+            "Match only when you're confident — return null otherwise. " +
+            "Ignore size / pack qualifiers (\"4-pack\", \"with pump\", \"25 oz\") — match on the flavor itself. " +
+            "Treat \"Vanilla\" = \"French Vanilla\" as DIFFERENT unless the existing list contains exactly the same name.";
+          const userText =
+            `Existing flavors:\n` +
+            flavors.map(f => `id=${f.id} ${f.name} (${f.variant})`).join('\n') +
+            `\n\nCandidates to match:\n` +
+            unmatched.map(m => `index=${m.variation_index} ${vars[m.variation_index].flavor_name} — ${vars[m.variation_index].title}`).join('\n');
+          const raw = await anthropicCall({ system, userText, maxTokens: 600 });
+          const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+          const scores = JSON.parse(cleaned);
+          for (const m of unmatched) {
+            const v = scores[String(m.variation_index)];
+            if (v != null && Number.isFinite(Number(v))) {
+              const id = Number(v);
+              const flav = flavors.find(f => f.id === id);
+              if (flav) { m.suggested_flavor_id = id; m.suggested_flavor_name = flav.name; m.confidence = 0.6; }
+            }
+          }
+        } catch (e) {
+          console.warn('[fr] match AI pass failed:', e.message);
+        }
+      }
+      res.json({ matches });
+    } catch (e) {
+      console.error('[fr] match-batch failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Confirm: write approved items to DB. Each item has an action:
+  //   action='create'  → create a new fr_flavor + add this listing as link
+  //   action='link'    → add this listing as a link on an existing flavor
+  //   action='skip'    → ignore (no-op)
+  // Returns counts so the UI can show a clean summary.
+  app.post('/api/flavor-reviews/import/confirm', requireAuth, async (req, res) => {
+    try {
+      const sourceUrl = String(req.body?.source_url || '').trim();
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (!items.length) return res.status(400).json({ error: 'No items to import.' });
+
+      const created = []; const linked = []; const skipped = []; const errors = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        try {
+          if (it.action === 'skip') { skipped.push({ index: i }); continue; }
+
+          const name = String(it.name || '').trim();
+          const kind = KINDS.includes(it.kind) ? it.kind : 'other';
+          const variant = VARIANTS.includes(it.variant) ? it.variant : 'regular';
+          const asin = String(it.asin || '').trim().slice(0, 20);
+          const title = String(it.title || '').trim().slice(0, 500);
+          const imageUrl = String(it.image_url || '').trim().slice(0, 1000);
+          const listingType = LISTING_TYPES_FR.includes(it.listing_type) ? it.listing_type : 'single';
+          const packSize = Math.max(1, Math.min(99, parseInt(it.pack_size, 10) || 1));
+          const channel = String(it.channel || 'Amazon').trim().slice(0, 60);
+          const listingUrl = String(it.url || sourceUrl || '').trim().slice(0, 1000);
+
+          let flavorId;
+          if (it.action === 'create') {
+            if (!name) { errors.push({ index: i, reason: 'name required' }); continue; }
+            const dup = await get(
+              'SELECT id FROM fr_flavors WHERE LOWER(name)=LOWER(?) AND variant=?',
+              name, variant
+            );
+            if (dup) {
+              // Race / re-import case — silently fall back to link mode.
+              flavorId = dup.id;
+              linked.push({ index: i, flavor_id: flavorId, name, action: 'link_existing' });
+            } else {
+              const ins = await run(
+                `INSERT INTO fr_flavors (name, kind, variant, image_url, amazon_asin, created_by)
+                 VALUES (?,?,?,?,?,?) RETURNING id`,
+                name, kind, variant,
+                listingType === 'single' ? imageUrl : '', // hero image only from single
+                listingType === 'single' ? asin : '',
+                req.session.userId
+              );
+              flavorId = ins.lastInsertRowid;
+              created.push({ index: i, flavor_id: flavorId, name });
+              try { await maybeAutoSchedule(flavorId); } catch {}
+            }
+          } else if (it.action === 'link') {
+            flavorId = Number(it.existing_flavor_id);
+            if (!Number.isFinite(flavorId)) { errors.push({ index: i, reason: 'existing_flavor_id required' }); continue; }
+            const exists = await get('SELECT id, image_url, amazon_asin FROM fr_flavors WHERE id=?', flavorId);
+            if (!exists) { errors.push({ index: i, reason: 'target flavor not found' }); continue; }
+            linked.push({ index: i, flavor_id: flavorId });
+            // Backfill hero image / primary ASIN if missing.
+            if (listingType === 'single') {
+              const sets = []; const args = [];
+              if (!exists.image_url && imageUrl) { sets.push('image_url=?'); args.push(imageUrl); }
+              if (!exists.amazon_asin && asin) { sets.push('amazon_asin=?'); args.push(asin); }
+              if (sets.length) {
+                args.push(flavorId);
+                await run(`UPDATE fr_flavors SET ${sets.join(',')} WHERE id=?`, ...args);
+              }
+            }
+          } else {
+            errors.push({ index: i, reason: 'unknown action ' + it.action }); continue;
+          }
+
+          // Add the link row if we have a URL. Dedup on (flavor_id, asin or url).
+          if (listingUrl) {
+            const dupLink = asin
+              ? await get('SELECT id FROM fr_flavor_links WHERE flavor_id=? AND asin=?', flavorId, asin)
+              : await get('SELECT id FROM fr_flavor_links WHERE flavor_id=? AND url=?', flavorId, listingUrl);
+            if (!dupLink) {
+              const maxPos = await get('SELECT MAX(position) AS p FROM fr_flavor_links WHERE flavor_id=?', flavorId);
+              const pos = Number(maxPos?.p || -1) + 1;
+              await run(
+                `INSERT INTO fr_flavor_links
+                   (flavor_id, channel, url, notes, position, asin, listing_type, image_url, title, pack_size)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+                flavorId, channel, listingUrl, String(it.notes || '').slice(0, 1000),
+                pos, asin, listingType, imageUrl, title, packSize
+              );
+            }
+          }
+        } catch (e) {
+          errors.push({ index: i, reason: e.message });
+        }
+      }
+      res.json({ created, linked, skipped, errors });
+    } catch (e) {
+      console.error('[fr] import confirm failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Reviews extraction (URL fetch / paste) ───────────────────────────────
+  const REVIEW_EXTRACT_SYSTEM =
+    "You extract product reviews from Amazon / Walmart / TikTok pages or pasted text. " +
+    "Return ONLY this JSON: { \"reviews\": [{ \"rating\": <1-5 or null>, \"title\": \"...\", " +
+    "\"body\": \"...\", \"reviewer_name\": \"...\", \"posted_at\": \"YYYY-MM-DD or empty\", " +
+    "\"verified\": true/false }] }\n\n" +
+    "Rules:\n" +
+    "- Extract every distinct review you can identify. Don't combine reviews.\n" +
+    "- rating: integer 1-5 if visible (\"★★★★☆\" = 4). null if not shown.\n" +
+    "- posted_at: ISO date if shown (\"Reviewed in the United States on May 12, 2024\" → \"2024-05-12\"). " +
+    "Empty string otherwise. Today is " + todayUtc() + ".\n" +
+    "- reviewer_name: visible username or display name. Empty if anonymous.\n" +
+    "- verified: true if marked \"Verified Purchase\", else false.\n" +
+    "- DO NOT invent reviews. If the content has no recognizable reviews, return { \"reviews\": [] }.\n" +
+    "- DO NOT include code fences, markdown, or any commentary.";
+
+  function parseReviewsJSON(raw) {
+    const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    try {
+      const j = JSON.parse(cleaned);
+      const reviews = Array.isArray(j.reviews) ? j.reviews.map(r => ({
+        rating: r.rating == null ? 0 : Math.max(0, Math.min(5, parseInt(r.rating, 10) || 0)),
+        title: String(r.title || '').slice(0, 200),
+        body: String(r.body || '').slice(0, 10000),
+        reviewer_name: String(r.reviewer_name || '').slice(0, 120),
+        posted_at: /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '',
+        verified: !!r.verified,
+      })).filter(r => r.body || r.title) : [];
+      return { reviews };
+    } catch (e) {
+      console.warn('[fr] review JSON parse failed:', e.message, 'raw:', cleaned.slice(0, 300));
+      return { reviews: [], parse_error: e.message };
+    }
+  }
+
+  app.post('/api/flavor-reviews/import/reviews-fetch', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const url = String(req.body?.url || '').trim();
+      if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Valid URL required' });
+
+      let reviews = []; let fetchedVia = null;
+
+      // Strategy A: Claude web_fetch
+      try {
+        const raw = await anthropicCall({
+          system: REVIEW_EXTRACT_SYSTEM,
+          userText: `Fetch this reviews page and extract every review. URL: ${url}`,
+          tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3 }],
+          maxTokens: 3500,
+          betaHeader: 'web-fetch-2025-09-10',
+        });
+        const r = parseReviewsJSON(raw);
+        if (r.reviews.length) { reviews = r.reviews; fetchedVia = 'claude_web_fetch'; }
+      } catch (e) {
+        console.warn('[fr] reviews web_fetch failed:', e.message);
+      }
+
+      // Strategy B: server-side fetch
+      if (!reviews.length) {
+        try {
+          const html = await serverFetchHtml(url);
+          const trimmed = html.slice(0, 80000);
+          const raw = await anthropicCall({
+            system: REVIEW_EXTRACT_SYSTEM,
+            userText: `I fetched this reviews page on the server. URL: ${url}\n\nHTML:\n${trimmed}`,
+            maxTokens: 3500,
+          });
+          const r = parseReviewsJSON(raw);
+          if (r.reviews.length) { reviews = r.reviews; fetchedVia = 'server_fetch'; }
+        } catch (e) {
+          console.warn('[fr] reviews server fetch failed:', e.message);
+        }
+      }
+
+      if (!reviews.length) return res.json({ ok: false, needs_paste: true, source_url: url });
+      res.json({ ok: true, source_url: url, reviews, fetched_via: fetchedVia });
+    } catch (e) {
+      console.error('[fr] reviews-fetch failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/flavor-reviews/import/reviews-paste', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const content = String(req.body?.content || '').trim();
+      if (!content) return res.status(400).json({ error: 'Paste the review content first.' });
+      if (content.length > 200000) return res.status(400).json({ error: 'Pasted content too large (max 200k chars).' });
+      const raw = await anthropicCall({
+        system: REVIEW_EXTRACT_SYSTEM,
+        userText: `Here is pasted content with one or more reviews. Extract them.\n\n${content}`,
+        maxTokens: 3500,
+      });
+      const r = parseReviewsJSON(raw);
+      if (!r.reviews.length) {
+        return res.json({ ok: false, reviews: [], error: 'No reviews recognised in that content.', parse_error: r.parse_error || null });
+      }
+      res.json({ ok: true, reviews: r.reviews });
+    } catch (e) {
+      console.error('[fr] reviews-paste failed:', e.message);
+      res.status(502).json({ error: e.message });
+    }
+  });
+
+  // ── Reviews confirm: bulk-create approved reviews on a flavor ────────────
+  app.post('/api/flavor-reviews/import/reviews-confirm', requireAuth, async (req, res) => {
+    try {
+      const flavorId = Number(req.body?.flavor_id);
+      if (!Number.isFinite(flavorId)) return res.status(400).json({ error: 'flavor_id required' });
+      const source = String(req.body?.source || '').trim().slice(0, 60);
+      if (!source) return res.status(400).json({ error: 'source required (Amazon / Walmart / TikTok / …)' });
+      const sourceUrl = String(req.body?.url || '').trim().slice(0, 1000);
+      const items = Array.isArray(req.body?.reviews) ? req.body.reviews : [];
+      if (!items.length) return res.status(400).json({ error: 'No reviews to save.' });
+
+      const flavor = await get('SELECT id FROM fr_flavors WHERE id=?', flavorId);
+      if (!flavor) return res.status(404).json({ error: 'Flavor not found' });
+
+      const created = []; const skipped = []; const errors = [];
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i];
+        try {
+          const rating = Math.max(0, Math.min(5, parseInt(r.rating, 10) || 0));
+          const title = String(r.title || '').slice(0, 200);
+          const body = String(r.body || '').slice(0, 10000);
+          const reviewer_name = String(r.reviewer_name || '').slice(0, 120);
+          const posted_at = /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '';
+
+          // Soft dedup: same flavor + source + body (case-insensitive) within
+          // a 60-char prefix. Avoids re-importing the same review on a refetch.
+          if (body) {
+            const prefix = body.slice(0, 60);
+            const dup = await get(
+              `SELECT id FROM fr_reviews WHERE flavor_id=? AND source=? AND LOWER(LEFT(body, 60))=LOWER(?)`,
+              flavorId, source, prefix
+            );
+            if (dup) { skipped.push({ index: i, reason: 'duplicate' }); continue; }
+          }
+
+          const sentiment = classifySentiment(rating);
+          const ins = await run(
+            `INSERT INTO fr_reviews
+               (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, created_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+            flavorId, source, rating, reviewer_name, title, body, sourceUrl, posted_at,
+            sentiment, req.session.userId
+          );
+          created.push({ index: i, id: ins.lastInsertRowid });
+          if (sentiment === 'negative') {
+            try { await bumpNextCyclePriority(flavorId); } catch {}
+          }
+        } catch (e) {
+          errors.push({ index: i, reason: e.message });
+        }
+      }
+      res.json({ created, skipped, errors });
+    } catch (e) {
+      console.error('[fr] reviews-confirm failed:', e.message);
+      res.status(500).json({ error: e.message });
     }
   });
 

@@ -1916,6 +1916,24 @@ async function init() {
   )`);
   await pool.query(`INSERT INTO fr_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
 
+  // ── Flavor Reviews: import-from-URL fields ───────────────────────────────
+  // Added via safeAlter so existing installs upgrade in place. The Amazon
+  // import flow stamps these once the user approves the extracted data:
+  //   fr_flavors.image_url    — main product image (first link's hero)
+  //   fr_flavors.amazon_asin  — primary listing ASIN (the "single bottle" one)
+  //   fr_flavor_links.asin    — per-listing Amazon ASIN
+  //   fr_flavor_links.listing_type — single | with_pump | 4_pack | 6_pack | other
+  //   fr_flavor_links.image_url    — per-listing hero image
+  //   fr_flavor_links.title        — Amazon's product title at link time
+  //   fr_flavor_links.pack_size    — numeric pack (1/4/6) for matching
+  await safeAlter("ALTER TABLE fr_flavors ADD COLUMN image_url TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavors ADD COLUMN amazon_asin TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN asin TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN listing_type TEXT NOT NULL DEFAULT 'single'");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN image_url TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN pack_size INTEGER NOT NULL DEFAULT 1");
+
   // Seed a real Syruvia listing as the starter row in
   // flavor_listing_examples so the admin has something to clone + edit per
   // type combo instead of staring at an empty grid. Only fires when the
