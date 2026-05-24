@@ -349,35 +349,76 @@
     const q = (FLAVORS_FILTER.search || '').trim().toLowerCase();
     const rows = FLAVORS_CACHE.filter(f => {
       if (FLAVORS_FILTER.kind !== 'all' && f.kind !== FLAVORS_FILTER.kind) return false;
-      if (FLAVORS_FILTER.variant !== 'all' && f.variant !== FLAVORS_FILTER.variant) return false;
       if (FLAVORS_FILTER.status !== 'all' && f.status !== FLAVORS_FILTER.status) return false;
       if (q && !f.name.toLowerCase().includes(q)) return false;
       return true;
     });
 
+    // Pair by flavor name: one card per name showing its Regular and
+    // Sugar-free records side by side. The variant filter controls which
+    // side(s) show — 'all' shows both, 'regular'/'sugar_free' collapse to one
+    // (and hide names that don't have that type).
+    const wantVariant = FLAVORS_FILTER.variant; // all | regular | sugar_free
+    const groups = new Map(); // nameKey → { name, kind, regular, sugar_free }
+    for (const f of rows) {
+      const key = f.name.trim().toLowerCase();
+      if (!groups.has(key)) groups.set(key, { name: f.name, kind: f.kind, regular: null, sugar_free: null });
+      const g = groups.get(key);
+      if (f.variant === 'sugar_free') g.sugar_free = f; else g.regular = f;
+    }
+    let groupList = [...groups.values()];
+    if (wantVariant === 'regular')    groupList = groupList.filter(g => g.regular);
+    if (wantVariant === 'sugar_free') groupList = groupList.filter(g => g.sugar_free);
+    groupList.sort((a, b) => a.name.localeCompare(b.name));
+
     const grid = $('fl-grid');
-    $('fl-count').textContent = `${rows.length} flavor${rows.length === 1 ? '' : 's'}`;
-    if (!rows.length) {
+    const recordCount = rows.length;
+    $('fl-count').textContent = `${groupList.length} flavor${groupList.length === 1 ? '' : 's'} · ${recordCount} product${recordCount === 1 ? '' : 's'}`;
+    if (!groupList.length) {
       grid.innerHTML = `<div class="empty-state"><div class="es-emoji">🫥</div><div class="es-title">No flavors match.</div><div>Adjust the filters or bulk-import your catalog.</div></div>`;
       return;
     }
-    grid.innerHTML = `<div class="flavor-grid">${rows.map(f => {
-      const overdue = f.next_cycle && f.next_cycle < todayUtc();
+
+    // Render one side (regular or sugar-free) of a paired card.
+    const sidePanel = (rec, typeLabel, variantClass) => {
+      if (!rec) {
+        return `<div class="fc-side fc-side-empty">
+          <div class="fc-side-head"><span class="pill variant-${variantClass}" style="opacity:.5">${typeLabel}</span></div>
+          <div class="fc-side-none">No ${typeLabel.toLowerCase()} version</div>
+        </div>`;
+      }
+      const overdue = rec.next_cycle && rec.next_cycle < todayUtc();
+      const stars = rec.avg_rating != null ? `<span class="fc-rating" title="Average rating">★ ${rec.avg_rating.toFixed(1)}</span>` : '';
+      return `<div class="fc-side" onclick="event.stopPropagation();window.location.hash='/flavor/${rec.id}'">
+        <div class="fc-side-head">
+          <span class="pill variant-${variantClass}">${typeLabel}</span>
+          ${rec.status !== 'active' ? `<span class="pill status-${escapeAttr(rec.status)}">${escapeHtml(rec.status)}</span>` : ''}
+          ${stars}
+        </div>
+        <div class="fc-stat-row">
+          ${rec.total_reviews ? `<span class="fc-mini">${rec.total_reviews} review${rec.total_reviews === 1 ? '' : 's'}</span>` : '<span class="fc-mini" style="color:var(--text3)">No reviews yet</span>'}
+          ${rec.open_bad > 0 ? `<span class="fc-mini bad">${rec.open_bad} bad</span>` : ''}
+          ${rec.open_issues > 0 ? `<span class="fc-mini issue">${rec.open_issues} issue${rec.open_issues === 1 ? '' : 's'}</span>` : ''}
+          ${rec.link_count ? `<span class="fc-mini">${rec.link_count} link${rec.link_count === 1 ? '' : 's'}</span>` : ''}
+          ${rec.next_cycle ? `<span class="fc-mini due ${overdue ? 'bad' : ''}">${overdue ? 'Overdue' : 'Next'} ${escapeHtml(prettyDate(rec.next_cycle))}</span>` : ''}
+        </div>
+      </div>`;
+    };
+
+    grid.innerHTML = `<div class="flavor-pair-grid">${groupList.map(g => {
+      const showReg = wantVariant !== 'sugar_free';
+      const showSF  = wantVariant !== 'regular';
+      const sides = [
+        showReg ? sidePanel(g.regular, 'Regular', 'regular') : '',
+        showSF  ? sidePanel(g.sugar_free, 'Sugar-free', 'sugar_free') : '',
+      ].filter(Boolean).join('');
       return `
-        <div class="flavor-card" onclick="window.location.hash='/flavor/${f.id}'">
-          <div class="fc-name">${escapeHtml(f.name)}</div>
-          <div class="fc-tags">
-            <span class="pill kind-${escapeAttr(f.kind)}">${escapeHtml(cap(f.kind))}</span>
-            <span class="pill variant-${escapeAttr(f.variant)}">${escapeHtml(f.variant.replace('_','-'))}</span>
-            ${f.status !== 'active' ? `<span class="pill status-${escapeAttr(f.status)}">${escapeHtml(f.status)}</span>` : ''}
+        <div class="flavor-pair-card">
+          <div class="fpc-head">
+            <span class="fpc-name">${escapeHtml(g.name)}</span>
+            <span class="pill kind-${escapeAttr(g.kind)}">${escapeHtml(cap(g.kind))}</span>
           </div>
-          <div class="fc-stat-row">
-            ${f.open_bad > 0   ? `<span class="fc-mini bad">${f.open_bad} bad reviews</span>` : ''}
-            ${f.open_issues > 0 ? `<span class="fc-mini issue">${f.open_issues} open issue${f.open_issues === 1 ? '' : 's'}</span>` : ''}
-            ${f.next_cycle ? `<span class="fc-mini due ${overdue ? 'bad' : ''}">${overdue ? 'Overdue ' : 'Next '}${escapeHtml(prettyDate(f.next_cycle))}</span>` : '<span class="fc-mini">Not scheduled</span>'}
-            ${f.link_count ? `<span class="fc-mini">${f.link_count} sell-link${f.link_count === 1 ? '' : 's'}</span>` : ''}
-            ${f.total_reviews ? `<span class="fc-mini">${f.total_reviews} review${f.total_reviews === 1 ? '' : 's'} logged</span>` : ''}
-          </div>
+          <div class="fpc-sides ${(showReg && showSF) ? 'two' : 'one'}">${sides}</div>
         </div>`;
     }).join('')}</div>`;
   }

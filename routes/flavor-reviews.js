@@ -81,6 +81,7 @@ module.exports = function attach(app, deps) {
           (SELECT COUNT(*) FROM fr_issues   i WHERE i.flavor_id=f.id AND i.status='open')          AS open_issues,
           (SELECT COUNT(*) FROM fr_reviews  r WHERE r.flavor_id=f.id AND r.rating > 0 AND r.rating <= 2 AND r.status='open') AS open_bad,
           (SELECT COUNT(*) FROM fr_reviews  r WHERE r.flavor_id=f.id)                              AS total_reviews,
+          (SELECT ROUND(AVG(rating)::numeric, 1) FROM fr_reviews r WHERE r.flavor_id=f.id AND r.rating > 0) AS avg_rating,
           (SELECT scheduled_for FROM fr_cycles c WHERE c.flavor_id=f.id AND c.status='scheduled'
              ORDER BY scheduled_for ASC LIMIT 1)                                                   AS next_cycle,
           (SELECT COUNT(*) FROM fr_flavor_links l WHERE l.flavor_id=f.id)                          AS link_count
@@ -92,6 +93,7 @@ module.exports = function attach(app, deps) {
         open_issues: Number(m.get(r.id)?.open_issues || 0),
         open_bad: Number(m.get(r.id)?.open_bad || 0),
         total_reviews: Number(m.get(r.id)?.total_reviews || 0),
+        avg_rating: m.get(r.id)?.avg_rating != null ? Number(m.get(r.id).avg_rating) : null,
         next_cycle: m.get(r.id)?.next_cycle || '',
         link_count: Number(m.get(r.id)?.link_count || 0),
       })));
