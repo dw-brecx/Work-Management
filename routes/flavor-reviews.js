@@ -205,6 +205,55 @@ module.exports = function attach(app, deps) {
     }
   });
 
+  // ── Main listings registry (the 4 Amazon parent listings) ────────────────
+  function shapeMainListing(row) {
+    const label = (row.variant === 'sugar_free' ? 'Sugar-free' : 'Regular') +
+                  (row.has_pump ? ' · with pump' : ' · no pump');
+    return {
+      id: row.id, variant: row.variant, has_pump: !!row.has_pump,
+      label, asin: row.asin || '', url: row.url || '', notes: row.notes || '',
+      updated_at: row.updated_at,
+    };
+  }
+
+  app.get('/api/flavor-reviews/main-listings', requireAuth, async (req, res) => {
+    try {
+      const rows = await all(`SELECT * FROM fr_main_listings
+        ORDER BY (variant='sugar_free'), has_pump, id`);
+      res.json({ listings: rows.map(shapeMainListing) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/flavor-reviews/main-listings/:id', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get('SELECT * FROM fr_main_listings WHERE id=?', id);
+      if (!existing) return res.status(404).json({ error: 'Listing not found' });
+
+      let url = String(req.body?.url ?? existing.url).trim().slice(0, 2000);
+      let asin = String(req.body?.asin ?? existing.asin).trim().toUpperCase().slice(0, 20);
+      const notes = String(req.body?.notes ?? existing.notes).slice(0, 1000);
+      // If a URL was given without an ASIN, lift the ASIN out of it.
+      if (url && !asin) {
+        const m = /\/(?:dp|gp\/product|product|product-reviews)\/([A-Z0-9]{10})/i.exec(url);
+        if (m) asin = m[1].toUpperCase();
+      }
+      // Light sanity: ASIN should be 10 alphanumerics if present.
+      if (asin && !/^[A-Z0-9]{10}$/.test(asin)) {
+        return res.status(400).json({ error: 'ASIN should be 10 letters/numbers (e.g. B0XXXXXXXX).' });
+      }
+      await run(
+        `UPDATE fr_main_listings SET url=?, asin=?, notes=?,
+           updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id=?`,
+        url, asin, notes, id
+      );
+      const updated = await get('SELECT * FROM fr_main_listings WHERE id=?', id);
+      res.json(shapeMainListing(updated));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Bulk import (CSV / TSV paste) ────────────────────────────────────────
   // Accepts a text blob. Sniffs the delimiter (tab vs comma) and the optional
   // header row. Columns: name, kind, variant, notes, links.

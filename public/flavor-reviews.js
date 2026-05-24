@@ -96,6 +96,7 @@
     if (h === '/import')      return { view: 'import' };
     if (h === '/agent')       return { view: 'agent' };
     if (h === '/excel')       return { view: 'excel' };
+    if (h === '/listings')    return { view: 'listings' };
     if (h === '/settings')    return { view: 'settings' };
     const m8 = /^\/flavor\/(\d+)\/reviews-import\/?$/.exec(h);
     if (m8) return { view: 'reviews-import', id: Number(m8[1]) };
@@ -199,6 +200,7 @@
         <div class="fr-header-actions">
           <button class="btn-sec" onclick="window.location.hash='/calendar'">📅 Calendar</button>
           <button class="btn-sec" onclick="window.location.hash='/flavors'">All flavors</button>
+          <button class="btn-sec" onclick="window.location.hash='/listings'">🏷️ Main listings</button>
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" id="dash-refresh-ai">✨ Refresh AI priority</button>` : ''}
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" onclick="window.location.hash='/agent'">🤖 Smart Import (paste any URL)</button>` : ''}
           <button class="btn-sec" onclick="window.location.hash='/excel'">📊 Excel import</button>
@@ -1303,11 +1305,112 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       <div id="ag-result" style="display:none"></div>
     `);
 
+    // When launched from the Main Listings page, the URL is pre-filled.
+    if (AGENT_PREFILL_URL) { $('ag-url').value = AGENT_PREFILL_URL; AGENT_PREFILL_URL = ''; }
     $('ag-go').addEventListener('click', () => runAgent({ url: $('ag-url').value.trim() }));
     // Pressing Enter in the URL field also runs.
     $('ag-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ag-go').click(); });
     // Render the inbox picker — clicking an item runs the agent against it.
     renderAgentInbox();
+  }
+
+  // Set by the Main Listings page before navigating to #/agent so the URL
+  // field comes pre-filled.
+  let AGENT_PREFILL_URL = '';
+
+  // ── Main listings registry ─────────────────────────────────────────────
+  // The 4 Amazon parent listings (type × pump) that reviews are mainly
+  // grabbed from. Editable ASIN + URL per slot, plus a launch button into
+  // the Smart Import agent for each.
+  async function renderListings() {
+    loadingShell();
+    let listings;
+    try { ({ listings } = await apiGet('/api/flavor-reviews/main-listings')); }
+    catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
+
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/', 'Dashboard')}
+        ${breadcrumb([{ label: 'Dashboard', href: '/' }, { label: 'Main listings' }])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">🏷️</span> Main listings</h1>
+          <p class="fr-lede">Your 4 main Amazon parent listings — the type × pump matrix you grab reviews from. Each covers many flavors. Fill in the ASIN or URL for each, then use "Grab reviews" to pull them in (reviews get matched to a flavor by flavor name + this listing's type). Extra reviews from other places come in via <a onclick="window.location.hash='/excel'" style="color:var(--accent);cursor:pointer">Excel import</a>, identified by flavor + type.</p>
+        </div>
+      </div>
+
+      <div id="ml-list" style="max-width:820px"></div>
+    `);
+    renderListingRows(listings);
+  }
+
+  function renderListingRows(listings) {
+    const host = $('ml-list');
+    host.innerHTML = listings.map(l => {
+      const reviewsUrl = l.asin ? `https://www.amazon.com/product-reviews/${l.asin}/` : '';
+      return `
+      <div class="card" data-id="${l.id}" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <span class="pill variant-${l.variant}">${escapeHtml(l.variant.replace('_','-'))}</span>
+          <span class="pill" style="background:var(--bg2);color:var(--text2);text-transform:none;letter-spacing:0">${l.has_pump ? 'with pump' : 'no pump'}</span>
+          <strong style="font-size:13.5px">${escapeHtml(l.label)}</strong>
+          <span style="flex:1"></span>
+          ${l.url || l.asin ? `<a href="${escapeAttr(l.url || ('https://www.amazon.com/dp/' + l.asin))}" target="_blank" rel="noopener noreferrer" style="font-size:11.5px;color:var(--accent);text-decoration:none">Open on Amazon ↗</a>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:160px 1fr;gap:10px;align-items:start">
+          <div class="form-row" style="margin:0">
+            <label class="fr-label">ASIN</label>
+            <input type="text" class="ml-asin" value="${escapeAttr(l.asin)}" placeholder="B0XXXXXXXX" style="font-family:ui-monospace,Menlo,monospace">
+          </div>
+          <div class="form-row" style="margin:0">
+            <label class="fr-label">Listing URL</label>
+            <input type="url" class="ml-url" value="${escapeAttr(l.url)}" placeholder="https://www.amazon.com/dp/… (or paste the listing URL — I'll pull the ASIN)">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+          <button class="btn-primary btn-tiny ml-save">Save</button>
+          <button class="btn-sec btn-tiny ml-grab" ${l.asin || l.url ? '' : 'disabled title="Add an ASIN or URL first"'}>🤖 Grab reviews</button>
+          ${reviewsUrl ? `<a href="${escapeAttr(reviewsUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--text3);text-decoration:none">Reviews page ↗</a>` : ''}
+          <span class="ml-status" style="font-size:11px;color:var(--text3)"></span>
+        </div>
+      </div>`;
+    }).join('');
+
+    host.querySelectorAll('.card[data-id]').forEach(card => {
+      const id = Number(card.dataset.id);
+      const asinEl = card.querySelector('.ml-asin');
+      const urlEl = card.querySelector('.ml-url');
+      const statusEl = card.querySelector('.ml-status');
+      card.querySelector('.ml-save').addEventListener('click', async (ev) => {
+        ev.target.disabled = true;
+        try {
+          const updated = await apiPatch('/api/flavor-reviews/main-listings/' + id, {
+            asin: asinEl.value.trim(), url: urlEl.value.trim(),
+          });
+          asinEl.value = updated.asin; // reflect ASIN pulled from URL
+          statusEl.textContent = 'Saved ✓';
+          // Re-enable grab button now that there's an asin/url.
+          const grab = card.querySelector('.ml-grab');
+          if (updated.asin || updated.url) { grab.disabled = false; grab.removeAttribute('title'); }
+          toast('Listing saved', 'ok');
+          setTimeout(() => { statusEl.textContent = ''; }, 2500);
+        } catch (e) { toast(e.message, 'err'); statusEl.textContent = e.message; }
+        finally { ev.target.disabled = false; }
+      });
+      card.querySelector('.ml-grab').addEventListener('click', () => {
+        // Prefer the reviews URL (parent /product-reviews/<asin>/) so the
+        // agent goes straight for reviews.
+        const asin = asinEl.value.trim();
+        const url = asin
+          ? `https://www.amazon.com/product-reviews/${asin}/`
+          : urlEl.value.trim();
+        if (!url) return toast('Add an ASIN or URL first', 'err');
+        AGENT_PREFILL_URL = url;
+        goto('/agent');
+      });
+    });
   }
 
   async function renderAgentInbox() {
@@ -2836,6 +2939,7 @@ The URL is: `;
     if (r.view === 'import')         return renderImport();
     if (r.view === 'agent')          return renderAgent();
     if (r.view === 'excel')          return renderExcel();
+    if (r.view === 'listings')       return renderListings();
     if (r.view === 'reviews-import') return renderReviewsImport(r.id);
     if (r.view === 'settings')       return renderSettings();
     return renderDashboard();
