@@ -154,12 +154,51 @@ module.exports = function attach(app, deps) {
       const cycles = await all(
         `SELECT * FROM fr_cycles WHERE flavor_id=? ORDER BY scheduled_for DESC`, id
       );
+
+      // Flavor "group": every record sharing this name (regular + sugar_free).
+      // The work unit is the flavor name — when working a flavor you want to
+      // see ALL its reviews/issues across both types, each tagged by type.
+      // We keep the per-record `reviews`/`issues` above (this type only) and
+      // add `group` for the merged, type-tagged view the UI defaults to.
+      const groupFlavors = await all(
+        `SELECT id, name, variant, kind, status FROM fr_flavors WHERE LOWER(name)=LOWER(?) ORDER BY (variant='sugar_free'), id`,
+        row.name
+      );
+      const groupIds = groupFlavors.map(g => g.id);
+      const ph = groupIds.map(() => '?').join(',');
+      const groupReviews = await all(
+        `SELECT r.*, f.variant AS flavor_variant, i.title AS issue_title, i.status AS issue_status
+           FROM fr_reviews r
+           JOIN fr_flavors f ON f.id = r.flavor_id
+           LEFT JOIN fr_issues i ON i.id = r.issue_id
+          WHERE r.flavor_id IN (${ph})
+          ORDER BY COALESCE(NULLIF(r.posted_at,''), r.created_at) DESC`,
+        ...groupIds
+      );
+      const groupIssues = await all(
+        `SELECT i.*, f.variant AS flavor_variant,
+                (SELECT COUNT(*) FROM fr_reviews r WHERE r.issue_id=i.id) AS review_count,
+                f.name AS flavor_name
+           FROM fr_issues i
+           JOIN fr_flavors f ON f.id = i.flavor_id
+          WHERE i.flavor_id IN (${ph})
+          ORDER BY
+            CASE i.status WHEN 'open' THEN 0 WHEN 'merged' THEN 1 WHEN 'ignored' THEN 2 ELSE 3 END,
+            i.created_at DESC`,
+        ...groupIds
+      );
+
       res.json({
         ...shapeFlavor(row),
         links: links.map(shapeLink),
         reviews: reviews.map(shapeReview),
         issues: issues.map(shapeIssue),
         cycles: cycles.map(shapeCycle),
+        group: {
+          flavors: groupFlavors.map(g => ({ id: g.id, name: g.name, variant: g.variant, kind: g.kind, status: g.status })),
+          reviews: groupReviews.map(shapeReview),
+          issues: groupIssues.map(shapeIssue),
+        },
       });
     } catch (e) {
       console.error('[fr] flavor detail failed:', e.message);
@@ -446,6 +485,7 @@ module.exports = function attach(app, deps) {
     return {
       id: row.id,
       flavor_id: row.flavor_id,
+      flavor_variant: row.flavor_variant || '',
       source: row.source,
       source_review_id: row.source_review_id || '',
       rating: row.rating,
@@ -571,6 +611,7 @@ module.exports = function attach(app, deps) {
       id: row.id,
       flavor_id: row.flavor_id,
       flavor_name: row.flavor_name || null,
+      flavor_variant: row.flavor_variant || '',
       title: row.title,
       summary: row.summary,
       severity: row.severity,

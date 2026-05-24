@@ -426,6 +426,7 @@
   // ── Flavor detail ──────────────────────────────────────────────────────
   let CURRENT_FLAVOR = null;
   let CURRENT_FLAVOR_TAB = 'overview';
+  let FLAVOR_REVIEW_FILTER = 'all'; // all | regular | sugar_free — type view on detail page
   let AI_SUMMARY_CACHE = {}; // keyed by flavor id
 
   async function renderFlavor(id, tab) {
@@ -434,14 +435,22 @@
     try { CURRENT_FLAVOR = await apiGet('/api/flavor-reviews/flavors/' + id); }
     catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
     const f = CURRENT_FLAVOR;
-    const openIssues = f.issues.filter(i => i.status === 'open');
-    const reviews = f.reviews;
-    const openBad = reviews.filter(r => r.rating > 0 && r.rating <= 2 && r.status === 'open');
+    // The work unit is the flavor name. Default to showing BOTH types
+    // (group) — each review/issue stays tagged with its type so a
+    // type-specific complaint (e.g. "sugar-free aftertaste") is still
+    // distinguishable, but you see the whole flavor at once.
+    FLAVOR_REVIEW_FILTER = 'all';
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const groupReviews = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
+    const groupIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
+    const openIssues = groupIssues.filter(i => i.status === 'open');
+    const openBad = (f.reviews || []).filter(r => r.rating > 0 && r.rating <= 2 && r.status === 'open');
+    const sibling = hasGroup ? f.group.flavors.find(g => g.id !== f.id) : null;
     const tabs = ['overview', 'reviews', 'issues'];
     const tabCounts = {
       overview: '',
-      reviews: ` <span class="count">${reviews.length}</span>`,
-      issues: openIssues.length ? ` <span class="count">${openIssues.length}</span>` : ` <span class="count">${f.issues.length}</span>`,
+      reviews: ` <span class="count">${groupReviews.length}</span>`,
+      issues: openIssues.length ? ` <span class="count">${openIssues.length}</span>` : ` <span class="count">${groupIssues.length}</span>`,
     };
 
     pageShell(`
@@ -456,11 +465,13 @@
             <span class="fr-emoji">${kindEmoji(f.kind)}</span>
             ${escapeHtml(f.name)}
           </h1>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">
             <span class="pill kind-${escapeAttr(f.kind)}">${escapeHtml(cap(f.kind))}</span>
             <span class="pill variant-${escapeAttr(f.variant)}">${escapeHtml(f.variant.replace('_','-'))}</span>
             <span class="pill status-${escapeAttr(f.status)}">${escapeHtml(f.status)}</span>
+            ${sibling ? `<span style="font-size:11.5px;color:var(--text3)">· also <a onclick="window.location.hash='/flavor/${sibling.id}'" style="color:var(--accent);cursor:pointer">${escapeHtml(sibling.variant.replace('_','-'))}</a></span>` : ''}
           </div>
+          ${hasGroup ? `<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Showing all reviews for <strong>${escapeHtml(f.name)}</strong> across both types — each tagged by type. Use the toggle on a tab to narrow.</div>` : ''}
         </div>
         <div class="fr-header-actions">
           <button class="btn-sec" id="fd-edit">Edit flavor</button>
@@ -524,8 +535,13 @@
   }
 
   function renderOverview(f) {
-    const recentReviews = f.reviews.slice(0, 5);
-    const openIssues = f.issues.filter(i => i.status === 'open');
+    // Overview shows the whole flavor (both types) — that's the point of
+    // "working a flavor". Each row is type-tagged when a sibling exists.
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const allReviews = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
+    const allIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
+    const recentReviews = allReviews.slice(0, 5);
+    const openIssues = allIssues.filter(i => i.status === 'open');
     const aiSummary = AI_SUMMARY_CACHE[f.id];
     const aiBlock = `
       <div class="ai-panel">
@@ -549,18 +565,18 @@
 
           <div class="card">
             <div class="card-head">
-              <h3>Recent reviews <span style="font-weight:400;color:var(--text3);font-size:11px">${f.reviews.length} total</span></h3>
+              <h3>Recent reviews <span style="font-weight:400;color:var(--text3);font-size:11px">${allReviews.length} total${hasGroup ? ' · both types' : ''}</span></h3>
               <a onclick="window.location.hash='/flavor/${f.id}/reviews'" style="font-size:11.5px;color:var(--accent);cursor:pointer">See all →</a>
             </div>
-            ${recentReviews.length ? recentReviews.map(reviewRow).join('') : '<div class="dash-empty" style="padding:18px">No reviews logged yet. Click "+ Log review" to add one from a marketplace.</div>'}
+            ${recentReviews.length ? recentReviews.map(r => reviewRow(r, { showType: hasGroup })).join('') : '<div class="dash-empty" style="padding:18px">No reviews logged yet. Click "+ Log one" to add one from a marketplace.</div>'}
           </div>
 
           <div class="card">
             <div class="card-head">
-              <h3>Open issues</h3>
+              <h3>Open issues${hasGroup ? ' <span style="font-weight:400;color:var(--text3);font-size:11px">both types</span>' : ''}</h3>
               <a onclick="window.location.hash='/flavor/${f.id}/issues'" style="font-size:11.5px;color:var(--accent);cursor:pointer">See all →</a>
             </div>
-            ${openIssues.length ? openIssues.map(issueRow).join('') : '<div class="dash-empty" style="padding:18px">No open issues. 🎉</div>'}
+            ${openIssues.length ? openIssues.map(i => issueRow(i, { showType: hasGroup })).join('') : '<div class="dash-empty" style="padding:18px">No open issues. 🎉</div>'}
           </div>
         </div>
 
@@ -599,23 +615,57 @@
     `;
   }
 
+  // Segmented "Both types · Regular · Sugar-free" control. Only shown when
+  // the flavor actually has more than one type record.
+  function typeToggle(f) {
+    if (!f.group || f.group.flavors.length < 2) return '';
+    const opts = [['all', 'Both types'], ['regular', 'Regular'], ['sugar_free', 'Sugar-free']];
+    return `<div class="type-toggle">${opts.map(([v, label]) =>
+      `<button class="tt-btn ${FLAVOR_REVIEW_FILTER === v ? 'active' : ''}" data-tt="${v}">${label}</button>`
+    ).join('')}</div>`;
+  }
+
+  // Apply the current type filter to a group list (reviews or issues).
+  function applyTypeFilter(list) {
+    if (FLAVOR_REVIEW_FILTER === 'all') return list;
+    return list.filter(x => x.flavor_variant === FLAVOR_REVIEW_FILTER);
+  }
+
   function renderReviewsTab(f) {
-    if (!f.reviews.length) return `<div class="empty-state"><div class="es-emoji">📝</div><div class="es-title">No reviews logged yet</div><div>Click "+ Log review" above to add reviews you read on Amazon, Walmart, or anywhere else.</div></div>`;
-    return `<div class="card"><div class="card-head"><h3>All reviews (${f.reviews.length})</h3></div>${f.reviews.map(reviewRow).join('')}</div>`;
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const source = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
+    if (!source.length) return `<div class="empty-state"><div class="es-emoji">📝</div><div class="es-title">No reviews logged yet</div><div>Click "+ Log one" above, or pull them in via ✨ Import reviews / 📊 Excel import.</div></div>`;
+    const list = applyTypeFilter(source);
+    const showType = hasGroup && FLAVOR_REVIEW_FILTER === 'all';
+    const label = FLAVOR_REVIEW_FILTER === 'all' ? (hasGroup ? 'all types' : '') : FLAVOR_REVIEW_FILTER.replace('_', '-');
+    return `<div class="card">
+      <div class="card-head">
+        <h3>Reviews (${list.length}${label ? ' · ' + label : ''})</h3>
+        ${typeToggle(f)}
+      </div>
+      ${list.length ? list.map(r => reviewRow(r, { showType })).join('') : '<div class="dash-empty" style="padding:18px">No reviews for this type.</div>'}
+    </div>`;
   }
 
   function renderIssuesTab(f) {
-    if (!f.issues.length) return `<div class="empty-state"><div class="es-emoji">✅</div><div class="es-title">No issues — all clear</div><div>If a bad review needs action, open it and click "Create issue".</div></div>`;
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const source = (f.group && f.group.issues) ? f.group.issues : f.issues;
+    if (!source.length) return `<div class="empty-state"><div class="es-emoji">✅</div><div class="es-title">No issues — all clear</div><div>If a bad review needs action, open it and click "Create issue".</div></div>`;
+    const filtered = applyTypeFilter(source);
+    const showType = hasGroup && FLAVOR_REVIEW_FILTER === 'all';
     const groups = {
-      open: f.issues.filter(i => i.status === 'open'),
-      merged: f.issues.filter(i => i.status === 'merged'),
-      fixed: f.issues.filter(i => i.status === 'fixed'),
-      ignored: f.issues.filter(i => i.status === 'ignored'),
+      open: filtered.filter(i => i.status === 'open'),
+      merged: filtered.filter(i => i.status === 'merged'),
+      fixed: filtered.filter(i => i.status === 'fixed'),
+      ignored: filtered.filter(i => i.status === 'ignored'),
     };
-    return ['open','merged','fixed','ignored'].map(g => {
+    const toggle = typeToggle(f);
+    const blocks = ['open','merged','fixed','ignored'].map(g => {
       if (!groups[g].length) return '';
-      return `<div class="card"><div class="card-head"><h3>${cap(g)} (${groups[g].length})</h3></div>${groups[g].map(issueRow).join('')}</div>`;
+      return `<div class="card"><div class="card-head"><h3>${cap(g)} (${groups[g].length})</h3></div>${groups[g].map(i => issueRow(i, { showType })).join('')}</div>`;
     }).join('');
+    // Put the toggle in a slim bar above the issue blocks.
+    return `${toggle ? `<div class="card" style="padding:10px 14px;display:flex;justify-content:flex-end">${toggle}</div>` : ''}${blocks || '<div class="dash-empty" style="padding:18px">No issues for this type.</div>'}`;
   }
 
   function wireFlavorTab() {
@@ -635,15 +685,27 @@
     if (en) en.addEventListener('click', () => openNotesModal(CURRENT_FLAVOR));
     const ac = $('add-cycle-btn');
     if (ac) ac.addEventListener('click', () => openCycleModal(CURRENT_FLAVOR.id));
+    // Type toggle (Both / Regular / Sugar-free) on the reviews & issues tabs.
+    document.querySelectorAll('.tt-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        FLAVOR_REVIEW_FILTER = btn.dataset.tt;
+        renderFlavorTab();
+      });
+    });
   }
 
-  function reviewRow(r) {
+  function reviewRow(r, opts) {
     const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(5 - (r.rating || 0));
+    const showType = opts && opts.showType && r.flavor_variant;
+    const typePill = showType
+      ? `<div class="pill variant-${escapeAttr(r.flavor_variant)}" style="margin-top:6px" title="${r.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'} version">${r.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'}</div>`
+      : '';
     return `
       <div class="review-row" id="review-${r.id}">
         <div>
           <div class="stars">${stars}</div>
           <div class="pill sentiment-${escapeAttr(r.sentiment || 'neutral')}" style="margin-top:6px">${escapeHtml(r.sentiment || '—')}</div>
+          ${typePill}
         </div>
         <div>
           <div class="rt-title">${escapeHtml(r.title || '(no title)')}</div>
@@ -669,7 +731,11 @@
       </div>`;
   }
 
-  function issueRow(i) {
+  function issueRow(i, opts) {
+    const showType = opts && opts.showType && i.flavor_variant;
+    const typePill = showType
+      ? `<span class="pill variant-${escapeAttr(i.flavor_variant)}" title="${i.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'} version">${i.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'}</span>`
+      : '';
     return `
       <div class="issue-row" onclick="window.location.hash='/issue/${i.id}'">
         <span class="pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span>
@@ -677,6 +743,7 @@
           <div class="ir-title">${escapeHtml(i.title)}</div>
           ${i.summary ? `<div class="ir-summary">${escapeHtml(i.summary.slice(0, 200))}${i.summary.length > 200 ? '…' : ''}</div>` : ''}
           <div class="ir-meta">
+            ${typePill}
             <span>${i.review_count} review${i.review_count === 1 ? '' : 's'}</span>
             ${i.fixed_at ? `<span>Fixed ${escapeHtml(prettyDate(i.fixed_at))}</span>` : ''}
             ${i.merged_into_id ? `<span>Merged into #${i.merged_into_id}</span>` : ''}
