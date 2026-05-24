@@ -589,6 +589,7 @@
               <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
               <button class="btn-tiny" onclick="window.location.hash='/agent'">🤖 Add via URL</button>
             </div>
+            ${f.links.length ? `<button class="btn-tiny btn-ai" style="margin-top:8px;width:100%" onclick="FR.grabFlavorReviews(${f.id})">✨ Grab this flavor's reviews from all its links</button>` : ''}
           </div>
 
           <div class="side-card">
@@ -1401,7 +1402,21 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         <div class="form-row">
           <label class="fr-label">Amazon URL</label>
           <input type="url" id="ag-url" placeholder="https://www.amazon.com/dp/B0… OR https://www.amazon.com/product-reviews/B0…">
-          <div style="font-size:11px;color:var(--text3);margin-top:5px">Examples: a parent product URL (extracts all variations + reviews), a single product URL, or a reviews URL (auto-matches to the flavor if we already have that ASIN).</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">A link lands on one flavor, but the parent has all variations. Choose the scope below.</div>
+        </div>
+        <div class="form-row">
+          <label class="fr-label">For reviews, grab…</label>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:12.5px">
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="radio" name="ag-scope" value="this_flavor" checked> Only this flavor's reviews</label>
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="radio" name="ag-scope" value="all_variations"> All variations' reviews</label>
+          </div>
+          <div id="ag-variant-row" style="display:none;margin-top:8px">
+            <label class="fr-label">Type (a parent listing is all one type)</label>
+            <select id="ag-variant" style="max-width:220px">
+              <option value="regular">Regular</option>
+              <option value="sugar_free">Sugar-free</option>
+            </select>
+          </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary" id="ag-go">🤖 Run agent</button>
@@ -1415,16 +1430,38 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
 
     // When launched from the Main Listings page, the URL is pre-filled.
     if (AGENT_PREFILL_URL) { $('ag-url').value = AGENT_PREFILL_URL; AGENT_PREFILL_URL = ''; }
-    $('ag-go').addEventListener('click', () => runAgent({ url: $('ag-url').value.trim() }));
+    if (AGENT_PREFILL_SCOPE) {
+      const radio = document.querySelector(`input[name="ag-scope"][value="${AGENT_PREFILL_SCOPE}"]`);
+      if (radio) radio.checked = true;
+      AGENT_PREFILL_SCOPE = '';
+    }
+    const syncVariantRow = () => {
+      const scope = (document.querySelector('input[name="ag-scope"]:checked') || {}).value;
+      $('ag-variant-row').style.display = scope === 'all_variations' ? 'block' : 'none';
+    };
+    document.querySelectorAll('input[name="ag-scope"]').forEach(r => r.addEventListener('change', syncVariantRow));
+    syncVariantRow();
+    if (AGENT_PREFILL_VARIANT) { $('ag-variant').value = AGENT_PREFILL_VARIANT; AGENT_PREFILL_VARIANT = ''; }
+    $('ag-go').addEventListener('click', () => runAgent(agentOpts({ url: $('ag-url').value.trim() })));
     // Pressing Enter in the URL field also runs.
     $('ag-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ag-go').click(); });
     // Render the inbox picker — clicking an item runs the agent against it.
     renderAgentInbox();
   }
 
+  // Bundle the current scope/variant choices into an agent request.
+  function agentOpts(base) {
+    const scope = (document.querySelector('input[name="ag-scope"]:checked') || {}).value || 'this_flavor';
+    const opts = { ...base, scope };
+    if (scope === 'all_variations') opts.variant = ($('ag-variant') && $('ag-variant').value) || 'regular';
+    return opts;
+  }
+
   // Set by the Main Listings page before navigating to #/agent so the URL
-  // field comes pre-filled.
+  // field (and scope/type) come pre-filled.
   let AGENT_PREFILL_URL = '';
+  let AGENT_PREFILL_SCOPE = '';
+  let AGENT_PREFILL_VARIANT = '';
 
   // ── Main listings registry ─────────────────────────────────────────────
   // The 4 Amazon parent listings (type × pump) that reviews are mainly
@@ -1510,13 +1547,17 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       });
       card.querySelector('.ml-grab').addEventListener('click', () => {
         // Prefer the reviews URL (parent /product-reviews/<asin>/) so the
-        // agent goes straight for reviews.
+        // agent goes straight for reviews. A main listing is a parent →
+        // default the agent to "all variations" with this listing's type.
         const asin = asinEl.value.trim();
         const url = asin
           ? `https://www.amazon.com/product-reviews/${asin}/`
           : urlEl.value.trim();
         if (!url) return toast('Add an ASIN or URL first', 'err');
+        const listing = listings.find(x => x.id === id);
         AGENT_PREFILL_URL = url;
+        AGENT_PREFILL_SCOPE = 'all_variations';
+        AGENT_PREFILL_VARIANT = listing ? listing.variant : '';
         goto('/agent');
       });
       card.querySelector('.ml-excel').addEventListener('click', async (ev) => {
@@ -1645,7 +1686,125 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       renderAgentReviewsProposal(flavor);
       return;
     }
+    if (r.action === 'reviews-multi') {
+      AGENT_MULTI = {
+        variant: r.variant || 'regular',
+        source: detectSourceFromUrl(r.source_url),
+        url: r.source_url,
+        reviews: r.reviews.map(rev => ({ ...rev, include: true })),
+      };
+      renderAgentReviewsMulti();
+      return;
+    }
     $('ag-status').innerHTML = `<div class="card" style="margin-top:12px;color:var(--text2)">Unknown action: ${escapeHtml(r.action)}</div>`;
+  }
+
+  // All-variations review proposal: reviews span flavors, each tagged with
+  // its own flavor; a single type applies to all. On save we route each to
+  // (flavor + type) and dedup server-side.
+  let AGENT_MULTI = null;
+  function renderAgentReviewsMulti() {
+    $('ag-step-1').style.display = 'none';
+    const s = AGENT_MULTI;
+    const result = $('ag-result');
+    result.style.display = '';
+    // Tally per-flavor counts for a quick overview.
+    const byFlavor = {};
+    for (const rv of s.reviews) { const k = rv.flavor || '(no flavor detected)'; byFlavor[k] = (byFlavor[k] || 0) + 1; }
+    const tally = Object.entries(byFlavor).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<span class="pill" style="background:var(--bg2);color:var(--text2);text-transform:none;letter-spacing:0">${escapeHtml(k)} · ${n}</span>`).join(' ');
+    result.innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3>🤖 ${s.reviews.length} reviews across all variations</h3>
+        </div>
+        <div class="ai-panel" style="background:linear-gradient(135deg,#faf5ff,#fff);border-color:#e9d5ff">
+          <h4>Each review keeps its own flavor; type applies to all</h4>
+          <div class="ai-body">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <label style="font-size:12.5px">Type for all:</label>
+              <select id="ag-multi-variant" style="max-width:200px">
+                <option value="regular" ${s.variant === 'regular' ? 'selected' : ''}>Regular</option>
+                <option value="sugar_free" ${s.variant === 'sugar_free' ? 'selected' : ''}>Sugar-free</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap">${tally}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:8px">Reviews whose flavor isn't in your catalog (for this type) will be reported and skipped — create those flavors first if you want them.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn-tiny" id="ag-multi-on">Select all</button>
+          <button class="btn-tiny" id="ag-multi-off">Select none</button>
+        </div>
+        <div id="ag-multi-list"></div>
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+          <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Cancel</button>
+          <button class="btn-primary" id="ag-multi-save">Save selected</button>
+        </div>
+      </div>`;
+    renderAgentMultiList();
+    $('ag-multi-on').addEventListener('click', () => { s.reviews.forEach(r => r.include = true); renderAgentMultiList(); });
+    $('ag-multi-off').addEventListener('click', () => { s.reviews.forEach(r => r.include = false); renderAgentMultiList(); });
+    $('ag-multi-save').addEventListener('click', confirmAgentMulti);
+  }
+
+  function renderAgentMultiList() {
+    const s = AGENT_MULTI;
+    $('ag-multi-list').innerHTML = s.reviews.map((r, idx) => {
+      const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(5 - (r.rating || 0));
+      return `<label style="display:grid;grid-template-columns:auto 1fr;gap:12px;padding:11px;border:1px solid var(--border);border-radius:10px;margin-bottom:7px;background:var(--card);cursor:pointer">
+        <input type="checkbox" class="agm-cb" data-idx="${idx}" ${r.include ? 'checked' : ''}>
+        <div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span class="pill" style="background:#ede9fe;color:#7c3aed">${escapeHtml(r.flavor || '— no flavor —')}</span>
+            <span style="color:#facc15;font-size:13px">${stars}</span>
+            ${r.verified ? '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">verified</span>' : ''}
+            ${r.posted_at ? `<span style="font-size:10.5px;color:var(--text3)">${escapeHtml(prettyDate(r.posted_at))}</span>` : ''}
+            ${r.reviewer_name ? `<span style="font-size:10.5px;color:var(--text3)">— ${escapeHtml(r.reviewer_name)}</span>` : ''}
+          </div>
+          ${r.title ? `<div style="font-size:12.5px;font-weight:650;margin-top:4px">${escapeHtml(r.title)}</div>` : ''}
+          <div style="font-size:12px;color:var(--text2);margin-top:3px;line-height:1.5">${escapeHtml((r.body || '').slice(0, 400))}${(r.body || '').length > 400 ? '…' : ''}</div>
+        </div>
+      </label>`;
+    }).join('');
+    $('ag-multi-list').querySelectorAll('.agm-cb').forEach(cb => {
+      cb.addEventListener('change', () => { AGENT_MULTI.reviews[Number(cb.dataset.idx)].include = cb.checked; });
+    });
+  }
+
+  async function confirmAgentMulti() {
+    const s = AGENT_MULTI;
+    const variant = ($('ag-multi-variant') && $('ag-multi-variant').value) || s.variant;
+    const chosen = s.reviews.filter(r => r.include);
+    if (!chosen.length) return toast('Pick at least one review', 'err');
+    $('ag-multi-save').disabled = true;
+    $('ag-multi-save').textContent = 'Saving…';
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/reviews-confirm-multi', {
+        variant, source: s.source, url: s.url, reviews: chosen,
+      });
+      const unmatchedBits = Object.entries(r.unmatched_by_flavor || {})
+        .map(([k, n]) => `${escapeHtml(k)} (${n})`).join(', ');
+      $('ag-result').innerHTML = `
+        <div class="card">
+          <div class="card-head"><h3>✓ Done</h3></div>
+          <div class="import-result">
+            <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${r.created.length}</div><div class="l">Saved</div></div>
+            <div class="pill-stat" style="border-color:#fde68a;background:var(--warn-bg)"><div class="v" style="color:var(--warn)">${r.skipped.length}</div><div class="l">Skipped (dup)</div></div>
+            <div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${(r.unmatched || []).length}</div><div class="l">Unmatched flavor</div></div>
+          </div>
+          ${unmatchedBits ? `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:10px;font-size:12px">Skipped — flavor not in catalog for ${escapeHtml(variant.replace('_','-'))}: ${unmatchedBits}. Create those flavors then re-run.</div>` : ''}
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-primary" onclick="window.location.hash='/flavors'">View flavors →</button>
+            <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Grab another</button>
+          </div>
+        </div>`;
+      toast(`Saved ${r.created.length} review${r.created.length === 1 ? '' : 's'}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+      $('ag-multi-save').disabled = false;
+      $('ag-multi-save').textContent = 'Save selected';
+    }
   }
 
   function detectSourceFromUrl(url) {
@@ -2097,6 +2256,9 @@ The URL is: `;
 
   // ── Reviews import (fetch URL or paste) ────────────────────────────────
   let RVI_STATE = null;
+  // Set by FR.grabFlavorReviews before navigating here, so we can jump
+  // straight to the approval grid with the grabbed reviews.
+  let PENDING_FLAVOR_GRAB = null;
 
   async function renderReviewsImport(flavorId) {
     RVI_STATE = { flavor_id: flavorId, reviews: [] };
@@ -2104,6 +2266,11 @@ The URL is: `;
     let flavor;
     try { flavor = await apiGet('/api/flavor-reviews/flavors/' + flavorId); }
     catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
+
+    // If we arrived from "Grab this flavor's reviews from all its links",
+    // skip the input step and show the approval grid directly.
+    const pending = (PENDING_FLAVOR_GRAB && PENDING_FLAVOR_GRAB.flavor_id === flavorId) ? PENDING_FLAVOR_GRAB : null;
+    PENDING_FLAVOR_GRAB = null;
 
     pageShell(`
       <div class="fr-topbar">
@@ -2166,6 +2333,14 @@ The URL is: `;
     });
     $('rvi-paste-go').addEventListener('click', () => doReviewsPaste());
     renderInboxPanel('rvi-inbox', 'reviews');
+
+    // Came from "Grab this flavor's reviews from all its links" — go straight
+    // to the approval grid with what we pulled.
+    if (pending) {
+      const worked = (pending.per_link || []).filter(p => p.ok);
+      if (worked.length) toast(`Pulled ${pending.reviews.length} from ${worked.length} link${worked.length === 1 ? '' : 's'}`, 'ok');
+      finishReviewsExtract(pending.reviews, pending.url);
+    }
   }
 
   async function doReviewsFetch() {
@@ -2949,7 +3124,30 @@ The URL is: `;
     },
     refreshInbox(hostId, kind) { renderInboxPanel(hostId, kind); },
     refreshAgentInbox() { renderAgentInbox(); },
-    runAgentFromInbox(inboxId) { runAgent({ inbox_id: inboxId }); },
+    runAgentFromInbox(inboxId) { runAgent(agentOpts({ inbox_id: inboxId })); },
+    async grabFlavorReviews(flavorId) {
+      toast('Grabbing this flavor\'s reviews from its links… (Amazon may block)', 'ok');
+      try {
+        const r = await apiPost('/api/flavor-reviews/import/flavor-grab', { flavor_id: flavorId });
+        if (r.ok && r.reviews && r.reviews.length) {
+          // Hand off to the reviews-import page's approval grid, pre-set to
+          // this flavor.
+          PENDING_FLAVOR_GRAB = {
+            flavor_id: flavorId,
+            reviews: r.reviews,
+            url: r.source_url || '',
+            per_link: r.per_link || [],
+          };
+          goto('/flavor/' + flavorId + '/reviews-import');
+        } else if (r.action === 'no_links') {
+          toast(r.message || 'No sell-links on this flavor yet.', 'err');
+        } else {
+          // needs_capture — guide to bookmarklet.
+          const worked = (r.per_link || []).filter(p => p.ok).length;
+          toast((r.message || 'Couldn\'t auto-fetch.') + (worked ? '' : ' Try the bookmarklet on the reviews page.'), 'err');
+        }
+      } catch (e) { toast(e.message, 'err'); }
+    },
     async generateExcelFromInbox(inboxId) {
       const status = $('xl-gen-status');
       if (status) status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Extracting from capture + building Excel…</div></div>`;

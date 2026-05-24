@@ -1954,6 +1954,129 @@ module.exports = function attach(app, deps) {
     }
   });
 
+  // ── Multi-flavor reviews confirm (all-variations scope) ──────────────────
+  // Each review carries its own flavor (from the variation it was left on);
+  // the variant (reg/SF) is shared (a parent listing is one type). We route
+  // each review to (flavor name + variant), dedup, and insert. Reviews whose
+  // flavor isn't in the catalog are reported as unmatched (we don't guess).
+  app.post('/api/flavor-reviews/import/reviews-confirm-multi', requireAuth, async (req, res) => {
+    try {
+      const variant = ['regular', 'sugar_free'].includes(req.body?.variant) ? req.body.variant : 'regular';
+      const source = String(req.body?.source || 'Amazon').trim().slice(0, 60) || 'Amazon';
+      const sourceUrl = String(req.body?.url || '').trim().slice(0, 1000);
+      const items = Array.isArray(req.body?.reviews) ? req.body.reviews : [];
+      if (!items.length) return res.status(400).json({ error: 'No reviews to save.' });
+
+      // Build a name→id map for this variant so we don't query per review.
+      const flavorsOfVariant = await all('SELECT id, name FROM fr_flavors WHERE variant=?', variant);
+      const nameToId = new Map();
+      for (const f of flavorsOfVariant) nameToId.set(f.name.trim().toLowerCase(), f.id);
+
+      const created = []; const skipped = []; const unmatched = []; const errors = [];
+      const seenInBatch = new Set();
+      const negativeFlavors = new Set();
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i];
+        try {
+          const flavorName = String(r.flavor || r.flavor_name || '').trim();
+          if (!flavorName) { unmatched.push({ index: i, reason: 'no flavor on review', flavor: '' }); continue; }
+          const flavorId = nameToId.get(flavorName.toLowerCase());
+          if (!flavorId) { unmatched.push({ index: i, flavor: flavorName, reason: 'flavor not in catalog for ' + variant }); continue; }
+
+          const rating = Math.max(0, Math.min(5, parseInt(r.rating, 10) || 0));
+          const title = String(r.title || '').slice(0, 200);
+          const body = String(r.body || '').slice(0, 10000);
+          const reviewer_name = String(r.reviewer_name || '').slice(0, 120);
+          const posted_at = /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '';
+          if (!body && !title) { skipped.push({ index: i, reason: 'empty' }); continue; }
+
+          const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+          if (dedupKey) {
+            const bk = flavorId + ':' + dedupKey;
+            if (seenInBatch.has(bk)) { skipped.push({ index: i, reason: 'duplicate-in-batch' }); continue; }
+            const dup = await get('SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1', flavorId, dedupKey);
+            if (dup) { skipped.push({ index: i, reason: 'duplicate', existing_id: dup.id }); continue; }
+            seenInBatch.add(bk);
+          }
+          const sentiment = classifySentiment(rating);
+          const ins = await run(
+            `INSERT INTO fr_reviews (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+            flavorId, source, rating, reviewer_name, title, body, sourceUrl, posted_at, sentiment, dedupKey, req.session.userId
+          );
+          created.push({ index: i, id: ins.lastInsertRowid, flavor_id: flavorId });
+          if (sentiment === 'negative') negativeFlavors.add(flavorId);
+        } catch (e) {
+          errors.push({ index: i, reason: e.message });
+        }
+      }
+      for (const fid of negativeFlavors) { try { await bumpNextCyclePriority(fid); } catch {} }
+      // Collapse unmatched into per-flavor counts for a tidy summary.
+      const unmatchedByFlavor = {};
+      for (const u of unmatched) { const k = u.flavor || '(none)'; unmatchedByFlavor[k] = (unmatchedByFlavor[k] || 0) + 1; }
+      res.json({ created, skipped, errors, unmatched, unmatched_by_flavor: unmatchedByFlavor });
+    } catch (e) {
+      console.error('[fr] reviews-confirm-multi failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Per-flavor grab: pull this flavor's reviews from all its sell-links ──
+  // The flavor's sell-links are its URLs across the listings. We fetch each,
+  // extract reviews (scope = this flavor — they're all this flavor), combine,
+  // and return a reviews-proposal pre-set to this flavor. Best-effort per the
+  // usual Amazon-blocking caveat; reports which links worked.
+  app.post('/api/flavor-reviews/import/flavor-grab', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const flavorId = Number(req.body?.flavor_id);
+      if (!Number.isFinite(flavorId)) return res.status(400).json({ error: 'flavor_id required' });
+      const flavor = await get('SELECT id, name, variant FROM fr_flavors WHERE id=?', flavorId);
+      if (!flavor) return res.status(404).json({ error: 'Flavor not found' });
+      const links = await all('SELECT url, asin FROM fr_flavor_links WHERE flavor_id=? ORDER BY position ASC, id ASC', flavorId);
+      if (!links.length) return res.json({ ok: false, action: 'no_links', message: 'This flavor has no sell-links yet. Add the URLs where it\'s sold first.' });
+
+      const allReviews = [];
+      const perLink = [];
+      const seen = new Set(); // de-dup across links by name+date+body
+      for (const l of links) {
+        // Prefer the reviews page for the link's ASIN so we get this variation.
+        const target = l.asin ? `https://www.amazon.com/product-reviews/${l.asin}/` : l.url;
+        if (!target) continue;
+        let got = null;
+        try { got = await fetchAndExtract(target, 'reviews'); } catch {}
+        const n = got?.extraction?.reviews?.length || 0;
+        perLink.push({ url: target, asin: l.asin || '', count: n, ok: !!n });
+        for (const rv of (got?.extraction?.reviews || [])) {
+          const key = computeDedupKey(rv.reviewer_name, rv.posted_at, rv.body);
+          if (key && seen.has(key)) continue;
+          if (key) seen.add(key);
+          allReviews.push(rv);
+        }
+      }
+
+      if (!allReviews.length) {
+        return res.json({
+          ok: false, action: 'needs_capture', flavor,
+          per_link: perLink,
+          message: 'Couldn\'t auto-fetch any reviews (Amazon usually blocks the server). Use the bookmarklet on this flavor\'s reviews pages, then import from the inbox / Excel.',
+        });
+      }
+      res.json({
+        ok: true,
+        action: 'reviews-proposal',
+        kind: 'reviews',
+        flavor,
+        per_link: perLink,
+        source_url: links[0].url || '',
+        reviews: allReviews,
+      });
+    } catch (e) {
+      console.error('[fr] flavor-grab failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── Bookmarklet scraper ──────────────────────────────────────────────────
   // The user drags a bookmarklet to their browser bar. On any Amazon page
   // they click it; the bookmarklet runs INSIDE the page (so it passes every
@@ -2361,6 +2484,13 @@ module.exports = function attach(app, deps) {
       if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
       const url = String(req.body?.url || '').trim();
       const inboxId = Number(req.body?.inbox_id || 0);
+      // scope: 'this_flavor' (default) = every review belongs to the one
+      //   flavor the link lands on. 'all_variations' = the link is a parent;
+      //   each review keeps its own variation flavor and routes individually.
+      const scope = req.body?.scope === 'all_variations' ? 'all_variations' : 'this_flavor';
+      // variant (reg/SF) used to tag reviews in all_variations mode (a parent
+      // listing is one type; flavor varies per review).
+      const variantHint = ['regular', 'sugar_free'].includes(req.body?.variant) ? req.body.variant : '';
       if (!url && !inboxId) return res.status(400).json({ error: 'Provide a URL or pick an inbox capture.' });
 
       // 1. Resolve URL + classification (inbox source URL wins over passed URL).
@@ -2418,7 +2548,22 @@ module.exports = function attach(app, deps) {
 
       // 3. Branch on kind
       if (expectedKind === 'reviews') {
-        // Look up flavor by ASIN — first via fr_flavor_links, fall back to fr_flavors.amazon_asin
+        if (scope === 'all_variations') {
+          // Parent listing: keep each review's own variation flavor. The UI
+          // will route each to (flavor name + chosen type) on save.
+          return res.json({
+            ok: true,
+            action: 'reviews-multi',
+            kind: 'reviews',
+            source_url: urlToUse,
+            source,
+            detected,
+            variant: variantHint,         // type for all rows; UI can change
+            reviews: extraction.reviews,  // each carries .flavor
+          });
+        }
+        // this_flavor: every review belongs to the single flavor the link
+        // lands on. Match it by ASIN; the UI pre-sets it (or asks).
         let flavor = null;
         if (detected.asin) {
           flavor = await get(
