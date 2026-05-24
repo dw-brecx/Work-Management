@@ -450,6 +450,53 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
 .fc-mini.issue { background: var(--warn-bg); color: var(--warn); }
 .fc-mini.due { background: var(--info-bg); color: var(--info); }
 
+/* Paired flavor cards (Regular + Sugar-free side by side) */
+.flavor-pair-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
+}
+.flavor-pair-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px 16px 16px;
+}
+.flavor-pair-card .fpc-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.flavor-pair-card .fpc-name { font-size: 15px; font-weight: 650; }
+.fpc-sides { display: grid; gap: 10px; }
+.fpc-sides.two { grid-template-columns: 1fr 1fr; }
+.fpc-sides.one { grid-template-columns: 1fr; }
+.fc-side {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 11px 12px;
+  cursor: pointer;
+  transition: border-color .12s, box-shadow .15s, transform .12s;
+  background: var(--card-soft, var(--bg2));
+}
+.fc-side:hover { border-color: var(--border2); box-shadow: 0 6px 16px -10px rgba(15,23,42,.2); transform: translateY(-1px); }
+.fc-side-empty { cursor: default; opacity: .7; background: transparent; border-style: dashed; }
+.fc-side-empty:hover { border-color: var(--border); box-shadow: none; transform: none; }
+.fc-side .fc-side-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.fc-side .fc-side-none { font-size: 11.5px; color: var(--text3); }
+.fc-side .fc-stat-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.fc-rating { font-size: 11.5px; font-weight: 700; color: #d97706; margin-left: auto; }
+@media (max-width: 560px) { .fpc-sides.two { grid-template-columns: 1fr; } }
+
+/* Type toggle (Both / Regular / Sugar-free) on the flavor detail tabs */
+.type-toggle { display: inline-flex; gap: 2px; background: var(--bg2); border-radius: 9px; padding: 3px; }
+.type-toggle .tt-btn {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 11.5px; font-weight: 600; color: var(--text2);
+  padding: 5px 11px; border-radius: 7px; transition: background .12s, color .12s;
+}
+.type-toggle .tt-btn:hover { color: var(--text); }
+.type-toggle .tt-btn.active { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(15,23,42,.12); }
+
 /* Pills */
 .pill {
   display: inline-flex; align-items: center;

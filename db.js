@@ -1903,6 +1903,35 @@ async function init() {
     updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_cycles_flavor ON fr_cycles (flavor_id, scheduled_for)`);
+
+  // The 4 main Amazon parent listings reviews are grabbed from. They're the
+  // type × pump matrix (regular/sugar_free × with/without pump); each parent
+  // spans many flavor variations. This is a small fixed registry — a home
+  // for the 4 URLs/ASINs + a "grab reviews" launch point. Reviews still
+  // attach to individual flavors (matched by flavor name + the listing's
+  // variant), not to the listing itself.
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_main_listings (
+    id SERIAL PRIMARY KEY,
+    variant TEXT NOT NULL,                 -- regular | sugar_free
+    has_pump BOOLEAN NOT NULL DEFAULT FALSE,
+    asin TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  // Seed the 4 fixed slots once. Empty asin/url — the user fills them in.
+  const mlRows = await get('SELECT COUNT(*) AS n FROM fr_main_listings');
+  if (!mlRows || Number(mlRows.n) === 0) {
+    for (const s of [
+      { variant: 'regular',    has_pump: false },
+      { variant: 'regular',    has_pump: true  },
+      { variant: 'sugar_free', has_pump: false },
+      { variant: 'sugar_free', has_pump: true  },
+    ]) {
+      await run('INSERT INTO fr_main_listings (variant, has_pump) VALUES (?,?)', s.variant, s.has_pump);
+    }
+  }
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_cycles_due ON fr_cycles (status, scheduled_for)`);
 
   // Singleton settings row (id=1 always). Upsert pattern in the route.

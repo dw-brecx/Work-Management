@@ -95,6 +95,8 @@
     if (h === '/bulk-import') return { view: 'bulk-import' };
     if (h === '/import')      return { view: 'import' };
     if (h === '/agent')       return { view: 'agent' };
+    if (h === '/excel')       return { view: 'excel' };
+    if (h === '/listings')    return { view: 'listings' };
     if (h === '/settings')    return { view: 'settings' };
     const m8 = /^\/flavor\/(\d+)\/reviews-import\/?$/.exec(h);
     if (m8) return { view: 'reviews-import', id: Number(m8[1]) };
@@ -198,8 +200,10 @@
         <div class="fr-header-actions">
           <button class="btn-sec" onclick="window.location.hash='/calendar'">📅 Calendar</button>
           <button class="btn-sec" onclick="window.location.hash='/flavors'">All flavors</button>
+          <button class="btn-sec" onclick="window.location.hash='/listings'">🏷️ Main listings</button>
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" id="dash-refresh-ai">✨ Refresh AI priority</button>` : ''}
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" onclick="window.location.hash='/agent'">🤖 Smart Import (paste any URL)</button>` : ''}
+          <button class="btn-sec" onclick="window.location.hash='/excel'">📊 Excel import</button>
           <button class="btn-primary" onclick="window.location.hash='/bulk-import'">+ Add flavors</button>
         </div>
       </div>
@@ -345,35 +349,76 @@
     const q = (FLAVORS_FILTER.search || '').trim().toLowerCase();
     const rows = FLAVORS_CACHE.filter(f => {
       if (FLAVORS_FILTER.kind !== 'all' && f.kind !== FLAVORS_FILTER.kind) return false;
-      if (FLAVORS_FILTER.variant !== 'all' && f.variant !== FLAVORS_FILTER.variant) return false;
       if (FLAVORS_FILTER.status !== 'all' && f.status !== FLAVORS_FILTER.status) return false;
       if (q && !f.name.toLowerCase().includes(q)) return false;
       return true;
     });
 
+    // Pair by flavor name: one card per name showing its Regular and
+    // Sugar-free records side by side. The variant filter controls which
+    // side(s) show — 'all' shows both, 'regular'/'sugar_free' collapse to one
+    // (and hide names that don't have that type).
+    const wantVariant = FLAVORS_FILTER.variant; // all | regular | sugar_free
+    const groups = new Map(); // nameKey → { name, kind, regular, sugar_free }
+    for (const f of rows) {
+      const key = f.name.trim().toLowerCase();
+      if (!groups.has(key)) groups.set(key, { name: f.name, kind: f.kind, regular: null, sugar_free: null });
+      const g = groups.get(key);
+      if (f.variant === 'sugar_free') g.sugar_free = f; else g.regular = f;
+    }
+    let groupList = [...groups.values()];
+    if (wantVariant === 'regular')    groupList = groupList.filter(g => g.regular);
+    if (wantVariant === 'sugar_free') groupList = groupList.filter(g => g.sugar_free);
+    groupList.sort((a, b) => a.name.localeCompare(b.name));
+
     const grid = $('fl-grid');
-    $('fl-count').textContent = `${rows.length} flavor${rows.length === 1 ? '' : 's'}`;
-    if (!rows.length) {
+    const recordCount = rows.length;
+    $('fl-count').textContent = `${groupList.length} flavor${groupList.length === 1 ? '' : 's'} · ${recordCount} product${recordCount === 1 ? '' : 's'}`;
+    if (!groupList.length) {
       grid.innerHTML = `<div class="empty-state"><div class="es-emoji">🫥</div><div class="es-title">No flavors match.</div><div>Adjust the filters or bulk-import your catalog.</div></div>`;
       return;
     }
-    grid.innerHTML = `<div class="flavor-grid">${rows.map(f => {
-      const overdue = f.next_cycle && f.next_cycle < todayUtc();
+
+    // Render one side (regular or sugar-free) of a paired card.
+    const sidePanel = (rec, typeLabel, variantClass) => {
+      if (!rec) {
+        return `<div class="fc-side fc-side-empty">
+          <div class="fc-side-head"><span class="pill variant-${variantClass}" style="opacity:.5">${typeLabel}</span></div>
+          <div class="fc-side-none">No ${typeLabel.toLowerCase()} version</div>
+        </div>`;
+      }
+      const overdue = rec.next_cycle && rec.next_cycle < todayUtc();
+      const stars = rec.avg_rating != null ? `<span class="fc-rating" title="Average rating">★ ${rec.avg_rating.toFixed(1)}</span>` : '';
+      return `<div class="fc-side" onclick="event.stopPropagation();window.location.hash='/flavor/${rec.id}'">
+        <div class="fc-side-head">
+          <span class="pill variant-${variantClass}">${typeLabel}</span>
+          ${rec.status !== 'active' ? `<span class="pill status-${escapeAttr(rec.status)}">${escapeHtml(rec.status)}</span>` : ''}
+          ${stars}
+        </div>
+        <div class="fc-stat-row">
+          ${rec.total_reviews ? `<span class="fc-mini">${rec.total_reviews} review${rec.total_reviews === 1 ? '' : 's'}</span>` : '<span class="fc-mini" style="color:var(--text3)">No reviews yet</span>'}
+          ${rec.open_bad > 0 ? `<span class="fc-mini bad">${rec.open_bad} bad</span>` : ''}
+          ${rec.open_issues > 0 ? `<span class="fc-mini issue">${rec.open_issues} issue${rec.open_issues === 1 ? '' : 's'}</span>` : ''}
+          ${rec.link_count ? `<span class="fc-mini">${rec.link_count} link${rec.link_count === 1 ? '' : 's'}</span>` : ''}
+          ${rec.next_cycle ? `<span class="fc-mini due ${overdue ? 'bad' : ''}">${overdue ? 'Overdue' : 'Next'} ${escapeHtml(prettyDate(rec.next_cycle))}</span>` : ''}
+        </div>
+      </div>`;
+    };
+
+    grid.innerHTML = `<div class="flavor-pair-grid">${groupList.map(g => {
+      const showReg = wantVariant !== 'sugar_free';
+      const showSF  = wantVariant !== 'regular';
+      const sides = [
+        showReg ? sidePanel(g.regular, 'Regular', 'regular') : '',
+        showSF  ? sidePanel(g.sugar_free, 'Sugar-free', 'sugar_free') : '',
+      ].filter(Boolean).join('');
       return `
-        <div class="flavor-card" onclick="window.location.hash='/flavor/${f.id}'">
-          <div class="fc-name">${escapeHtml(f.name)}</div>
-          <div class="fc-tags">
-            <span class="pill kind-${escapeAttr(f.kind)}">${escapeHtml(cap(f.kind))}</span>
-            <span class="pill variant-${escapeAttr(f.variant)}">${escapeHtml(f.variant.replace('_','-'))}</span>
-            ${f.status !== 'active' ? `<span class="pill status-${escapeAttr(f.status)}">${escapeHtml(f.status)}</span>` : ''}
+        <div class="flavor-pair-card">
+          <div class="fpc-head">
+            <span class="fpc-name">${escapeHtml(g.name)}</span>
+            <span class="pill kind-${escapeAttr(g.kind)}">${escapeHtml(cap(g.kind))}</span>
           </div>
-          <div class="fc-stat-row">
-            ${f.open_bad > 0   ? `<span class="fc-mini bad">${f.open_bad} bad reviews</span>` : ''}
-            ${f.open_issues > 0 ? `<span class="fc-mini issue">${f.open_issues} open issue${f.open_issues === 1 ? '' : 's'}</span>` : ''}
-            ${f.next_cycle ? `<span class="fc-mini due ${overdue ? 'bad' : ''}">${overdue ? 'Overdue ' : 'Next '}${escapeHtml(prettyDate(f.next_cycle))}</span>` : '<span class="fc-mini">Not scheduled</span>'}
-            ${f.link_count ? `<span class="fc-mini">${f.link_count} sell-link${f.link_count === 1 ? '' : 's'}</span>` : ''}
-            ${f.total_reviews ? `<span class="fc-mini">${f.total_reviews} review${f.total_reviews === 1 ? '' : 's'} logged</span>` : ''}
-          </div>
+          <div class="fpc-sides ${(showReg && showSF) ? 'two' : 'one'}">${sides}</div>
         </div>`;
     }).join('')}</div>`;
   }
@@ -381,6 +426,7 @@
   // ── Flavor detail ──────────────────────────────────────────────────────
   let CURRENT_FLAVOR = null;
   let CURRENT_FLAVOR_TAB = 'overview';
+  let FLAVOR_REVIEW_FILTER = 'all'; // all | regular | sugar_free — type view on detail page
   let AI_SUMMARY_CACHE = {}; // keyed by flavor id
 
   async function renderFlavor(id, tab) {
@@ -389,14 +435,22 @@
     try { CURRENT_FLAVOR = await apiGet('/api/flavor-reviews/flavors/' + id); }
     catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
     const f = CURRENT_FLAVOR;
-    const openIssues = f.issues.filter(i => i.status === 'open');
-    const reviews = f.reviews;
-    const openBad = reviews.filter(r => r.rating > 0 && r.rating <= 2 && r.status === 'open');
+    // The work unit is the flavor name. Default to showing BOTH types
+    // (group) — each review/issue stays tagged with its type so a
+    // type-specific complaint (e.g. "sugar-free aftertaste") is still
+    // distinguishable, but you see the whole flavor at once.
+    FLAVOR_REVIEW_FILTER = 'all';
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const groupReviews = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
+    const groupIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
+    const openIssues = groupIssues.filter(i => i.status === 'open');
+    const openBad = (f.reviews || []).filter(r => r.rating > 0 && r.rating <= 2 && r.status === 'open');
+    const sibling = hasGroup ? f.group.flavors.find(g => g.id !== f.id) : null;
     const tabs = ['overview', 'reviews', 'issues'];
     const tabCounts = {
       overview: '',
-      reviews: ` <span class="count">${reviews.length}</span>`,
-      issues: openIssues.length ? ` <span class="count">${openIssues.length}</span>` : ` <span class="count">${f.issues.length}</span>`,
+      reviews: ` <span class="count">${groupReviews.length}</span>`,
+      issues: openIssues.length ? ` <span class="count">${openIssues.length}</span>` : ` <span class="count">${groupIssues.length}</span>`,
     };
 
     pageShell(`
@@ -411,11 +465,13 @@
             <span class="fr-emoji">${kindEmoji(f.kind)}</span>
             ${escapeHtml(f.name)}
           </h1>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">
             <span class="pill kind-${escapeAttr(f.kind)}">${escapeHtml(cap(f.kind))}</span>
             <span class="pill variant-${escapeAttr(f.variant)}">${escapeHtml(f.variant.replace('_','-'))}</span>
             <span class="pill status-${escapeAttr(f.status)}">${escapeHtml(f.status)}</span>
+            ${sibling ? `<span style="font-size:11.5px;color:var(--text3)">· also <a onclick="window.location.hash='/flavor/${sibling.id}'" style="color:var(--accent);cursor:pointer">${escapeHtml(sibling.variant.replace('_','-'))}</a></span>` : ''}
           </div>
+          ${hasGroup ? `<div style="font-size:11.5px;color:var(--text3);margin-top:6px">Showing all reviews for <strong>${escapeHtml(f.name)}</strong> across both types — each tagged by type. Use the toggle on a tab to narrow.</div>` : ''}
         </div>
         <div class="fr-header-actions">
           <button class="btn-sec" id="fd-edit">Edit flavor</button>
@@ -423,6 +479,7 @@
           <button class="btn-sec btn-ai" onclick="window.location.hash='/flavor/${f.id}/reviews-import'">✨ Import reviews</button>
           <button class="btn-sec" id="fd-add-review">+ Log one</button>
           <button class="btn-primary" id="fd-new-issue">+ New issue</button>
+          <button class="btn-sec btn-danger" id="fd-delete">Delete flavor</button>
         </div>
       </div>
 
@@ -444,8 +501,27 @@
     $('fd-add-link').addEventListener('click', () => openLinkModal(f.id));
     $('fd-add-review').addEventListener('click', () => openReviewModal(f.id));
     $('fd-new-issue').addEventListener('click', () => openIssueModal(f.id, openBad));
+    $('fd-delete').addEventListener('click', () => deleteFlavor(f));
 
     renderFlavorTab();
+  }
+
+  // Delete a flavor (cascades to its sell-links, reviews, issues, and
+  // scheduled cycles server-side). Two-step confirm because it's
+  // destructive — the count of attached reviews is shown so the user
+  // knows what they're about to lose.
+  async function deleteFlavor(f) {
+    const reviewCount = (f.reviews || []).length;
+    const issueCount = (f.issues || []).length;
+    const extra = (reviewCount || issueCount)
+      ? `\n\nThis also permanently deletes ${reviewCount} review${reviewCount === 1 ? '' : 's'} and ${issueCount} issue${issueCount === 1 ? '' : 's'} attached to it.`
+      : '';
+    if (!confirm(`Delete "${f.name}" (${f.variant.replace('_', '-')})?${extra}\n\nThis cannot be undone.`)) return;
+    try {
+      await apiDel('/api/flavor-reviews/flavors/' + f.id);
+      toast(`Deleted "${f.name}"`, 'ok');
+      goto('/flavors');
+    } catch (e) { toast(e.message, 'err'); }
   }
 
   function renderFlavorTab() {
@@ -459,8 +535,13 @@
   }
 
   function renderOverview(f) {
-    const recentReviews = f.reviews.slice(0, 5);
-    const openIssues = f.issues.filter(i => i.status === 'open');
+    // Overview shows the whole flavor (both types) — that's the point of
+    // "working a flavor". Each row is type-tagged when a sibling exists.
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const allReviews = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
+    const allIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
+    const recentReviews = allReviews.slice(0, 5);
+    const openIssues = allIssues.filter(i => i.status === 'open');
     const aiSummary = AI_SUMMARY_CACHE[f.id];
     const aiBlock = `
       <div class="ai-panel">
@@ -484,18 +565,18 @@
 
           <div class="card">
             <div class="card-head">
-              <h3>Recent reviews <span style="font-weight:400;color:var(--text3);font-size:11px">${f.reviews.length} total</span></h3>
+              <h3>Recent reviews <span style="font-weight:400;color:var(--text3);font-size:11px">${allReviews.length} total${hasGroup ? ' · both types' : ''}</span></h3>
               <a onclick="window.location.hash='/flavor/${f.id}/reviews'" style="font-size:11.5px;color:var(--accent);cursor:pointer">See all →</a>
             </div>
-            ${recentReviews.length ? recentReviews.map(reviewRow).join('') : '<div class="dash-empty" style="padding:18px">No reviews logged yet. Click "+ Log review" to add one from a marketplace.</div>'}
+            ${recentReviews.length ? recentReviews.map(r => reviewRow(r, { showType: hasGroup })).join('') : '<div class="dash-empty" style="padding:18px">No reviews logged yet. Click "+ Log one" to add one from a marketplace.</div>'}
           </div>
 
           <div class="card">
             <div class="card-head">
-              <h3>Open issues</h3>
+              <h3>Open issues${hasGroup ? ' <span style="font-weight:400;color:var(--text3);font-size:11px">both types</span>' : ''}</h3>
               <a onclick="window.location.hash='/flavor/${f.id}/issues'" style="font-size:11.5px;color:var(--accent);cursor:pointer">See all →</a>
             </div>
-            ${openIssues.length ? openIssues.map(issueRow).join('') : '<div class="dash-empty" style="padding:18px">No open issues. 🎉</div>'}
+            ${openIssues.length ? openIssues.map(i => issueRow(i, { showType: hasGroup })).join('') : '<div class="dash-empty" style="padding:18px">No open issues. 🎉</div>'}
           </div>
         </div>
 
@@ -508,6 +589,7 @@
               <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
               <button class="btn-tiny" onclick="window.location.hash='/agent'">🤖 Add via URL</button>
             </div>
+            ${f.links.length ? `<button class="btn-tiny btn-ai" style="margin-top:8px;width:100%" onclick="FR.grabFlavorReviews(${f.id})">✨ Grab this flavor's reviews from all its links</button>` : ''}
           </div>
 
           <div class="side-card">
@@ -534,23 +616,57 @@
     `;
   }
 
+  // Segmented "Both types · Regular · Sugar-free" control. Only shown when
+  // the flavor actually has more than one type record.
+  function typeToggle(f) {
+    if (!f.group || f.group.flavors.length < 2) return '';
+    const opts = [['all', 'Both types'], ['regular', 'Regular'], ['sugar_free', 'Sugar-free']];
+    return `<div class="type-toggle">${opts.map(([v, label]) =>
+      `<button class="tt-btn ${FLAVOR_REVIEW_FILTER === v ? 'active' : ''}" data-tt="${v}">${label}</button>`
+    ).join('')}</div>`;
+  }
+
+  // Apply the current type filter to a group list (reviews or issues).
+  function applyTypeFilter(list) {
+    if (FLAVOR_REVIEW_FILTER === 'all') return list;
+    return list.filter(x => x.flavor_variant === FLAVOR_REVIEW_FILTER);
+  }
+
   function renderReviewsTab(f) {
-    if (!f.reviews.length) return `<div class="empty-state"><div class="es-emoji">📝</div><div class="es-title">No reviews logged yet</div><div>Click "+ Log review" above to add reviews you read on Amazon, Walmart, or anywhere else.</div></div>`;
-    return `<div class="card"><div class="card-head"><h3>All reviews (${f.reviews.length})</h3></div>${f.reviews.map(reviewRow).join('')}</div>`;
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const source = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
+    if (!source.length) return `<div class="empty-state"><div class="es-emoji">📝</div><div class="es-title">No reviews logged yet</div><div>Click "+ Log one" above, or pull them in via ✨ Import reviews / 📊 Excel import.</div></div>`;
+    const list = applyTypeFilter(source);
+    const showType = hasGroup && FLAVOR_REVIEW_FILTER === 'all';
+    const label = FLAVOR_REVIEW_FILTER === 'all' ? (hasGroup ? 'all types' : '') : FLAVOR_REVIEW_FILTER.replace('_', '-');
+    return `<div class="card">
+      <div class="card-head">
+        <h3>Reviews (${list.length}${label ? ' · ' + label : ''})</h3>
+        ${typeToggle(f)}
+      </div>
+      ${list.length ? list.map(r => reviewRow(r, { showType })).join('') : '<div class="dash-empty" style="padding:18px">No reviews for this type.</div>'}
+    </div>`;
   }
 
   function renderIssuesTab(f) {
-    if (!f.issues.length) return `<div class="empty-state"><div class="es-emoji">✅</div><div class="es-title">No issues — all clear</div><div>If a bad review needs action, open it and click "Create issue".</div></div>`;
+    const hasGroup = !!(f.group && f.group.flavors.length > 1);
+    const source = (f.group && f.group.issues) ? f.group.issues : f.issues;
+    if (!source.length) return `<div class="empty-state"><div class="es-emoji">✅</div><div class="es-title">No issues — all clear</div><div>If a bad review needs action, open it and click "Create issue".</div></div>`;
+    const filtered = applyTypeFilter(source);
+    const showType = hasGroup && FLAVOR_REVIEW_FILTER === 'all';
     const groups = {
-      open: f.issues.filter(i => i.status === 'open'),
-      merged: f.issues.filter(i => i.status === 'merged'),
-      fixed: f.issues.filter(i => i.status === 'fixed'),
-      ignored: f.issues.filter(i => i.status === 'ignored'),
+      open: filtered.filter(i => i.status === 'open'),
+      merged: filtered.filter(i => i.status === 'merged'),
+      fixed: filtered.filter(i => i.status === 'fixed'),
+      ignored: filtered.filter(i => i.status === 'ignored'),
     };
-    return ['open','merged','fixed','ignored'].map(g => {
+    const toggle = typeToggle(f);
+    const blocks = ['open','merged','fixed','ignored'].map(g => {
       if (!groups[g].length) return '';
-      return `<div class="card"><div class="card-head"><h3>${cap(g)} (${groups[g].length})</h3></div>${groups[g].map(issueRow).join('')}</div>`;
+      return `<div class="card"><div class="card-head"><h3>${cap(g)} (${groups[g].length})</h3></div>${groups[g].map(i => issueRow(i, { showType })).join('')}</div>`;
     }).join('');
+    // Put the toggle in a slim bar above the issue blocks.
+    return `${toggle ? `<div class="card" style="padding:10px 14px;display:flex;justify-content:flex-end">${toggle}</div>` : ''}${blocks || '<div class="dash-empty" style="padding:18px">No issues for this type.</div>'}`;
   }
 
   function wireFlavorTab() {
@@ -570,15 +686,27 @@
     if (en) en.addEventListener('click', () => openNotesModal(CURRENT_FLAVOR));
     const ac = $('add-cycle-btn');
     if (ac) ac.addEventListener('click', () => openCycleModal(CURRENT_FLAVOR.id));
+    // Type toggle (Both / Regular / Sugar-free) on the reviews & issues tabs.
+    document.querySelectorAll('.tt-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        FLAVOR_REVIEW_FILTER = btn.dataset.tt;
+        renderFlavorTab();
+      });
+    });
   }
 
-  function reviewRow(r) {
+  function reviewRow(r, opts) {
     const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(5 - (r.rating || 0));
+    const showType = opts && opts.showType && r.flavor_variant;
+    const typePill = showType
+      ? `<div class="pill variant-${escapeAttr(r.flavor_variant)}" style="margin-top:6px" title="${r.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'} version">${r.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'}</div>`
+      : '';
     return `
       <div class="review-row" id="review-${r.id}">
         <div>
           <div class="stars">${stars}</div>
           <div class="pill sentiment-${escapeAttr(r.sentiment || 'neutral')}" style="margin-top:6px">${escapeHtml(r.sentiment || '—')}</div>
+          ${typePill}
         </div>
         <div>
           <div class="rt-title">${escapeHtml(r.title || '(no title)')}</div>
@@ -604,7 +732,11 @@
       </div>`;
   }
 
-  function issueRow(i) {
+  function issueRow(i, opts) {
+    const showType = opts && opts.showType && i.flavor_variant;
+    const typePill = showType
+      ? `<span class="pill variant-${escapeAttr(i.flavor_variant)}" title="${i.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'} version">${i.flavor_variant === 'sugar_free' ? 'Sugar-free' : 'Regular'}</span>`
+      : '';
     return `
       <div class="issue-row" onclick="window.location.hash='/issue/${i.id}'">
         <span class="pill sev-${escapeAttr(i.severity)}">${escapeHtml(i.severity)}</span>
@@ -612,6 +744,7 @@
           <div class="ir-title">${escapeHtml(i.title)}</div>
           ${i.summary ? `<div class="ir-summary">${escapeHtml(i.summary.slice(0, 200))}${i.summary.length > 200 ? '…' : ''}</div>` : ''}
           <div class="ir-meta">
+            ${typePill}
             <span>${i.review_count} review${i.review_count === 1 ? '' : 's'}</span>
             ${i.fixed_at ? `<span>Fixed ${escapeHtml(prettyDate(i.fixed_at))}</span>` : ''}
             ${i.merged_into_id ? `<span>Merged into #${i.merged_into_id}</span>` : ''}
@@ -1269,7 +1402,21 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         <div class="form-row">
           <label class="fr-label">Amazon URL</label>
           <input type="url" id="ag-url" placeholder="https://www.amazon.com/dp/B0… OR https://www.amazon.com/product-reviews/B0…">
-          <div style="font-size:11px;color:var(--text3);margin-top:5px">Examples: a parent product URL (extracts all variations + reviews), a single product URL, or a reviews URL (auto-matches to the flavor if we already have that ASIN).</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">A link lands on one flavor, but the parent has all variations. Choose the scope below.</div>
+        </div>
+        <div class="form-row">
+          <label class="fr-label">For reviews, grab…</label>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:12.5px">
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="radio" name="ag-scope" value="this_flavor" checked> Only this flavor's reviews</label>
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="radio" name="ag-scope" value="all_variations"> All variations' reviews</label>
+          </div>
+          <div id="ag-variant-row" style="display:none;margin-top:8px">
+            <label class="fr-label">Type (a parent listing is all one type)</label>
+            <select id="ag-variant" style="max-width:220px">
+              <option value="regular">Regular</option>
+              <option value="sugar_free">Sugar-free</option>
+            </select>
+          </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary" id="ag-go">🤖 Run agent</button>
@@ -1281,11 +1428,151 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       <div id="ag-result" style="display:none"></div>
     `);
 
-    $('ag-go').addEventListener('click', () => runAgent({ url: $('ag-url').value.trim() }));
+    // When launched from the Main Listings page, the URL is pre-filled.
+    if (AGENT_PREFILL_URL) { $('ag-url').value = AGENT_PREFILL_URL; AGENT_PREFILL_URL = ''; }
+    if (AGENT_PREFILL_SCOPE) {
+      const radio = document.querySelector(`input[name="ag-scope"][value="${AGENT_PREFILL_SCOPE}"]`);
+      if (radio) radio.checked = true;
+      AGENT_PREFILL_SCOPE = '';
+    }
+    const syncVariantRow = () => {
+      const scope = (document.querySelector('input[name="ag-scope"]:checked') || {}).value;
+      $('ag-variant-row').style.display = scope === 'all_variations' ? 'block' : 'none';
+    };
+    document.querySelectorAll('input[name="ag-scope"]').forEach(r => r.addEventListener('change', syncVariantRow));
+    syncVariantRow();
+    if (AGENT_PREFILL_VARIANT) { $('ag-variant').value = AGENT_PREFILL_VARIANT; AGENT_PREFILL_VARIANT = ''; }
+    $('ag-go').addEventListener('click', () => runAgent(agentOpts({ url: $('ag-url').value.trim() })));
     // Pressing Enter in the URL field also runs.
     $('ag-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('ag-go').click(); });
     // Render the inbox picker — clicking an item runs the agent against it.
     renderAgentInbox();
+  }
+
+  // Bundle the current scope/variant choices into an agent request.
+  function agentOpts(base) {
+    const scope = (document.querySelector('input[name="ag-scope"]:checked') || {}).value || 'this_flavor';
+    const opts = { ...base, scope };
+    if (scope === 'all_variations') opts.variant = ($('ag-variant') && $('ag-variant').value) || 'regular';
+    return opts;
+  }
+
+  // Set by the Main Listings page before navigating to #/agent so the URL
+  // field (and scope/type) come pre-filled.
+  let AGENT_PREFILL_URL = '';
+  let AGENT_PREFILL_SCOPE = '';
+  let AGENT_PREFILL_VARIANT = '';
+
+  // ── Main listings registry ─────────────────────────────────────────────
+  // The 4 Amazon parent listings (type × pump) that reviews are mainly
+  // grabbed from. Editable ASIN + URL per slot, plus a launch button into
+  // the Smart Import agent for each.
+  async function renderListings() {
+    loadingShell();
+    let listings;
+    try { ({ listings } = await apiGet('/api/flavor-reviews/main-listings')); }
+    catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
+
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/', 'Dashboard')}
+        ${breadcrumb([{ label: 'Dashboard', href: '/' }, { label: 'Main listings' }])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">🏷️</span> Main listings</h1>
+          <p class="fr-lede">Your 4 main Amazon parent listings — the type × pump matrix you grab reviews from. Each covers many flavors. Fill in the ASIN or URL for each, then use "Grab reviews" to pull them in (reviews get matched to a flavor by flavor name + this listing's type). Extra reviews from other places come in via <a onclick="window.location.hash='/excel'" style="color:var(--accent);cursor:pointer">Excel import</a>, identified by flavor + type.</p>
+        </div>
+      </div>
+
+      <div id="ml-list" style="max-width:820px"></div>
+    `);
+    renderListingRows(listings);
+  }
+
+  function renderListingRows(listings) {
+    const host = $('ml-list');
+    host.innerHTML = listings.map(l => {
+      const reviewsUrl = l.asin ? `https://www.amazon.com/product-reviews/${l.asin}/` : '';
+      return `
+      <div class="card" data-id="${l.id}" style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <span class="pill variant-${l.variant}">${escapeHtml(l.variant.replace('_','-'))}</span>
+          <span class="pill" style="background:var(--bg2);color:var(--text2);text-transform:none;letter-spacing:0">${l.has_pump ? 'with pump' : 'no pump'}</span>
+          <strong style="font-size:13.5px">${escapeHtml(l.label)}</strong>
+          <span style="flex:1"></span>
+          ${l.url || l.asin ? `<a href="${escapeAttr(l.url || ('https://www.amazon.com/dp/' + l.asin))}" target="_blank" rel="noopener noreferrer" style="font-size:11.5px;color:var(--accent);text-decoration:none">Open on Amazon ↗</a>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:160px 1fr;gap:10px;align-items:start">
+          <div class="form-row" style="margin:0">
+            <label class="fr-label">ASIN</label>
+            <input type="text" class="ml-asin" value="${escapeAttr(l.asin)}" placeholder="B0XXXXXXXX" style="font-family:ui-monospace,Menlo,monospace">
+          </div>
+          <div class="form-row" style="margin:0">
+            <label class="fr-label">Listing URL</label>
+            <input type="url" class="ml-url" value="${escapeAttr(l.url)}" placeholder="https://www.amazon.com/dp/… (or paste the listing URL — I'll pull the ASIN)">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+          <button class="btn-primary btn-tiny ml-save">Save</button>
+          <button class="btn-sec btn-tiny ml-excel" ${l.asin || l.url ? '' : 'disabled title="Add an ASIN or URL first"'}>📊 Grab reviews → Excel</button>
+          <button class="btn-sec btn-tiny ml-grab" ${l.asin || l.url ? '' : 'disabled title="Add an ASIN or URL first"'}>🤖 Open in agent</button>
+          ${reviewsUrl ? `<a href="${escapeAttr(reviewsUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--text3);text-decoration:none">Reviews page ↗</a>` : ''}
+          <span class="ml-status" style="font-size:11px;color:var(--text3)"></span>
+        </div>
+      </div>`;
+    }).join('');
+
+    host.querySelectorAll('.card[data-id]').forEach(card => {
+      const id = Number(card.dataset.id);
+      const asinEl = card.querySelector('.ml-asin');
+      const urlEl = card.querySelector('.ml-url');
+      const statusEl = card.querySelector('.ml-status');
+      card.querySelector('.ml-save').addEventListener('click', async (ev) => {
+        ev.target.disabled = true;
+        try {
+          const updated = await apiPatch('/api/flavor-reviews/main-listings/' + id, {
+            asin: asinEl.value.trim(), url: urlEl.value.trim(),
+          });
+          asinEl.value = updated.asin; // reflect ASIN pulled from URL
+          statusEl.textContent = 'Saved ✓';
+          // Re-enable grab button now that there's an asin/url.
+          const grab = card.querySelector('.ml-grab');
+          if (updated.asin || updated.url) { grab.disabled = false; grab.removeAttribute('title'); }
+          toast('Listing saved', 'ok');
+          setTimeout(() => { statusEl.textContent = ''; }, 2500);
+        } catch (e) { toast(e.message, 'err'); statusEl.textContent = e.message; }
+        finally { ev.target.disabled = false; }
+      });
+      card.querySelector('.ml-grab').addEventListener('click', () => {
+        // Prefer the reviews URL (parent /product-reviews/<asin>/) so the
+        // agent goes straight for reviews. A main listing is a parent →
+        // default the agent to "all variations" with this listing's type.
+        const asin = asinEl.value.trim();
+        const url = asin
+          ? `https://www.amazon.com/product-reviews/${asin}/`
+          : urlEl.value.trim();
+        if (!url) return toast('Add an ASIN or URL first', 'err');
+        const listing = listings.find(x => x.id === id);
+        AGENT_PREFILL_URL = url;
+        AGENT_PREFILL_SCOPE = 'all_variations';
+        AGENT_PREFILL_VARIANT = listing ? listing.variant : '';
+        goto('/agent');
+      });
+      card.querySelector('.ml-excel').addEventListener('click', async (ev) => {
+        ev.target.disabled = true;
+        statusEl.textContent = '⚙️ Grabbing reviews → building Excel… (Amazon may block; 20–60s)';
+        try {
+          // Pass the listing id so the server stamps the right type (reg/SF)
+          // on every review row. flavor comes from each review's variation.
+          const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { main_listing_id: id });
+          statusEl.textContent = `✓ Downloaded ${counts.reviews || 0} review row(s). Review/edit, then upload on the Excel page.`;
+        } catch (e) {
+          statusEl.innerHTML = `${escapeHtml(e.message)} — <a onclick="window.location.hash='/settings'" style="color:var(--accent);cursor:pointer">use the bookmarklet</a> on the reviews page, then generate from the inbox on the <a onclick="window.location.hash='/excel'" style="color:var(--accent);cursor:pointer">Excel page</a>.`;
+        } finally { ev.target.disabled = false; }
+      });
+    });
   }
 
   async function renderAgentInbox() {
@@ -1399,7 +1686,125 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
       renderAgentReviewsProposal(flavor);
       return;
     }
+    if (r.action === 'reviews-multi') {
+      AGENT_MULTI = {
+        variant: r.variant || 'regular',
+        source: detectSourceFromUrl(r.source_url),
+        url: r.source_url,
+        reviews: r.reviews.map(rev => ({ ...rev, include: true })),
+      };
+      renderAgentReviewsMulti();
+      return;
+    }
     $('ag-status').innerHTML = `<div class="card" style="margin-top:12px;color:var(--text2)">Unknown action: ${escapeHtml(r.action)}</div>`;
+  }
+
+  // All-variations review proposal: reviews span flavors, each tagged with
+  // its own flavor; a single type applies to all. On save we route each to
+  // (flavor + type) and dedup server-side.
+  let AGENT_MULTI = null;
+  function renderAgentReviewsMulti() {
+    $('ag-step-1').style.display = 'none';
+    const s = AGENT_MULTI;
+    const result = $('ag-result');
+    result.style.display = '';
+    // Tally per-flavor counts for a quick overview.
+    const byFlavor = {};
+    for (const rv of s.reviews) { const k = rv.flavor || '(no flavor detected)'; byFlavor[k] = (byFlavor[k] || 0) + 1; }
+    const tally = Object.entries(byFlavor).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<span class="pill" style="background:var(--bg2);color:var(--text2);text-transform:none;letter-spacing:0">${escapeHtml(k)} · ${n}</span>`).join(' ');
+    result.innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3>🤖 ${s.reviews.length} reviews across all variations</h3>
+        </div>
+        <div class="ai-panel" style="background:linear-gradient(135deg,#faf5ff,#fff);border-color:#e9d5ff">
+          <h4>Each review keeps its own flavor; type applies to all</h4>
+          <div class="ai-body">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <label style="font-size:12.5px">Type for all:</label>
+              <select id="ag-multi-variant" style="max-width:200px">
+                <option value="regular" ${s.variant === 'regular' ? 'selected' : ''}>Regular</option>
+                <option value="sugar_free" ${s.variant === 'sugar_free' ? 'selected' : ''}>Sugar-free</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap">${tally}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:8px">Reviews whose flavor isn't in your catalog (for this type) will be reported and skipped — create those flavors first if you want them.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn-tiny" id="ag-multi-on">Select all</button>
+          <button class="btn-tiny" id="ag-multi-off">Select none</button>
+        </div>
+        <div id="ag-multi-list"></div>
+        <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+          <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Cancel</button>
+          <button class="btn-primary" id="ag-multi-save">Save selected</button>
+        </div>
+      </div>`;
+    renderAgentMultiList();
+    $('ag-multi-on').addEventListener('click', () => { s.reviews.forEach(r => r.include = true); renderAgentMultiList(); });
+    $('ag-multi-off').addEventListener('click', () => { s.reviews.forEach(r => r.include = false); renderAgentMultiList(); });
+    $('ag-multi-save').addEventListener('click', confirmAgentMulti);
+  }
+
+  function renderAgentMultiList() {
+    const s = AGENT_MULTI;
+    $('ag-multi-list').innerHTML = s.reviews.map((r, idx) => {
+      const stars = '★'.repeat(r.rating || 0) + '☆'.repeat(5 - (r.rating || 0));
+      return `<label style="display:grid;grid-template-columns:auto 1fr;gap:12px;padding:11px;border:1px solid var(--border);border-radius:10px;margin-bottom:7px;background:var(--card);cursor:pointer">
+        <input type="checkbox" class="agm-cb" data-idx="${idx}" ${r.include ? 'checked' : ''}>
+        <div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span class="pill" style="background:#ede9fe;color:#7c3aed">${escapeHtml(r.flavor || '— no flavor —')}</span>
+            <span style="color:#facc15;font-size:13px">${stars}</span>
+            ${r.verified ? '<span class="pill" style="background:var(--ok-bg);color:var(--ok)">verified</span>' : ''}
+            ${r.posted_at ? `<span style="font-size:10.5px;color:var(--text3)">${escapeHtml(prettyDate(r.posted_at))}</span>` : ''}
+            ${r.reviewer_name ? `<span style="font-size:10.5px;color:var(--text3)">— ${escapeHtml(r.reviewer_name)}</span>` : ''}
+          </div>
+          ${r.title ? `<div style="font-size:12.5px;font-weight:650;margin-top:4px">${escapeHtml(r.title)}</div>` : ''}
+          <div style="font-size:12px;color:var(--text2);margin-top:3px;line-height:1.5">${escapeHtml((r.body || '').slice(0, 400))}${(r.body || '').length > 400 ? '…' : ''}</div>
+        </div>
+      </label>`;
+    }).join('');
+    $('ag-multi-list').querySelectorAll('.agm-cb').forEach(cb => {
+      cb.addEventListener('change', () => { AGENT_MULTI.reviews[Number(cb.dataset.idx)].include = cb.checked; });
+    });
+  }
+
+  async function confirmAgentMulti() {
+    const s = AGENT_MULTI;
+    const variant = ($('ag-multi-variant') && $('ag-multi-variant').value) || s.variant;
+    const chosen = s.reviews.filter(r => r.include);
+    if (!chosen.length) return toast('Pick at least one review', 'err');
+    $('ag-multi-save').disabled = true;
+    $('ag-multi-save').textContent = 'Saving…';
+    try {
+      const r = await apiPost('/api/flavor-reviews/import/reviews-confirm-multi', {
+        variant, source: s.source, url: s.url, reviews: chosen,
+      });
+      const unmatchedBits = Object.entries(r.unmatched_by_flavor || {})
+        .map(([k, n]) => `${escapeHtml(k)} (${n})`).join(', ');
+      $('ag-result').innerHTML = `
+        <div class="card">
+          <div class="card-head"><h3>✓ Done</h3></div>
+          <div class="import-result">
+            <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${r.created.length}</div><div class="l">Saved</div></div>
+            <div class="pill-stat" style="border-color:#fde68a;background:var(--warn-bg)"><div class="v" style="color:var(--warn)">${r.skipped.length}</div><div class="l">Skipped (dup)</div></div>
+            <div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${(r.unmatched || []).length}</div><div class="l">Unmatched flavor</div></div>
+          </div>
+          ${unmatchedBits ? `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:10px;font-size:12px">Skipped — flavor not in catalog for ${escapeHtml(variant.replace('_','-'))}: ${unmatchedBits}. Create those flavors then re-run.</div>` : ''}
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button class="btn-primary" onclick="window.location.hash='/flavors'">View flavors →</button>
+            <button class="btn-sec" onclick="window.location.hash='/agent';location.reload()">Grab another</button>
+          </div>
+        </div>`;
+      toast(`Saved ${r.created.length} review${r.created.length === 1 ? '' : 's'}`, 'ok');
+    } catch (e) {
+      toast(e.message, 'err');
+      $('ag-multi-save').disabled = false;
+      $('ag-multi-save').textContent = 'Save selected';
+    }
   }
 
   function detectSourceFromUrl(url) {
@@ -1624,8 +2029,236 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     }
   }
 
+  // ── Excel import/export pipeline ───────────────────────────────────────
+  // The "press a button → agent grabs everything → I get an Excel → I upload
+  // it and the app dedup-imports" workflow. Three blocks on one page:
+  //   1. Generate an Excel from a URL or bookmarklet capture (server-side
+  //      best-effort extraction) — OR download a blank template.
+  //   2. A copy-paste prompt for running an EXTERNAL Claude agent (with web
+  //      access) that produces the same Excel format, for when Amazon blocks
+  //      the server.
+  //   3. Upload the (reviewed/edited) Excel → dedup import → summary.
+  const FR_AGENT_PROMPT = `You are a product-data scraper for the syrup brand "Syruvia".
+I will give you ONE Amazon URL. Do all of this:
+
+1. Open the URL. If it's a product page with a flavor-variations widget,
+   enumerate EVERY variation. For each, capture: ASIN, the bare flavor name
+   (e.g. "Blueberry" — strip brand/size/"syrup"), variant (regular or
+   sugar_free), listing type (single / with_pump / 4_pack / 6_pack / other),
+   pack size, hero image URL, the product URL, and the full Amazon title.
+2. For each variation (or the single product), open its reviews page
+   (amazon.com/product-reviews/<ASIN>/) and collect EVERY review across all
+   pages: rating (1-5), title, body, reviewer name, date (YYYY-MM-DD),
+   and whether it's a Verified Purchase.
+3. Produce an .xlsx workbook with exactly two sheets:
+   • "Flavors" with columns: asin, flavor_name, variant, kind, listing_type,
+     pack_size, image_url, url, title
+   • "Reviews" with columns: asin, flavor_name, variant, source, rating,
+     title, body, reviewer_name, posted_at, verified, url
+   Put the ASIN on every review row so it links back to its flavor.
+4. Don't invent data. Leave a cell blank if you don't know it.
+
+The URL is: `;
+
+  async function renderExcel() {
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/', 'Dashboard')}
+        ${breadcrumb([{ label: 'Dashboard', href: '/' }, { label: 'Excel import' }])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">📊</span> Excel import</h1>
+          <p class="fr-lede">Grab all variations + reviews for a product into one spreadsheet, review/edit it, then upload — the app adds only what's new. It dedups flavors by ASIN (or flavor name + variant) and reviews by reviewer + date + text, so re-uploading the same or an updated file is always safe.</p>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:820px">
+        <div class="card-head"><h3>1 · Get a spreadsheet</h3></div>
+        <div class="form-row">
+          <label class="fr-label">Generate from an Amazon URL (or a bookmarklet capture)</label>
+          <input type="url" id="xl-url" placeholder="https://www.amazon.com/dp/B0…">
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">Pulls all variations and their reviews into a filled .xlsx, with each review tagged by its flavor (from the variation) + the type you pick below. Amazon often blocks the server — if so, use the bookmarklet then pick the capture below, or the external-agent prompt.</div>
+        </div>
+        <div class="form-row" style="max-width:260px">
+          <label class="fr-label">Type for these reviews</label>
+          <select id="xl-variant">
+            <option value="regular">Regular</option>
+            <option value="sugar_free">Sugar-free</option>
+          </select>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">A parent listing is all one type. The flavor is read per-review from each variation. (Or just grab straight from <a onclick="window.location.hash='/listings'" style="color:var(--accent);cursor:pointer">Main listings</a> — the type is set there.)</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary" id="xl-generate">⚙️ Generate &amp; download</button>
+          <button class="btn-sec" id="xl-template">Download blank template</button>
+          <button class="btn-sec" onclick="window.location.hash='/settings'">📥 Set up bookmarklet</button>
+        </div>
+        <div id="xl-inbox" style="margin-top:14px"></div>
+        <div id="xl-gen-status"></div>
+
+        <details style="margin-top:16px">
+          <summary style="cursor:pointer;font-size:12.5px;color:#7c3aed;font-weight:600">🤖 Use an external Claude agent instead (copy prompt)</summary>
+          <div style="margin-top:10px;font-size:12px;color:var(--text2)">
+            Paste this into any Claude agent that has web access (e.g. Claude with tools, or a desktop agent). It produces an .xlsx in exactly the format this page imports. Then upload the result below.
+            <div style="position:relative;margin-top:8px">
+              <textarea id="xl-prompt" readonly style="width:100%;min-height:200px;font-family:ui-monospace,Menlo,monospace;font-size:11px;background:var(--bg2)">${escapeHtml(FR_AGENT_PROMPT)}</textarea>
+              <button class="btn-tiny" id="xl-copy-prompt" style="position:absolute;top:8px;right:8px">Copy</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card" style="max-width:820px;margin-top:16px">
+        <div class="card-head"><h3>2 · Upload &amp; import</h3></div>
+        <p style="font-size:12px;color:var(--text2);margin:0 0 12px">Upload the .xlsx (or .csv) with <strong>Flavors</strong> and <strong>Reviews</strong> sheets. We'll add only rows that aren't already in the app.</p>
+        <div id="xl-drop" style="border:2px dashed var(--border);border-radius:12px;padding:28px;text-align:center;cursor:pointer;transition:border-color .15s">
+          <div style="font-size:28px">📊</div>
+          <div style="font-size:13px;font-weight:600;margin-top:6px">Click to choose a file, or drag it here</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:3px">.xlsx or .csv · up to 25 MB</div>
+          <input type="file" id="xl-file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" style="display:none">
+        </div>
+        <div id="xl-upload-status"></div>
+      </div>
+    `);
+
+    $('xl-template').addEventListener('click', () => downloadFile('/api/flavor-reviews/import/excel-template', 'GET'));
+    $('xl-generate').addEventListener('click', () => generateExcel($('xl-url').value.trim()));
+    $('xl-copy-prompt').addEventListener('click', () => {
+      const ta = $('xl-prompt'); ta.select();
+      try { document.execCommand('copy'); toast('Prompt copied', 'ok'); } catch { toast('Select + copy manually', 'err'); }
+    });
+
+    const drop = $('xl-drop'); const fileInput = $('xl-file');
+    drop.addEventListener('click', () => fileInput.click());
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; });
+    drop.addEventListener('dragleave', () => { drop.style.borderColor = 'var(--border)'; });
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault(); drop.style.borderColor = 'var(--border)';
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) uploadExcel(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadExcel(fileInput.files[0]); });
+
+    renderExcelInbox();
+  }
+
+  async function renderExcelInbox() {
+    const host = $('xl-inbox');
+    if (!host) return;
+    try {
+      const { items } = await apiGet('/api/flavor-reviews/scraper/inbox');
+      if (!items.length) { host.innerHTML = ''; return; }
+      host.innerHTML = `
+        <div style="font-size:11.5px;color:var(--text3);margin-bottom:6px">Or generate from a bookmarklet capture:</div>
+        ${items.map(it => `
+          <div style="display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px">
+            <span class="pill" style="background:${it.kind === 'reviews' ? 'var(--info-bg)' : 'var(--ok-bg)'};color:${it.kind === 'reviews' ? 'var(--info)' : 'var(--ok)'}">${it.kind}</span>
+            <div style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.page_title || it.source_url || '(no title)')}</div>
+            <button class="btn-tiny btn-primary" onclick="FR.generateExcelFromInbox(${it.id})">⚙️ Generate →</button>
+          </div>`).join('')}`;
+    } catch { host.innerHTML = ''; }
+  }
+
+  // Trigger a browser download of a GET or POST endpoint that returns a file.
+  async function downloadFile(url, method, body) {
+    try {
+      const r = await fetch(url, {
+        method: method || 'GET',
+        credentials: 'same-origin',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (r.status === 401) { location.href = '/login.html'; return; }
+      if (!r.ok) {
+        let msg = 'Download failed';
+        try { const j = await r.json(); msg = j.error || (j.needs_capture ? j.message : msg); } catch {}
+        throw new Error(msg);
+      }
+      const blob = await r.blob();
+      const cd = r.headers.get('Content-Disposition') || '';
+      const m = /filename="?([^"]+)"?/.exec(cd);
+      const filename = m ? m[1] : 'download.xlsx';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      return {
+        flavors: r.headers.get('X-FR-Flavors'),
+        reviews: r.headers.get('X-FR-Reviews'),
+      };
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  async function generateExcel(url) {
+    if (!url) return toast('Paste a URL first (or generate from a capture below)', 'err');
+    const status = $('xl-gen-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Fetching + extracting variations and reviews… 20–60s for Amazon.</div></div>`;
+    $('xl-generate').disabled = true;
+    try {
+      const variant = ($('xl-variant') && $('xl-variant').value) || 'regular';
+      const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { url, variant });
+      status.innerHTML = `<div class="card" style="border-color:#bbf7d0;background:var(--ok-bg);margin-top:12px;font-size:12.5px">✓ Downloaded — ${counts.flavors || 0} flavor row(s), ${counts.reviews || 0} review row(s). Review/edit it, then upload below.</div>`;
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px;font-size:12.5px">${escapeHtml(e.message)}</div>`;
+    } finally {
+      $('xl-generate').disabled = false;
+    }
+  }
+
+  async function uploadExcel(file) {
+    const status = $('xl-upload-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">📊 Parsing ${escapeHtml(file.name)} and importing (dedup as we go)…</div></div>`;
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/flavor-reviews/import/excel-upload', { method: 'POST', credentials: 'same-origin', body: fd });
+      if (r.status === 401) { location.href = '/login.html'; return; }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Upload failed');
+      renderExcelResult(data);
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderExcelResult(data) {
+    const c = data.counts || {};
+    const d = data.detail || {};
+    const skippedFlavors = (d.flavors_skipped || []);
+    const skippedReviews = (d.reviews_skipped || []);
+    const errs = (d.review_errors || []);
+    $('xl-upload-status').innerHTML = `
+      <div class="card" style="margin-top:14px">
+        <div class="card-head"><h3>✓ Import complete</h3></div>
+        <div class="import-result">
+          <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${c.flavors_created || 0}</div><div class="l">Flavors created</div></div>
+          <div class="pill-stat" style="border-color:#e2e8f0;background:var(--bg2)"><div class="v">${c.flavors_existing || 0}</div><div class="l">Already existed</div></div>
+          <div class="pill-stat" style="border-color:#dbeafe;background:var(--info-bg)"><div class="v" style="color:var(--info)">${c.links_added || 0}</div><div class="l">Sell-links added</div></div>
+          <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${c.reviews_added || 0}</div><div class="l">Reviews added</div></div>
+          <div class="pill-stat" style="border-color:#fde68a;background:var(--warn-bg)"><div class="v" style="color:var(--warn)">${c.reviews_skipped || 0}</div><div class="l">Reviews skipped (dup)</div></div>
+          ${(c.review_errors || 0) ? `<div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${c.review_errors}</div><div class="l">Errors</div></div>` : ''}
+        </div>
+        ${(skippedFlavors.length || skippedReviews.length || errs.length) ? `
+          <details style="margin-top:14px">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text3)">Details on skipped / errored rows</summary>
+            <pre style="margin-top:8px;font-size:11px;background:var(--bg2);padding:10px;border-radius:8px;white-space:pre-wrap;max-height:280px;overflow:auto">${escapeHtml(JSON.stringify({ flavors_skipped: skippedFlavors, reviews_skipped: skippedReviews, review_errors: errs }, null, 2))}</pre>
+          </details>` : ''}
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn-primary" onclick="window.location.hash='/flavors'">View all flavors →</button>
+          <button class="btn-sec" onclick="window.location.hash='/excel';location.reload()">Import another file</button>
+        </div>
+      </div>`;
+    toast(`Added ${c.flavors_created || 0} flavors, ${c.reviews_added || 0} reviews`, 'ok');
+  }
+
   // ── Reviews import (fetch URL or paste) ────────────────────────────────
   let RVI_STATE = null;
+  // Set by FR.grabFlavorReviews before navigating here, so we can jump
+  // straight to the approval grid with the grabbed reviews.
+  let PENDING_FLAVOR_GRAB = null;
 
   async function renderReviewsImport(flavorId) {
     RVI_STATE = { flavor_id: flavorId, reviews: [] };
@@ -1633,6 +2266,11 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     let flavor;
     try { flavor = await apiGet('/api/flavor-reviews/flavors/' + flavorId); }
     catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
+
+    // If we arrived from "Grab this flavor's reviews from all its links",
+    // skip the input step and show the approval grid directly.
+    const pending = (PENDING_FLAVOR_GRAB && PENDING_FLAVOR_GRAB.flavor_id === flavorId) ? PENDING_FLAVOR_GRAB : null;
+    PENDING_FLAVOR_GRAB = null;
 
     pageShell(`
       <div class="fr-topbar">
@@ -1695,6 +2333,14 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     });
     $('rvi-paste-go').addEventListener('click', () => doReviewsPaste());
     renderInboxPanel('rvi-inbox', 'reviews');
+
+    // Came from "Grab this flavor's reviews from all its links" — go straight
+    // to the approval grid with what we pulled.
+    if (pending) {
+      const worked = (pending.per_link || []).filter(p => p.ok);
+      if (worked.length) toast(`Pulled ${pending.reviews.length} from ${worked.length} link${worked.length === 1 ? '' : 's'}`, 'ok');
+      finishReviewsExtract(pending.reviews, pending.url);
+    }
   }
 
   async function doReviewsFetch() {
@@ -2478,7 +3124,41 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     },
     refreshInbox(hostId, kind) { renderInboxPanel(hostId, kind); },
     refreshAgentInbox() { renderAgentInbox(); },
-    runAgentFromInbox(inboxId) { runAgent({ inbox_id: inboxId }); },
+    runAgentFromInbox(inboxId) { runAgent(agentOpts({ inbox_id: inboxId })); },
+    async grabFlavorReviews(flavorId) {
+      toast('Grabbing this flavor\'s reviews from its links… (Amazon may block)', 'ok');
+      try {
+        const r = await apiPost('/api/flavor-reviews/import/flavor-grab', { flavor_id: flavorId });
+        if (r.ok && r.reviews && r.reviews.length) {
+          // Hand off to the reviews-import page's approval grid, pre-set to
+          // this flavor.
+          PENDING_FLAVOR_GRAB = {
+            flavor_id: flavorId,
+            reviews: r.reviews,
+            url: r.source_url || '',
+            per_link: r.per_link || [],
+          };
+          goto('/flavor/' + flavorId + '/reviews-import');
+        } else if (r.action === 'no_links') {
+          toast(r.message || 'No sell-links on this flavor yet.', 'err');
+        } else {
+          // needs_capture — guide to bookmarklet.
+          const worked = (r.per_link || []).filter(p => p.ok).length;
+          toast((r.message || 'Couldn\'t auto-fetch.') + (worked ? '' : ' Try the bookmarklet on the reviews page.'), 'err');
+        }
+      } catch (e) { toast(e.message, 'err'); }
+    },
+    async generateExcelFromInbox(inboxId) {
+      const status = $('xl-gen-status');
+      if (status) status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Extracting from capture + building Excel…</div></div>`;
+      try {
+        const variant = ($('xl-variant') && $('xl-variant').value) || 'regular';
+        const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { inbox_id: inboxId, variant });
+        if (status) status.innerHTML = `<div class="card" style="border-color:#bbf7d0;background:var(--ok-bg);margin-top:12px;font-size:12.5px">✓ Downloaded — ${counts.flavors || 0} flavor row(s), ${counts.reviews || 0} review row(s). Review/edit, then upload below.</div>`;
+      } catch (e) {
+        if (status) status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px;font-size:12.5px">${escapeHtml(e.message)}</div>`;
+      }
+    },
     async pickInbox(id, kind) {
       // Called from inside the /import or /flavor/:id/reviews-import flow.
       // Parse the capture, then jump into the same approval grid as paste-mode.
@@ -2587,6 +3267,8 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     if (r.view === 'bulk-import')    return renderBulkImport();
     if (r.view === 'import')         return renderImport();
     if (r.view === 'agent')          return renderAgent();
+    if (r.view === 'excel')          return renderExcel();
+    if (r.view === 'listings')       return renderListings();
     if (r.view === 'reviews-import') return renderReviewsImport(r.id);
     if (r.view === 'settings')       return renderSettings();
     return renderDashboard();

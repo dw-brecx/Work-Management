@@ -14,6 +14,19 @@
 module.exports = function attach(app, deps) {
   const { get, all, run, requireAuth, pool } = deps;
   const { randomBytes } = require('crypto');
+  const multer = require('multer');
+  // Excel/CSV uploads are parsed in memory (no temp files to clean up).
+  const xlsxUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+  // xlsx (SheetJS) is loaded lazily so a missing dependency degrades to just
+  // the Excel endpoints erroring — it never crashes the whole route mount or
+  // the server at startup. (multer was already a dependency, so it's eager.)
+  let _XLSX = null;
+  function getXLSX() {
+    if (_XLSX) return _XLSX;
+    try { _XLSX = require('xlsx'); }
+    catch (e) { throw new Error('Excel support is unavailable — the "xlsx" package is not installed on the server (run npm install).'); }
+    return _XLSX;
+  }
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
   const aiReady = !!ANTHROPIC_API_KEY;
 
@@ -68,6 +81,7 @@ module.exports = function attach(app, deps) {
           (SELECT COUNT(*) FROM fr_issues   i WHERE i.flavor_id=f.id AND i.status='open')          AS open_issues,
           (SELECT COUNT(*) FROM fr_reviews  r WHERE r.flavor_id=f.id AND r.rating > 0 AND r.rating <= 2 AND r.status='open') AS open_bad,
           (SELECT COUNT(*) FROM fr_reviews  r WHERE r.flavor_id=f.id)                              AS total_reviews,
+          (SELECT ROUND(AVG(rating)::numeric, 1) FROM fr_reviews r WHERE r.flavor_id=f.id AND r.rating > 0) AS avg_rating,
           (SELECT scheduled_for FROM fr_cycles c WHERE c.flavor_id=f.id AND c.status='scheduled'
              ORDER BY scheduled_for ASC LIMIT 1)                                                   AS next_cycle,
           (SELECT COUNT(*) FROM fr_flavor_links l WHERE l.flavor_id=f.id)                          AS link_count
@@ -79,6 +93,7 @@ module.exports = function attach(app, deps) {
         open_issues: Number(m.get(r.id)?.open_issues || 0),
         open_bad: Number(m.get(r.id)?.open_bad || 0),
         total_reviews: Number(m.get(r.id)?.total_reviews || 0),
+        avg_rating: m.get(r.id)?.avg_rating != null ? Number(m.get(r.id).avg_rating) : null,
         next_cycle: m.get(r.id)?.next_cycle || '',
         link_count: Number(m.get(r.id)?.link_count || 0),
       })));
@@ -139,12 +154,51 @@ module.exports = function attach(app, deps) {
       const cycles = await all(
         `SELECT * FROM fr_cycles WHERE flavor_id=? ORDER BY scheduled_for DESC`, id
       );
+
+      // Flavor "group": every record sharing this name (regular + sugar_free).
+      // The work unit is the flavor name — when working a flavor you want to
+      // see ALL its reviews/issues across both types, each tagged by type.
+      // We keep the per-record `reviews`/`issues` above (this type only) and
+      // add `group` for the merged, type-tagged view the UI defaults to.
+      const groupFlavors = await all(
+        `SELECT id, name, variant, kind, status FROM fr_flavors WHERE LOWER(name)=LOWER(?) ORDER BY (variant='sugar_free'), id`,
+        row.name
+      );
+      const groupIds = groupFlavors.map(g => g.id);
+      const ph = groupIds.map(() => '?').join(',');
+      const groupReviews = await all(
+        `SELECT r.*, f.variant AS flavor_variant, i.title AS issue_title, i.status AS issue_status
+           FROM fr_reviews r
+           JOIN fr_flavors f ON f.id = r.flavor_id
+           LEFT JOIN fr_issues i ON i.id = r.issue_id
+          WHERE r.flavor_id IN (${ph})
+          ORDER BY COALESCE(NULLIF(r.posted_at,''), r.created_at) DESC`,
+        ...groupIds
+      );
+      const groupIssues = await all(
+        `SELECT i.*, f.variant AS flavor_variant,
+                (SELECT COUNT(*) FROM fr_reviews r WHERE r.issue_id=i.id) AS review_count,
+                f.name AS flavor_name
+           FROM fr_issues i
+           JOIN fr_flavors f ON f.id = i.flavor_id
+          WHERE i.flavor_id IN (${ph})
+          ORDER BY
+            CASE i.status WHEN 'open' THEN 0 WHEN 'merged' THEN 1 WHEN 'ignored' THEN 2 ELSE 3 END,
+            i.created_at DESC`,
+        ...groupIds
+      );
+
       res.json({
         ...shapeFlavor(row),
         links: links.map(shapeLink),
         reviews: reviews.map(shapeReview),
         issues: issues.map(shapeIssue),
         cycles: cycles.map(shapeCycle),
+        group: {
+          flavors: groupFlavors.map(g => ({ id: g.id, name: g.name, variant: g.variant, kind: g.kind, status: g.status })),
+          reviews: groupReviews.map(shapeReview),
+          issues: groupIssues.map(shapeIssue),
+        },
       });
     } catch (e) {
       console.error('[fr] flavor detail failed:', e.message);
@@ -190,6 +244,55 @@ module.exports = function attach(app, deps) {
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Main listings registry (the 4 Amazon parent listings) ────────────────
+  function shapeMainListing(row) {
+    const label = (row.variant === 'sugar_free' ? 'Sugar-free' : 'Regular') +
+                  (row.has_pump ? ' · with pump' : ' · no pump');
+    return {
+      id: row.id, variant: row.variant, has_pump: !!row.has_pump,
+      label, asin: row.asin || '', url: row.url || '', notes: row.notes || '',
+      updated_at: row.updated_at,
+    };
+  }
+
+  app.get('/api/flavor-reviews/main-listings', requireAuth, async (req, res) => {
+    try {
+      const rows = await all(`SELECT * FROM fr_main_listings
+        ORDER BY (variant='sugar_free'), has_pump, id`);
+      res.json({ listings: rows.map(shapeMainListing) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.patch('/api/flavor-reviews/main-listings/:id', requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      const existing = await get('SELECT * FROM fr_main_listings WHERE id=?', id);
+      if (!existing) return res.status(404).json({ error: 'Listing not found' });
+
+      let url = String(req.body?.url ?? existing.url).trim().slice(0, 2000);
+      let asin = String(req.body?.asin ?? existing.asin).trim().toUpperCase().slice(0, 20);
+      const notes = String(req.body?.notes ?? existing.notes).slice(0, 1000);
+      // If a URL was given without an ASIN, lift the ASIN out of it.
+      if (url && !asin) {
+        const m = /\/(?:dp|gp\/product|product|product-reviews)\/([A-Z0-9]{10})/i.exec(url);
+        if (m) asin = m[1].toUpperCase();
+      }
+      // Light sanity: ASIN should be 10 alphanumerics if present.
+      if (asin && !/^[A-Z0-9]{10}$/.test(asin)) {
+        return res.status(400).json({ error: 'ASIN should be 10 letters/numbers (e.g. B0XXXXXXXX).' });
+      }
+      await run(
+        `UPDATE fr_main_listings SET url=?, asin=?, notes=?,
+           updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id=?`,
+        url, asin, notes, id
+      );
+      const updated = await get('SELECT * FROM fr_main_listings WHERE id=?', id);
+      res.json(shapeMainListing(updated));
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // ── Bulk import (CSV / TSV paste) ────────────────────────────────────────
@@ -382,6 +485,7 @@ module.exports = function attach(app, deps) {
     return {
       id: row.id,
       flavor_id: row.flavor_id,
+      flavor_variant: row.flavor_variant || '',
       source: row.source,
       source_review_id: row.source_review_id || '',
       rating: row.rating,
@@ -507,6 +611,7 @@ module.exports = function attach(app, deps) {
       id: row.id,
       flavor_id: row.flavor_id,
       flavor_name: row.flavor_name || null,
+      flavor_variant: row.flavor_variant || '',
       title: row.title,
       summary: row.summary,
       severity: row.severity,
@@ -1588,7 +1693,7 @@ module.exports = function attach(app, deps) {
     "You extract product reviews from Amazon / Walmart / TikTok pages or pasted text. " +
     "Return ONLY this JSON: { \"reviews\": [{ \"rating\": <1-5 or null>, \"title\": \"...\", " +
     "\"body\": \"...\", \"reviewer_name\": \"...\", \"posted_at\": \"YYYY-MM-DD or empty\", " +
-    "\"verified\": true/false }] }\n\n" +
+    "\"verified\": true/false, \"flavor\": \"...\" }] }\n\n" +
     "Rules:\n" +
     "- Extract every distinct review you can identify. Don't combine reviews.\n" +
     "- rating: integer 1-5 if visible (\"★★★★☆\" = 4). null if not shown.\n" +
@@ -1596,6 +1701,11 @@ module.exports = function attach(app, deps) {
     "Empty string otherwise. Today is " + todayUtc() + ".\n" +
     "- reviewer_name: visible username or display name. Empty if anonymous.\n" +
     "- verified: true if marked \"Verified Purchase\", else false.\n" +
+    "- flavor: VERY IMPORTANT on parent listings that span multiple flavors. Each Amazon review " +
+    "usually shows which variation it's for, e.g. a line like \"Flavor Name: Blueberry\", " +
+    "\"Color: Caramel\", \"Style: Vanilla\", or \"Size: ...\". Put the bare flavor there " +
+    "(\"Blueberry\", \"Caramel\") — strip the label and any size/pack words. Empty string if the " +
+    "review doesn't show a variation.\n" +
     "- DO NOT invent reviews. If the content has no recognizable reviews, return { \"reviews\": [] }.\n" +
     "- DO NOT include code fences, markdown, or any commentary.";
 
@@ -1610,6 +1720,7 @@ module.exports = function attach(app, deps) {
         reviewer_name: String(r.reviewer_name || '').slice(0, 120),
         posted_at: /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '',
         verified: !!r.verified,
+        flavor: String(r.flavor || '').slice(0, 120),
       })).filter(r => r.body || r.title) : [];
       return { reviews };
     } catch (e) {
@@ -1839,6 +1950,129 @@ module.exports = function attach(app, deps) {
       res.json({ created, skipped, errors });
     } catch (e) {
       console.error('[fr] reviews-confirm failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Multi-flavor reviews confirm (all-variations scope) ──────────────────
+  // Each review carries its own flavor (from the variation it was left on);
+  // the variant (reg/SF) is shared (a parent listing is one type). We route
+  // each review to (flavor name + variant), dedup, and insert. Reviews whose
+  // flavor isn't in the catalog are reported as unmatched (we don't guess).
+  app.post('/api/flavor-reviews/import/reviews-confirm-multi', requireAuth, async (req, res) => {
+    try {
+      const variant = ['regular', 'sugar_free'].includes(req.body?.variant) ? req.body.variant : 'regular';
+      const source = String(req.body?.source || 'Amazon').trim().slice(0, 60) || 'Amazon';
+      const sourceUrl = String(req.body?.url || '').trim().slice(0, 1000);
+      const items = Array.isArray(req.body?.reviews) ? req.body.reviews : [];
+      if (!items.length) return res.status(400).json({ error: 'No reviews to save.' });
+
+      // Build a name→id map for this variant so we don't query per review.
+      const flavorsOfVariant = await all('SELECT id, name FROM fr_flavors WHERE variant=?', variant);
+      const nameToId = new Map();
+      for (const f of flavorsOfVariant) nameToId.set(f.name.trim().toLowerCase(), f.id);
+
+      const created = []; const skipped = []; const unmatched = []; const errors = [];
+      const seenInBatch = new Set();
+      const negativeFlavors = new Set();
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i];
+        try {
+          const flavorName = String(r.flavor || r.flavor_name || '').trim();
+          if (!flavorName) { unmatched.push({ index: i, reason: 'no flavor on review', flavor: '' }); continue; }
+          const flavorId = nameToId.get(flavorName.toLowerCase());
+          if (!flavorId) { unmatched.push({ index: i, flavor: flavorName, reason: 'flavor not in catalog for ' + variant }); continue; }
+
+          const rating = Math.max(0, Math.min(5, parseInt(r.rating, 10) || 0));
+          const title = String(r.title || '').slice(0, 200);
+          const body = String(r.body || '').slice(0, 10000);
+          const reviewer_name = String(r.reviewer_name || '').slice(0, 120);
+          const posted_at = /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '';
+          if (!body && !title) { skipped.push({ index: i, reason: 'empty' }); continue; }
+
+          const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+          if (dedupKey) {
+            const bk = flavorId + ':' + dedupKey;
+            if (seenInBatch.has(bk)) { skipped.push({ index: i, reason: 'duplicate-in-batch' }); continue; }
+            const dup = await get('SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1', flavorId, dedupKey);
+            if (dup) { skipped.push({ index: i, reason: 'duplicate', existing_id: dup.id }); continue; }
+            seenInBatch.add(bk);
+          }
+          const sentiment = classifySentiment(rating);
+          const ins = await run(
+            `INSERT INTO fr_reviews (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+            flavorId, source, rating, reviewer_name, title, body, sourceUrl, posted_at, sentiment, dedupKey, req.session.userId
+          );
+          created.push({ index: i, id: ins.lastInsertRowid, flavor_id: flavorId });
+          if (sentiment === 'negative') negativeFlavors.add(flavorId);
+        } catch (e) {
+          errors.push({ index: i, reason: e.message });
+        }
+      }
+      for (const fid of negativeFlavors) { try { await bumpNextCyclePriority(fid); } catch {} }
+      // Collapse unmatched into per-flavor counts for a tidy summary.
+      const unmatchedByFlavor = {};
+      for (const u of unmatched) { const k = u.flavor || '(none)'; unmatchedByFlavor[k] = (unmatchedByFlavor[k] || 0) + 1; }
+      res.json({ created, skipped, errors, unmatched, unmatched_by_flavor: unmatchedByFlavor });
+    } catch (e) {
+      console.error('[fr] reviews-confirm-multi failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Per-flavor grab: pull this flavor's reviews from all its sell-links ──
+  // The flavor's sell-links are its URLs across the listings. We fetch each,
+  // extract reviews (scope = this flavor — they're all this flavor), combine,
+  // and return a reviews-proposal pre-set to this flavor. Best-effort per the
+  // usual Amazon-blocking caveat; reports which links worked.
+  app.post('/api/flavor-reviews/import/flavor-grab', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const flavorId = Number(req.body?.flavor_id);
+      if (!Number.isFinite(flavorId)) return res.status(400).json({ error: 'flavor_id required' });
+      const flavor = await get('SELECT id, name, variant FROM fr_flavors WHERE id=?', flavorId);
+      if (!flavor) return res.status(404).json({ error: 'Flavor not found' });
+      const links = await all('SELECT url, asin FROM fr_flavor_links WHERE flavor_id=? ORDER BY position ASC, id ASC', flavorId);
+      if (!links.length) return res.json({ ok: false, action: 'no_links', message: 'This flavor has no sell-links yet. Add the URLs where it\'s sold first.' });
+
+      const allReviews = [];
+      const perLink = [];
+      const seen = new Set(); // de-dup across links by name+date+body
+      for (const l of links) {
+        // Prefer the reviews page for the link's ASIN so we get this variation.
+        const target = l.asin ? `https://www.amazon.com/product-reviews/${l.asin}/` : l.url;
+        if (!target) continue;
+        let got = null;
+        try { got = await fetchAndExtract(target, 'reviews'); } catch {}
+        const n = got?.extraction?.reviews?.length || 0;
+        perLink.push({ url: target, asin: l.asin || '', count: n, ok: !!n });
+        for (const rv of (got?.extraction?.reviews || [])) {
+          const key = computeDedupKey(rv.reviewer_name, rv.posted_at, rv.body);
+          if (key && seen.has(key)) continue;
+          if (key) seen.add(key);
+          allReviews.push(rv);
+        }
+      }
+
+      if (!allReviews.length) {
+        return res.json({
+          ok: false, action: 'needs_capture', flavor,
+          per_link: perLink,
+          message: 'Couldn\'t auto-fetch any reviews (Amazon usually blocks the server). Use the bookmarklet on this flavor\'s reviews pages, then import from the inbox / Excel.',
+        });
+      }
+      res.json({
+        ok: true,
+        action: 'reviews-proposal',
+        kind: 'reviews',
+        flavor,
+        per_link: perLink,
+        source_url: links[0].url || '',
+        reviews: allReviews,
+      });
+    } catch (e) {
+      console.error('[fr] flavor-grab failed:', e.message);
       res.status(500).json({ error: e.message });
     }
   });
@@ -2250,6 +2484,13 @@ module.exports = function attach(app, deps) {
       if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
       const url = String(req.body?.url || '').trim();
       const inboxId = Number(req.body?.inbox_id || 0);
+      // scope: 'this_flavor' (default) = every review belongs to the one
+      //   flavor the link lands on. 'all_variations' = the link is a parent;
+      //   each review keeps its own variation flavor and routes individually.
+      const scope = req.body?.scope === 'all_variations' ? 'all_variations' : 'this_flavor';
+      // variant (reg/SF) used to tag reviews in all_variations mode (a parent
+      // listing is one type; flavor varies per review).
+      const variantHint = ['regular', 'sugar_free'].includes(req.body?.variant) ? req.body.variant : '';
       if (!url && !inboxId) return res.status(400).json({ error: 'Provide a URL or pick an inbox capture.' });
 
       // 1. Resolve URL + classification (inbox source URL wins over passed URL).
@@ -2307,7 +2548,22 @@ module.exports = function attach(app, deps) {
 
       // 3. Branch on kind
       if (expectedKind === 'reviews') {
-        // Look up flavor by ASIN — first via fr_flavor_links, fall back to fr_flavors.amazon_asin
+        if (scope === 'all_variations') {
+          // Parent listing: keep each review's own variation flavor. The UI
+          // will route each to (flavor name + chosen type) on save.
+          return res.json({
+            ok: true,
+            action: 'reviews-multi',
+            kind: 'reviews',
+            source_url: urlToUse,
+            source,
+            detected,
+            variant: variantHint,         // type for all rows; UI can change
+            reviews: extraction.reviews,  // each carries .flavor
+          });
+        }
+        // this_flavor: every review belongs to the single flavor the link
+        // lands on. Match it by ASIN; the UI pre-sets it (or asks).
         let flavor = null;
         if (detected.asin) {
           flavor = await get(
@@ -2404,6 +2660,401 @@ module.exports = function attach(app, deps) {
       });
     } catch (e) {
       console.error('[fr agent] failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Excel import/export pipeline ─────────────────────────────────────────
+  // Workflow: an agent (this app's, or an external Claude with web access,
+  // or the bookmarklet) grabs variations + reviews and produces an .xlsx with
+  // two sheets — Flavors and Reviews. The user reviews/edits in Excel, then
+  // uploads here. On import we dedup flavors by ASIN or name+variant, and
+  // reviews by the same name+date+body key used everywhere else, adding only
+  // what's new.
+
+  const XL_FLAVOR_HEADERS = ['asin', 'flavor_name', 'variant', 'kind', 'listing_type', 'pack_size', 'image_url', 'url', 'title'];
+  const XL_REVIEW_HEADERS = ['asin', 'flavor_name', 'variant', 'source', 'rating', 'title', 'body', 'reviewer_name', 'posted_at', 'verified', 'url'];
+
+  // Map a spreadsheet header cell → canonical field. Tolerant of casing,
+  // spaces, dashes, and a few common synonyms so a hand-built or
+  // agent-built sheet doesn't have to match our names exactly.
+  function xlNormHeader(k) { return String(k == null ? '' : k).trim().toLowerCase().replace(/[\s\-]+/g, '_'); }
+  const XL_ALIASES = {
+    asin: 'asin',
+    flavor_name: 'flavor_name', flavor: 'flavor_name', name: 'flavor_name', flavour_name: 'flavor_name', flavour: 'flavor_name',
+    variant: 'variant', variation: 'variant',
+    kind: 'kind', category: 'kind', type: 'kind',
+    listing_type: 'listing_type', listing: 'listing_type', pack_type: 'listing_type',
+    pack_size: 'pack_size', pack: 'pack_size', qty: 'pack_size', quantity: 'pack_size',
+    image_url: 'image_url', image: 'image_url', img: 'image_url', image_link: 'image_url',
+    url: 'url', link: 'url', product_url: 'url', product_link: 'url',
+    title: 'title', product_title: 'title',
+    source: 'source', channel: 'source',
+    rating: 'rating', stars: 'rating', star_rating: 'rating',
+    body: 'body', review: 'body', review_body: 'body', content: 'body', text: 'body',
+    reviewer_name: 'reviewer_name', reviewer: 'reviewer_name', author: 'reviewer_name', customer: 'reviewer_name', name_of_reviewer: 'reviewer_name',
+    posted_at: 'posted_at', date: 'posted_at', review_date: 'posted_at', posted: 'posted_at',
+    verified: 'verified', verified_purchase: 'verified',
+  };
+  function xlRemapRow(row) {
+    const out = {};
+    for (const [k, v] of Object.entries(row)) {
+      const canon = XL_ALIASES[xlNormHeader(k)];
+      if (canon) out[canon] = v;
+    }
+    return out;
+  }
+  function xlBool(v) {
+    const s = String(v == null ? '' : v).trim().toLowerCase();
+    return s === 'true' || s === 'yes' || s === 'y' || s === '1' || s === 'verified';
+  }
+  // Coerce a sheet date cell (could be a JS Date, an Excel serial, or a string)
+  // into ISO YYYY-MM-DD, or '' if we can't.
+  function xlDate(v) {
+    if (v == null || v === '') return '';
+    if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+    const s = String(v).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    // "May 18, 2026" style
+    const MONTHS = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+    let m = /([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/.exec(s);
+    if (m) {
+      const mo = MONTHS[m[1].toLowerCase().slice(0, 3)];
+      if (mo) return `${m[3]}-${String(mo).padStart(2,'0')}-${String(Number(m[2])).padStart(2,'0')}`;
+    }
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+    return '';
+  }
+
+  function buildWorkbook({ flavors, reviews, withInstructions }) {
+    const XLSX = getXLSX();
+    const wb = XLSX.utils.book_new();
+    if (withInstructions) {
+      const instr = XLSX.utils.aoa_to_sheet([
+        ['Syruvia — Flavor + Review import template'],
+        [''],
+        ['Fill the "Flavors" and "Reviews" tabs, then upload this file in the app (Smart Import → Excel).'],
+        [''],
+        ['FLAVORS tab — one row per product variation / listing:'],
+        ['  asin          Amazon ASIN, the 10-char product id (e.g. B0XXXXXXXX).'],
+        ['  flavor_name   The bare flavor only — "Blueberry", "Caramel". No brand/size words.'],
+        ['  variant       regular OR sugar_free.'],
+        ['  kind          coffee / cocktail / fruit / tea / latte / smoothie / unique / other.'],
+        ['  listing_type  single / with_pump / 4_pack / 6_pack / other.'],
+        ['  pack_size     1, 4, 6 …'],
+        ['  image_url     Hero image URL (optional).'],
+        ['  url           The product page URL (optional but recommended).'],
+        ['  title         Amazon product title (optional).'],
+        [''],
+        ['REVIEWS tab — one row per review:'],
+        ['  asin          ASIN this review belongs to (best matcher — links the review to the flavor).'],
+        ['  flavor_name   + variant: fallback matcher if asin is blank.'],
+        ['  source        Amazon / Walmart / TikTok / Website / Other.'],
+        ['  rating        1–5 (blank if unknown).'],
+        ['  title         Review title.'],
+        ['  body          Review text.'],
+        ['  reviewer_name Reviewer display name.'],
+        ['  posted_at     YYYY-MM-DD (or "May 18, 2026" — we parse it).'],
+        ['  verified      TRUE/FALSE.'],
+        ['  url           Source URL (optional).'],
+        [''],
+        ['Dedup is automatic on upload:'],
+        ['  • A flavor is skipped if its ASIN OR its flavor_name+variant already exists.'],
+        ['  • A review is skipped if the same reviewer_name + posted_at + body already exists for that flavor.'],
+        ['So re-uploading the same file (or an updated one) is always safe.'],
+      ]);
+      instr['!cols'] = [{ wch: 100 }];
+      XLSX.utils.book_append_sheet(wb, instr, 'Instructions');
+    }
+    const fRows = [XL_FLAVOR_HEADERS, ...(flavors || []).map(f => XL_FLAVOR_HEADERS.map(h => f[h] == null ? '' : f[h]))];
+    const fSheet = XLSX.utils.aoa_to_sheet(fRows);
+    fSheet['!cols'] = XL_FLAVOR_HEADERS.map(h => ({ wch: h === 'url' || h === 'image_url' || h === 'title' ? 40 : 16 }));
+    XLSX.utils.book_append_sheet(wb, fSheet, 'Flavors');
+
+    const rRows = [XL_REVIEW_HEADERS, ...(reviews || []).map(r => XL_REVIEW_HEADERS.map(h => r[h] == null ? '' : r[h]))];
+    const rSheet = XLSX.utils.aoa_to_sheet(rRows);
+    rSheet['!cols'] = XL_REVIEW_HEADERS.map(h => ({ wch: h === 'body' ? 60 : h === 'title' || h === 'url' ? 30 : 14 }));
+    XLSX.utils.book_append_sheet(wb, rSheet, 'Reviews');
+
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  }
+
+  // GET blank template (with one example row in each sheet).
+  app.get('/api/flavor-reviews/import/excel-template', requireAuth, async (req, res) => {
+    try {
+      const buf = buildWorkbook({
+        withInstructions: true,
+        flavors: [{ asin: 'B0EXAMPLE1', flavor_name: 'Blueberry', variant: 'sugar_free', kind: 'coffee', listing_type: 'single', pack_size: 1, image_url: '', url: 'https://www.amazon.com/dp/B0EXAMPLE1', title: 'Syruvia Sugar-Free Blueberry Syrup 25.4 fl oz' }],
+        reviews: [{ asin: 'B0EXAMPLE1', flavor_name: 'Blueberry', variant: 'sugar_free', source: 'Amazon', rating: 5, title: 'Love it', body: 'Great in coffee and not too sweet.', reviewer_name: 'Jane D.', posted_at: '2026-05-18', verified: 'TRUE', url: '' }],
+      });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="syruvia-import-template.xlsx"');
+      res.send(buf);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST generate a filled workbook from a URL or inbox capture. Best-effort
+  // — uses the same dual-path fetch + extraction as the agent. For product
+  // URLs it also pulls reviews from /product-reviews/<asin>/.
+  app.post('/api/flavor-reviews/import/excel-generate', requireAuth, async (req, res) => {
+    try {
+      if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
+      const url = String(req.body?.url || '').trim();
+      const inboxId = Number(req.body?.inbox_id || 0);
+      const mainListingId = Number(req.body?.main_listing_id || 0);
+      // Variant (reg/SF) to stamp on every review row. Comes from the chosen
+      // main listing, or an explicit param. A parent listing is all one type;
+      // the flavor varies per review (captured from each review's variation).
+      let variantHint = ['regular', 'sugar_free'].includes(req.body?.variant) ? req.body.variant : '';
+
+      let urlToUse = url;
+      let inboxRow = null;
+      if (mainListingId) {
+        const ml = await get('SELECT * FROM fr_main_listings WHERE id=?', mainListingId);
+        if (ml) {
+          if (!variantHint) variantHint = ml.variant;
+          if (!urlToUse) urlToUse = ml.url || (ml.asin ? `https://www.amazon.com/product-reviews/${ml.asin}/` : '');
+        }
+      }
+      if (!urlToUse && !inboxId) return res.status(400).json({ error: 'Provide a URL, a main listing, or an inbox capture.' });
+
+      if (inboxId) {
+        inboxRow = await get('SELECT id, html, source_url, kind FROM fr_scraper_inbox WHERE id=?', inboxId);
+        if (!inboxRow) return res.status(404).json({ error: 'Inbox capture not found' });
+        if (inboxRow.source_url) urlToUse = inboxRow.source_url;
+      }
+      const detected = classifyAmazonUrl(urlToUse);
+      const expectedKind = inboxRow ? inboxRow.kind : (detected.kind === 'reviews' ? 'reviews' : 'product');
+
+      const flavorsOut = [];
+      const reviewsOut = [];
+      // Push extracted reviews into the Excel rows. flavor_name comes from
+      // EACH review's variation (parent listings span flavors); variant comes
+      // from the listing (variantHint). That's the flavor + type matching key.
+      const pushReviews = (reviews, asin, srcUrl) => {
+        for (const rv of (reviews || [])) {
+          reviewsOut.push({
+            asin: asin || '',
+            flavor_name: rv.flavor || '',
+            variant: variantHint || '',
+            source: 'Amazon',
+            rating: rv.rating || '', title: rv.title || '', body: rv.body || '',
+            reviewer_name: rv.reviewer_name || '', posted_at: rv.posted_at || '',
+            verified: rv.verified ? 'TRUE' : 'FALSE', url: srcUrl || urlToUse,
+          });
+        }
+      };
+
+      if (expectedKind === 'reviews') {
+        let extraction = null;
+        if (inboxRow) { try { extraction = await extractFromHtml(inboxRow.html, urlToUse, 'reviews'); } catch {} }
+        if (!extraction || !extraction.reviews.length) {
+          const got = urlToUse ? await fetchAndExtract(urlToUse, 'reviews') : null;
+          if (got) extraction = got.extraction;
+        }
+        pushReviews(extraction?.reviews, detected.asin, urlToUse);
+      } else {
+        let extraction = null;
+        if (inboxRow) { try { extraction = await extractFromHtml(inboxRow.html, urlToUse, 'product'); } catch {} }
+        if (!extraction || !extraction.variations.length) {
+          const got = urlToUse ? await fetchAndExtract(urlToUse, 'product') : null;
+          if (got) extraction = got.extraction;
+        }
+        for (const v of (extraction?.variations || [])) {
+          if (!v.asin && detected.asin) v.asin = detected.asin;
+          flavorsOut.push({
+            asin: v.asin || '', flavor_name: v.flavor_name || '', variant: variantHint || 'regular',
+            kind: 'coffee', listing_type: v.listing_type || 'single', pack_size: v.pack_size || 1,
+            image_url: v.image_url || '', url: urlToUse, title: v.title || '',
+          });
+        }
+        // Bonus reviews from the product's reviews page.
+        if (detected.asin) {
+          const reviewsUrl = 'https://www.amazon.com/product-reviews/' + detected.asin + '/';
+          try {
+            const got = await fetchAndExtract(reviewsUrl, 'reviews');
+            pushReviews(got?.extraction?.reviews, detected.asin, reviewsUrl);
+          } catch {}
+        }
+      }
+
+      if (!flavorsOut.length && !reviewsOut.length) {
+        return res.json({
+          ok: false, needs_capture: true, source_url: urlToUse,
+          message: 'Couldn\'t auto-fetch (Amazon usually blocks). Use the bookmarklet on this URL, then generate from the inbox capture.',
+        });
+      }
+
+      const buf = buildWorkbook({ withInstructions: true, flavors: flavorsOut, reviews: reviewsOut });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="syruvia-import.xlsx"');
+      res.setHeader('X-FR-Flavors', String(flavorsOut.length));
+      res.setHeader('X-FR-Reviews', String(reviewsOut.length));
+      res.send(buf);
+    } catch (e) {
+      console.error('[fr] excel-generate failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST upload + import. Parses the workbook, dedups, and writes only new
+  // rows. Returns a detailed summary the UI renders.
+  app.post('/api/flavor-reviews/import/excel-upload', requireAuth, xlsxUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer) return res.status(400).json({ error: 'No file uploaded.' });
+      const XLSX = getXLSX();
+      let wb;
+      try { wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true }); }
+      catch (e) { return res.status(400).json({ error: 'Could not read that file as a spreadsheet: ' + e.message }); }
+
+      const findSheet = (re) => wb.Sheets[wb.SheetNames.find(n => re.test(n)) || ''] || null;
+      const flavorsSheet = wb.Sheets['Flavors'] || findSheet(/flavou?r/i);
+      const reviewsSheet = wb.Sheets['Reviews'] || findSheet(/review/i);
+      const rawFlavors = flavorsSheet ? XLSX.utils.sheet_to_json(flavorsSheet, { defval: '' }) : [];
+      const rawReviews = reviewsSheet ? XLSX.utils.sheet_to_json(reviewsSheet, { defval: '' }) : [];
+      if (!rawFlavors.length && !rawReviews.length) {
+        return res.status(400).json({ error: 'No "Flavors" or "Reviews" sheet with data found. Use the template.' });
+      }
+
+      // ── Preload existing catalog into lookup maps ──────────────────────
+      const asinToFlavor = {};               // ASIN(upper) → flavor_id
+      const nameVariantToFlavor = {};        // "name(lower)|variant" → flavor_id
+      const existingFlavors = await all('SELECT id, name, variant, amazon_asin FROM fr_flavors');
+      for (const f of existingFlavors) {
+        if (f.amazon_asin) asinToFlavor[f.amazon_asin.toUpperCase()] = f.id;
+        nameVariantToFlavor[f.name.toLowerCase() + '|' + f.variant] = f.id;
+      }
+      const existingLinks = await all("SELECT flavor_id, asin, url FROM fr_flavor_links");
+      const linkKeys = new Set(); // "flavor_id|asin" and "flavor_id|url"
+      for (const l of existingLinks) {
+        if (l.asin) { asinToFlavor[l.asin.toUpperCase()] = l.flavor_id; linkKeys.add(l.flavor_id + '|A|' + l.asin.toUpperCase()); }
+        if (l.url) linkKeys.add(l.flavor_id + '|U|' + l.url);
+      }
+
+      const summary = {
+        flavors_created: [], flavors_existing: [], flavors_skipped: [], links_added: 0,
+        reviews_added: [], reviews_skipped: [], review_errors: [],
+      };
+
+      // ── Flavors sheet ──────────────────────────────────────────────────
+      for (let i = 0; i < rawFlavors.length; i++) {
+        const row = xlRemapRow(rawFlavors[i]);
+        const asin = String(row.asin || '').trim().toUpperCase().slice(0, 20);
+        const name = String(row.flavor_name || '').trim().slice(0, 120);
+        const variant = VARIANTS.includes(String(row.variant || '').trim()) ? String(row.variant).trim() : 'regular';
+        if (!name && !asin) { summary.flavors_skipped.push({ row: i + 2, reason: 'no asin or flavor_name' }); continue; }
+
+        const kind = KINDS.includes(String(row.kind || '').trim()) ? String(row.kind).trim() : 'other';
+        const listingType = LISTING_TYPES_FR.includes(String(row.listing_type || '').trim()) ? String(row.listing_type).trim() : 'single';
+        const packSize = Math.max(1, Math.min(99, parseInt(row.pack_size, 10) || 1));
+        const imageUrl = String(row.image_url || '').trim().slice(0, 1000);
+        const linkUrl = String(row.url || '').trim().slice(0, 1000);
+        const title = String(row.title || '').trim().slice(0, 500);
+
+        // Dedup: ASIN match OR name+variant match.
+        let flavorId = (asin && asinToFlavor[asin]) || nameVariantToFlavor[name.toLowerCase() + '|' + variant] || null;
+
+        if (flavorId) {
+          summary.flavors_existing.push({ row: i + 2, flavor_id: flavorId, name: name || asin });
+        } else {
+          if (!name) { summary.flavors_skipped.push({ row: i + 2, reason: 'asin not found and no flavor_name to create from' }); continue; }
+          const ins = await run(
+            `INSERT INTO fr_flavors (name, kind, variant, image_url, amazon_asin, created_by)
+             VALUES (?,?,?,?,?,?) RETURNING id`,
+            name, kind, variant, listingType === 'single' ? imageUrl : '', listingType === 'single' ? asin : '', req.session.userId
+          );
+          flavorId = ins.lastInsertRowid;
+          summary.flavors_created.push({ row: i + 2, flavor_id: flavorId, name });
+          asinToFlavor[asin] = flavorId;
+          nameVariantToFlavor[name.toLowerCase() + '|' + variant] = flavorId;
+          try { await maybeAutoSchedule(flavorId); } catch {}
+        }
+
+        // Add the sell-link if we have a url/asin and it isn't already present.
+        if (linkUrl || asin) {
+          const aKey = asin ? flavorId + '|A|' + asin : null;
+          const uKey = linkUrl ? flavorId + '|U|' + linkUrl : null;
+          if (!(aKey && linkKeys.has(aKey)) && !(uKey && linkKeys.has(uKey))) {
+            const maxPos = await get('SELECT MAX(position) AS p FROM fr_flavor_links WHERE flavor_id=?', flavorId);
+            const pos = Number(maxPos?.p || -1) + 1;
+            await run(
+              `INSERT INTO fr_flavor_links (flavor_id, channel, url, notes, position, asin, listing_type, image_url, title, pack_size)
+               VALUES (?,?,?,?,?,?,?,?,?,?)`,
+              flavorId, 'Amazon', linkUrl || ('https://www.amazon.com/dp/' + asin), '', pos, asin, listingType, imageUrl, title, packSize
+            );
+            if (aKey) linkKeys.add(aKey);
+            if (uKey) linkKeys.add(uKey);
+            summary.links_added++;
+          }
+        }
+      }
+
+      // ── Reviews sheet ──────────────────────────────────────────────────
+      const seenInBatch = new Set();
+      for (let i = 0; i < rawReviews.length; i++) {
+        const row = xlRemapRow(rawReviews[i]);
+        try {
+          const asin = String(row.asin || '').trim().toUpperCase().slice(0, 20);
+          const name = String(row.flavor_name || '').trim().slice(0, 120);
+          const variant = VARIANTS.includes(String(row.variant || '').trim()) ? String(row.variant).trim() : 'regular';
+
+          // Resolve which flavor this review belongs to: ASIN first, then name+variant.
+          let flavorId = (asin && asinToFlavor[asin]) || nameVariantToFlavor[name.toLowerCase() + '|' + variant] || null;
+          if (!flavorId) { summary.reviews_skipped.push({ row: i + 2, reason: 'no matching flavor (asin/name not in app or this file)' }); continue; }
+
+          const rating = Math.max(0, Math.min(5, parseInt(row.rating, 10) || 0));
+          const title = String(row.title || '').slice(0, 200);
+          const body = String(row.body || '').slice(0, 10000);
+          const reviewer_name = String(row.reviewer_name || '').slice(0, 120);
+          const posted_at = xlDate(row.posted_at);
+          const source = String(row.source || 'Amazon').trim().slice(0, 60) || 'Amazon';
+          const reviewUrl = String(row.url || '').trim().slice(0, 1000);
+          const verified = xlBool(row.verified);
+
+          if (!body && !title) { summary.reviews_skipped.push({ row: i + 2, reason: 'empty review' }); continue; }
+
+          // Strict dedup — same key everywhere else uses.
+          const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+          if (dedupKey) {
+            const bk = flavorId + ':' + dedupKey;
+            if (seenInBatch.has(bk)) { summary.reviews_skipped.push({ row: i + 2, reason: 'duplicate-in-file' }); continue; }
+            const dup = await get('SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1', flavorId, dedupKey);
+            if (dup) { summary.reviews_skipped.push({ row: i + 2, reason: 'duplicate', existing_id: dup.id }); continue; }
+            seenInBatch.add(bk);
+          }
+
+          const sentiment = classifySentiment(rating);
+          const ins = await run(
+            `INSERT INTO fr_reviews
+               (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+            flavorId, source, rating, reviewer_name, title, body, reviewUrl, posted_at, sentiment, dedupKey, req.session.userId
+          );
+          summary.reviews_added.push({ row: i + 2, id: ins.lastInsertRowid, flavor_id: flavorId });
+          if (sentiment === 'negative') { try { await bumpNextCyclePriority(flavorId); } catch {} }
+        } catch (e) {
+          summary.review_errors.push({ row: i + 2, reason: e.message });
+        }
+      }
+
+      res.json({
+        ok: true,
+        counts: {
+          flavors_created: summary.flavors_created.length,
+          flavors_existing: summary.flavors_existing.length,
+          flavors_skipped: summary.flavors_skipped.length,
+          links_added: summary.links_added,
+          reviews_added: summary.reviews_added.length,
+          reviews_skipped: summary.reviews_skipped.length,
+          review_errors: summary.review_errors.length,
+        },
+        detail: summary,
+      });
+    } catch (e) {
+      console.error('[fr] excel-upload failed:', e.message);
       res.status(500).json({ error: e.message });
     }
   });
