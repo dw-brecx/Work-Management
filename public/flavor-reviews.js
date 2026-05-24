@@ -95,6 +95,7 @@
     if (h === '/bulk-import') return { view: 'bulk-import' };
     if (h === '/import')      return { view: 'import' };
     if (h === '/agent')       return { view: 'agent' };
+    if (h === '/excel')       return { view: 'excel' };
     if (h === '/settings')    return { view: 'settings' };
     const m8 = /^\/flavor\/(\d+)\/reviews-import\/?$/.exec(h);
     if (m8) return { view: 'reviews-import', id: Number(m8[1]) };
@@ -200,6 +201,7 @@
           <button class="btn-sec" onclick="window.location.hash='/flavors'">All flavors</button>
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" id="dash-refresh-ai">✨ Refresh AI priority</button>` : ''}
           ${data.ai_enabled ? `<button class="btn-sec btn-ai" onclick="window.location.hash='/agent'">🤖 Smart Import (paste any URL)</button>` : ''}
+          <button class="btn-sec" onclick="window.location.hash='/excel'">📊 Excel import</button>
           <button class="btn-primary" onclick="window.location.hash='/bulk-import'">+ Add flavors</button>
         </div>
       </div>
@@ -423,6 +425,7 @@
           <button class="btn-sec btn-ai" onclick="window.location.hash='/flavor/${f.id}/reviews-import'">✨ Import reviews</button>
           <button class="btn-sec" id="fd-add-review">+ Log one</button>
           <button class="btn-primary" id="fd-new-issue">+ New issue</button>
+          <button class="btn-sec btn-danger" id="fd-delete">Delete flavor</button>
         </div>
       </div>
 
@@ -444,8 +447,27 @@
     $('fd-add-link').addEventListener('click', () => openLinkModal(f.id));
     $('fd-add-review').addEventListener('click', () => openReviewModal(f.id));
     $('fd-new-issue').addEventListener('click', () => openIssueModal(f.id, openBad));
+    $('fd-delete').addEventListener('click', () => deleteFlavor(f));
 
     renderFlavorTab();
+  }
+
+  // Delete a flavor (cascades to its sell-links, reviews, issues, and
+  // scheduled cycles server-side). Two-step confirm because it's
+  // destructive — the count of attached reviews is shown so the user
+  // knows what they're about to lose.
+  async function deleteFlavor(f) {
+    const reviewCount = (f.reviews || []).length;
+    const issueCount = (f.issues || []).length;
+    const extra = (reviewCount || issueCount)
+      ? `\n\nThis also permanently deletes ${reviewCount} review${reviewCount === 1 ? '' : 's'} and ${issueCount} issue${issueCount === 1 ? '' : 's'} attached to it.`
+      : '';
+    if (!confirm(`Delete "${f.name}" (${f.variant.replace('_', '-')})?${extra}\n\nThis cannot be undone.`)) return;
+    try {
+      await apiDel('/api/flavor-reviews/flavors/' + f.id);
+      toast(`Deleted "${f.name}"`, 'ok');
+      goto('/flavors');
+    } catch (e) { toast(e.message, 'err'); }
   }
 
   function renderFlavorTab() {
@@ -1624,6 +1646,222 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     }
   }
 
+  // ── Excel import/export pipeline ───────────────────────────────────────
+  // The "press a button → agent grabs everything → I get an Excel → I upload
+  // it and the app dedup-imports" workflow. Three blocks on one page:
+  //   1. Generate an Excel from a URL or bookmarklet capture (server-side
+  //      best-effort extraction) — OR download a blank template.
+  //   2. A copy-paste prompt for running an EXTERNAL Claude agent (with web
+  //      access) that produces the same Excel format, for when Amazon blocks
+  //      the server.
+  //   3. Upload the (reviewed/edited) Excel → dedup import → summary.
+  const FR_AGENT_PROMPT = `You are a product-data scraper for the syrup brand "Syruvia".
+I will give you ONE Amazon URL. Do all of this:
+
+1. Open the URL. If it's a product page with a flavor-variations widget,
+   enumerate EVERY variation. For each, capture: ASIN, the bare flavor name
+   (e.g. "Blueberry" — strip brand/size/"syrup"), variant (regular or
+   sugar_free), listing type (single / with_pump / 4_pack / 6_pack / other),
+   pack size, hero image URL, the product URL, and the full Amazon title.
+2. For each variation (or the single product), open its reviews page
+   (amazon.com/product-reviews/<ASIN>/) and collect EVERY review across all
+   pages: rating (1-5), title, body, reviewer name, date (YYYY-MM-DD),
+   and whether it's a Verified Purchase.
+3. Produce an .xlsx workbook with exactly two sheets:
+   • "Flavors" with columns: asin, flavor_name, variant, kind, listing_type,
+     pack_size, image_url, url, title
+   • "Reviews" with columns: asin, flavor_name, variant, source, rating,
+     title, body, reviewer_name, posted_at, verified, url
+   Put the ASIN on every review row so it links back to its flavor.
+4. Don't invent data. Leave a cell blank if you don't know it.
+
+The URL is: `;
+
+  async function renderExcel() {
+    pageShell(`
+      <div class="fr-topbar">
+        ${backChip('/', 'Dashboard')}
+        ${breadcrumb([{ label: 'Dashboard', href: '/' }, { label: 'Excel import' }])}
+      </div>
+
+      <div class="fr-header">
+        <div class="fr-title-block">
+          <h1 class="fr-title"><span class="fr-emoji">📊</span> Excel import</h1>
+          <p class="fr-lede">Grab all variations + reviews for a product into one spreadsheet, review/edit it, then upload — the app adds only what's new. It dedups flavors by ASIN (or flavor name + variant) and reviews by reviewer + date + text, so re-uploading the same or an updated file is always safe.</p>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:820px">
+        <div class="card-head"><h3>1 · Get a spreadsheet</h3></div>
+        <div class="form-row">
+          <label class="fr-label">Generate from an Amazon URL (or a bookmarklet capture)</label>
+          <input type="url" id="xl-url" placeholder="https://www.amazon.com/dp/B0…">
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">Pulls all variations and their reviews into a filled .xlsx. Amazon often blocks the server — if so, use the bookmarklet then pick the capture below, or use the external-agent prompt.</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary" id="xl-generate">⚙️ Generate &amp; download</button>
+          <button class="btn-sec" id="xl-template">Download blank template</button>
+          <button class="btn-sec" onclick="window.location.hash='/settings'">📥 Set up bookmarklet</button>
+        </div>
+        <div id="xl-inbox" style="margin-top:14px"></div>
+        <div id="xl-gen-status"></div>
+
+        <details style="margin-top:16px">
+          <summary style="cursor:pointer;font-size:12.5px;color:#7c3aed;font-weight:600">🤖 Use an external Claude agent instead (copy prompt)</summary>
+          <div style="margin-top:10px;font-size:12px;color:var(--text2)">
+            Paste this into any Claude agent that has web access (e.g. Claude with tools, or a desktop agent). It produces an .xlsx in exactly the format this page imports. Then upload the result below.
+            <div style="position:relative;margin-top:8px">
+              <textarea id="xl-prompt" readonly style="width:100%;min-height:200px;font-family:ui-monospace,Menlo,monospace;font-size:11px;background:var(--bg2)">${escapeHtml(FR_AGENT_PROMPT)}</textarea>
+              <button class="btn-tiny" id="xl-copy-prompt" style="position:absolute;top:8px;right:8px">Copy</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card" style="max-width:820px;margin-top:16px">
+        <div class="card-head"><h3>2 · Upload &amp; import</h3></div>
+        <p style="font-size:12px;color:var(--text2);margin:0 0 12px">Upload the .xlsx (or .csv) with <strong>Flavors</strong> and <strong>Reviews</strong> sheets. We'll add only rows that aren't already in the app.</p>
+        <div id="xl-drop" style="border:2px dashed var(--border);border-radius:12px;padding:28px;text-align:center;cursor:pointer;transition:border-color .15s">
+          <div style="font-size:28px">📊</div>
+          <div style="font-size:13px;font-weight:600;margin-top:6px">Click to choose a file, or drag it here</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:3px">.xlsx or .csv · up to 25 MB</div>
+          <input type="file" id="xl-file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" style="display:none">
+        </div>
+        <div id="xl-upload-status"></div>
+      </div>
+    `);
+
+    $('xl-template').addEventListener('click', () => downloadFile('/api/flavor-reviews/import/excel-template', 'GET'));
+    $('xl-generate').addEventListener('click', () => generateExcel($('xl-url').value.trim()));
+    $('xl-copy-prompt').addEventListener('click', () => {
+      const ta = $('xl-prompt'); ta.select();
+      try { document.execCommand('copy'); toast('Prompt copied', 'ok'); } catch { toast('Select + copy manually', 'err'); }
+    });
+
+    const drop = $('xl-drop'); const fileInput = $('xl-file');
+    drop.addEventListener('click', () => fileInput.click());
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.style.borderColor = 'var(--accent)'; });
+    drop.addEventListener('dragleave', () => { drop.style.borderColor = 'var(--border)'; });
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault(); drop.style.borderColor = 'var(--border)';
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) uploadExcel(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadExcel(fileInput.files[0]); });
+
+    renderExcelInbox();
+  }
+
+  async function renderExcelInbox() {
+    const host = $('xl-inbox');
+    if (!host) return;
+    try {
+      const { items } = await apiGet('/api/flavor-reviews/scraper/inbox');
+      if (!items.length) { host.innerHTML = ''; return; }
+      host.innerHTML = `
+        <div style="font-size:11.5px;color:var(--text3);margin-bottom:6px">Or generate from a bookmarklet capture:</div>
+        ${items.map(it => `
+          <div style="display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:5px">
+            <span class="pill" style="background:${it.kind === 'reviews' ? 'var(--info-bg)' : 'var(--ok-bg)'};color:${it.kind === 'reviews' ? 'var(--info)' : 'var(--ok)'}">${it.kind}</span>
+            <div style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(it.page_title || it.source_url || '(no title)')}</div>
+            <button class="btn-tiny btn-primary" onclick="FR.generateExcelFromInbox(${it.id})">⚙️ Generate →</button>
+          </div>`).join('')}`;
+    } catch { host.innerHTML = ''; }
+  }
+
+  // Trigger a browser download of a GET or POST endpoint that returns a file.
+  async function downloadFile(url, method, body) {
+    try {
+      const r = await fetch(url, {
+        method: method || 'GET',
+        credentials: 'same-origin',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (r.status === 401) { location.href = '/login.html'; return; }
+      if (!r.ok) {
+        let msg = 'Download failed';
+        try { const j = await r.json(); msg = j.error || (j.needs_capture ? j.message : msg); } catch {}
+        throw new Error(msg);
+      }
+      const blob = await r.blob();
+      const cd = r.headers.get('Content-Disposition') || '';
+      const m = /filename="?([^"]+)"?/.exec(cd);
+      const filename = m ? m[1] : 'download.xlsx';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      return {
+        flavors: r.headers.get('X-FR-Flavors'),
+        reviews: r.headers.get('X-FR-Reviews'),
+      };
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  async function generateExcel(url) {
+    if (!url) return toast('Paste a URL first (or generate from a capture below)', 'err');
+    const status = $('xl-gen-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Fetching + extracting variations and reviews… 20–60s for Amazon.</div></div>`;
+    $('xl-generate').disabled = true;
+    try {
+      const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { url });
+      status.innerHTML = `<div class="card" style="border-color:#bbf7d0;background:var(--ok-bg);margin-top:12px;font-size:12.5px">✓ Downloaded — ${counts.flavors || 0} flavor row(s), ${counts.reviews || 0} review row(s). Review/edit it, then upload below.</div>`;
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px;font-size:12.5px">${escapeHtml(e.message)}</div>`;
+    } finally {
+      $('xl-generate').disabled = false;
+    }
+  }
+
+  async function uploadExcel(file) {
+    const status = $('xl-upload-status');
+    status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">📊 Parsing ${escapeHtml(file.name)} and importing (dedup as we go)…</div></div>`;
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/flavor-reviews/import/excel-upload', { method: 'POST', credentials: 'same-origin', body: fd });
+      if (r.status === 401) { location.href = '/login.html'; return; }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Upload failed');
+      renderExcelResult(data);
+    } catch (e) {
+      status.innerHTML = `<div class="card" style="border-color:#fecaca;background:var(--danger-bg);margin-top:12px;color:var(--danger)">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function renderExcelResult(data) {
+    const c = data.counts || {};
+    const d = data.detail || {};
+    const skippedFlavors = (d.flavors_skipped || []);
+    const skippedReviews = (d.reviews_skipped || []);
+    const errs = (d.review_errors || []);
+    $('xl-upload-status').innerHTML = `
+      <div class="card" style="margin-top:14px">
+        <div class="card-head"><h3>✓ Import complete</h3></div>
+        <div class="import-result">
+          <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${c.flavors_created || 0}</div><div class="l">Flavors created</div></div>
+          <div class="pill-stat" style="border-color:#e2e8f0;background:var(--bg2)"><div class="v">${c.flavors_existing || 0}</div><div class="l">Already existed</div></div>
+          <div class="pill-stat" style="border-color:#dbeafe;background:var(--info-bg)"><div class="v" style="color:var(--info)">${c.links_added || 0}</div><div class="l">Sell-links added</div></div>
+          <div class="pill-stat" style="border-color:#bbf7d0;background:var(--ok-bg)"><div class="v" style="color:var(--ok)">${c.reviews_added || 0}</div><div class="l">Reviews added</div></div>
+          <div class="pill-stat" style="border-color:#fde68a;background:var(--warn-bg)"><div class="v" style="color:var(--warn)">${c.reviews_skipped || 0}</div><div class="l">Reviews skipped (dup)</div></div>
+          ${(c.review_errors || 0) ? `<div class="pill-stat" style="border-color:#fecaca;background:var(--danger-bg)"><div class="v" style="color:var(--danger)">${c.review_errors}</div><div class="l">Errors</div></div>` : ''}
+        </div>
+        ${(skippedFlavors.length || skippedReviews.length || errs.length) ? `
+          <details style="margin-top:14px">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text3)">Details on skipped / errored rows</summary>
+            <pre style="margin-top:8px;font-size:11px;background:var(--bg2);padding:10px;border-radius:8px;white-space:pre-wrap;max-height:280px;overflow:auto">${escapeHtml(JSON.stringify({ flavors_skipped: skippedFlavors, reviews_skipped: skippedReviews, review_errors: errs }, null, 2))}</pre>
+          </details>` : ''}
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button class="btn-primary" onclick="window.location.hash='/flavors'">View all flavors →</button>
+          <button class="btn-sec" onclick="window.location.hash='/excel';location.reload()">Import another file</button>
+        </div>
+      </div>`;
+    toast(`Added ${c.flavors_created || 0} flavors, ${c.reviews_added || 0} reviews`, 'ok');
+  }
+
   // ── Reviews import (fetch URL or paste) ────────────────────────────────
   let RVI_STATE = null;
 
@@ -2479,6 +2717,16 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     refreshInbox(hostId, kind) { renderInboxPanel(hostId, kind); },
     refreshAgentInbox() { renderAgentInbox(); },
     runAgentFromInbox(inboxId) { runAgent({ inbox_id: inboxId }); },
+    async generateExcelFromInbox(inboxId) {
+      const status = $('xl-gen-status');
+      if (status) status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Extracting from capture + building Excel…</div></div>`;
+      try {
+        const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { inbox_id: inboxId });
+        if (status) status.innerHTML = `<div class="card" style="border-color:#bbf7d0;background:var(--ok-bg);margin-top:12px;font-size:12.5px">✓ Downloaded — ${counts.flavors || 0} flavor row(s), ${counts.reviews || 0} review row(s). Review/edit, then upload below.</div>`;
+      } catch (e) {
+        if (status) status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px;font-size:12.5px">${escapeHtml(e.message)}</div>`;
+      }
+    },
     async pickInbox(id, kind) {
       // Called from inside the /import or /flavor/:id/reviews-import flow.
       // Parse the capture, then jump into the same approval grid as paste-mode.
@@ -2587,6 +2835,7 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
     if (r.view === 'bulk-import')    return renderBulkImport();
     if (r.view === 'import')         return renderImport();
     if (r.view === 'agent')          return renderAgent();
+    if (r.view === 'excel')          return renderExcel();
     if (r.view === 'reviews-import') return renderReviewsImport(r.id);
     if (r.view === 'settings')       return renderSettings();
     return renderDashboard();
