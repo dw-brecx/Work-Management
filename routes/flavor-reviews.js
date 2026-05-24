@@ -14,10 +14,19 @@
 module.exports = function attach(app, deps) {
   const { get, all, run, requireAuth, pool } = deps;
   const { randomBytes } = require('crypto');
-  const XLSX = require('xlsx');
   const multer = require('multer');
   // Excel/CSV uploads are parsed in memory (no temp files to clean up).
   const xlsxUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+  // xlsx (SheetJS) is loaded lazily so a missing dependency degrades to just
+  // the Excel endpoints erroring — it never crashes the whole route mount or
+  // the server at startup. (multer was already a dependency, so it's eager.)
+  let _XLSX = null;
+  function getXLSX() {
+    if (_XLSX) return _XLSX;
+    try { _XLSX = require('xlsx'); }
+    catch (e) { throw new Error('Excel support is unavailable — the "xlsx" package is not installed on the server (run npm install).'); }
+    return _XLSX;
+  }
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
   const aiReady = !!ANTHROPIC_API_KEY;
 
@@ -2476,6 +2485,7 @@ module.exports = function attach(app, deps) {
   }
 
   function buildWorkbook({ flavors, reviews, withInstructions }) {
+    const XLSX = getXLSX();
     const wb = XLSX.utils.book_new();
     if (withInstructions) {
       const instr = XLSX.utils.aoa_to_sheet([
@@ -2637,6 +2647,7 @@ module.exports = function attach(app, deps) {
   app.post('/api/flavor-reviews/import/excel-upload', requireAuth, xlsxUpload.single('file'), async (req, res) => {
     try {
       if (!req.file || !req.file.buffer) return res.status(400).json({ error: 'No file uploaded.' });
+      const XLSX = getXLSX();
       let wb;
       try { wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true }); }
       catch (e) { return res.status(400).json({ error: 'Could not read that file as a spreadsheet: ' + e.message }); }
