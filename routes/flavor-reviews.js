@@ -1693,7 +1693,7 @@ module.exports = function attach(app, deps) {
     "You extract product reviews from Amazon / Walmart / TikTok pages or pasted text. " +
     "Return ONLY this JSON: { \"reviews\": [{ \"rating\": <1-5 or null>, \"title\": \"...\", " +
     "\"body\": \"...\", \"reviewer_name\": \"...\", \"posted_at\": \"YYYY-MM-DD or empty\", " +
-    "\"verified\": true/false }] }\n\n" +
+    "\"verified\": true/false, \"flavor\": \"...\" }] }\n\n" +
     "Rules:\n" +
     "- Extract every distinct review you can identify. Don't combine reviews.\n" +
     "- rating: integer 1-5 if visible (\"★★★★☆\" = 4). null if not shown.\n" +
@@ -1701,6 +1701,11 @@ module.exports = function attach(app, deps) {
     "Empty string otherwise. Today is " + todayUtc() + ".\n" +
     "- reviewer_name: visible username or display name. Empty if anonymous.\n" +
     "- verified: true if marked \"Verified Purchase\", else false.\n" +
+    "- flavor: VERY IMPORTANT on parent listings that span multiple flavors. Each Amazon review " +
+    "usually shows which variation it's for, e.g. a line like \"Flavor Name: Blueberry\", " +
+    "\"Color: Caramel\", \"Style: Vanilla\", or \"Size: ...\". Put the bare flavor there " +
+    "(\"Blueberry\", \"Caramel\") — strip the label and any size/pack words. Empty string if the " +
+    "review doesn't show a variation.\n" +
     "- DO NOT invent reviews. If the content has no recognizable reviews, return { \"reviews\": [] }.\n" +
     "- DO NOT include code fences, markdown, or any commentary.";
 
@@ -1715,6 +1720,7 @@ module.exports = function attach(app, deps) {
         reviewer_name: String(r.reviewer_name || '').slice(0, 120),
         posted_at: /^\d{4}-\d{2}-\d{2}$/.test(r.posted_at || '') ? r.posted_at : '',
         verified: !!r.verified,
+        flavor: String(r.flavor || '').slice(0, 120),
       })).filter(r => r.body || r.title) : [];
       return { reviews };
     } catch (e) {
@@ -2653,10 +2659,23 @@ module.exports = function attach(app, deps) {
       if (!aiReady) return res.status(503).json({ error: 'AI disabled — ANTHROPIC_API_KEY not set on the server.' });
       const url = String(req.body?.url || '').trim();
       const inboxId = Number(req.body?.inbox_id || 0);
-      if (!url && !inboxId) return res.status(400).json({ error: 'Provide a URL or pick an inbox capture.' });
+      const mainListingId = Number(req.body?.main_listing_id || 0);
+      // Variant (reg/SF) to stamp on every review row. Comes from the chosen
+      // main listing, or an explicit param. A parent listing is all one type;
+      // the flavor varies per review (captured from each review's variation).
+      let variantHint = ['regular', 'sugar_free'].includes(req.body?.variant) ? req.body.variant : '';
 
       let urlToUse = url;
       let inboxRow = null;
+      if (mainListingId) {
+        const ml = await get('SELECT * FROM fr_main_listings WHERE id=?', mainListingId);
+        if (ml) {
+          if (!variantHint) variantHint = ml.variant;
+          if (!urlToUse) urlToUse = ml.url || (ml.asin ? `https://www.amazon.com/product-reviews/${ml.asin}/` : '');
+        }
+      }
+      if (!urlToUse && !inboxId) return res.status(400).json({ error: 'Provide a URL, a main listing, or an inbox capture.' });
+
       if (inboxId) {
         inboxRow = await get('SELECT id, html, source_url, kind FROM fr_scraper_inbox WHERE id=?', inboxId);
         if (!inboxRow) return res.status(404).json({ error: 'Inbox capture not found' });
@@ -2667,6 +2686,22 @@ module.exports = function attach(app, deps) {
 
       const flavorsOut = [];
       const reviewsOut = [];
+      // Push extracted reviews into the Excel rows. flavor_name comes from
+      // EACH review's variation (parent listings span flavors); variant comes
+      // from the listing (variantHint). That's the flavor + type matching key.
+      const pushReviews = (reviews, asin, srcUrl) => {
+        for (const rv of (reviews || [])) {
+          reviewsOut.push({
+            asin: asin || '',
+            flavor_name: rv.flavor || '',
+            variant: variantHint || '',
+            source: 'Amazon',
+            rating: rv.rating || '', title: rv.title || '', body: rv.body || '',
+            reviewer_name: rv.reviewer_name || '', posted_at: rv.posted_at || '',
+            verified: rv.verified ? 'TRUE' : 'FALSE', url: srcUrl || urlToUse,
+          });
+        }
+      };
 
       if (expectedKind === 'reviews') {
         let extraction = null;
@@ -2675,14 +2710,7 @@ module.exports = function attach(app, deps) {
           const got = urlToUse ? await fetchAndExtract(urlToUse, 'reviews') : null;
           if (got) extraction = got.extraction;
         }
-        for (const rv of (extraction?.reviews || [])) {
-          reviewsOut.push({
-            asin: detected.asin, flavor_name: '', variant: '', source: 'Amazon',
-            rating: rv.rating || '', title: rv.title || '', body: rv.body || '',
-            reviewer_name: rv.reviewer_name || '', posted_at: rv.posted_at || '',
-            verified: rv.verified ? 'TRUE' : 'FALSE', url: urlToUse,
-          });
-        }
+        pushReviews(extraction?.reviews, detected.asin, urlToUse);
       } else {
         let extraction = null;
         if (inboxRow) { try { extraction = await extractFromHtml(inboxRow.html, urlToUse, 'product'); } catch {} }
@@ -2693,7 +2721,7 @@ module.exports = function attach(app, deps) {
         for (const v of (extraction?.variations || [])) {
           if (!v.asin && detected.asin) v.asin = detected.asin;
           flavorsOut.push({
-            asin: v.asin || '', flavor_name: v.flavor_name || '', variant: 'regular',
+            asin: v.asin || '', flavor_name: v.flavor_name || '', variant: variantHint || 'regular',
             kind: 'coffee', listing_type: v.listing_type || 'single', pack_size: v.pack_size || 1,
             image_url: v.image_url || '', url: urlToUse, title: v.title || '',
           });
@@ -2703,14 +2731,7 @@ module.exports = function attach(app, deps) {
           const reviewsUrl = 'https://www.amazon.com/product-reviews/' + detected.asin + '/';
           try {
             const got = await fetchAndExtract(reviewsUrl, 'reviews');
-            for (const rv of (got?.extraction?.reviews || [])) {
-              reviewsOut.push({
-                asin: detected.asin, flavor_name: flavorsOut[0]?.flavor_name || '', variant: '',
-                source: 'Amazon', rating: rv.rating || '', title: rv.title || '', body: rv.body || '',
-                reviewer_name: rv.reviewer_name || '', posted_at: rv.posted_at || '',
-                verified: rv.verified ? 'TRUE' : 'FALSE', url: reviewsUrl,
-              });
-            }
+            pushReviews(got?.extraction?.reviews, detected.asin, reviewsUrl);
           } catch {}
         }
       }

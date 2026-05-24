@@ -1479,7 +1479,8 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         </div>
         <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
           <button class="btn-primary btn-tiny ml-save">Save</button>
-          <button class="btn-sec btn-tiny ml-grab" ${l.asin || l.url ? '' : 'disabled title="Add an ASIN or URL first"'}>🤖 Grab reviews</button>
+          <button class="btn-sec btn-tiny ml-excel" ${l.asin || l.url ? '' : 'disabled title="Add an ASIN or URL first"'}>📊 Grab reviews → Excel</button>
+          <button class="btn-sec btn-tiny ml-grab" ${l.asin || l.url ? '' : 'disabled title="Add an ASIN or URL first"'}>🤖 Open in agent</button>
           ${reviewsUrl ? `<a href="${escapeAttr(reviewsUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--text3);text-decoration:none">Reviews page ↗</a>` : ''}
           <span class="ml-status" style="font-size:11px;color:var(--text3)"></span>
         </div>
@@ -1517,6 +1518,18 @@ Strawberry	fruit	regular	Summer push planned	Amazon|https://amazon.com/strawberr
         if (!url) return toast('Add an ASIN or URL first', 'err');
         AGENT_PREFILL_URL = url;
         goto('/agent');
+      });
+      card.querySelector('.ml-excel').addEventListener('click', async (ev) => {
+        ev.target.disabled = true;
+        statusEl.textContent = '⚙️ Grabbing reviews → building Excel… (Amazon may block; 20–60s)';
+        try {
+          // Pass the listing id so the server stamps the right type (reg/SF)
+          // on every review row. flavor comes from each review's variation.
+          const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { main_listing_id: id });
+          statusEl.textContent = `✓ Downloaded ${counts.reviews || 0} review row(s). Review/edit, then upload on the Excel page.`;
+        } catch (e) {
+          statusEl.innerHTML = `${escapeHtml(e.message)} — <a onclick="window.location.hash='/settings'" style="color:var(--accent);cursor:pointer">use the bookmarklet</a> on the reviews page, then generate from the inbox on the <a onclick="window.location.hash='/excel'" style="color:var(--accent);cursor:pointer">Excel page</a>.`;
+        } finally { ev.target.disabled = false; }
       });
     });
   }
@@ -1907,7 +1920,15 @@ The URL is: `;
         <div class="form-row">
           <label class="fr-label">Generate from an Amazon URL (or a bookmarklet capture)</label>
           <input type="url" id="xl-url" placeholder="https://www.amazon.com/dp/B0…">
-          <div style="font-size:11px;color:var(--text3);margin-top:5px">Pulls all variations and their reviews into a filled .xlsx. Amazon often blocks the server — if so, use the bookmarklet then pick the capture below, or use the external-agent prompt.</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">Pulls all variations and their reviews into a filled .xlsx, with each review tagged by its flavor (from the variation) + the type you pick below. Amazon often blocks the server — if so, use the bookmarklet then pick the capture below, or the external-agent prompt.</div>
+        </div>
+        <div class="form-row" style="max-width:260px">
+          <label class="fr-label">Type for these reviews</label>
+          <select id="xl-variant">
+            <option value="regular">Regular</option>
+            <option value="sugar_free">Sugar-free</option>
+          </select>
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">A parent listing is all one type. The flavor is read per-review from each variation. (Or just grab straight from <a onclick="window.location.hash='/listings'" style="color:var(--accent);cursor:pointer">Main listings</a> — the type is set there.)</div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn-primary" id="xl-generate">⚙️ Generate &amp; download</button>
@@ -2018,7 +2039,8 @@ The URL is: `;
     status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Fetching + extracting variations and reviews… 20–60s for Amazon.</div></div>`;
     $('xl-generate').disabled = true;
     try {
-      const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { url });
+      const variant = ($('xl-variant') && $('xl-variant').value) || 'regular';
+      const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { url, variant });
       status.innerHTML = `<div class="card" style="border-color:#bbf7d0;background:var(--ok-bg);margin-top:12px;font-size:12.5px">✓ Downloaded — ${counts.flavors || 0} flavor row(s), ${counts.reviews || 0} review row(s). Review/edit it, then upload below.</div>`;
     } catch (e) {
       status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px;font-size:12.5px">${escapeHtml(e.message)}</div>`;
@@ -2932,7 +2954,8 @@ The URL is: `;
       const status = $('xl-gen-status');
       if (status) status.innerHTML = `<div class="ai-panel" style="margin-top:12px"><div class="ai-body">⚙️ Extracting from capture + building Excel…</div></div>`;
       try {
-        const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { inbox_id: inboxId });
+        const variant = ($('xl-variant') && $('xl-variant').value) || 'regular';
+        const counts = await downloadFile('/api/flavor-reviews/import/excel-generate', 'POST', { inbox_id: inboxId, variant });
         if (status) status.innerHTML = `<div class="card" style="border-color:#bbf7d0;background:var(--ok-bg);margin-top:12px;font-size:12.5px">✓ Downloaded — ${counts.flavors || 0} flavor row(s), ${counts.reviews || 0} review row(s). Review/edit, then upload below.</div>`;
       } catch (e) {
         if (status) status.innerHTML = `<div class="card" style="border-color:#fde68a;background:var(--warn-bg);margin-top:12px;font-size:12.5px">${escapeHtml(e.message)}</div>`;
