@@ -21,6 +21,10 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  // When this app runs embedded in an iframe (inside the main shell), send the
+  // TOP window to login on auth failure — not the iframe (which would show a
+  // tiny login form inside the page). Same-origin, so window.top is reachable.
+  const gotoLogin = () => { try { (window.top || window).location.href = '/login.html'; } catch { window.location.href = '/login.html'; } };
   const escapeHtml = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -29,7 +33,7 @@
   // ── API helpers ────────────────────────────────────────────────────────
   async function apiGet(p) {
     const r = await fetch(p, { credentials: 'same-origin' });
-    if (r.status === 401) { location.href = '/login.html'; throw new Error('unauth'); }
+    if (r.status === 401) { gotoLogin(); throw new Error('unauth'); }
     if (!r.ok) {
       let msg = 'GET ' + p + ' failed';
       try { const j = await r.json(); msg = j.error || msg; } catch {}
@@ -44,7 +48,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: body == null ? undefined : JSON.stringify(body),
     });
-    if (r.status === 401) { location.href = '/login.html'; throw new Error('unauth'); }
+    if (r.status === 401) { gotoLogin(); throw new Error('unauth'); }
     let data = {};
     try { data = await r.json(); } catch {}
     if (!r.ok) throw new Error(data.error || (method + ' ' + p + ' failed'));
@@ -73,11 +77,11 @@
   async function checkAuth() {
     try {
       const me = await fetch('/api/auth/me', { credentials: 'same-origin' });
-      if (!me.ok) { location.href = '/login.html'; return false; }
+      if (!me.ok) { gotoLogin(); return false; }
       CURRENT_USER = await me.json();
       return true;
     } catch {
-      location.href = '/login.html'; return false;
+      gotoLogin(); return false;
     }
   }
 
@@ -2177,7 +2181,7 @@ The URL is: `;
         headers: body ? { 'Content-Type': 'application/json' } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
-      if (r.status === 401) { location.href = '/login.html'; return; }
+      if (r.status === 401) { gotoLogin(); return; }
       if (!r.ok) {
         let msg = 'Download failed';
         try { const j = await r.json(); msg = j.error || (j.needs_capture ? j.message : msg); } catch {}
@@ -2224,7 +2228,7 @@ The URL is: `;
       const fd = new FormData();
       fd.append('file', file);
       const r = await fetch('/api/flavor-reviews/import/excel-upload', { method: 'POST', credentials: 'same-origin', body: fd });
-      if (r.status === 401) { location.href = '/login.html'; return; }
+      if (r.status === 401) { gotoLogin(); return; }
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || 'Upload failed');
       renderExcelResult(data);
