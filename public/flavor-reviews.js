@@ -685,8 +685,11 @@
           <span class="v"><span class="pill status-${escapeAttr(c.status)}">${escapeHtml(c.status)}</span></span>
         </div>
         ${tix(c) ? `<div style="font-size:11px;color:var(--text3);margin:-3px 0 7px">🎫 ${tix(c)}</div>` : ''}
-      `).join('') : '<div style="font-size:12px;color:var(--text3)">No upcoming review days. Add this flavor to a date on the calendar.</div>'}
-      <button class="btn-tiny" style="margin-top:6px" onclick="window.location.hash='/calendar'">📅 Open calendar</button>
+      `).join('') : '<div style="font-size:12px;color:var(--text3)">No upcoming review days yet.</div>'}
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn-tiny btn-primary" onclick="FR.scheduleFlavor(${f.id})">+ Schedule date</button>
+        <button class="btn-tiny" onclick="window.location.hash='/calendar'">📅 Calendar</button>
+      </div>
     </div>
     ${history.length ? `<div class="side-card">
       <h4>Review history</h4>
@@ -1018,6 +1021,7 @@
           <p class="fr-lede">Pick a date to schedule the week's flavors (up to ~${escapeHtml(String(SETTINGS_CACHE?.weekly_cap || 5))}, in order). Each flavor spawns a gather-reviews ticket and a product-check ticket. Click any day to schedule or manage it.</p>
         </div>
         <div class="fr-header-actions">
+          <button class="btn-sec btn-danger" onclick="FR.clearSchedule()">🗑 Clear all scheduled</button>
           <button class="btn-primary" onclick="FR.openScheduleModal('${today}')">+ Schedule review day</button>
         </div>
       </div>
@@ -1050,6 +1054,31 @@
     return { start: iso(monday), end: iso(sunday) };
   }
 
+  // Fetch the flavors already scheduled in the ISO week containing `dateIso`
+  // (a week can straddle two months, so fetch both). Used to show "what's
+  // already on this week" while picking a date.
+  async function weekScheduleInfo(dateIso) {
+    const wb = isoWeekBoundsClient(dateIso);
+    let list = [];
+    try {
+      const months = [...new Set([wb.start.slice(0, 7), wb.end.slice(0, 7)])];
+      const fetched = [];
+      for (const mo of months) { const c = await apiGet('/api/flavor-reviews/cycles?month=' + mo); fetched.push(...c); }
+      list = fetched.filter(c => c.scheduled_for >= wb.start && c.scheduled_for <= wb.end && c.status !== 'skipped');
+    } catch {}
+    return { wb, list };
+  }
+
+  function weekListHtml(list) {
+    if (!list.length) return '<div class="sched-week-empty">Nothing scheduled this week yet.</div>';
+    const byDay = {};
+    for (const c of list) (byDay[c.scheduled_for] = byDay[c.scheduled_for] || []).push(c);
+    return Object.keys(byDay).sort().map(d =>
+      `<div class="weekday"><span class="weekday-date">${escapeHtml(prettyDate(d))}</span>${byDay[d].sort((a, b) => (a.position - b.position) || (a.id - b.id)).map(c =>
+        `<span class="pill status-${escapeAttr(c.status)} weekflav">${escapeHtml(c.flavor_name)}</span>`).join('')}</div>`
+    ).join('');
+  }
+
   // One option per flavor NAME (the flavor is the unit). Representative id =
   // the regular record if present, else the sugar-free one. Active only.
   function flavorNameOptions() {
@@ -1076,10 +1105,6 @@
     const opts = flavorNameOptions();
     const wb = isoWeekBoundsClient(dateIso);
     let weekCount = 0;
-    try {
-      const cyc = await apiGet('/api/flavor-reviews/cycles?month=' + dateIso.slice(0, 7));
-      weekCount = cyc.filter(c => c.scheduled_for >= wb.start && c.scheduled_for <= wb.end && c.status !== 'skipped').length;
-    } catch {}
     const selected = [];
     const m = modal(`
       <h3>Schedule review day · ${escapeHtml(prettyDate(dateIso))}</h3>
@@ -1088,6 +1113,7 @@
         <input type="date" id="sch-date" value="${escapeAttr(dateIso)}">
       </div>
       <div id="sch-cap" class="sched-cap"></div>
+      <div class="sched-week-wrap"><div class="fr-label" style="margin-bottom:5px">Already scheduled this week</div><div id="sch-week" class="sched-week">Loading…</div></div>
       <div class="sched-grid">
         <div>
           <input type="text" id="sch-search" placeholder="Search flavors to add…">
@@ -1109,8 +1135,16 @@
     const availEl = m.el.querySelector('#sch-avail');
     const selEl = m.el.querySelector('#sch-selected');
     const capEl = m.el.querySelector('#sch-cap');
+    const weekEl = m.el.querySelector('#sch-week');
     const searchEl = m.el.querySelector('#sch-search');
     const dateEl = m.el.querySelector('#sch-date');
+    async function refreshWeek() {
+      const info = await weekScheduleInfo(dateIso);
+      wb.start = info.wb.start; wb.end = info.wb.end;
+      weekCount = info.list.length;
+      weekEl.innerHTML = weekListHtml(info.list);
+      renderCap();
+    }
     function renderCap() {
       const total = weekCount + selected.length;
       const over = total > cap;
@@ -1147,16 +1181,11 @@
       else if (rm) { const i = Number(rm.dataset.rm); selected.splice(i, 1); renderAvail(); renderSel(); }
     });
     searchEl.addEventListener('input', renderAvail);
-    dateEl.addEventListener('change', async () => {
+    dateEl.addEventListener('change', () => {
       const nd = dateEl.value;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(nd)) return;
       dateIso = nd;
-      const b = isoWeekBoundsClient(nd); wb.start = b.start; wb.end = b.end;
-      try {
-        const cyc = await apiGet('/api/flavor-reviews/cycles?month=' + nd.slice(0, 7));
-        weekCount = cyc.filter(c => c.scheduled_for >= wb.start && c.scheduled_for <= wb.end && c.status !== 'skipped').length;
-      } catch {}
-      renderCap();
+      refreshWeek();
     });
     m.el.querySelector('#sch-cancel').addEventListener('click', m.close);
     m.el.querySelector('#sch-save').addEventListener('click', async () => {
@@ -1174,7 +1203,63 @@
         else renderCalendar(dateIso.slice(0, 7));
       } catch (e) { toast(e.message, 'err'); }
     });
-    renderAvail(); renderSel();
+    renderAvail(); renderSel(); refreshWeek();
+  }
+
+  // Schedule a SINGLE flavor onto a date, straight from its detail page.
+  // Shows the week's existing review days, then creates the cycle + the two
+  // tickets via the same /review-days endpoint.
+  async function openFlavorScheduleModal(flavorId, flavorName) {
+    if (!SETTINGS_CACHE) SETTINGS_CACHE = await apiGet('/api/flavor-reviews/settings').catch(() => null);
+    const cap = Number(SETTINGS_CACHE?.weekly_cap || 5);
+    let dateIso = todayUtc();
+    const wb = isoWeekBoundsClient(dateIso);
+    const m = modal(`
+      <h3>Schedule a review date · ${escapeHtml(flavorName || '')}</h3>
+      <div class="form-row" style="max-width:220px">
+        <label class="fr-label">Review date</label>
+        <input type="date" id="fsch-date" value="${escapeAttr(dateIso)}">
+      </div>
+      <div id="fsch-cap" class="sched-cap"></div>
+      <div class="sched-week-wrap"><div class="fr-label" style="margin-bottom:5px">Already scheduled this week</div><div id="fsch-week" class="sched-week">Loading…</div></div>
+      <label style="display:flex;gap:7px;align-items:center;font-size:12px;margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="fsch-tickets" checked> Create gather-reviews + product-check tickets
+      </label>
+      <div class="modal-actions">
+        <button class="btn-sec" id="fsch-cancel">Cancel</button>
+        <button class="btn-primary" id="fsch-save">Schedule</button>
+      </div>
+    `);
+    const capEl = m.el.querySelector('#fsch-cap');
+    const weekEl = m.el.querySelector('#fsch-week');
+    const dateEl = m.el.querySelector('#fsch-date');
+    async function refresh() {
+      const info = await weekScheduleInfo(dateIso);
+      wb.start = info.wb.start; wb.end = info.wb.end;
+      const total = info.list.length;
+      const over = total >= cap;
+      capEl.className = 'sched-cap' + (over ? ' over' : '');
+      capEl.innerHTML = `Week ${escapeHtml(prettyDate(wb.start))} – ${escapeHtml(prettyDate(wb.end))} · <strong>${total}</strong>/${cap} flavors${total > cap ? ' <span class="sched-over">— over the weekly cap</span>' : ''}`;
+      weekEl.innerHTML = weekListHtml(info.list);
+    }
+    dateEl.addEventListener('change', () => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateEl.value)) return;
+      dateIso = dateEl.value; refresh();
+    });
+    m.el.querySelector('#fsch-cancel').addEventListener('click', m.close);
+    m.el.querySelector('#fsch-save').addEventListener('click', async () => {
+      try {
+        const r = await apiPost('/api/flavor-reviews/review-days', {
+          date: dateIso, flavor_ids: [flavorId],
+          create_tickets: m.el.querySelector('#fsch-tickets').checked,
+        });
+        const sk = (r.skipped || []).length;
+        toast(sk ? 'Already scheduled that day' : `Scheduled for ${prettyDate(dateIso)}`, sk ? 'err' : 'ok');
+        m.close();
+        if (CURRENT_FLAVOR) renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB);
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    refresh();
   }
 
   async function openDayPanel(dateIso) {
@@ -3517,6 +3602,18 @@ The URL is: `;
     openLinkModal,
     openScheduleModal,
     openDayPanel,
+    scheduleFlavor(id) {
+      const name = (CURRENT_FLAVOR && CURRENT_FLAVOR.id === id) ? CURRENT_FLAVOR.name : '';
+      openFlavorScheduleModal(id, name);
+    },
+    async clearSchedule() {
+      if (!confirm('Clear ALL scheduled review days (everything not yet marked reviewed)? This also deletes the gather + check tickets those days created. Completed review history is kept. This cannot be undone.')) return;
+      try {
+        const r = await apiPost('/api/flavor-reviews/cycles/clear', { scope: 'scheduled', delete_tickets: true });
+        toast(`Cleared ${r.cycles_deleted} scheduled day(s) · removed ${r.tickets_deleted} ticket(s)`, 'ok');
+        renderCalendar();
+      } catch (e) { toast(e.message, 'err'); }
+    },
     // Open a main-app ticket. We're embedded in an iframe, so drive the TOP
     // window to the ticket's deep-link route in the main app.
     openTicket(id) {
