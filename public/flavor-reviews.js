@@ -542,14 +542,21 @@
     const allIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
     const recentReviews = allReviews.slice(0, 5);
     const openIssues = allIssues.filter(i => i.status === 'open');
-    const aiSummary = AI_SUMMARY_CACHE[f.id];
+    // AI take is cached per (flavor, scope) so switching the toggle shows the
+    // matching analysis. Scope follows the same type filter as the reviews.
+    const aiScope = hasGroup ? FLAVOR_REVIEW_FILTER : 'all';
+    const aiSummary = AI_SUMMARY_CACHE[f.id + ':' + aiScope];
+    const scopeWord = aiScope === 'all' ? (hasGroup ? 'both types' : 'this flavor') : aiScope.replace('_', '-');
     const aiBlock = `
       <div class="ai-panel">
-        <h4><svg class="ai-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> AI take</h4>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <h4 style="margin:0"><svg class="ai-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg> AI take <span style="font-weight:400;color:var(--text3);font-size:11px">· ${escapeHtml(scopeWord)}</span></h4>
+          ${typeToggle(f)}
+        </div>
         ${aiSummary
           ? `<div class="ai-body">${escapeHtml(aiSummary)}</div>`
-          : `<div class="ai-body ai-empty">No AI summary yet. Click below to ask Claude to read every review and recommend what (if anything) to do.</div>`}
-        <div style="margin-top:10px"><button class="btn-sec btn-ai" id="ai-summary-btn">✨ ${aiSummary ? 'Re-analyse' : 'Get AI take'}</button></div>
+          : `<div class="ai-body ai-empty">No AI summary yet for ${escapeHtml(scopeWord)}.${hasGroup ? ' Use the Reviews tab toggle to switch type, then re-run.' : ''} Click below to have Claude read the reviews and recommend what (if anything) to do.</div>`}
+        <div style="margin-top:10px"><button class="btn-sec btn-ai" id="ai-summary-btn">✨ ${aiSummary ? 'Re-analyse' : 'Get AI take'} (${escapeHtml(scopeWord)})</button></div>
       </div>`;
     return `
       <div class="detail-layout">
@@ -587,9 +594,8 @@
             ${f.links.length ? f.links.map(linkRow).join('') : '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}
             <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
               <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
-              <button class="btn-tiny" onclick="window.location.hash='/agent'">🤖 Add via URL</button>
             </div>
-            ${f.links.length ? `<button class="btn-tiny btn-ai" style="margin-top:8px;width:100%" onclick="FR.grabFlavorReviews(${f.id})">✨ Grab this flavor's reviews from all its links</button>` : ''}
+            ${f.links.some(l => l.asin) ? `<button class="btn-tiny btn-ai" style="margin-top:8px;width:100%" onclick="FR.fetchReviewsApi(${f.id})">🔑 Fetch reviews via API (Rainforest)</button>` : ''}
           </div>
 
           <div class="side-card">
@@ -672,10 +678,13 @@
   function wireFlavorTab() {
     const ai = $('ai-summary-btn');
     if (ai) ai.addEventListener('click', async () => {
+      const f = CURRENT_FLAVOR;
+      const hasGroup = !!(f.group && f.group.flavors.length > 1);
+      const scope = hasGroup ? FLAVOR_REVIEW_FILTER : 'all';
       ai.disabled = true; ai.textContent = '✨ Asking AI…';
       try {
-        const r = await apiPost('/api/flavor-reviews/flavors/' + CURRENT_FLAVOR.id + '/ai/summary');
-        AI_SUMMARY_CACHE[CURRENT_FLAVOR.id] = r.summary;
+        const r = await apiPost('/api/flavor-reviews/flavors/' + f.id + '/ai/summary?scope=' + scope);
+        AI_SUMMARY_CACHE[f.id + ':' + scope] = r.summary;
         renderFlavorTab();
       } catch (e) {
         toast(e.message, 'err');
@@ -2256,8 +2265,9 @@ The URL is: `;
 
   // ── Reviews import (fetch URL or paste) ────────────────────────────────
   let RVI_STATE = null;
-  // Set by FR.grabFlavorReviews before navigating here, so we can jump
-  // straight to the approval grid with the grabbed reviews.
+  // Reserved for a future "hand off grabbed reviews to the approval grid"
+  // flow. Currently unset (the per-flavor scrape grab was replaced by the
+  // Rainforest API fetch on the flavor page).
   let PENDING_FLAVOR_GRAB = null;
 
   async function renderReviewsImport(flavorId) {
@@ -2539,14 +2549,23 @@ The URL is: `;
 
       <div class="card" style="max-width:760px;margin-top:16px">
         <div class="card-head">
-          <h3>📥 Scraper bookmarklet</h3>
+          <h3>🔑 Rainforest API (reviews)</h3>
         </div>
         <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin:0 0 12px">
-          Amazon blocks most automated scrapes. The bookmarklet sidesteps that by running inside <em>your</em> browser
-          tab — your real Amazon session does the work. One click captures the rendered page (including JS-injected
-          variations and reviews) and sends it here, then Claude parses it on demand.
+          Amazon has no official API that returns review text, so we use
+          <a href="https://www.rainforestapi.com/" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Rainforest API</a>
+          (third-party). Paste your key, then use <strong>Fetch reviews via API</strong> on any flavor to pull reviews for
+          its ASINs — tagged to that flavor + type, deduped. Paid per request.
         </p>
-        <div id="scr-setup-body" style="min-height:80px;font-size:12px;color:var(--text3)">Loading…</div>
+        <div class="form-row" style="max-width:480px">
+          <label class="fr-label">API key ${s.rainforest_configured ? `<span style="color:var(--ok);font-weight:600">· saved (…${escapeHtml(s.rainforest_key_tail || '')})</span>` : '<span style="color:var(--text3)">· not set</span>'}</label>
+          <input type="password" id="set-rainforest" placeholder="${s.rainforest_configured ? 'Leave blank to keep current key' : 'Paste your Rainforest API key'}" autocomplete="off">
+          <div style="font-size:11px;color:var(--text3);margin-top:5px">Stored server-side; never shown again. Submit an empty value + Save-key to clear it.</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-sec" id="set-save-rainforest">Save key</button>
+          ${s.rainforest_configured ? `<button class="btn-sec btn-danger" id="set-clear-rainforest">Clear key</button>` : ''}
+        </div>
       </div>
     `);
 
@@ -2562,8 +2581,18 @@ The URL is: `;
         toast('Settings saved', 'ok');
       } catch (e) { toast(e.message, 'err'); }
     });
-
-    loadScraperSetup();
+    $('set-save-rainforest').addEventListener('click', async () => {
+      const key = $('set-rainforest').value.trim();
+      if (!key) return toast('Paste a key first (or use Clear key)', 'err');
+      try { await apiPatch('/api/flavor-reviews/settings', { rainforest_key: key }); toast('API key saved', 'ok'); renderSettings(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
+    const clr = $('set-clear-rainforest');
+    if (clr) clr.addEventListener('click', async () => {
+      if (!confirm('Clear the saved Rainforest API key?')) return;
+      try { await apiPatch('/api/flavor-reviews/settings', { rainforest_key: '' }); toast('API key cleared', 'ok'); renderSettings(); }
+      catch (e) { toast(e.message, 'err'); }
+    });
   }
 
   async function loadScraperSetup() {
@@ -3125,26 +3154,17 @@ The URL is: `;
     refreshInbox(hostId, kind) { renderInboxPanel(hostId, kind); },
     refreshAgentInbox() { renderAgentInbox(); },
     runAgentFromInbox(inboxId) { runAgent(agentOpts({ inbox_id: inboxId })); },
-    async grabFlavorReviews(flavorId) {
-      toast('Grabbing this flavor\'s reviews from its links… (Amazon may block)', 'ok');
+    async fetchReviewsApi(flavorId) {
+      if (!confirm('Fetch reviews from Rainforest API for this flavor\'s ASINs? This uses paid API credits (a few requests per ASIN).')) return;
+      toast('Fetching reviews via Rainforest…', 'ok');
       try {
-        const r = await apiPost('/api/flavor-reviews/import/flavor-grab', { flavor_id: flavorId });
-        if (r.ok && r.reviews && r.reviews.length) {
-          // Hand off to the reviews-import page's approval grid, pre-set to
-          // this flavor.
-          PENDING_FLAVOR_GRAB = {
-            flavor_id: flavorId,
-            reviews: r.reviews,
-            url: r.source_url || '',
-            per_link: r.per_link || [],
-          };
-          goto('/flavor/' + flavorId + '/reviews-import');
-        } else if (r.action === 'no_links') {
-          toast(r.message || 'No sell-links on this flavor yet.', 'err');
+        const r = await apiPost('/api/flavor-reviews/reviews/fetch-api', { flavor_id: flavorId, max_pages: 3 });
+        if (r.ok) {
+          const c = r.counts || {};
+          toast(`Added ${c.created || 0} review${c.created === 1 ? '' : 's'} (${c.skipped || 0} dup, ${c.errors || 0} errors)`, c.errors ? 'err' : 'ok');
+          if (CURRENT_FLAVOR && CURRENT_FLAVOR.id === flavorId) renderFlavor(flavorId, CURRENT_FLAVOR_TAB);
         } else {
-          // needs_capture — guide to bookmarklet.
-          const worked = (r.per_link || []).filter(p => p.ok).length;
-          toast((r.message || 'Couldn\'t auto-fetch.') + (worked ? '' : ' Try the bookmarklet on the reviews page.'), 'err');
+          toast(r.error || 'Fetch failed', 'err');
         }
       } catch (e) { toast(e.message, 'err'); }
     },

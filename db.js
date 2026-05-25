@@ -1969,6 +1969,9 @@ async function init() {
   // Claude parses them on demand. Stored as TEXT — captures can be
   // several MB (esp. 10-page review walks); PG handles that fine.
   await safeAlter("ALTER TABLE fr_settings ADD COLUMN scraper_token TEXT NOT NULL DEFAULT ''");
+  // Rainforest API key (third-party Amazon reviews data). Stored server-side;
+  // the settings API only ever returns whether it's configured, never the key.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN rainforest_key TEXT NOT NULL DEFAULT ''");
 
   // Strict review dedup: a normalized key on (reviewer_name, posted_at, body)
   // catches re-imports and Claude double-emitting the same row. Computed in
