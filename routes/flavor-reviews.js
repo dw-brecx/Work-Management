@@ -1254,6 +1254,40 @@ module.exports = function attach(app, deps) {
     }
   });
 
+  // Download the local Review Agent app as a zip, so any user can grab it from
+  // Settings and run it on their own machine. Built on the fly from the
+  // review-agent/ folder (skipping installed deps / generated output).
+  app.get('/api/flavor-reviews/review-agent/download', requireAuth, async (req, res) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const JSZip = require('jszip');
+      const root = path.join(__dirname, '..', 'review-agent');
+      if (!fs.existsSync(root)) return res.status(404).json({ error: 'Review Agent files are not on the server.' });
+      const skipDirs = new Set(['node_modules', 'downloads', '.browser-profile', '.git']);
+      const skipFiles = new Set(['.env']);
+      const zip = new JSZip();
+      (function add(dir, prefix) {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            if (skipDirs.has(entry.name)) continue;
+            add(path.join(dir, entry.name), prefix + entry.name + '/');
+          } else {
+            if (skipFiles.has(entry.name)) continue;
+            zip.file(prefix + entry.name, fs.readFileSync(path.join(dir, entry.name)));
+          }
+        }
+      })(root, 'review-agent/');
+      const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="review-agent.zip"');
+      res.send(buf);
+    } catch (e) {
+      console.error('[fr] review-agent download failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── Dashboard ────────────────────────────────────────────────────────────
   // Single fan-out endpoint so the dashboard renders in one round trip.
   app.get('/api/flavor-reviews/dashboard', requireAuth, async (req, res) => {

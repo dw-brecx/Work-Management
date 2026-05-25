@@ -3061,6 +3061,20 @@ The URL is: `;
           ${s.rainforest_configured ? `<button class="btn-sec btn-danger" id="set-clear-rainforest">Clear key</button>` : ''}
         </div>
       </div>
+
+      <div class="card" style="max-width:760px;margin-top:16px">
+        <div class="card-head">
+          <h3>🤖 Review Agent (desktop app)</h3>
+        </div>
+        <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin:0 0 12px">
+          A small app you run on <strong>your own computer</strong>. Paste a flavor's Amazon link and it opens a real
+          browser with your own session, walks every reviews page like a person, and saves all the reviews to a file you
+          upload here. Download it, unzip, and follow the included <code>README</code> (needs Node.js 18+). One-time:
+          <code>npm install</code> → <code>npm run setup</code> → <code>npm start</code>.
+        </p>
+        <a class="btn-primary" href="/api/flavor-reviews/review-agent/download" download="review-agent.zip"
+           style="text-decoration:none;display:inline-block">⬇ Download Review Agent (.zip)</a>
+      </div>
     `);
 
     $('set-save').addEventListener('click', async () => {
