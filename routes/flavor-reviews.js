@@ -985,6 +985,10 @@ module.exports = function attach(app, deps) {
         default_reviewer_id: row?.default_reviewer_id || null,
         bad_review_threshold: Number(row?.bad_review_threshold || 2),
         auto_schedule: !!(row?.auto_schedule ?? 1),
+        // Never return the key itself — just whether it's set, plus a masked
+        // tail so the user can recognise which key is saved.
+        rainforest_configured: !!(row?.rainforest_key),
+        rainforest_key_tail: row?.rainforest_key ? String(row.rainforest_key).slice(-4) : '',
         team,
       });
     } catch (e) {
@@ -1011,6 +1015,11 @@ module.exports = function attach(app, deps) {
       if ('auto_schedule' in req.body) {
         sets.push('auto_schedule=?'); args.push(req.body.auto_schedule ? 1 : 0);
       }
+      if ('rainforest_key' in req.body) {
+        // Empty string clears it. Trim whitespace; keys are alphanumeric.
+        const k = String(req.body.rainforest_key || '').trim().slice(0, 200);
+        sets.push('rainforest_key=?'); args.push(k);
+      }
       if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
       sets.push(`updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
       args.push(1);
@@ -1021,6 +1030,8 @@ module.exports = function attach(app, deps) {
         default_reviewer_id: row.default_reviewer_id,
         bad_review_threshold: row.bad_review_threshold,
         auto_schedule: !!row.auto_schedule,
+        rainforest_configured: !!row.rainforest_key,
+        rainforest_key_tail: row.rainforest_key ? String(row.rainforest_key).slice(-4) : '',
       });
     } catch (e) {
       console.error('[fr] settings patch failed:', e.message);
@@ -1128,30 +1139,42 @@ module.exports = function attach(app, deps) {
       const f = await get('SELECT * FROM fr_flavors WHERE id=?', id);
       if (!f) return res.status(404).json({ error: 'Not found' });
 
-      const reviews = await all(
-        `SELECT rating, title, body, posted_at, source FROM fr_reviews
-          WHERE flavor_id=?
-          ORDER BY COALESCE(NULLIF(posted_at,''), created_at) DESC
-          LIMIT 25`, id
+      // Scope: the AI take respects the same type filter as the reviews view.
+      // 'all' = every record sharing this flavor name (regular + sugar_free);
+      // 'regular' / 'sugar_free' = just that type. We pull across the whole
+      // flavor-name group so "all" gives a true total for the flavor.
+      const scope = ['regular', 'sugar_free'].includes(req.query.scope) ? req.query.scope : 'all';
+      const groupIds = (await all('SELECT id FROM fr_flavors WHERE LOWER(name)=LOWER(?)', f.name)).map(r => r.id);
+      const ph = groupIds.map(() => '?').join(',');
+      let reviews = await all(
+        `SELECT r.rating, r.title, r.body, r.posted_at, r.source, fl.variant AS flavor_variant
+           FROM fr_reviews r JOIN fr_flavors fl ON fl.id=r.flavor_id
+          WHERE r.flavor_id IN (${ph})
+          ORDER BY COALESCE(NULLIF(r.posted_at,''), r.created_at) DESC
+          LIMIT 60`, ...groupIds
       );
-      if (!reviews.length) return res.json({ summary: 'No reviews logged yet for this flavor.' });
+      if (scope !== 'all') reviews = reviews.filter(r => r.flavor_variant === scope);
+      reviews = reviews.slice(0, 30);
+      const scopeLabel = scope === 'all' ? 'both types (regular + sugar-free)' : scope.replace('_', '-');
+      if (!reviews.length) return res.json({ summary: `No ${scope === 'all' ? '' : scopeLabel + ' '}reviews logged yet for ${f.name}.`, scope });
 
       const lines = reviews.map(r =>
-        `[${r.rating || '?'}★ ${r.source}${r.posted_at ? ' / ' + r.posted_at : ''}] ${r.title ? r.title + ' — ' : ''}${(r.body || '').slice(0, 400)}`
+        `[${r.rating || '?'}★ ${r.flavor_variant === 'sugar_free' ? 'SF' : 'Reg'} ${r.source}${r.posted_at ? ' / ' + r.posted_at : ''}] ${r.title ? r.title + ' — ' : ''}${(r.body || '').slice(0, 400)}`
       ).join('\n');
 
       const system =
         "You analyze customer reviews for syrup flavors at a small consumer-goods company. " +
-        "Given a flavor and its recent reviews, write a SHORT recommendation (max 7 sentences) covering: " +
-        "(1) the dominant theme of complaints, (2) whether action is needed and what KIND of action " +
-        "(reformulate, fix bottle/label, adjust marketing copy, no action — already addressed, etc.), " +
-        "(3) urgency. Be concrete and operational. Don't pad. " +
-        "If reviews are overwhelmingly positive, say \"No action needed\" plainly and stop.";
+        "Reviews are tagged Reg (regular) or SF (sugar-free). Given a flavor and its recent reviews, " +
+        "write a SHORT recommendation (max 8 sentences) covering: " +
+        "(1) the dominant theme of complaints, (2) whether any complaint is TYPE-SPECIFIC (e.g. only the " +
+        "sugar-free version has an aftertaste problem) vs. about the flavor overall, (3) whether action is " +
+        "needed and what KIND (reformulate, fix bottle/label, adjust marketing copy, no action), (4) urgency. " +
+        "Be concrete and operational. Don't pad. If reviews are overwhelmingly positive, say \"No action needed\" plainly.";
       const userMsg =
-        `Flavor: ${f.name} (${f.kind}, ${f.variant})\n` +
+        `Flavor: ${f.name} — analyzing: ${scopeLabel}\n` +
         `Reviews:\n${lines}`;
-      const summary = await callClaude(system, userMsg, 600);
-      res.json({ summary });
+      const summary = await callClaude(system, userMsg, 700);
+      res.json({ summary, scope });
     } catch (e) {
       console.error('[fr] ai summary failed:', e.message);
       res.status(502).json({ error: 'AI call failed: ' + e.message });
@@ -2073,6 +2096,109 @@ module.exports = function attach(app, deps) {
       });
     } catch (e) {
       console.error('[fr] flavor-grab failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Rainforest API: pull reviews for a flavor by ASIN ────────────────────
+  // No official Amazon API returns review text, so we use Rainforest (a
+  // third-party Amazon data API). For a flavor, every sell-link ASIN is one
+  // listing of that exact flavor+type — so all reviews from that ASIN belong
+  // to the flavor with no guessing. We page through, map to our shape, dedup
+  // (name+date+body), and insert. Returns a per-ASIN summary.
+  async function rainforestReviews(apiKey, asin, page) {
+    const u = new URL('https://api.rainforestapi.com/request');
+    u.searchParams.set('api_key', apiKey);
+    u.searchParams.set('type', 'reviews');
+    u.searchParams.set('amazon_domain', 'amazon.com');
+    u.searchParams.set('asin', asin);
+    u.searchParams.set('sort_by', 'most_recent');
+    u.searchParams.set('page', String(page || 1));
+    const r = await fetch(u.toString());
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      throw new Error('Rainforest ' + r.status + ': ' + t.slice(0, 200));
+    }
+    return r.json();
+  }
+
+  app.post('/api/flavor-reviews/reviews/fetch-api', requireAuth, async (req, res) => {
+    try {
+      const setting = await get('SELECT rainforest_key FROM fr_settings WHERE id=1');
+      const apiKey = setting?.rainforest_key || process.env.RAINFOREST_API_KEY || '';
+      if (!apiKey) return res.status(400).json({ error: 'No Rainforest API key set. Add it in Settings.' });
+
+      const flavorId = Number(req.body?.flavor_id);
+      if (!Number.isFinite(flavorId)) return res.status(400).json({ error: 'flavor_id required' });
+      const maxPages = Math.max(1, Math.min(20, parseInt(req.body?.max_pages, 10) || 3));
+
+      const flavor = await get('SELECT id, name, variant, amazon_asin FROM fr_flavors WHERE id=?', flavorId);
+      if (!flavor) return res.status(404).json({ error: 'Flavor not found' });
+      // Collect the distinct ASINs to query: per-link ASINs + the flavor's
+      // primary ASIN if set.
+      const links = await all("SELECT asin FROM fr_flavor_links WHERE flavor_id=? AND asin <> ''", flavorId);
+      const asins = [...new Set(links.map(l => l.asin.toUpperCase()).filter(Boolean))];
+      if (flavor.amazon_asin) asins.push(flavor.amazon_asin.toUpperCase());
+      const uniqueAsins = [...new Set(asins)];
+      if (!uniqueAsins.length) return res.json({ ok: false, error: 'This flavor has no ASINs. Add a sell-link with an ASIN first.' });
+
+      const created = []; const skipped = []; const errors = []; const perAsin = [];
+      const seenInBatch = new Set();
+      const negative = [];
+      for (const asin of uniqueAsins) {
+        let asinCreated = 0, asinDup = 0, pagesFetched = 0;
+        try {
+          for (let page = 1; page <= maxPages; page++) {
+            const data = await rainforestReviews(apiKey, asin, page);
+            const reviews = Array.isArray(data.reviews) ? data.reviews : [];
+            pagesFetched = page;
+            if (!reviews.length) break;
+            for (const rv of reviews) {
+              const rating = Math.max(0, Math.min(5, Math.round(parseFloat(rv.rating) || 0)));
+              const title = String(rv.title || '').slice(0, 200);
+              const body = String(rv.body || rv.body_html || '').replace(/<[^>]+>/g, '').slice(0, 10000);
+              const reviewer_name = String(rv.profile?.name || rv.author || '').slice(0, 120);
+              const posted_at = (rv.date?.utc && /^\d{4}-\d{2}-\d{2}/.test(rv.date.utc)) ? rv.date.utc.slice(0, 10) : '';
+              const url = String(rv.link || rv.url || ('https://www.amazon.com/dp/' + asin)).slice(0, 1000);
+              const verified = !!rv.verified_purchase;
+              if (!body && !title) { continue; }
+              const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+              if (dedupKey) {
+                if (seenInBatch.has(dedupKey)) { asinDup++; skipped.push({ asin }); continue; }
+                const dup = await get('SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1', flavorId, dedupKey);
+                if (dup) { asinDup++; skipped.push({ asin }); continue; }
+                seenInBatch.add(dedupKey);
+              }
+              const sentiment = classifySentiment(rating);
+              const ins = await run(
+                `INSERT INTO fr_reviews (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, created_by)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+                flavorId, 'Amazon', rating, reviewer_name, title, body, url, posted_at, sentiment, dedupKey, req.session.userId
+              );
+              created.push({ id: ins.lastInsertRowid }); asinCreated++;
+              if (sentiment === 'negative') negative.push(flavorId);
+              void verified;
+            }
+            // Stop early if the API signals no more pages.
+            const totalPages = data.pagination?.total_pages;
+            if (totalPages && page >= totalPages) break;
+          }
+        } catch (e) {
+          errors.push({ asin, reason: e.message });
+        }
+        perAsin.push({ asin, created: asinCreated, duplicates: asinDup, pages: pagesFetched });
+      }
+      if (negative.length) { try { await bumpNextCyclePriority(flavorId); } catch {} }
+      res.json({
+        ok: true,
+        flavor: { id: flavor.id, name: flavor.name, variant: flavor.variant },
+        asins: uniqueAsins,
+        counts: { created: created.length, skipped: skipped.length, errors: errors.length },
+        per_asin: perAsin,
+        errors,
+      });
+    } catch (e) {
+      console.error('[fr] fetch-api failed:', e.message);
       res.status(500).json({ error: e.message });
     }
   });
