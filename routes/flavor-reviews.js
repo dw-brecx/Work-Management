@@ -187,6 +187,16 @@ module.exports = function attach(app, deps) {
             i.created_at DESC`,
         ...groupIds
       );
+      // All sell-links across both type records, each tagged with its type so
+      // the detail page can group them into Regular / Sugar-free boxes.
+      const groupLinks = await all(
+        `SELECT l.*, f.variant AS flavor_variant
+           FROM fr_flavor_links l
+           JOIN fr_flavors f ON f.id = l.flavor_id
+          WHERE l.flavor_id IN (${ph})
+          ORDER BY (f.variant='sugar_free'), l.position ASC, l.id ASC`,
+        ...groupIds
+      );
 
       res.json({
         ...shapeFlavor(row),
@@ -198,6 +208,7 @@ module.exports = function attach(app, deps) {
           flavors: groupFlavors.map(g => ({ id: g.id, name: g.name, variant: g.variant, kind: g.kind, status: g.status })),
           reviews: groupReviews.map(shapeReview),
           issues: groupIssues.map(shapeIssue),
+          links: groupLinks.map(l => ({ ...shapeLink(l), flavor_variant: l.flavor_variant })),
         },
       });
     } catch (e) {

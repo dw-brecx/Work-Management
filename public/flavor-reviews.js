@@ -393,7 +393,7 @@
       }
       const overdue = rec.next_cycle && rec.next_cycle < todayUtc();
       const stars = rec.avg_rating != null ? `<span class="fc-rating" title="Average rating">★ ${rec.avg_rating.toFixed(1)}</span>` : '';
-      return `<div class="fc-side" onclick="event.stopPropagation();window.location.hash='/flavor/${rec.id}'">
+      return `<div class="fc-side">
         <div class="fc-side-head">
           <span class="pill variant-${variantClass}">${typeLabel}</span>
           ${rec.status !== 'active' ? `<span class="pill status-${escapeAttr(rec.status)}">${escapeHtml(rec.status)}</span>` : ''}
@@ -416,8 +416,12 @@
         showReg ? sidePanel(g.regular, 'Regular', 'regular') : '',
         showSF  ? sidePanel(g.sugar_free, 'Sugar-free', 'sugar_free') : '',
       ].filter(Boolean).join('');
+      // A flavor is one clickable unit — open the merged detail (either type
+      // record resolves to the same name-grouped view). Prefer the record
+      // matching the active filter, else regular, else sugar-free.
+      const primary = (wantVariant === 'sugar_free' ? g.sugar_free : g.regular) || g.regular || g.sugar_free;
       return `
-        <div class="flavor-pair-card">
+        <div class="flavor-pair-card fpc-clickable" onclick="window.location.hash='/flavor/${primary.id}'" title="Open ${escapeAttr(g.name)}">
           <div class="fpc-head">
             <span class="fpc-name">${escapeHtml(g.name)}</span>
             <span class="pill kind-${escapeAttr(g.kind)}">${escapeHtml(cap(g.kind))}</span>
@@ -430,6 +434,7 @@
   // ── Flavor detail ──────────────────────────────────────────────────────
   let CURRENT_FLAVOR = null;
   let CURRENT_FLAVOR_TAB = 'overview';
+  let LINKS_FILTER = 'all'; // all | regular | sugar_free — sell-links box filter
   let FLAVOR_REVIEW_FILTER = 'all'; // all | regular | sugar_free — type view on detail page
   let AI_SUMMARY_CACHE = {}; // keyed by flavor id
 
@@ -444,6 +449,7 @@
     // type-specific complaint (e.g. "sugar-free aftertaste") is still
     // distinguishable, but you see the whole flavor at once.
     FLAVOR_REVIEW_FILTER = 'all';
+    LINKS_FILTER = 'all';
     const hasGroup = !!(f.group && f.group.flavors.length > 1);
     const groupReviews = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
     const groupIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
@@ -593,14 +599,7 @@
 
         <div>
           ${f.image_url ? `<div class="side-card" style="padding:0;overflow:hidden"><img src="${escapeAttr(f.image_url)}" alt="${escapeAttr(f.name)}" style="width:100%;display:block" referrerpolicy="no-referrer" onerror="this.parentElement.style.display='none'"></div>` : ''}
-          <div class="side-card">
-            <h4>Sell-links${f.amazon_asin ? ` · <span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0">ASIN ${escapeHtml(f.amazon_asin)}</span>` : ''}</h4>
-            ${f.links.length ? f.links.map(linkRow).join('') : '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}
-            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-              <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
-            </div>
-            ${f.links.some(l => l.asin) ? `<button class="btn-tiny btn-ai" style="margin-top:8px;width:100%" onclick="FR.fetchReviewsApi(${f.id})">🔑 Fetch reviews via API (Rainforest)</button>` : ''}
-          </div>
+          ${renderLinksCard(f)}
 
           <div class="side-card">
             <h4>Schedule</h4>
@@ -624,6 +623,56 @@
         </div>
       </div>
     `;
+  }
+
+  // Sell-links card: a flavor's links split into a Regular box and a
+  // Sugar-free box (each tagged with its type). The toggle defaults to "All"
+  // (both boxes) and narrows to one type. Add-link / Fetch-via-API target the
+  // correct type's record so reviews land on the right flavor.
+  function linksToggle(f) {
+    if (!f.group || f.group.flavors.length < 2) return '';
+    const opts = [['all', 'All'], ['regular', 'Regular'], ['sugar_free', 'Sugar-free']];
+    return `<div class="type-toggle links-toggle">${opts.map(([v, label]) =>
+      `<button class="tt-btn lt-btn ${LINKS_FILTER === v ? 'active' : ''}" data-lt="${v}">${label}</button>`
+    ).join('')}</div>`;
+  }
+
+  function renderLinksCard(f) {
+    const flavors = (f.group && f.group.flavors.length) ? f.group.flavors : [{ id: f.id, variant: f.variant }];
+    const allLinks = (f.group && f.group.links) ? f.group.links : (f.links || []).map(l => ({ ...l, flavor_variant: f.variant }));
+    const regRec = flavors.find(v => v.variant === 'regular');
+    const sfRec  = flavors.find(v => v.variant === 'sugar_free');
+    const regLinks = allLinks.filter(l => l.flavor_variant === 'regular');
+    const sfLinks  = allLinks.filter(l => l.flavor_variant === 'sugar_free');
+
+    const box = (rec, label, variantClass, links) => {
+      if (!rec) return '';
+      const hasAsin = links.some(l => l.asin);
+      return `<div class="links-box">
+        <div class="links-box-head">
+          <span class="pill variant-${variantClass}">${label}</span>
+          <span style="font-size:11px;color:var(--text3)">${links.length} link${links.length === 1 ? '' : 's'}</span>
+        </div>
+        ${links.length ? links.map(linkRow).join('') : `<div style="font-size:11.5px;color:var(--text3);padding:4px 0">No ${label.toLowerCase()} links yet.</div>`}
+        <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+          <button class="btn-tiny" onclick="FR.openLinkModal(${rec.id})">+ Add link</button>
+          ${hasAsin ? `<button class="btn-tiny btn-ai" onclick="FR.fetchReviewsApi(${rec.id})">🔑 Fetch via API</button>` : ''}
+        </div>
+      </div>`;
+    };
+
+    const showReg = LINKS_FILTER !== 'sugar_free';
+    const showSF  = LINKS_FILTER !== 'regular';
+    const boxes = [
+      showReg ? box(regRec, 'Regular', 'regular', regLinks) : '',
+      showSF  ? box(sfRec, 'Sugar-free', 'sugar_free', sfLinks) : '',
+    ].filter(Boolean).join('');
+
+    return `<div class="side-card">
+      <h4>Sell-links</h4>
+      ${linksToggle(f)}
+      <div id="fd-links-body">${boxes || '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}</div>
+    </div>`;
   }
 
   // Segmented "Both types · Regular · Sugar-free" control. Only shown when
@@ -700,9 +749,18 @@
     const ac = $('add-cycle-btn');
     if (ac) ac.addEventListener('click', () => openCycleModal(CURRENT_FLAVOR.id));
     // Type toggle (Both / Regular / Sugar-free) on the reviews & issues tabs.
+    // The sell-links toggle shares the .tt-btn class for styling but carries
+    // data-lt (not data-tt) and drives LINKS_FILTER instead — guard against it.
     document.querySelectorAll('.tt-btn').forEach(btn => {
+      if (btn.dataset.tt == null) return;
       btn.addEventListener('click', () => {
         FLAVOR_REVIEW_FILTER = btn.dataset.tt;
+        renderFlavorTab();
+      });
+    });
+    document.querySelectorAll('.lt-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        LINKS_FILTER = btn.dataset.lt;
         renderFlavorTab();
       });
     });
@@ -3166,7 +3224,9 @@ The URL is: `;
         if (r.ok) {
           const c = r.counts || {};
           toast(`Added ${c.created || 0} review${c.created === 1 ? '' : 's'} (${c.skipped || 0} dup, ${c.errors || 0} errors)`, c.errors ? 'err' : 'ok');
-          if (CURRENT_FLAVOR && CURRENT_FLAVOR.id === flavorId) renderFlavor(flavorId, CURRENT_FLAVOR_TAB);
+          // Reload the whole flavor (the group reloads), so reviews fetched for
+          // the sibling type record show up too — not just when ids match.
+          if (CURRENT_FLAVOR) renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB);
         } else {
           toast(r.error || 'Fetch failed', 'err');
         }

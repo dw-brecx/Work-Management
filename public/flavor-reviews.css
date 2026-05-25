@@ -462,6 +462,8 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
   border-radius: 14px;
   padding: 14px 16px 16px;
 }
+.flavor-pair-card.fpc-clickable { cursor: pointer; transition: border-color .12s, box-shadow .15s, transform .12s; }
+.flavor-pair-card.fpc-clickable:hover { border-color: var(--border2); box-shadow: 0 10px 24px -14px rgba(15,23,42,.28); transform: translateY(-1px); }
 .flavor-pair-card .fpc-head {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-bottom: 12px;
@@ -474,13 +476,9 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 11px 12px;
-  cursor: pointer;
-  transition: border-color .12s, box-shadow .15s, transform .12s;
   background: var(--card-soft, var(--bg2));
 }
-.fc-side:hover { border-color: var(--border2); box-shadow: 0 6px 16px -10px rgba(15,23,42,.2); transform: translateY(-1px); }
-.fc-side-empty { cursor: default; opacity: .7; background: transparent; border-style: dashed; }
-.fc-side-empty:hover { border-color: var(--border); box-shadow: none; transform: none; }
+.fc-side-empty { opacity: .7; background: transparent; border-style: dashed; }
 .fc-side .fc-side-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .fc-side .fc-side-none { font-size: 11.5px; color: var(--text3); }
 .fc-side .fc-stat-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -496,6 +494,14 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
 }
 .type-toggle .tt-btn:hover { color: var(--text); }
 .type-toggle .tt-btn.active { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(15,23,42,.12); }
+
+/* Sell-links: the toggle stretches full width of the side card, and each
+   type's links sit in their own bordered box. */
+.links-toggle { display: flex; width: 100%; margin: 8px 0 10px; }
+.links-toggle .lt-btn { flex: 1; text-align: center; }
+.links-box { border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; margin-bottom: 9px; background: var(--card-soft, var(--bg2)); }
+.links-box:last-child { margin-bottom: 0; }
+.links-box-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
 
 /* Pills */
 .pill {
