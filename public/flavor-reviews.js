@@ -1282,6 +1282,7 @@
         </div>
         <div style="display:flex;gap:5px;flex-direction:column">
           ${done ? `<button class="btn-tiny" data-edit="${c.id}">Edit outcome</button>` : `<button class="btn-tiny btn-primary" data-done="${c.id}">Mark reviewed</button>`}
+          ${done ? '' : `<button class="btn-tiny" data-move="${c.id}">Move date</button>`}
           <button class="btn-tiny btn-danger" data-del="${c.id}">Remove</button>
         </div>
       </div>`;
@@ -1298,13 +1299,16 @@
     m.el.querySelector('#day-close').addEventListener('click', () => { m.close(); renderCalendar(dateIso.slice(0, 7)); });
     m.el.querySelector('#day-add').addEventListener('click', () => { m.close(); openScheduleModal(dateIso, () => openDayPanel(dateIso)); });
     m.el.querySelector('#day-rows').addEventListener('click', async (e) => {
-      const done = e.target.closest('[data-done]'), edit = e.target.closest('[data-edit]'), del = e.target.closest('[data-del]');
+      const done = e.target.closest('[data-done]'), edit = e.target.closest('[data-edit]'), del = e.target.closest('[data-del]'), move = e.target.closest('[data-move]');
       if (done || edit) {
         const id = Number((done || edit).dataset.done || (done || edit).dataset.edit);
         m.close(); openReviewDoneModal(byId.get(id), () => openDayPanel(dateIso));
+      } else if (move) {
+        const id = Number(move.dataset.move);
+        m.close(); openMoveCycleModal(byId.get(id), () => openDayPanel(dateIso));
       } else if (del) {
         const id = Number(del.dataset.del);
-        if (!confirm('Remove this flavor from the day? Its tickets are not deleted — close them in the ticket app if needed.')) return;
+        if (!confirm('Remove this flavor from the day? Its gather + check tickets will be deleted too.')) return;
         try { await apiDel('/api/flavor-reviews/cycles/' + id); m.close(); openDayPanel(dateIso); } catch (err) { toast(err.message, 'err'); }
       }
     });
@@ -1345,6 +1349,41 @@
         else if (CURRENT_FLAVOR) renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB);
       } catch (e) { toast(e.message, 'err'); }
     });
+  }
+
+  // Move a scheduled cycle to another date. The linked tickets' due dates
+  // follow automatically (server-side). Shows the target week as you pick.
+  function openMoveCycleModal(c, afterSave) {
+    if (!c) return;
+    let dateIso = c.scheduled_for;
+    const m = modal(`
+      <h3>Move review date · ${escapeHtml(c.flavor_name || '')}</h3>
+      <div class="form-row" style="max-width:220px">
+        <label class="fr-label">New date</label>
+        <input type="date" id="mv-date" value="${escapeAttr(dateIso)}">
+      </div>
+      <div class="sched-week-wrap"><div class="fr-label" style="margin-bottom:5px">Already scheduled that week</div><div id="mv-week" class="sched-week">Loading…</div></div>
+      ${(c.gather_ticket_id || c.check_ticket_id) ? '<div style="font-size:11.5px;color:var(--text3)">The gather + check tickets\' due dates will move with it.</div>' : ''}
+      <div class="modal-actions">
+        <button class="btn-sec" id="mv-cancel">Cancel</button>
+        <button class="btn-primary" id="mv-save">Move</button>
+      </div>
+    `);
+    const weekEl = m.el.querySelector('#mv-week');
+    const dateEl = m.el.querySelector('#mv-date');
+    async function refresh() { const info = await weekScheduleInfo(dateIso); weekEl.innerHTML = weekListHtml(info.list); }
+    dateEl.addEventListener('change', () => { if (/^\d{4}-\d{2}-\d{2}$/.test(dateEl.value)) { dateIso = dateEl.value; refresh(); } });
+    m.el.querySelector('#mv-cancel').addEventListener('click', m.close);
+    m.el.querySelector('#mv-save').addEventListener('click', async () => {
+      if (dateIso === c.scheduled_for) { m.close(); return; }
+      try {
+        await apiPatch('/api/flavor-reviews/cycles/' + c.id, { scheduled_for: dateIso });
+        toast(`Moved to ${prettyDate(dateIso)}`, 'ok');
+        m.close();
+        if (afterSave) afterSave();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    refresh();
   }
 
   // ── Bulk import ────────────────────────────────────────────────────────
@@ -2986,6 +3025,16 @@ The URL is: `;
             <input type="number" id="set-offset" min="0" max="60" value="${s.checker_offset_days}">
             <div style="font-size:11px;color:var(--text3);margin-top:5px">Days after the review day the check ticket is due.</div>
           </div>
+          <div class="form-row">
+            <label class="fr-label">Open gather ticket … days before</label>
+            <input type="number" id="set-gather-lead" min="0" max="120" value="${s.gather_lead_days}">
+            <div style="font-size:11px;color:var(--text3);margin-top:5px">The gather-reviews ticket is only created this many days before the review date — so nobody gets a stack of future tickets now.</div>
+          </div>
+          <div class="form-row">
+            <label class="fr-label">Open check ticket … days before</label>
+            <input type="number" id="set-check-lead" min="0" max="120" value="${s.check_lead_days}">
+            <div style="font-size:11px;color:var(--text3);margin-top:5px">Same, for the product-check ticket.</div>
+          </div>
         </div>
         <div style="display:flex;gap:8px;margin-top:6px">
           <button class="btn-primary" id="set-save-sched">Save</button>
@@ -3012,6 +3061,20 @@ The URL is: `;
           ${s.rainforest_configured ? `<button class="btn-sec btn-danger" id="set-clear-rainforest">Clear key</button>` : ''}
         </div>
       </div>
+
+      <div class="card" style="max-width:760px;margin-top:16px">
+        <div class="card-head">
+          <h3>🤖 Review Agent (desktop app)</h3>
+        </div>
+        <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin:0 0 12px">
+          A small app you run on <strong>your own computer</strong>. Paste a flavor's Amazon link and it opens a real
+          browser with your own session, walks every reviews page like a person, and saves all the reviews to a file you
+          upload here. Download it, unzip, and follow the included <code>README</code> (needs Node.js 18+). One-time:
+          <code>npm install</code> → <code>npm run setup</code> → <code>npm start</code>.
+        </p>
+        <a class="btn-primary" href="/api/flavor-reviews/review-agent/download" download="review-agent.zip"
+           style="text-decoration:none;display:inline-block">⬇ Download Review Agent (.zip)</a>
+      </div>
     `);
 
     $('set-save').addEventListener('click', async () => {
@@ -3033,6 +3096,8 @@ The URL is: `;
           product_checker_id: $('set-checker').value ? Number($('set-checker').value) : null,
           weekly_cap: Number($('set-cap').value),
           checker_offset_days: Number($('set-offset').value),
+          gather_lead_days: Number($('set-gather-lead').value),
+          check_lead_days: Number($('set-check-lead').value),
         });
         SETTINGS_CACHE = null;
         toast('Review scheduling saved', 'ok');

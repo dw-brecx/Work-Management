@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth, pool, createTicket } = deps;
+  const { get, all, run, requireAuth, pool, createTicket, ensureReviewTicketsForCycle } = deps;
   const { randomBytes } = require('crypto');
   const multer = require('multer');
   // Excel/CSV uploads are parsed in memory (no temp files to clean up).
@@ -879,10 +879,7 @@ module.exports = function attach(app, deps) {
 
       const s = await get('SELECT * FROM fr_settings WHERE id=1');
       const gathererId = s?.review_gatherer_id || s?.default_reviewer_id || null;
-      const checkerId  = s?.product_checker_id || null;
       const cap = Number(s?.weekly_cap || 5);
-      const checkerOffset = Number(s?.checker_offset_days ?? 3);
-      const checkDue = addDaysIso(date, checkerOffset);
 
       // Existing scheduled flavors in this ISO week (for the soft cap).
       const wk = isoWeekBounds(date);
@@ -906,36 +903,20 @@ module.exports = function attach(app, deps) {
 
         pos += 1;
         const ins = await run(
-          `INSERT INTO fr_cycles (flavor_id, scheduled_for, assigned_to, priority, position)
-           VALUES (?,?,?,?,?) RETURNING id`,
-          flavorId, date, gathererId, 3, pos
+          `INSERT INTO fr_cycles (flavor_id, scheduled_for, assigned_to, priority, position, tickets_enabled)
+           VALUES (?,?,?,?,?,?) RETURNING id`,
+          flavorId, date, gathererId, 3, pos, makeTickets ? 1 : 0
         );
         const cycleId = ins.lastInsertRowid;
 
+        // Don't create the tickets up front — only those whose per-type lead
+        // window already includes today. The hourly sweep creates the rest as
+        // their windows open, so nobody gets a pile of tickets for far dates.
         let gatherTicketId = '', checkTicketId = '';
-        if (makeTickets && typeof createTicket === 'function') {
-          const tag = `Flavor review: ${f.name}`;
-          try {
-            const g = await createTicket({
-              title: `Gather all reviews — ${f.name}`,
-              description: `Collect every recent review for "${f.name}" (both Regular and Sugar-free) ahead of the ${ticketDueString(date)} review. Pull via the Rainforest API on the flavor page or upload a review file, then confirm the latest are in.`,
-              assigneeUserId: gathererId, priority: 'Medium', dept: 'Reviews',
-              due: ticketDueString(date), tags: [tag, 'Gather reviews'],
-              flavorId: f.id, flavorName: f.name, createdBy: req.session.userId,
-            });
-            gatherTicketId = g.id;
-          } catch (e) { console.warn('[fr] gather ticket failed:', e.message); }
-          try {
-            const c = await createTicket({
-              title: `Check product & adjust — ${f.name}`,
-              description: `Review the gathered feedback for "${f.name}" and decide if the product needs changes (reformulate, bottle/label, listing copy, etc.). Record what you changed on the flavor's Review history when done.`,
-              assigneeUserId: checkerId, priority: 'Medium', dept: 'Product',
-              due: ticketDueString(checkDue), tags: [tag, 'Check product'],
-              flavorId: f.id, flavorName: f.name, createdBy: req.session.userId,
-            });
-            checkTicketId = c.id;
-          } catch (e) { console.warn('[fr] check ticket failed:', e.message); }
-          await run('UPDATE fr_cycles SET gather_ticket_id=?, check_ticket_id=? WHERE id=?', gatherTicketId, checkTicketId, cycleId);
+        if (makeTickets && typeof ensureReviewTicketsForCycle === 'function') {
+          const cyc = await get('SELECT * FROM fr_cycles WHERE id=?', cycleId);
+          const r = await ensureReviewTicketsForCycle(cyc, s);
+          if (r) { gatherTicketId = r.gather_ticket_id || ''; checkTicketId = r.check_ticket_id || ''; }
         }
         created.push({ cycle_id: cycleId, flavor_id: f.id, name: f.name, position: pos, gather_ticket_id: gatherTicketId, check_ticket_id: checkTicketId });
       }
@@ -1031,6 +1012,16 @@ module.exports = function attach(app, deps) {
       args.push(id);
       await run(`UPDATE fr_cycles SET ${sets.join(',')} WHERE id=?`, ...args);
 
+      // Moving a cycle to another date drags its tickets' due dates along:
+      // gather is due on the review day, check is due offset days later.
+      if ('scheduled_for' in req.body && req.body.scheduled_for && req.body.scheduled_for !== existing.scheduled_for) {
+        const newDate = req.body.scheduled_for;
+        const s = await get('SELECT checker_offset_days FROM fr_settings WHERE id=1');
+        const checkDue = addDaysIso(newDate, Number(s?.checker_offset_days ?? 3));
+        if (existing.gather_ticket_id) { try { await run('UPDATE tickets SET due=? WHERE id=?', ticketDueString(newDate), existing.gather_ticket_id); } catch {} }
+        if (existing.check_ticket_id)  { try { await run('UPDATE tickets SET due=? WHERE id=?', ticketDueString(checkDue), existing.check_ticket_id); } catch {} }
+      }
+
       // When marking done (first time only), auto-schedule the next cycle per
       // cadence so the calendar never goes empty after a review session.
       if (req.body?.status === 'done' && existing.status !== 'done') {
@@ -1054,8 +1045,15 @@ module.exports = function attach(app, deps) {
     try {
       const id = Number(req.params.id);
       if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
+      // Removing a scheduled flavor also removes the gather + check tickets it
+      // created — they only exist because of this review day.
+      const existing = await get('SELECT gather_ticket_id, check_ticket_id FROM fr_cycles WHERE id=?', id);
+      let ticketsDeleted = 0;
+      for (const tid of [existing?.gather_ticket_id, existing?.check_ticket_id]) {
+        if (tid) { try { await run('DELETE FROM tickets WHERE id=?', tid); ticketsDeleted++; } catch {} }
+      }
       await run('DELETE FROM fr_cycles WHERE id=?', id);
-      res.json({ ok: true });
+      res.json({ ok: true, tickets_deleted: ticketsDeleted });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -1178,6 +1176,8 @@ module.exports = function attach(app, deps) {
         product_checker_id: row?.product_checker_id || null,
         weekly_cap: Number(row?.weekly_cap || 5),
         checker_offset_days: Number(row?.checker_offset_days ?? 3),
+        gather_lead_days: Number(row?.gather_lead_days ?? 7),
+        check_lead_days: Number(row?.check_lead_days ?? 2),
         team,
       });
     } catch (e) {
@@ -1223,6 +1223,12 @@ module.exports = function attach(app, deps) {
       if ('checker_offset_days' in req.body) {
         sets.push('checker_offset_days=?'); args.push(Math.max(0, Math.min(60, parseInt(req.body.checker_offset_days, 10) || 0)));
       }
+      if ('gather_lead_days' in req.body) {
+        sets.push('gather_lead_days=?'); args.push(Math.max(0, Math.min(120, parseInt(req.body.gather_lead_days, 10) || 0)));
+      }
+      if ('check_lead_days' in req.body) {
+        sets.push('check_lead_days=?'); args.push(Math.max(0, Math.min(120, parseInt(req.body.check_lead_days, 10) || 0)));
+      }
       if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
       sets.push(`updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
       args.push(1);
@@ -1239,9 +1245,45 @@ module.exports = function attach(app, deps) {
         product_checker_id: row.product_checker_id || null,
         weekly_cap: Number(row.weekly_cap || 5),
         checker_offset_days: Number(row.checker_offset_days ?? 3),
+        gather_lead_days: Number(row.gather_lead_days ?? 7),
+        check_lead_days: Number(row.check_lead_days ?? 2),
       });
     } catch (e) {
       console.error('[fr] settings patch failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Download the local Review Agent app as a zip, so any user can grab it from
+  // Settings and run it on their own machine. Built on the fly from the
+  // review-agent/ folder (skipping installed deps / generated output).
+  app.get('/api/flavor-reviews/review-agent/download', requireAuth, async (req, res) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const JSZip = require('jszip');
+      const root = path.join(__dirname, '..', 'review-agent');
+      if (!fs.existsSync(root)) return res.status(404).json({ error: 'Review Agent files are not on the server.' });
+      const skipDirs = new Set(['node_modules', 'downloads', '.browser-profile', '.git']);
+      const skipFiles = new Set(['.env']);
+      const zip = new JSZip();
+      (function add(dir, prefix) {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isDirectory()) {
+            if (skipDirs.has(entry.name)) continue;
+            add(path.join(dir, entry.name), prefix + entry.name + '/');
+          } else {
+            if (skipFiles.has(entry.name)) continue;
+            zip.file(prefix + entry.name, fs.readFileSync(path.join(dir, entry.name)));
+          }
+        }
+      })(root, 'review-agent/');
+      const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="review-agent.zip"');
+      res.send(buf);
+    } catch (e) {
+      console.error('[fr] review-agent download failed:', e.message);
       res.status(500).json({ error: e.message });
     }
   });

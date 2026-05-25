@@ -7464,6 +7464,15 @@ window.PAGE_PATHS = {
   'settings':    '/settings',
 };
 
+// Deep-link from a review ticket into that flavor's reviews, inside the shell:
+// point the embedded Flavor Reviews iframe at the flavor, then show the page.
+function openFlavorReviews(flavorId) {
+  const fr = document.getElementById('reviews-frame');
+  if (fr) fr.setAttribute('src', '/flavor-reviews.html#/flavor/' + flavorId);
+  navigate('reviews');
+}
+window.openFlavorReviews = openFlavorReviews;
+
 function navigate(page, opts) {
   opts = opts || {};
   document.querySelectorAll('.page, .page-with-right').forEach(el => {
@@ -9382,6 +9391,13 @@ function renderInfoGridView(t, sla) {
       <div class="info-row-value" style="gap:6px">
         <span style="padding:2px 9px;border-radius:20px;background:#ede9fe;color:#5b21b6;font-size:11px;font-weight:600">🍯 ${escapeHtml(t.syruvia_flavor_name||t.syruvia_flavor_id)}</span>
         ${SYRUVIA_URL ? `<a href="${escapeHtml(SYRUVIA_URL)}?flavor=${encodeURIComponent(t.syruvia_flavor_id)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:3px">Open in Syruvia ↗</a>` : ''}
+      </div>
+    </div>` : t.fr_flavor_id ? `
+    <div class="info-row" style="grid-column:1 / -1">
+      <span class="info-row-label" style="display:flex;align-items:center;gap:4px">💬 Flavor</span>
+      <div class="info-row-value" style="gap:6px">
+        <span style="padding:2px 9px;border-radius:20px;background:#ede9fe;color:#5b21b6;font-size:11px;font-weight:600">🍯 ${escapeHtml(t.fr_flavor_name || ('Flavor #'+t.fr_flavor_id))}</span>
+        <a onclick="openFlavorReviews(${Number(t.fr_flavor_id)})" style="font-size:11px;color:var(--accent);text-decoration:none;display:inline-flex;align-items:center;gap:3px;cursor:pointer">View all reviews →</a>
       </div>
     </div>` : ''}
   `;

@@ -1310,6 +1310,11 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_id INTEGER DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_step TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_name TEXT DEFAULT NULL");
+  // Flavor Reviews — tickets spawned by the review-day scheduler carry the
+  // reviews-app flavor id (distinct from syruvia_flavor_id, which links to the
+  // external Syruvia app) so the ticket can deep-link to that flavor's reviews.
+  await safeAlter("ALTER TABLE tickets ADD COLUMN fr_flavor_id INTEGER DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN fr_flavor_name TEXT DEFAULT NULL");
   // Per-channel SKU naming pattern. Placeholders are substituted in
   // routes/flavors.js's generateChannelSku() — defaults to a sensible
   // convention; admins override per channel from Flavors → Settings.
@@ -1992,6 +1997,13 @@ async function init() {
   await safeAlter("ALTER TABLE fr_settings ADD COLUMN product_checker_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
   await safeAlter("ALTER TABLE fr_settings ADD COLUMN weekly_cap INTEGER NOT NULL DEFAULT 5");
   await safeAlter("ALTER TABLE fr_settings ADD COLUMN checker_offset_days INTEGER NOT NULL DEFAULT 3");
+  // Lead time per ticket type: each ticket is only created this many days
+  // before the review date (so a reviewer isn't buried in tickets for dates
+  // weeks out). A daily/hourly sweep materialises them as their window opens.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN gather_lead_days INTEGER NOT NULL DEFAULT 7");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN check_lead_days INTEGER NOT NULL DEFAULT 2");
+  // Whether a cycle should spawn tickets at all (the scheduling toggle).
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN tickets_enabled INTEGER NOT NULL DEFAULT 1");
 
   // Strict review dedup: a normalized key on (reviewer_name, posted_at, body)
   // catches re-imports and Claude double-emitting the same row. Computed in
