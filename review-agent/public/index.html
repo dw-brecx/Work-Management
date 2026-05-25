@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Review Agent</title>
+<link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🤖 Review Agent</h1>
+      <p class="lede">Paste a flavor's Amazon link. The agent opens a real browser (your own session), walks every reviews page like a person, and saves them to a file you can upload into Flavor Reviews.</p>
+      <p class="claude-state" id="claude-state"></p>
+    </header>
+
+    <div class="card">
+      <label class="lbl">Amazon link (product or reviews page)</label>
+      <input type="url" id="url" placeholder="https://www.amazon.com/dp/B0XXXXXXXX">
+
+      <div class="grid">
+        <div>
+          <label class="lbl">Flavor name <span class="opt">(optional, stamped on each row)</span></label>
+          <input type="text" id="flavor" placeholder="e.g. Strawberry">
+        </div>
+        <div>
+          <label class="lbl">Type</label>
+          <select id="variant">
+            <option value="regular">Regular</option>
+            <option value="sugar_free">Sugar-free</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl">Max pages</label>
+          <input type="number" id="maxPages" value="10" min="1" max="100">
+        </div>
+      </div>
+
+      <label class="check"><input type="checkbox" id="headless"> Run hidden (headless). Leave OFF the first time so you can log in / solve a CAPTCHA.</label>
+
+      <div class="actions">
+        <button id="go" class="primary">Gather reviews</button>
+        <a id="download" class="dl" style="display:none" href="#">⬇ Download file</a>
+      </div>
+    </div>
+
+    <div class="log-card">
+      <div class="log-head">Progress</div>
+      <pre id="log" class="log">Ready.</pre>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
