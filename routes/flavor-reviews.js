@@ -1059,6 +1059,33 @@ module.exports = function attach(app, deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // Wipe the schedule clean. By default removes every not-yet-done cycle
+  // (scheduled / in_progress / skipped) and the gather + check tickets those
+  // cycles spawned — leaving completed cycles intact so each product keeps its
+  // review history. Pass scope:'all' to also remove completed cycles.
+  app.post('/api/flavor-reviews/cycles/clear', requireAuth, async (req, res) => {
+    try {
+      const scope = req.body?.scope === 'all' ? 'all' : 'scheduled';
+      const deleteTickets = req.body?.delete_tickets !== false;
+      const where = scope === 'all' ? '1=1' : "status IN ('scheduled','in_progress','skipped')";
+      const rows = await all(`SELECT id, gather_ticket_id, check_ticket_id FROM fr_cycles WHERE ${where}`);
+      let ticketsDeleted = 0;
+      if (deleteTickets) {
+        const ids = [];
+        for (const r of rows) { if (r.gather_ticket_id) ids.push(r.gather_ticket_id); if (r.check_ticket_id) ids.push(r.check_ticket_id); }
+        const uniq = [...new Set(ids)];
+        for (const tid of uniq) {
+          try { await run('DELETE FROM tickets WHERE id=?', tid); ticketsDeleted++; } catch (e) { /* ignore already-gone */ }
+        }
+      }
+      await run(`DELETE FROM fr_cycles WHERE ${where}`);
+      res.json({ ok: true, cycles_deleted: rows.length, tickets_deleted: ticketsDeleted, scope });
+    } catch (e) {
+      console.error('[fr] cycles clear failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   async function maybeAutoSchedule(flavorId) {
     const s = await get('SELECT * FROM fr_settings WHERE id=1');
     if (!s || !s.auto_schedule) return;

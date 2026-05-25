@@ -743,6 +743,13 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
 .sched-row .sched-types { font-size: 10px; color: var(--text3); font-weight: 600; }
 .sched-row .sched-ord { display: flex; gap: 3px; }
 .sched-empty { padding: 14px; font-size: 12px; color: var(--text3); text-align: center; }
+.sched-week-wrap { margin: 4px 0 12px; }
+.sched-week { border: 1px solid var(--border); border-radius: 9px; background: var(--card-soft); padding: 8px 10px; max-height: 140px; overflow: auto; }
+.sched-week-empty { font-size: 12px; color: var(--text3); }
+.weekday { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 3px 0; }
+.weekday + .weekday { border-top: 1px dashed var(--border); }
+.weekday-date { font-size: 11px; font-weight: 650; color: var(--text2); min-width: 78px; }
+.pill.weekflav { text-transform: none; letter-spacing: 0; font-weight: 600; }
 @media (max-width: 560px) { .sched-grid { grid-template-columns: 1fr; } }
 
 /* Day panel rows */
