@@ -2005,6 +2005,12 @@ async function init() {
   // Whether a cycle should spawn tickets at all (the scheduling toggle).
   await safeAlter("ALTER TABLE fr_cycles ADD COLUMN tickets_enabled INTEGER NOT NULL DEFAULT 1");
 
+  // Reviews carry which listing they came from, so an uploaded file can be
+  // tagged "sugar-free, 1-pack, with pump" etc. at import time.
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN listing_type TEXT NOT NULL DEFAULT ''"); // single | with_pump
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN pack_size INTEGER NOT NULL DEFAULT 1");
+
   // Strict review dedup: a normalized key on (reviewer_name, posted_at, body)
   // catches re-imports and Claude double-emitting the same row. Computed in
   // JS at insert time (see routes); we mirror the normalization here for the

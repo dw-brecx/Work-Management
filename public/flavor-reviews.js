@@ -486,7 +486,7 @@
         <div class="fr-header-actions">
           <button class="btn-sec" id="fd-edit">Edit flavor</button>
           <button class="btn-sec" id="fd-add-link">+ Sell-link</button>
-          <button class="btn-sec btn-ai" onclick="window.location.hash='/flavor/${f.id}/reviews-import'">✨ Import reviews</button>
+          <button class="btn-sec btn-ai" id="fd-upload-reviews">⬆ Upload reviews file</button>
           <button class="btn-sec" id="fd-add-review">+ Log one</button>
           <button class="btn-primary" id="fd-new-issue">+ New issue</button>
           <button class="btn-sec btn-danger" id="fd-delete">Delete flavor</button>
@@ -509,6 +509,7 @@
     });
     $('fd-edit').addEventListener('click', () => openFlavorModal(f));
     $('fd-add-link').addEventListener('click', () => openLinkModal(f.id));
+    $('fd-upload-reviews').addEventListener('click', () => openUploadReviewsModal(f));
     $('fd-add-review').addEventListener('click', () => openReviewModal(f.id));
     $('fd-new-issue').addEventListener('click', () => openIssueModal(f.id, openBad));
     $('fd-delete').addEventListener('click', () => deleteFlavor(f));
@@ -818,6 +819,8 @@
             <span>${escapeHtml(r.source)}</span>
             ${r.reviewer_name ? `<span>${escapeHtml(r.reviewer_name)}</span>` : ''}
             ${r.posted_at ? `<span>${escapeHtml(prettyDate(r.posted_at))}</span>` : ''}
+            ${r.verified ? `<span title="Verified purchase">✓ Verified</span>` : ''}
+            ${(r.listing_type || (r.pack_size && r.pack_size > 1)) ? `<span>${r.listing_type === 'with_pump' ? 'With pump' : 'No pump'}${r.pack_size > 1 ? ' · ' + r.pack_size + '-pack' : ''}</span>` : ''}
             ${r.url ? `<a href="${escapeAttr(r.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Open ↗</a>` : ''}
             ${r.issue_id ? `<a onclick="window.location.hash='/issue/${r.issue_id}'" style="color:var(--accent);cursor:pointer">Issue: ${escapeHtml(r.issue_title || 'open')}</a>` : ''}
           </div>
@@ -3338,6 +3341,71 @@ The URL is: `;
         m.close();
         if (CURRENT_FLAVOR) renderFlavor(flavorId, CURRENT_FLAVOR_TAB);
       } catch (e) { toast(e.message, 'err'); }
+    });
+  }
+
+  // Upload a reviews file (the Chrome-agent export, or any sheet) into this
+  // flavor, tagged with the type / pack / pump you pick — so the reviews land
+  // on the right record and know which listing they came from.
+  function openUploadReviewsModal(f) {
+    const m = modal(`
+      <h3>Upload reviews to ${escapeHtml(f.name)}</h3>
+      <p style="font-size:12px;color:var(--text3);margin:0 0 12px">Pick what this file is, then choose the file. Works with the Review Agent / Chrome export (Reviewer Name, Rating, Date, Title, Body, Verified, Product Variant).</p>
+      <div class="form-grid">
+        <div class="form-row">
+          <label class="fr-label">Type</label>
+          <select id="up-variant">
+            <option value="regular" ${f.variant !== 'sugar_free' ? 'selected' : ''}>Regular</option>
+            <option value="sugar_free" ${f.variant === 'sugar_free' ? 'selected' : ''}>Sugar-free</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="fr-label">Pump</label>
+          <select id="up-pump">
+            <option value="single">Without pump</option>
+            <option value="with_pump">With pump</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="fr-label">Pack</label>
+          <select id="up-pack">
+            <option value="1">1-pack</option>
+            <option value="4">4-pack</option>
+            <option value="6">6-pack</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="fr-label">File (.xlsx or .csv)</label>
+        <input type="file" id="up-file" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="up-status" style="font-size:12px;color:var(--text3);min-height:16px"></div>
+      <div class="modal-actions">
+        <button class="btn-sec" id="up-cancel">Cancel</button>
+        <button class="btn-primary" id="up-save">Upload</button>
+      </div>
+    `);
+    m.el.querySelector('#up-cancel').addEventListener('click', m.close);
+    m.el.querySelector('#up-save').addEventListener('click', async () => {
+      const fileInput = m.el.querySelector('#up-file');
+      if (!fileInput.files || !fileInput.files[0]) { toast('Choose a file first', 'err'); return; }
+      const status = m.el.querySelector('#up-status');
+      const btn = m.el.querySelector('#up-save');
+      btn.disabled = true; status.textContent = 'Uploading & importing…';
+      try {
+        const fd = new FormData();
+        fd.append('file', fileInput.files[0]);
+        fd.append('variant', m.el.querySelector('#up-variant').value);
+        fd.append('listing_type', m.el.querySelector('#up-pump').value);
+        fd.append('pack_size', m.el.querySelector('#up-pack').value);
+        const r = await fetch('/api/flavor-reviews/flavors/' + f.id + '/reviews/upload', { method: 'POST', credentials: 'same-origin', body: fd });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'Upload failed');
+        const c = data.counts || {};
+        toast(`Added ${c.created || 0} review${c.created === 1 ? '' : 's'} (${c.skipped || 0} skipped) to ${data.flavor.variant.replace('_', '-')}`, 'ok');
+        m.close();
+        renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB);
+      } catch (e) { status.textContent = ''; btn.disabled = false; toast(e.message, 'err'); }
     });
   }
 

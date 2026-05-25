@@ -518,6 +518,9 @@ module.exports = function attach(app, deps) {
       url: row.url,
       posted_at: row.posted_at,
       sentiment: row.sentiment,
+      verified: !!row.verified,
+      listing_type: row.listing_type || '',
+      pack_size: Number(row.pack_size || 1),
       ai_summary: row.ai_summary,
       status: row.status,
       issue_id: row.issue_id || null,
@@ -2370,6 +2373,112 @@ module.exports = function attach(app, deps) {
     }
     return r.json();
   }
+
+  // Parse "4.0 out of 5 stars" → 4, "Reviewed … on May 22, 2026" → 2026-05-22.
+  function parseRatingCell(v) {
+    const m = String(v == null ? '' : v).match(/([0-9]+(?:\.[0-9]+)?)/);
+    return m ? Math.max(0, Math.min(5, Math.round(parseFloat(m[1])))) : 0;
+  }
+  function parseDateCell(v) {
+    if (v == null) return '';
+    if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+    const s = String(v).trim();
+    const m = s.match(/on\s+(.+)$/i);
+    const d = new Date(m ? m[1] : s);
+    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+  }
+  // Pick the first present key from a row (case-insensitive header match).
+  function pick(row, names) {
+    const keys = Object.keys(row);
+    for (const want of names) {
+      const k = keys.find(kk => kk.trim().toLowerCase() === want.toLowerCase());
+      if (k != null && String(row[k]).trim() !== '') return row[k];
+    }
+    return '';
+  }
+
+  // Find the flavor record of the wanted type within this flavor's name-group;
+  // create it if it doesn't exist yet, so uploading e.g. sugar-free reviews to
+  // a flavor that only has a regular record just works.
+  async function resolveGroupRecord(flavorId, wantVariant) {
+    const base = await get('SELECT id, name, kind FROM fr_flavors WHERE id=?', flavorId);
+    if (!base) return null;
+    const existing = await get('SELECT * FROM fr_flavors WHERE LOWER(name)=LOWER(?) AND variant=?', base.name, wantVariant);
+    if (existing) return existing;
+    const ins = await run(
+      `INSERT INTO fr_flavors (name, kind, variant, status) VALUES (?,?,?,'active') RETURNING id`,
+      base.name, base.kind || 'other', wantVariant
+    );
+    return await get('SELECT * FROM fr_flavors WHERE id=?', ins.lastInsertRowid);
+  }
+
+  // Upload a reviews file (the Chrome-agent export, or a generic sheet) and
+  // attach every row to this flavor — tagged with the type / pack / pump the
+  // user picked, so the reviews "know" which listing they belong to.
+  app.post('/api/flavor-reviews/flavors/:id/reviews/upload', requireAuth, xlsxUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer) return res.status(400).json({ error: 'No file uploaded.' });
+      const flavorId = Number(req.params.id);
+      if (!Number.isFinite(flavorId)) return res.status(400).json({ error: 'Bad flavor id' });
+
+      const wantVariant = req.body?.variant === 'sugar_free' ? 'sugar_free' : 'regular';
+      const listingType = ['single', 'with_pump'].includes(req.body?.listing_type) ? req.body.listing_type : 'single';
+      const packSize = Math.max(1, Math.min(99, parseInt(req.body?.pack_size, 10) || 1));
+
+      const target = await resolveGroupRecord(flavorId, wantVariant);
+      if (!target) return res.status(404).json({ error: 'Flavor not found' });
+
+      const XLSX = getXLSX();
+      let wb;
+      try { wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true }); }
+      catch { return res.status(400).json({ error: 'Could not read that file — is it a valid .xlsx/.csv?' }); }
+      // Prefer a "Reviews" sheet; else the first sheet.
+      const sheetName = wb.SheetNames.find(n => /review/i.test(n)) || wb.SheetNames[0];
+      const rows = sheetName ? XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' }) : [];
+      if (!rows.length) return res.status(400).json({ error: 'No rows found in the file.' });
+
+      const created = []; const skipped = []; const seen = new Set();
+      let negatives = 0;
+      for (const row of rows) {
+        const rating = parseRatingCell(pick(row, ['Rating', 'rating', 'stars']));
+        const title = String(pick(row, ['Review Title', 'title', 'review_title'])).slice(0, 200);
+        const body = String(pick(row, ['Review Body', 'body', 'review_body', 'review'])).slice(0, 10000);
+        const reviewer_name = String(pick(row, ['Reviewer Name', 'reviewer_name', 'author', 'name'])).slice(0, 120);
+        const posted_at = parseDateCell(pick(row, ['Date', 'posted_at', 'date']));
+        const verifiedRaw = String(pick(row, ['Verified Purchase', 'verified'])).toLowerCase();
+        const verified = /verified|yes|true|1/.test(verifiedRaw) ? 1 : 0;
+        const url = String(pick(row, ['url', 'link', 'URL'])).slice(0, 1000);
+        if (!body && !title) { skipped.push({ reason: 'empty' }); continue; }
+
+        const dedupKey = computeDedupKey(reviewer_name, posted_at, body);
+        if (dedupKey) {
+          if (seen.has(dedupKey)) { skipped.push({ reason: 'dup-in-file' }); continue; }
+          const dup = await get('SELECT id FROM fr_reviews WHERE flavor_id=? AND dedup_key=? LIMIT 1', target.id, dedupKey);
+          if (dup) { skipped.push({ reason: 'already-imported' }); continue; }
+          seen.add(dedupKey);
+        }
+        const sentiment = classifySentiment(rating);
+        const ins = await run(
+          `INSERT INTO fr_reviews (flavor_id, source, rating, reviewer_name, title, body, url, posted_at, sentiment, dedup_key, verified, listing_type, pack_size, created_by)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+          target.id, 'Amazon', rating, reviewer_name, title, body, url, posted_at, sentiment, dedupKey, verified, listingType, packSize, req.session.userId
+        );
+        created.push({ id: ins.lastInsertRowid });
+        if (sentiment === 'negative') negatives++;
+      }
+      if (negatives) { try { await bumpNextCyclePriority(target.id); } catch {} }
+
+      res.json({
+        ok: true,
+        flavor: { id: target.id, name: target.name, variant: target.variant },
+        listing_type: listingType, pack_size: packSize,
+        counts: { created: created.length, skipped: skipped.length, total: rows.length },
+      });
+    } catch (e) {
+      console.error('[fr] reviews upload failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   app.post('/api/flavor-reviews/reviews/fetch-api', requireAuth, async (req, res) => {
     try {
