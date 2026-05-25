@@ -393,7 +393,7 @@
       }
       const overdue = rec.next_cycle && rec.next_cycle < todayUtc();
       const stars = rec.avg_rating != null ? `<span class="fc-rating" title="Average rating">★ ${rec.avg_rating.toFixed(1)}</span>` : '';
-      return `<div class="fc-side" onclick="event.stopPropagation();window.location.hash='/flavor/${rec.id}'">
+      return `<div class="fc-side">
         <div class="fc-side-head">
           <span class="pill variant-${variantClass}">${typeLabel}</span>
           ${rec.status !== 'active' ? `<span class="pill status-${escapeAttr(rec.status)}">${escapeHtml(rec.status)}</span>` : ''}
@@ -416,8 +416,12 @@
         showReg ? sidePanel(g.regular, 'Regular', 'regular') : '',
         showSF  ? sidePanel(g.sugar_free, 'Sugar-free', 'sugar_free') : '',
       ].filter(Boolean).join('');
+      // A flavor is one clickable unit — open the merged detail (either type
+      // record resolves to the same name-grouped view). Prefer the record
+      // matching the active filter, else regular, else sugar-free.
+      const primary = (wantVariant === 'sugar_free' ? g.sugar_free : g.regular) || g.regular || g.sugar_free;
       return `
-        <div class="flavor-pair-card">
+        <div class="flavor-pair-card fpc-clickable" onclick="window.location.hash='/flavor/${primary.id}'" title="Open ${escapeAttr(g.name)}">
           <div class="fpc-head">
             <span class="fpc-name">${escapeHtml(g.name)}</span>
             <span class="pill kind-${escapeAttr(g.kind)}">${escapeHtml(cap(g.kind))}</span>
@@ -430,6 +434,7 @@
   // ── Flavor detail ──────────────────────────────────────────────────────
   let CURRENT_FLAVOR = null;
   let CURRENT_FLAVOR_TAB = 'overview';
+  let LINKS_FILTER = 'all'; // all | regular | sugar_free — sell-links box filter
   let FLAVOR_REVIEW_FILTER = 'all'; // all | regular | sugar_free — type view on detail page
   let AI_SUMMARY_CACHE = {}; // keyed by flavor id
 
@@ -444,6 +449,7 @@
     // type-specific complaint (e.g. "sugar-free aftertaste") is still
     // distinguishable, but you see the whole flavor at once.
     FLAVOR_REVIEW_FILTER = 'all';
+    LINKS_FILTER = 'all';
     const hasGroup = !!(f.group && f.group.flavors.length > 1);
     const groupReviews = (f.group && f.group.reviews) ? f.group.reviews : f.reviews;
     const groupIssues = (f.group && f.group.issues) ? f.group.issues : f.issues;
@@ -593,25 +599,9 @@
 
         <div>
           ${f.image_url ? `<div class="side-card" style="padding:0;overflow:hidden"><img src="${escapeAttr(f.image_url)}" alt="${escapeAttr(f.name)}" style="width:100%;display:block" referrerpolicy="no-referrer" onerror="this.parentElement.style.display='none'"></div>` : ''}
-          <div class="side-card">
-            <h4>Sell-links${f.amazon_asin ? ` · <span style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text3);text-transform:none;letter-spacing:0">ASIN ${escapeHtml(f.amazon_asin)}</span>` : ''}</h4>
-            ${f.links.length ? f.links.map(linkRow).join('') : '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}
-            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-              <button class="btn-tiny" onclick="FR.openLinkModal(${f.id})">+ Add link</button>
-            </div>
-            ${f.links.some(l => l.asin) ? `<button class="btn-tiny btn-ai" style="margin-top:8px;width:100%" onclick="FR.fetchReviewsApi(${f.id})">🔑 Fetch reviews via API (Rainforest)</button>` : ''}
-          </div>
+          ${renderLinksCard(f)}
 
-          <div class="side-card">
-            <h4>Schedule</h4>
-            ${f.cycles.length === 0 ? '<div style="font-size:12px;color:var(--text3)">No review cycles yet.</div>' : f.cycles.map(c => `
-              <div class="side-row">
-                <span>${escapeHtml(prettyDate(c.scheduled_for))}</span>
-                <span class="v"><span class="pill status-${escapeAttr(c.status)}">${escapeHtml(c.status)}</span></span>
-              </div>
-            `).join('')}
-            <button class="btn-tiny" style="margin-top:8px" id="add-cycle-btn">+ Schedule cycle</button>
-          </div>
+          ${renderScheduleCard(f)}
 
           <div class="side-card">
             <h4>Stats</h4>
@@ -624,6 +614,94 @@
         </div>
       </div>
     `;
+  }
+
+  // Sell-links card: a flavor's links split into a Regular box and a
+  // Sugar-free box (each tagged with its type). The toggle defaults to "All"
+  // (both boxes) and narrows to one type. Add-link / Fetch-via-API target the
+  // correct type's record so reviews land on the right flavor.
+  function linksToggle(f) {
+    if (!f.group || f.group.flavors.length < 2) return '';
+    const opts = [['all', 'All'], ['regular', 'Regular'], ['sugar_free', 'Sugar-free']];
+    return `<div class="type-toggle links-toggle">${opts.map(([v, label]) =>
+      `<button class="tt-btn lt-btn ${LINKS_FILTER === v ? 'active' : ''}" data-lt="${v}">${label}</button>`
+    ).join('')}</div>`;
+  }
+
+  function renderLinksCard(f) {
+    const flavors = (f.group && f.group.flavors.length) ? f.group.flavors : [{ id: f.id, variant: f.variant }];
+    const allLinks = (f.group && f.group.links) ? f.group.links : (f.links || []).map(l => ({ ...l, flavor_variant: f.variant }));
+    const regRec = flavors.find(v => v.variant === 'regular');
+    const sfRec  = flavors.find(v => v.variant === 'sugar_free');
+    const regLinks = allLinks.filter(l => l.flavor_variant === 'regular');
+    const sfLinks  = allLinks.filter(l => l.flavor_variant === 'sugar_free');
+
+    const box = (rec, label, variantClass, links) => {
+      if (!rec) return '';
+      const hasAsin = links.some(l => l.asin);
+      return `<div class="links-box">
+        <div class="links-box-head">
+          <span class="pill variant-${variantClass}">${label}</span>
+          <span style="font-size:11px;color:var(--text3)">${links.length} link${links.length === 1 ? '' : 's'}</span>
+        </div>
+        ${links.length ? links.map(linkRow).join('') : `<div style="font-size:11.5px;color:var(--text3);padding:4px 0">No ${label.toLowerCase()} links yet.</div>`}
+        <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+          <button class="btn-tiny" onclick="FR.openLinkModal(${rec.id})">+ Add link</button>
+          ${hasAsin ? `<button class="btn-tiny btn-ai" onclick="FR.fetchReviewsApi(${rec.id})">🔑 Fetch via API</button>` : ''}
+        </div>
+      </div>`;
+    };
+
+    const showReg = LINKS_FILTER !== 'sugar_free';
+    const showSF  = LINKS_FILTER !== 'regular';
+    const boxes = [
+      showReg ? box(regRec, 'Regular', 'regular', regLinks) : '',
+      showSF  ? box(sfRec, 'Sugar-free', 'sugar_free', sfLinks) : '',
+    ].filter(Boolean).join('');
+
+    return `<div class="side-card">
+      <h4>Sell-links</h4>
+      ${linksToggle(f)}
+      <div id="fd-links-body">${boxes || '<div style="font-size:12px;color:var(--text3)">No sell-links yet. Add the URLs where this flavor is sold (Amazon, Walmart, etc.) so the reviewer can pull up the page.</div>'}</div>
+    </div>`;
+  }
+
+  // Schedule + review-history card on the flavor detail. Upcoming review days
+  // (with their gather/check tickets) on top; below, the dated history of what
+  // was actually done to the product on each past review.
+  function renderScheduleCard(f) {
+    const cyc = (f.group && f.group.cycles) ? f.group.cycles : (f.cycles || []);
+    const upcoming = cyc.filter(c => c.status === 'scheduled' || c.status === 'in_progress');
+    const history  = cyc.filter(c => c.status === 'done');
+    const tix = (c) => [
+      c.gather_ticket_id && `<a onclick="FR.openTicket('${c.gather_ticket_id}')" style="color:var(--accent);cursor:pointer" title="Gather-reviews ticket">${escapeHtml(c.gather_ticket_id)}</a>`,
+      c.check_ticket_id  && `<a onclick="FR.openTicket('${c.check_ticket_id}')" style="color:var(--accent);cursor:pointer" title="Product-check ticket">${escapeHtml(c.check_ticket_id)}</a>`,
+    ].filter(Boolean).join(' · ');
+    return `<div class="side-card">
+      <h4>Review schedule</h4>
+      ${upcoming.length ? upcoming.map(c => `
+        <div class="side-row" style="align-items:flex-start">
+          <span>${escapeHtml(prettyDate(c.scheduled_for))}</span>
+          <span class="v"><span class="pill status-${escapeAttr(c.status)}">${escapeHtml(c.status)}</span></span>
+        </div>
+        ${tix(c) ? `<div style="font-size:11px;color:var(--text3);margin:-3px 0 7px">🎫 ${tix(c)}</div>` : ''}
+      `).join('') : '<div style="font-size:12px;color:var(--text3)">No upcoming review days. Add this flavor to a date on the calendar.</div>'}
+      <button class="btn-tiny" style="margin-top:6px" onclick="window.location.hash='/calendar'">📅 Open calendar</button>
+    </div>
+    ${history.length ? `<div class="side-card">
+      <h4>Review history</h4>
+      ${history.map(c => `
+        <div class="hist-row">
+          <div class="hist-date">${escapeHtml(prettyDate(c.completed_at || c.scheduled_for))}</div>
+          <div class="hist-body">
+            <span class="pill outcome-${escapeAttr(c.outcome || 'none')}">${escapeHtml(c.outcome ? cap(c.outcome) : 'reviewed')}</span>
+            <div class="hist-changes${c.changes ? '' : ' empty'}">${c.changes ? escapeHtml(c.changes) : 'No changes recorded.'}</div>
+            ${tix(c) ? `<div style="font-size:10.5px;color:var(--text3);margin-top:3px">🎫 ${tix(c)}</div>` : ''}
+            <button class="btn-tiny" style="margin-top:5px" onclick="FR.editCycleOutcome(${c.id})">Edit</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>` : ''}`;
   }
 
   // Segmented "Both types · Regular · Sugar-free" control. Only shown when
@@ -700,9 +778,18 @@
     const ac = $('add-cycle-btn');
     if (ac) ac.addEventListener('click', () => openCycleModal(CURRENT_FLAVOR.id));
     // Type toggle (Both / Regular / Sugar-free) on the reviews & issues tabs.
+    // The sell-links toggle shares the .tt-btn class for styling but carries
+    // data-lt (not data-tt) and drives LINKS_FILTER instead — guard against it.
     document.querySelectorAll('.tt-btn').forEach(btn => {
+      if (btn.dataset.tt == null) return;
       btn.addEventListener('click', () => {
         FLAVOR_REVIEW_FILTER = btn.dataset.tt;
+        renderFlavorTab();
+      });
+    });
+    document.querySelectorAll('.lt-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        LINKS_FILTER = btn.dataset.lt;
         renderFlavorTab();
       });
     });
@@ -878,6 +965,7 @@
     const today = todayUtc();
     const month = (monthIso && /^\d{4}-\d{2}$/.test(monthIso)) ? monthIso : today.slice(0, 7);
     loadingShell();
+    if (!SETTINGS_CACHE) SETTINGS_CACHE = await apiGet('/api/flavor-reviews/settings').catch(() => null);
     let cycles;
     try { cycles = await apiGet('/api/flavor-reviews/cycles?month=' + month); }
     catch (e) { pageShell(`<div class="empty-state">${escapeHtml(e.message)}</div>`); return; }
@@ -907,12 +995,13 @@
       const list = byDay.get(dateIso) || [];
       const chips = list.slice(0, 4).map(c => {
         const score = (c.priority || 3) + (c.ai_priority_bump || 0);
-        const cls = c.status === 'done' ? 'done' : (score >= 5 ? 'urgent' : (score >= 4 ? 'warn' : ''));
-        return `<div class="chip ${cls}" title="${escapeAttr(c.flavor_name)} — ${escapeHtml(c.status)}" onclick="event.stopPropagation();window.location.hash='/flavor/${c.flavor_id}'">${escapeHtml(c.flavor_name)}</div>`;
+        const cls = c.status === 'done' ? 'done' : c.status === 'skipped' ? 'skipped' : (score >= 5 ? 'urgent' : (score >= 4 ? 'warn' : ''));
+        const tk = (c.gather_ticket_id || c.check_ticket_id) ? ' 🎫' : '';
+        return `<div class="chip ${cls}" title="${escapeAttr(c.flavor_name)} — ${escapeHtml(c.status)}">${escapeHtml(c.flavor_name)}${tk}</div>`;
       }).join('');
       const more = list.length > 4 ? `<div class="chip" style="background:var(--bg2);color:var(--text2)">+${list.length - 4} more</div>` : '';
-      cells += `<div class="cal-cell ${isToday ? 'today' : ''}">
-        <div class="d"><span>${d}</span>${list.length ? `<span style="font-size:10px;color:var(--text3)">${list.length}</span>` : ''}</div>
+      cells += `<div class="cal-cell cal-clickable ${isToday ? 'today' : ''}" onclick="FR.openDayPanel('${dateIso}')" title="Schedule / manage ${dateIso}">
+        <div class="d"><span>${d}</span>${list.length ? `<span class="cal-count">${list.length}</span>` : ''}</div>
         ${chips}${more}
       </div>`;
     }
@@ -926,7 +1015,10 @@
       <div class="fr-header">
         <div class="fr-title-block">
           <h1 class="fr-title"><span class="fr-emoji">📅</span> Review calendar</h1>
-          <p class="fr-lede">Every scheduled review cycle. Click a flavor chip to jump straight into its detail page. AI-bumped cycles get highlighted in orange or red so you don't miss the urgent ones.</p>
+          <p class="fr-lede">Pick a date to schedule the week's flavors (up to ~${escapeHtml(String(SETTINGS_CACHE?.weekly_cap || 5))}, in order). Each flavor spawns a gather-reviews ticket and a product-check ticket. Click any day to schedule or manage it.</p>
+        </div>
+        <div class="fr-header-actions">
+          <button class="btn-primary" onclick="FR.openScheduleModal('${today}')">+ Schedule review day</button>
         </div>
       </div>
 
@@ -945,6 +1037,229 @@
         </div>
       </div>
     `);
+  }
+
+  // ── Review-day scheduling ────────────────────────────────────────────────
+  function isoWeekBoundsClient(dateIso) {
+    const d = new Date(dateIso + 'T00:00:00Z');
+    const dow = d.getUTCDay();
+    const mondayOffset = (dow === 0 ? -6 : 1 - dow);
+    const monday = new Date(d); monday.setUTCDate(d.getUTCDate() + mondayOffset);
+    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
+    const iso = (x) => x.toISOString().slice(0, 10);
+    return { start: iso(monday), end: iso(sunday) };
+  }
+
+  // One option per flavor NAME (the flavor is the unit). Representative id =
+  // the regular record if present, else the sugar-free one. Active only.
+  function flavorNameOptions() {
+    const groups = new Map();
+    for (const f of (FLAVORS_CACHE || [])) {
+      if (f.status && f.status !== 'active') continue;
+      const key = f.name.trim().toLowerCase();
+      if (!groups.has(key)) groups.set(key, { name: f.name, regular: null, sugar_free: null });
+      const g = groups.get(key);
+      if (f.variant === 'sugar_free') g.sugar_free = f; else g.regular = f;
+    }
+    return [...groups.values()].map(g => ({
+      id: (g.regular || g.sugar_free).id,
+      name: g.name,
+      types: [g.regular ? 'Reg' : null, g.sugar_free ? 'SF' : null].filter(Boolean).join('+'),
+    })).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async function openScheduleModal(dateIso, afterSave) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) dateIso = todayUtc();
+    if (!FLAVORS_CACHE) { try { FLAVORS_CACHE = await apiGet('/api/flavor-reviews/flavors'); } catch {} }
+    if (!SETTINGS_CACHE) SETTINGS_CACHE = await apiGet('/api/flavor-reviews/settings').catch(() => null);
+    const cap = Number(SETTINGS_CACHE?.weekly_cap || 5);
+    const opts = flavorNameOptions();
+    const wb = isoWeekBoundsClient(dateIso);
+    let weekCount = 0;
+    try {
+      const cyc = await apiGet('/api/flavor-reviews/cycles?month=' + dateIso.slice(0, 7));
+      weekCount = cyc.filter(c => c.scheduled_for >= wb.start && c.scheduled_for <= wb.end && c.status !== 'skipped').length;
+    } catch {}
+    const selected = [];
+    const m = modal(`
+      <h3>Schedule review day · ${escapeHtml(prettyDate(dateIso))}</h3>
+      <div class="form-row" style="max-width:220px">
+        <label class="fr-label">Date</label>
+        <input type="date" id="sch-date" value="${escapeAttr(dateIso)}">
+      </div>
+      <div id="sch-cap" class="sched-cap"></div>
+      <div class="sched-grid">
+        <div>
+          <input type="text" id="sch-search" placeholder="Search flavors to add…">
+          <div id="sch-avail" class="sched-list"></div>
+        </div>
+        <div>
+          <div class="fr-label" style="margin-bottom:6px">Selected — in order</div>
+          <div id="sch-selected" class="sched-list"></div>
+        </div>
+      </div>
+      <label style="display:flex;gap:7px;align-items:center;font-size:12px;margin-top:10px;cursor:pointer">
+        <input type="checkbox" id="sch-tickets" checked> Create a gather-reviews ticket + a product-check ticket for each flavor
+      </label>
+      <div class="modal-actions">
+        <button class="btn-sec" id="sch-cancel">Cancel</button>
+        <button class="btn-primary" id="sch-save">Schedule</button>
+      </div>
+    `);
+    const availEl = m.el.querySelector('#sch-avail');
+    const selEl = m.el.querySelector('#sch-selected');
+    const capEl = m.el.querySelector('#sch-cap');
+    const searchEl = m.el.querySelector('#sch-search');
+    const dateEl = m.el.querySelector('#sch-date');
+    function renderCap() {
+      const total = weekCount + selected.length;
+      const over = total > cap;
+      capEl.innerHTML = `Week ${escapeHtml(prettyDate(wb.start))} – ${escapeHtml(prettyDate(wb.end))} · <strong>${total}</strong>/${cap} flavors${over ? ' <span class="sched-over">— over the weekly cap (allowed, just a heads-up)</span>' : ''}`;
+      capEl.className = 'sched-cap' + (over ? ' over' : '');
+    }
+    function renderAvail() {
+      const q = searchEl.value.trim().toLowerCase();
+      const taken = new Set(selected.map(s => s.id));
+      const rows = opts.filter(o => !taken.has(o.id) && (!q || o.name.toLowerCase().includes(q)));
+      availEl.innerHTML = rows.length
+        ? rows.map(o => `<div class="sched-row" data-add="${o.id}"><span>${escapeHtml(o.name)}</span><span class="sched-types">${escapeHtml(o.types)}</span></div>`).join('')
+        : '<div class="sched-empty">No matches</div>';
+    }
+    function renderSel() {
+      selEl.innerHTML = selected.length
+        ? selected.map((s, i) => `<div class="sched-row sel"><span>${i + 1}. ${escapeHtml(s.name)}</span><span class="sched-ord">
+            <button class="btn-tiny" data-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+            <button class="btn-tiny" data-down="${i}" ${i === selected.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="btn-tiny btn-danger" data-rm="${i}">×</button></span></div>`).join('')
+        : '<div class="sched-empty">Click flavors on the left to add them (in the order you want them reviewed).</div>';
+      renderCap();
+    }
+    availEl.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-add]'); if (!row) return;
+      const id = Number(row.dataset.add);
+      const o = opts.find(x => x.id === id);
+      if (o) { selected.push({ id: o.id, name: o.name }); renderAvail(); renderSel(); }
+    });
+    selEl.addEventListener('click', (e) => {
+      const up = e.target.closest('[data-up]'), down = e.target.closest('[data-down]'), rm = e.target.closest('[data-rm]');
+      if (up) { const i = Number(up.dataset.up); if (i > 0) { [selected[i - 1], selected[i]] = [selected[i], selected[i - 1]]; renderSel(); } }
+      else if (down) { const i = Number(down.dataset.down); if (i < selected.length - 1) { [selected[i + 1], selected[i]] = [selected[i], selected[i + 1]]; renderSel(); } }
+      else if (rm) { const i = Number(rm.dataset.rm); selected.splice(i, 1); renderAvail(); renderSel(); }
+    });
+    searchEl.addEventListener('input', renderAvail);
+    dateEl.addEventListener('change', async () => {
+      const nd = dateEl.value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(nd)) return;
+      dateIso = nd;
+      const b = isoWeekBoundsClient(nd); wb.start = b.start; wb.end = b.end;
+      try {
+        const cyc = await apiGet('/api/flavor-reviews/cycles?month=' + nd.slice(0, 7));
+        weekCount = cyc.filter(c => c.scheduled_for >= wb.start && c.scheduled_for <= wb.end && c.status !== 'skipped').length;
+      } catch {}
+      renderCap();
+    });
+    m.el.querySelector('#sch-cancel').addEventListener('click', m.close);
+    m.el.querySelector('#sch-save').addEventListener('click', async () => {
+      if (!selected.length) { toast('Pick at least one flavor', 'err'); return; }
+      try {
+        const r = await apiPost('/api/flavor-reviews/review-days', {
+          date: dateIso,
+          flavor_ids: selected.map(s => s.id),
+          create_tickets: m.el.querySelector('#sch-tickets').checked,
+        });
+        const c = (r.created || []).length, sk = (r.skipped || []).length;
+        toast(`Scheduled ${c} flavor${c === 1 ? '' : 's'}${sk ? `, skipped ${sk}` : ''}${r.week?.exceeded ? ` · week now ${r.week.count_after}/${r.week.cap}` : ''}`, sk ? 'err' : 'ok');
+        m.close();
+        if (afterSave) afterSave();
+        else renderCalendar(dateIso.slice(0, 7));
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    renderAvail(); renderSel();
+  }
+
+  async function openDayPanel(dateIso) {
+    let cycles = [];
+    try {
+      const list = await apiGet('/api/flavor-reviews/cycles?month=' + dateIso.slice(0, 7));
+      cycles = list.filter(c => c.scheduled_for === dateIso).sort((a, b) => (a.position - b.position) || (a.id - b.id));
+    } catch (e) { toast(e.message, 'err'); }
+    const rows = cycles.map(c => {
+      const done = c.status === 'done';
+      const tix = [
+        c.gather_ticket_id && `<a onclick="FR.openTicket('${c.gather_ticket_id}')" class="daylink">Gather ${escapeHtml(c.gather_ticket_id)}</a>`,
+        c.check_ticket_id && `<a onclick="FR.openTicket('${c.check_ticket_id}')" class="daylink">Check ${escapeHtml(c.check_ticket_id)}</a>`,
+      ].filter(Boolean).join(' · ');
+      return `<div class="day-row">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600"><a onclick="FR.openFlavorFromPanel(${c.flavor_id})" style="color:var(--accent);cursor:pointer">${c.position ? c.position + '. ' : ''}${escapeHtml(c.flavor_name)}</a> <span class="pill status-${escapeAttr(c.status)}">${escapeHtml(c.status)}</span></div>
+          ${tix ? `<div style="font-size:11px;color:var(--text3);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap">🎫 ${tix}</div>` : '<div style="font-size:11px;color:var(--text3);margin-top:3px">No tickets</div>'}
+          ${c.outcome || c.changes ? `<div style="font-size:11.5px;color:var(--text2);margin-top:3px">${c.outcome ? '<strong>' + escapeHtml(cap(c.outcome)) + '</strong> · ' : ''}${escapeHtml(c.changes || '')}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:5px;flex-direction:column">
+          ${done ? `<button class="btn-tiny" data-edit="${c.id}">Edit outcome</button>` : `<button class="btn-tiny btn-primary" data-done="${c.id}">Mark reviewed</button>`}
+          <button class="btn-tiny btn-danger" data-del="${c.id}">Remove</button>
+        </div>
+      </div>`;
+    }).join('');
+    const m = modal(`
+      <h3>Review day · ${escapeHtml(prettyDate(dateIso))}</h3>
+      <div id="day-rows" style="max-height:55vh;overflow:auto">${cycles.length ? rows : '<div class="sched-empty">No flavors scheduled for this day yet.</div>'}</div>
+      <div class="modal-actions" style="justify-content:space-between">
+        <button class="btn-primary" id="day-add">+ Add flavors</button>
+        <button class="btn-sec" id="day-close">Close</button>
+      </div>
+    `);
+    const byId = new Map(cycles.map(c => [c.id, c]));
+    m.el.querySelector('#day-close').addEventListener('click', () => { m.close(); renderCalendar(dateIso.slice(0, 7)); });
+    m.el.querySelector('#day-add').addEventListener('click', () => { m.close(); openScheduleModal(dateIso, () => openDayPanel(dateIso)); });
+    m.el.querySelector('#day-rows').addEventListener('click', async (e) => {
+      const done = e.target.closest('[data-done]'), edit = e.target.closest('[data-edit]'), del = e.target.closest('[data-del]');
+      if (done || edit) {
+        const id = Number((done || edit).dataset.done || (done || edit).dataset.edit);
+        m.close(); openReviewDoneModal(byId.get(id), () => openDayPanel(dateIso));
+      } else if (del) {
+        const id = Number(del.dataset.del);
+        if (!confirm('Remove this flavor from the day? Its tickets are not deleted — close them in the ticket app if needed.')) return;
+        try { await apiDel('/api/flavor-reviews/cycles/' + id); m.close(); openDayPanel(dateIso); } catch (err) { toast(err.message, 'err'); }
+      }
+    });
+  }
+
+  function openReviewDoneModal(c, afterSave) {
+    if (!c) return;
+    const m = modal(`
+      <h3>Mark reviewed · ${escapeHtml(c.flavor_name || '')}</h3>
+      <div class="form-row">
+        <label class="fr-label">Outcome</label>
+        <select id="rd-outcome">
+          <option value="no_action" ${c.outcome === 'no_action' ? 'selected' : ''}>No action needed</option>
+          <option value="adjusted"  ${c.outcome === 'adjusted'  ? 'selected' : ''}>Adjusted the product</option>
+          <option value="escalated" ${c.outcome === 'escalated' ? 'selected' : ''}>Escalated / needs more work</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="fr-label">What did we do / change? (saved to this product's review history)</label>
+        <textarea id="rd-changes" placeholder="e.g. Reduced sweetness ~5%, updated label allergen note, or: no change needed — reviews positive">${escapeHtml(c.changes || '')}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-sec" id="rd-cancel">Cancel</button>
+        <button class="btn-primary" id="rd-save">Save &amp; mark reviewed</button>
+      </div>
+    `);
+    m.el.querySelector('#rd-cancel').addEventListener('click', () => { m.close(); if (afterSave) afterSave(); });
+    m.el.querySelector('#rd-save').addEventListener('click', async () => {
+      try {
+        await apiPatch('/api/flavor-reviews/cycles/' + c.id, {
+          status: 'done',
+          outcome: m.el.querySelector('#rd-outcome').value,
+          changes: m.el.querySelector('#rd-changes').value,
+        });
+        toast('Saved to review history', 'ok');
+        m.close();
+        if (afterSave) afterSave();
+        else if (CURRENT_FLAVOR) renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB);
+      } catch (e) { toast(e.message, 'err'); }
+    });
   }
 
   // ── Bulk import ────────────────────────────────────────────────────────
@@ -2553,6 +2868,47 @@ The URL is: `;
 
       <div class="card" style="max-width:760px;margin-top:16px">
         <div class="card-head">
+          <h3>📅 Review-day scheduling</h3>
+        </div>
+        <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin:0 0 12px">
+          When you schedule a flavor onto a calendar date, two real tickets are created in the main ticket app: one to
+          gather all its reviews, one for someone to check the product and make adjustments. Set who they go to here.
+        </p>
+        <div class="form-grid">
+          <div class="form-row">
+            <label class="fr-label">Review gatherer</label>
+            <select id="set-gatherer">
+              <option value="">(unassigned)</option>
+              ${(s.team || []).map(u => `<option value="${u.id}" ${s.review_gatherer_id === u.id ? 'selected' : ''}>${escapeHtml(u.name)} (${escapeHtml(u.email)})</option>`).join('')}
+            </select>
+            <div style="font-size:11px;color:var(--text3);margin-top:5px">Gets the "gather all reviews" ticket.</div>
+          </div>
+          <div class="form-row">
+            <label class="fr-label">Product checker</label>
+            <select id="set-checker">
+              <option value="">(unassigned)</option>
+              ${(s.team || []).map(u => `<option value="${u.id}" ${s.product_checker_id === u.id ? 'selected' : ''}>${escapeHtml(u.name)} (${escapeHtml(u.email)})</option>`).join('')}
+            </select>
+            <div style="font-size:11px;color:var(--text3);margin-top:5px">Gets the "check product & adjust" ticket.</div>
+          </div>
+          <div class="form-row">
+            <label class="fr-label">Flavors per week (soft cap)</label>
+            <input type="number" id="set-cap" min="1" max="50" value="${s.weekly_cap}">
+            <div style="font-size:11px;color:var(--text3);margin-top:5px">Warns when a week goes past this — never blocks.</div>
+          </div>
+          <div class="form-row">
+            <label class="fr-label">Product-check due offset</label>
+            <input type="number" id="set-offset" min="0" max="60" value="${s.checker_offset_days}">
+            <div style="font-size:11px;color:var(--text3);margin-top:5px">Days after the review day the check ticket is due.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="btn-primary" id="set-save-sched">Save</button>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:760px;margin-top:16px">
+        <div class="card-head">
           <h3>🔑 Rainforest API (reviews)</h3>
         </div>
         <p style="font-size:12.5px;color:var(--text2);line-height:1.55;margin:0 0 12px">
@@ -2583,6 +2939,18 @@ The URL is: `;
         };
         await apiPatch('/api/flavor-reviews/settings', payload);
         toast('Settings saved', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    $('set-save-sched').addEventListener('click', async () => {
+      try {
+        await apiPatch('/api/flavor-reviews/settings', {
+          review_gatherer_id: $('set-gatherer').value ? Number($('set-gatherer').value) : null,
+          product_checker_id: $('set-checker').value ? Number($('set-checker').value) : null,
+          weekly_cap: Number($('set-cap').value),
+          checker_offset_days: Number($('set-offset').value),
+        });
+        SETTINGS_CACHE = null;
+        toast('Review scheduling saved', 'ok');
       } catch (e) { toast(e.message, 'err'); }
     });
     $('set-save-rainforest').addEventListener('click', async () => {
@@ -3147,6 +3515,23 @@ The URL is: `;
   // ── Public hooks (used by inline handlers in row HTML) ─────────────────
   window.FR = {
     openLinkModal,
+    openScheduleModal,
+    openDayPanel,
+    // Open a main-app ticket. We're embedded in an iframe, so drive the TOP
+    // window to the ticket's deep-link route in the main app.
+    openTicket(id) {
+      const url = '/tickets/' + id;
+      try { (window.top || window).location.href = url; } catch { window.location.href = url; }
+    },
+    openFlavorFromPanel(id) {
+      document.querySelectorAll('.fr-modal-bg').forEach(e => e.remove());
+      window.location.hash = '/flavor/' + id;
+    },
+    editCycleOutcome(cycleId) {
+      const cyc = (CURRENT_FLAVOR && CURRENT_FLAVOR.group && CURRENT_FLAVOR.group.cycles) ? CURRENT_FLAVOR.group.cycles : (CURRENT_FLAVOR?.cycles || []);
+      const c = cyc.find(x => x.id === cycleId);
+      if (c) openReviewDoneModal(c, () => renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB));
+    },
     async deleteInbox(id) {
       if (!confirm('Delete this capture from the inbox?')) return;
       try {
@@ -3166,7 +3551,9 @@ The URL is: `;
         if (r.ok) {
           const c = r.counts || {};
           toast(`Added ${c.created || 0} review${c.created === 1 ? '' : 's'} (${c.skipped || 0} dup, ${c.errors || 0} errors)`, c.errors ? 'err' : 'ok');
-          if (CURRENT_FLAVOR && CURRENT_FLAVOR.id === flavorId) renderFlavor(flavorId, CURRENT_FLAVOR_TAB);
+          // Reload the whole flavor (the group reloads), so reviews fetched for
+          // the sibling type record show up too — not just when ids match.
+          if (CURRENT_FLAVOR) renderFlavor(CURRENT_FLAVOR.id, CURRENT_FLAVOR_TAB);
         } else {
           toast(r.error || 'Fetch failed', 'err');
         }

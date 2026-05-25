@@ -1973,6 +1973,26 @@ async function init() {
   // the settings API only ever returns whether it's configured, never the key.
   await safeAlter("ALTER TABLE fr_settings ADD COLUMN rainforest_key TEXT NOT NULL DEFAULT ''");
 
+  // ── Review-day scheduling (calendar) ─────────────────────────────────────
+  // A "review day" = one date per week holding up to ~5 flavors (in order).
+  // Scheduling a flavor onto a date spawns two real main-app tickets: one to
+  // gather all its reviews, one for someone to check the product and make
+  // adjustments. We remember both ticket ids on the cycle, the order the
+  // flavor sits in on that day, and the outcome/changes once it's reviewed
+  // (so each product gets a dated history of what we actually did).
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN position INTEGER NOT NULL DEFAULT 0");
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN gather_ticket_id TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN check_ticket_id TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN outcome TEXT NOT NULL DEFAULT ''");   // '' | no_action | adjusted | escalated
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN changes TEXT NOT NULL DEFAULT ''");   // free text: what we changed
+  // Who the two auto-created tickets default to, plus the weekly flavor cap
+  // (soft) and how many days after the review day the product-check ticket is
+  // due.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN review_gatherer_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN product_checker_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN weekly_cap INTEGER NOT NULL DEFAULT 5");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN checker_offset_days INTEGER NOT NULL DEFAULT 3");
+
   // Strict review dedup: a normalized key on (reviewer_name, posted_at, body)
   // catches re-imports and Claude double-emitting the same row. Computed in
   // JS at insert time (see routes); we mirror the normalization here for the

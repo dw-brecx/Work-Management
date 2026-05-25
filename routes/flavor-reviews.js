@@ -12,7 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = function attach(app, deps) {
-  const { get, all, run, requireAuth, pool } = deps;
+  const { get, all, run, requireAuth, pool, createTicket } = deps;
   const { randomBytes } = require('crypto');
   const multer = require('multer');
   // Excel/CSV uploads are parsed in memory (no temp files to clean up).
@@ -187,6 +187,27 @@ module.exports = function attach(app, deps) {
             i.created_at DESC`,
         ...groupIds
       );
+      // All sell-links across both type records, each tagged with its type so
+      // the detail page can group them into Regular / Sugar-free boxes.
+      const groupLinks = await all(
+        `SELECT l.*, f.variant AS flavor_variant
+           FROM fr_flavor_links l
+           JOIN fr_flavors f ON f.id = l.flavor_id
+          WHERE l.flavor_id IN (${ph})
+          ORDER BY (f.variant='sugar_free'), l.position ASC, l.id ASC`,
+        ...groupIds
+      );
+      // Every review cycle across the group — drives the schedule card and the
+      // "Review history" timeline (when each review happened + what we did).
+      const groupCycles = await all(
+        `SELECT c.*, f.name AS flavor_name, f.variant AS flavor_variant, u.name AS assignee_name
+           FROM fr_cycles c
+           JOIN fr_flavors f ON f.id = c.flavor_id
+      LEFT JOIN users u ON u.id = c.assigned_to
+          WHERE c.flavor_id IN (${ph})
+       ORDER BY c.scheduled_for DESC, c.id DESC`,
+        ...groupIds
+      );
 
       res.json({
         ...shapeFlavor(row),
@@ -198,6 +219,8 @@ module.exports = function attach(app, deps) {
           flavors: groupFlavors.map(g => ({ id: g.id, name: g.name, variant: g.variant, kind: g.kind, status: g.status })),
           reviews: groupReviews.map(shapeReview),
           issues: groupIssues.map(shapeIssue),
+          links: groupLinks.map(l => ({ ...shapeLink(l), flavor_variant: l.flavor_variant })),
+          cycles: groupCycles.map(shapeCycle),
         },
       });
     } catch (e) {
@@ -781,9 +804,15 @@ module.exports = function attach(app, deps) {
   function shapeCycle(row) {
     return {
       id: row.id, flavor_id: row.flavor_id, flavor_name: row.flavor_name || null,
+      flavor_variant: row.flavor_variant || null,
       scheduled_for: row.scheduled_for, assigned_to: row.assigned_to || null,
       assignee_name: row.assignee_name || '',
       status: row.status, priority: row.priority, ai_priority_bump: row.ai_priority_bump,
+      position: row.position || 0,
+      gather_ticket_id: row.gather_ticket_id || '',
+      check_ticket_id: row.check_ticket_id || '',
+      outcome: row.outcome || '',
+      changes: row.changes || '',
       completed_at: row.completed_at || null, completed_by: row.completed_by || null,
       notes: row.notes || '',
       created_at: row.created_at,
@@ -800,16 +829,133 @@ module.exports = function attach(app, deps) {
         args.push(month + '-%');
       }
       const rows = await all(
-        `SELECT c.*, f.name AS flavor_name, u.name AS assignee_name
+        `SELECT c.*, f.name AS flavor_name, f.variant AS flavor_variant, u.name AS assignee_name
            FROM fr_cycles c
            JOIN fr_flavors f ON f.id = c.flavor_id
       LEFT JOIN users u ON u.id = c.assigned_to
           ${where}
-       ORDER BY c.scheduled_for ASC, (c.priority + c.ai_priority_bump) DESC`,
+       ORDER BY c.scheduled_for ASC, c.position ASC, (c.priority + c.ai_priority_bump) DESC`,
         ...args
       );
       res.json(rows.map(shapeCycle));
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ISO-week (Mon–Sun) bounds for a YYYY-MM-DD date, returned as ISO strings.
+  // Used to enforce the soft "~N flavors per week" cap.
+  function isoWeekBounds(dateIso) {
+    const d = new Date(dateIso + 'T00:00:00Z');
+    const dow = d.getUTCDay();                 // 0=Sun..6=Sat
+    const mondayOffset = (dow === 0 ? -6 : 1 - dow);
+    const monday = new Date(d); monday.setUTCDate(d.getUTCDate() + mondayOffset);
+    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
+    const iso = (x) => x.toISOString().slice(0, 10);
+    return { start: iso(monday), end: iso(sunday) };
+  }
+
+  // Format a YYYY-MM-DD into the "Mon DD, YYYY" string the main ticket UI uses
+  // for its `due` column, so scheduled tickets read consistently.
+  function ticketDueString(dateIso) {
+    try { return new Date(dateIso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }); }
+    catch { return dateIso; }
+  }
+  function addDaysIso(dateIso, days) {
+    const d = new Date(dateIso + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + Number(days || 0));
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Schedule a "review day": place an ordered set of flavors on one date.
+  // Each flavor → one cycle + two real main-app tickets (gather reviews,
+  // check product & adjust), assigned to the Settings defaults and linked to
+  // the flavor. Soft-warns (does not block) past the weekly cap.
+  app.post('/api/flavor-reviews/review-days', requireAuth, async (req, res) => {
+    try {
+      const date = String(req.body?.date || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+      const flavorIds = Array.isArray(req.body?.flavor_ids) ? req.body.flavor_ids.map(Number).filter(Number.isFinite) : [];
+      if (!flavorIds.length) return res.status(400).json({ error: 'flavor_ids required' });
+      const makeTickets = req.body?.create_tickets !== false;
+
+      const s = await get('SELECT * FROM fr_settings WHERE id=1');
+      const gathererId = s?.review_gatherer_id || s?.default_reviewer_id || null;
+      const checkerId  = s?.product_checker_id || null;
+      const cap = Number(s?.weekly_cap || 5);
+      const checkerOffset = Number(s?.checker_offset_days ?? 3);
+      const checkDue = addDaysIso(date, checkerOffset);
+
+      // Existing scheduled flavors in this ISO week (for the soft cap).
+      const wk = isoWeekBounds(date);
+      const weekRow = await get(
+        `SELECT COUNT(*) AS n FROM fr_cycles WHERE scheduled_for >= ? AND scheduled_for <= ? AND status <> 'skipped'`,
+        wk.start, wk.end
+      );
+      const countBefore = Number(weekRow?.n || 0);
+
+      // Current max position on this exact date so new flavors append in order.
+      const posRow = await get('SELECT COALESCE(MAX(position),0) AS p FROM fr_cycles WHERE scheduled_for=?', date);
+      let pos = Number(posRow?.p || 0);
+
+      const created = []; const skipped = [];
+      for (const flavorId of flavorIds) {
+        const f = await get('SELECT id, name, variant FROM fr_flavors WHERE id=?', flavorId);
+        if (!f) { skipped.push({ flavor_id: flavorId, reason: 'not found' }); continue; }
+        // Don't double-book the same flavor on the same date.
+        const dupe = await get("SELECT id FROM fr_cycles WHERE flavor_id=? AND scheduled_for=? AND status<>'skipped'", flavorId, date);
+        if (dupe) { skipped.push({ flavor_id: flavorId, name: f.name, reason: 'already scheduled this day' }); continue; }
+
+        pos += 1;
+        const ins = await run(
+          `INSERT INTO fr_cycles (flavor_id, scheduled_for, assigned_to, priority, position)
+           VALUES (?,?,?,?,?) RETURNING id`,
+          flavorId, date, gathererId, 3, pos
+        );
+        const cycleId = ins.lastInsertRowid;
+
+        let gatherTicketId = '', checkTicketId = '';
+        if (makeTickets && typeof createTicket === 'function') {
+          const tag = `Flavor review: ${f.name}`;
+          try {
+            const g = await createTicket({
+              title: `Gather all reviews — ${f.name}`,
+              description: `Collect every recent review for "${f.name}" (both Regular and Sugar-free) ahead of the ${ticketDueString(date)} review. Pull via the Rainforest API on the flavor page or upload a review file, then confirm the latest are in.`,
+              assigneeUserId: gathererId, priority: 'Medium', dept: 'Reviews',
+              due: ticketDueString(date), tags: [tag, 'Gather reviews'],
+              flavorId: f.id, flavorName: f.name, createdBy: req.session.userId,
+            });
+            gatherTicketId = g.id;
+          } catch (e) { console.warn('[fr] gather ticket failed:', e.message); }
+          try {
+            const c = await createTicket({
+              title: `Check product & adjust — ${f.name}`,
+              description: `Review the gathered feedback for "${f.name}" and decide if the product needs changes (reformulate, bottle/label, listing copy, etc.). Record what you changed on the flavor's Review history when done.`,
+              assigneeUserId: checkerId, priority: 'Medium', dept: 'Product',
+              due: ticketDueString(checkDue), tags: [tag, 'Check product'],
+              flavorId: f.id, flavorName: f.name, createdBy: req.session.userId,
+            });
+            checkTicketId = c.id;
+          } catch (e) { console.warn('[fr] check ticket failed:', e.message); }
+          await run('UPDATE fr_cycles SET gather_ticket_id=?, check_ticket_id=? WHERE id=?', gatherTicketId, checkTicketId, cycleId);
+        }
+        created.push({ cycle_id: cycleId, flavor_id: f.id, name: f.name, position: pos, gather_ticket_id: gatherTicketId, check_ticket_id: checkTicketId });
+      }
+
+      const countAfter = countBefore + created.length;
+      res.status(201).json({
+        ok: true,
+        date,
+        created,
+        skipped,
+        week: {
+          start: wk.start, end: wk.end, cap,
+          count_before: countBefore, count_after: countAfter,
+          exceeded: countAfter > cap,
+        },
+      });
+    } catch (e) {
+      console.error('[fr] review-days failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.post('/api/flavor-reviews/flavors/:id/cycles', requireAuth, async (req, res) => {
@@ -860,11 +1006,22 @@ module.exports = function attach(app, deps) {
       if ('notes' in req.body) {
         sets.push('notes=?'); args.push(String(req.body.notes || '').slice(0, 4000));
       }
+      if ('outcome' in req.body) {
+        const o = String(req.body.outcome || '').trim();
+        if (o && !['no_action', 'adjusted', 'escalated'].includes(o)) return res.status(400).json({ error: 'Bad outcome' });
+        sets.push('outcome=?'); args.push(o);
+      }
+      if ('changes' in req.body) {
+        sets.push('changes=?'); args.push(String(req.body.changes || '').slice(0, 4000));
+      }
       if ('status' in req.body) {
         const s = String(req.body.status || '').trim();
         if (!['scheduled', 'in_progress', 'done', 'skipped'].includes(s)) return res.status(400).json({ error: 'Bad status' });
         sets.push('status=?'); args.push(s);
-        if (s === 'done') {
+        // Only stamp completion on the transition INTO done — re-saving an
+        // already-done cycle (e.g. editing its outcome) must not move the date
+        // or re-trigger auto-scheduling.
+        if (s === 'done' && existing.status !== 'done') {
           sets.push(`completed_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
           sets.push('completed_by=?'); args.push(req.session.userId);
         }
@@ -874,9 +1031,9 @@ module.exports = function attach(app, deps) {
       args.push(id);
       await run(`UPDATE fr_cycles SET ${sets.join(',')} WHERE id=?`, ...args);
 
-      // When marking done, auto-schedule the next cycle per cadence so the
-      // calendar never goes empty after a review session.
-      if (req.body?.status === 'done') {
+      // When marking done (first time only), auto-schedule the next cycle per
+      // cadence so the calendar never goes empty after a review session.
+      if (req.body?.status === 'done' && existing.status !== 'done') {
         await scheduleNextCycle(existing.flavor_id);
       }
 
@@ -989,6 +1146,11 @@ module.exports = function attach(app, deps) {
         // tail so the user can recognise which key is saved.
         rainforest_configured: !!(row?.rainforest_key),
         rainforest_key_tail: row?.rainforest_key ? String(row.rainforest_key).slice(-4) : '',
+        // Review-day scheduling defaults.
+        review_gatherer_id: row?.review_gatherer_id || null,
+        product_checker_id: row?.product_checker_id || null,
+        weekly_cap: Number(row?.weekly_cap || 5),
+        checker_offset_days: Number(row?.checker_offset_days ?? 3),
         team,
       });
     } catch (e) {
@@ -1020,6 +1182,20 @@ module.exports = function attach(app, deps) {
         const k = String(req.body.rainforest_key || '').trim().slice(0, 200);
         sets.push('rainforest_key=?'); args.push(k);
       }
+      if ('review_gatherer_id' in req.body) {
+        const a = req.body.review_gatherer_id == null ? null : Number(req.body.review_gatherer_id);
+        sets.push('review_gatherer_id=?'); args.push(a);
+      }
+      if ('product_checker_id' in req.body) {
+        const a = req.body.product_checker_id == null ? null : Number(req.body.product_checker_id);
+        sets.push('product_checker_id=?'); args.push(a);
+      }
+      if ('weekly_cap' in req.body) {
+        sets.push('weekly_cap=?'); args.push(Math.max(1, Math.min(50, parseInt(req.body.weekly_cap, 10) || 5)));
+      }
+      if ('checker_offset_days' in req.body) {
+        sets.push('checker_offset_days=?'); args.push(Math.max(0, Math.min(60, parseInt(req.body.checker_offset_days, 10) || 0)));
+      }
       if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
       sets.push(`updated_at=TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
       args.push(1);
@@ -1032,6 +1208,10 @@ module.exports = function attach(app, deps) {
         auto_schedule: !!row.auto_schedule,
         rainforest_configured: !!row.rainforest_key,
         rainforest_key_tail: row.rainforest_key ? String(row.rainforest_key).slice(-4) : '',
+        review_gatherer_id: row.review_gatherer_id || null,
+        product_checker_id: row.product_checker_id || null,
+        weekly_cap: Number(row.weekly_cap || 5),
+        checker_offset_days: Number(row.checker_offset_days ?? 3),
       });
     } catch (e) {
       console.error('[fr] settings patch failed:', e.message);

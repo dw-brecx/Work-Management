@@ -743,6 +743,58 @@ async function nameForUserId(userId, fallback) {
   return u ? u.name : (fallback || '');
 }
 
+// Create a single main-app ticket programmatically. Used by the Flavor
+// Reviews scheduler so a scheduled review spawns real tickets in everyone's
+// normal queue (linked to the flavor via syruvia_flavor_id). Centralised here
+// so TKT-id allocation + assignee notification + timeline stay in one place
+// instead of being duplicated inside the route modules.
+async function createTicket(opts) {
+  const {
+    title, description = '', assigneeUserId = null, priority = 'Medium',
+    dept = 'General', due = '', status = 'Open', tags = [],
+    flavorId = null, flavorName = '', createdBy = null,
+  } = opts || {};
+  if (!title) throw new Error('createTicket: title required');
+
+  // Allocate a unique TKT-#### id (retry on race with other writers).
+  let id = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+    let nextNum = 1000;
+    if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+    const candidate = 'TKT-' + (nextNum + 1);
+    if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
+  }
+  if (!id) throw new Error('Could not allocate a unique ticket id — please retry.');
+
+  const creatorName  = createdBy ? await nameForUserId(createdBy, '') : '';
+  const assigneeName = assigneeUserId ? await nameForUserId(assigneeUserId, '') : '';
+  const createdStr   = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  await run(
+    `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,syruvia_flavor_id,syruvia_flavor_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)`,
+    id, title, creatorName || '', assigneeName || '', creatorName || '',
+    priority, status, dept, due, createdStr, 0, JSON.stringify(tags || []),
+    createdBy, assigneeUserId, createdBy, createdBy,
+    flavorId || null, flavorName || null
+  );
+  await run(
+    `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+       ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+    id, String(description || '')
+  );
+  if (assigneeName) {
+    await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, assigneeName, assigneeUserId);
+    if (assigneeUserId && assigneeUserId !== createdBy) {
+      await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        assigneeUserId, 'assigned', '👤', `${creatorName || 'The review scheduler'} assigned you "${title}"`, id);
+    }
+  }
+  await writeTimeline(id, TL.create, `Ticket created by ${creatorName || 'the review scheduler'}${assigneeName ? ` · assigned to ${assigneeName}` : ''}`);
+  return { id, title, assignee: assigneeName, due };
+}
+
 async function buildTicket(row) {
   if (!row) return null;
   // Pull all assignees with both user_id and stored user_name; prefer the
@@ -8242,7 +8294,7 @@ require('./routes/flavors')(app, {
 // In-market flavor catalog + customer-review tracking + scheduled review
 // cycles. Lives in routes/flavor-reviews.js and is served on
 // /flavor-reviews.html (standalone page outside the SPA shell).
-require('./routes/flavor-reviews')(app, { get, all, run, requireAuth, pool });
+require('./routes/flavor-reviews')(app, { get, all, run, requireAuth, pool, createTicket });
 
 // Unauthenticated standalone HTML for the public share viewer (rendered at
 // /p/:token). Lives outside the SPA shell so it works without a session.

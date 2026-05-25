@@ -462,6 +462,8 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
   border-radius: 14px;
   padding: 14px 16px 16px;
 }
+.flavor-pair-card.fpc-clickable { cursor: pointer; transition: border-color .12s, box-shadow .15s, transform .12s; }
+.flavor-pair-card.fpc-clickable:hover { border-color: var(--border2); box-shadow: 0 10px 24px -14px rgba(15,23,42,.28); transform: translateY(-1px); }
 .flavor-pair-card .fpc-head {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-bottom: 12px;
@@ -474,13 +476,9 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 11px 12px;
-  cursor: pointer;
-  transition: border-color .12s, box-shadow .15s, transform .12s;
   background: var(--card-soft, var(--bg2));
 }
-.fc-side:hover { border-color: var(--border2); box-shadow: 0 6px 16px -10px rgba(15,23,42,.2); transform: translateY(-1px); }
-.fc-side-empty { cursor: default; opacity: .7; background: transparent; border-style: dashed; }
-.fc-side-empty:hover { border-color: var(--border); box-shadow: none; transform: none; }
+.fc-side-empty { opacity: .7; background: transparent; border-style: dashed; }
 .fc-side .fc-side-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .fc-side .fc-side-none { font-size: 11.5px; color: var(--text3); }
 .fc-side .fc-stat-row { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -496,6 +494,14 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
 }
 .type-toggle .tt-btn:hover { color: var(--text); }
 .type-toggle .tt-btn.active { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(15,23,42,.12); }
+
+/* Sell-links: the toggle stretches full width of the side card, and each
+   type's links sit in their own bordered box. */
+.links-toggle { display: flex; width: 100%; margin: 8px 0 10px; }
+.links-toggle .lt-btn { flex: 1; text-align: center; }
+.links-box { border: 1px solid var(--border); border-radius: 10px; padding: 9px 10px; margin-bottom: 9px; background: var(--card-soft, var(--bg2)); }
+.links-box:last-child { margin-bottom: 0; }
+.links-box-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
 
 /* Pills */
 .pill {
@@ -717,6 +723,44 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.55; }
 .cal-cell .chip.urgent { background: var(--danger-bg); color: var(--danger); }
 .cal-cell .chip.warn   { background: var(--warn-bg); color: var(--warn); }
 .cal-cell .chip.done   { background: var(--ok-bg); color: var(--ok); text-decoration: line-through; opacity: .7; }
+.cal-cell .chip.skipped{ background: var(--bg2); color: var(--text3); text-decoration: line-through; opacity: .6; }
+.cal-cell.cal-clickable { cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.cal-cell.cal-clickable:hover { border-color: var(--accent); box-shadow: 0 4px 14px -8px rgba(15,23,42,.3); }
+.cal-cell .cal-count { font-size: 10px; color: #fff; background: var(--accent); border-radius: 10px; padding: 0 6px; font-weight: 700; }
+
+/* ── Review-day scheduling (modal) ─────────────────────────── */
+.sched-cap { font-size: 12px; color: var(--text2); margin: 4px 0 10px; }
+.sched-cap.over { color: var(--danger); }
+.sched-over { color: var(--danger); font-weight: 600; }
+.sched-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sched-grid input[type="text"] { width: 100%; margin-bottom: 8px; }
+.sched-list { border: 1px solid var(--border); border-radius: 9px; max-height: 320px; overflow: auto; background: var(--card-soft); }
+.sched-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 12.5px; cursor: pointer; }
+.sched-row:last-child { border-bottom: none; }
+.sched-row:hover { background: var(--bg2); }
+.sched-row.sel { cursor: default; }
+.sched-row.sel:hover { background: transparent; }
+.sched-row .sched-types { font-size: 10px; color: var(--text3); font-weight: 600; }
+.sched-row .sched-ord { display: flex; gap: 3px; }
+.sched-empty { padding: 14px; font-size: 12px; color: var(--text3); text-align: center; }
+@media (max-width: 560px) { .sched-grid { grid-template-columns: 1fr; } }
+
+/* Day panel rows */
+.day-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.day-row:last-child { border-bottom: none; }
+.daylink { color: var(--accent); cursor: pointer; }
+
+/* Review history (flavor detail) */
+.hist-row { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.hist-row:last-child { border-bottom: none; }
+.hist-date { font-size: 11px; font-weight: 650; color: var(--text2); min-width: 64px; flex-shrink: 0; }
+.hist-body { flex: 1; min-width: 0; }
+.hist-changes { font-size: 11.5px; color: var(--text); margin-top: 4px; line-height: 1.45; }
+.hist-changes.empty { color: var(--text3); }
+.pill.outcome-adjusted  { background: var(--warn-bg); color: var(--warn); }
+.pill.outcome-escalated { background: var(--danger-bg); color: var(--danger); }
+.pill.outcome-no_action { background: var(--ok-bg); color: var(--ok); }
+.pill.outcome-none      { background: var(--bg2); color: var(--text2); }
 
 /* ── Modal-light (full-page form rows) ─────────────────────── */
 .merge-list {
