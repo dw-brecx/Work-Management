@@ -13114,7 +13114,15 @@ function saveTicket() {
   const checklist = Array.from(document.querySelectorAll('.create-checklist-input'))
     .map(input => input.value.trim())
     .filter(Boolean);
-  const attachments = Array.from(document.getElementById('m-files')?.files || []).map(file => file.name);
+  const attachFiles = Array.from(document.getElementById('m-files')?.files || []);
+  const attachments = attachFiles.map(file => file.name);
+  // Stage the real File objects so the POST /api/tickets fetch interceptor
+  // uploads them to /api/upload with the server-assigned ticket id. The form
+  // reset below clears #m-files, but the File references stay alive in the
+  // queue. Without this, only the names were kept and the bytes were dropped.
+  if (attachFiles.length) {
+    window._pendingTicketFiles = (window._pendingTicketFiles || []).concat(attachFiles);
+  }
   const description = document.getElementById('m-desc')?.value.trim() || '';
   const dueDate = parseTicketDate(dueRaw);
   const dueFormatted = dueDate ? formatDateLong(dueDate) : dueRaw;
@@ -17229,7 +17237,7 @@ function setupTicketModalAttachments(modal) {
   if (submitBtn) {
     submitBtn.addEventListener('click', () => {
       if (pendingFiles.length === 0) return;
-      window._pendingTicketFiles = [...pendingFiles];
+      window._pendingTicketFiles = (window._pendingTicketFiles || []).concat(pendingFiles);
       pendingFiles = [];
       document.getElementById('modal-attach-previews').innerHTML = '';
     });
