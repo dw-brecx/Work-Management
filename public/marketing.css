@@ -5,7 +5,8 @@
    ============================================================ */
 
 :root {
-  --nav:#0f172a;
+  --nav:#061525;
+  --nav2:#0a2740;
   --accent:#3b82f6;
   --accent2:#6366f1;
   --bg:#f8fafc;
@@ -63,11 +64,12 @@ a { color:inherit; }
 #mk-sidebar {
   width: 210px;
   min-width: 210px;
-  background: var(--nav);
+  background: linear-gradient(180deg, var(--nav) 0%, var(--nav2) 58%, #03101d 100%);
   display: flex; flex-direction: column;
   height: 100vh;
   position: sticky; top: 0;
-  border-right: 1px solid rgba(255,255,255,.05);
+  border-right: 1px solid rgba(255,255,255,.08);
+  box-shadow: 12px 0 38px rgba(2,6,23,.18);
 }
 .mk-sb-logo {
   padding: 18px 14px 14px;
@@ -88,23 +90,29 @@ a { color:inherit; }
   margin: 8px 6px 0;
 }
 .mk-sb-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 10px; margin-bottom: 2px;
-  border-radius: 8px;
-  color: #64748b; font-size: 12px;
+  position: relative;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 12px; margin-bottom: 5px;
+  border-radius: 13px;
+  color: #90a4b8; font-size: 13px; font-weight: 560;
   text-decoration: none; user-select: none;
   transition: background .15s, color .15s, transform .12s;
 }
 .mk-sb-item:hover {
-  background: rgba(255,255,255,.05);
-  color: #94a3b8;
+  background: rgba(255,255,255,.075);
+  color: #e5f1ff;
   transform: translateX(2px);
 }
 .mk-sb-item.active {
-  background: rgba(59,130,246,.18);
-  color: #93c5fd;
+  background: linear-gradient(135deg, rgba(0,72,116,.96), rgba(37,99,235,.72));
+  color: #fff;
+  box-shadow: 0 12px 26px rgba(0,72,116,.28);
 }
-.mk-sb-item svg { flex-shrink: 0; opacity: .9; }
+.mk-sb-item.active::before {
+  content: ""; position: absolute; left: -8px; top: 11px; bottom: 11px;
+  width: 4px; border-radius: 0 8px 8px 0; background: #67e8f9;
+}
+.mk-sb-item svg { flex-shrink: 0; width: 17px; height: 17px; opacity: .9; }
 
 /* Collapse to a slim icon-rail on narrow screens. Keep nav reachable but
    give the calendar more horizontal space. */
