@@ -8993,6 +8993,16 @@ async function mktInsertTask(templateId, position, c) {
   return Number(ins.lastInsertRowid);
 }
 
+// Marketing templates additionally support a non-recurring 'one_time' type
+// (a single post on the start date). Recurring tickets don't, so this wraps
+// the shared rtCleanRecurFields rather than widening it.
+function mktCleanRecurFields(body) {
+  if (body.recur_type === 'one_time') {
+    return { recur_type: 'one_time', recur_day: null, recur_weekday: null, recur_interval: null };
+  }
+  return rtCleanRecurFields(body);
+}
+
 function mktCleanTemplateFields(body) {
   const platform = MKT_PLATFORMS.includes(body.platform) ? body.platform : 'instagram';
   const post_kind = MKT_POST_KINDS.includes(body.post_kind) ? body.post_kind : 'post';
@@ -9152,6 +9162,13 @@ function mktReminderAtUtc(dueYmd, offsetHours) {
 // A hard SAFETY_CAP of 1000 guards against pathological inputs.
 function mktExpandOccurrences(template) {
   const dates = [];
+  // One-time templates produce a single post on the start date — no recurrence
+  // walk and no end condition. Handled here so we never fall into the
+  // advance-by-one-day fallback in rtComputeNextRunDate for an unknown type.
+  if (template.recur_type === 'one_time') {
+    const only = String(template.start_date || '');
+    return /^\d{4}-\d{2}-\d{2}$/.test(only) ? [only] : [];
+  }
   let current = rtInitialNextRunDate(template);
   if (!current) return dates;
   const endDateLimit = template.end_type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(template.end_date || '') ? template.end_date : null;
@@ -9351,7 +9368,7 @@ app.post('/api/marketing/templates', requireAdmin, async (req, res) => {
     const { name, description, start_date, tasks } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(start_date || ''))) return res.status(400).json({ error: 'start_date required (YYYY-MM-DD)' });
-    const r = rtCleanRecurFields(req.body);
+    const r = mktCleanRecurFields(req.body);
     const m = mktCleanTemplateFields(req.body);
     const next_post_date = rtInitialNextRunDate({ start_date, ...r });
     const ins = await run(
@@ -9409,7 +9426,7 @@ app.put('/api/marketing/templates/:id', requireAdmin, async (req, res) => {
     }
     let { recur_type, recur_day, recur_weekday, recur_interval } = existing;
     if (b.recur_type !== undefined) {
-      const r = rtCleanRecurFields(b);
+      const r = mktCleanRecurFields(b);
       recur_type = r.recur_type; recur_day = r.recur_day;
       recur_weekday = r.recur_weekday; recur_interval = r.recur_interval;
     }
