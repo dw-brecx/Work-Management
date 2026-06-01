@@ -1110,19 +1110,55 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   /* Comment row actions (Reply / Delete) — small ghost buttons that hover
      to a soft tinted background. Clear hierarchy with primary tint for
      Reply and red tint for Delete. */
-  .cmt-actions{display:flex;align-items:center;gap:4px;margin-top:7px}
+  .cmt-actions{display:flex;align-items:center;gap:4px;margin-top:7px;flex-wrap:wrap}
   .cmt-action{
     display:inline-flex;align-items:center;gap:5px;
     padding:4px 9px;border-radius:7px;
     font-size:11px;font-weight:500;line-height:1;
     background:transparent;border:0;cursor:pointer;
     color:var(--text2);font-family:inherit;
+    white-space:nowrap;
     transition:background .12s,color .12s;
   }
   .cmt-action svg{flex-shrink:0;opacity:.85}
   .cmt-action:hover{background:#eef2ff;color:var(--accent)}
   .cmt-action-danger{color:#9ca3af}
   .cmt-action-danger:hover{background:#fef2f2;color:#dc2626}
+
+  /* Reply threading visual aids — a soft vertical line on every reply
+     bubble makes parent → child relationships visible even when the
+     parent has scrolled out of view, and the "↩ @name" hint in the
+     bubble head gives explicit context for orphaned-looking replies. */
+  .td-comment-thread.is-reply{position:relative}
+  .td-comment-thread.is-reply::before{
+    content:'';
+    position:absolute;
+    left:-10px;top:14px;bottom:6px;
+    width:2px;border-radius:1px;
+    background:var(--border);
+  }
+  .td-comment-reply-to{
+    display:inline-flex;align-items:center;gap:3px;
+    font-size:10px;color:var(--text3);
+    background:var(--bg2);padding:1px 6px;border-radius:99px;
+    font-weight:500;
+  }
+  .td-comment-reply-to .rt-arrow{opacity:.7}
+
+  /* "View N earlier replies" expander — shown when a comment has 3+
+     direct replies and the thread is collapsed. Sits between the parent
+     bubble and the latest 2 visible replies. */
+  .cmt-show-more{
+    display:inline-flex;align-items:center;gap:5px;
+    margin:6px 0 2px 22px;
+    padding:5px 11px;border-radius:8px;
+    background:var(--bg2);border:1px dashed var(--border);
+    color:var(--text2);font-size:11px;font-weight:500;
+    cursor:pointer;font-family:inherit;
+    transition:background .12s,color .12s,border-color .12s;
+  }
+  .cmt-show-more:hover{background:#eef2ff;color:var(--accent);border-color:#c7d2fe;border-style:solid}
+  .cmt-show-more svg{opacity:.85}
 
   /* PLAN DETAIL PAGE */
   .pd-grid{display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start}
@@ -11578,6 +11614,17 @@ function renderCommentAttachment(a) {
   </a>`;
 }
 
+// Per-comment expansion state for collapsed reply threads. Survives across
+// re-renders within the same ticket-detail session; cleared when the user
+// opens a different ticket (window.localComments is replaced).
+window._cmtExpanded = window._cmtExpanded || new Set();
+// Show the latest N replies by default when a comment has more than this
+// many direct replies; the rest hide behind a "View N earlier replies"
+// expander. Tuned for the narrow right panel — bigger numbers defeat the
+// purpose of collapsing.
+const CMT_VISIBLE_REPLIES_DEFAULT = 2;
+const CMT_COLLAPSE_AT = 3;
+
 function renderComments() {
   const el = document.getElementById('cmt-drawer-list');
   if (!el) return;
@@ -11595,16 +11642,25 @@ function renderComments() {
         tops.push(c);
       }
     }
-    function renderOne(c, depth) {
-      const replies = childrenOf[c.id] || [];
+    function renderOne(c, depth, parent) {
+      const allReplies = childrenOf[c.id] || [];
       const isReply = depth > 0;
       // Cap visual indent at 2 levels. Anything nested deeper still renders
       // (the thread relationship is preserved) but at the same left-edge as
       // depth-2 — otherwise a 4-deep thread squeezes the inner bubble down
-      // to 2 words per line. 22px per level is generous enough to read as
-      // "this is a reply" but tight enough that 2 levels still leaves room.
+      // to 2 words per line. Tightened from 22 → 16px per level so the
+      // inner bubble still has reading room on a narrow right panel.
       const visualDepth = Math.min(depth, 2);
-      const indentPx = visualDepth * 22;
+      const indentPx = visualDepth * 16;
+      // Collapse N-th-from-newest replies behind a "View N earlier" pill
+      // unless the user has already expanded this thread. Showing the
+      // newest matches chat-style reading order (most recent at the bottom).
+      const expanded = window._cmtExpanded.has(c.id);
+      const shouldCollapse = allReplies.length >= CMT_COLLAPSE_AT && !expanded;
+      const visibleReplies = shouldCollapse
+        ? allReplies.slice(-CMT_VISIBLE_REPLIES_DEFAULT)
+        : allReplies;
+      const hiddenCount = allReplies.length - visibleReplies.length;
       const replyForm = `
         <div class="td-comment-reply-form" id="reply-form-${c.id}" style="display:none;margin-top:8px;display:none">
           <textarea id="reply-text-${c.id}" placeholder="Write a reply…" rows="2" style="width:100%;font-size:11.5px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;resize:vertical;font-family:inherit"></textarea>
@@ -11657,14 +11713,29 @@ function renderComments() {
       // Replies are rendered as siblings of the parent bubble (not inside
       // it) so the parent's padding doesn't compound on every nesting
       // level. The wrapper carries the depth-based left margin.
+      // The .is-reply class enables the soft vertical thread line via CSS
+      // ::before, so the parent-child relationship stays visible even
+      // when the parent has scrolled out of view.
+      const replyToHint = parent
+        ? `<span class="td-comment-reply-to" title="Reply to ${escapeHtml(parent.author)}"><span class="rt-arrow">↩</span> ${escapeHtml(parent.author)}</span>`
+        : '';
+      // Show-more pill: rendered between the parent bubble and its visible
+      // replies. Clicking flips the per-comment expanded flag and re-renders.
+      const showMoreBtn = shouldCollapse
+        ? `<button type="button" class="cmt-show-more" onclick="expandCommentThread(${c.id})">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+             <span>View ${hiddenCount} earlier ${hiddenCount === 1 ? 'reply' : 'replies'}</span>
+           </button>`
+        : '';
       return `
-        <div class="td-comment-thread" style="margin-left:${indentPx}px${isReply ? ';margin-top:6px' : ''}">
+        <div class="td-comment-thread${isReply ? ' is-reply' : ''}" style="margin-left:${indentPx}px${isReply ? ';margin-top:6px' : ''}">
           <div class="td-comment-item">
             <div class="avatar" style="background:${c.bg};color:${c.col}">${c.init}</div>
             <div class="td-comment-bubble" style="${isReply ? 'background:#fafbff' : ''}">
               <div class="td-comment-head">
                 <span class="td-comment-name">${escapeHtml(c.author)}</span>
                 <span class="td-comment-time">${escapeHtml(c.createdAt ? _fmtUtcLocal(c.createdAt) : (c.time || ''))}</span>
+                ${replyToHint}
               </div>
               <div class="td-comment-body">${formatCommentText(c.text)}</div>
               ${attsHtml}
@@ -11672,14 +11743,15 @@ function renderComments() {
               ${replyForm}
             </div>
           </div>
-          ${replies.map(r => renderOne(r, depth + 1)).join('')}
+          ${showMoreBtn}
+          ${visibleReplies.map(r => renderOne(r, depth + 1, c)).join('')}
         </div>
       `;
     }
     // Chat-style: oldest at top, newest at the bottom. The composer is
     // pinned below the list, so reading the conversation top-down stays
     // natural and the newest reply lands right next to the input.
-    el.innerHTML = tops.map(c => renderOne(c, 0)).join('');
+    el.innerHTML = tops.map(c => renderOne(c, 0, null)).join('');
   }
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
@@ -11688,6 +11760,16 @@ function renderComments() {
   // accurate after the innerHTML replace.
   requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 }
+
+// Expand a collapsed reply thread on a single comment. Sets a per-comment
+// flag in the shared `_cmtExpanded` set, then re-renders. The flag is
+// scoped to the current ticket — `loadCommentsForTicket` clears the set
+// when a new ticket is opened so an unrelated ticket doesn't inherit it.
+window.expandCommentThread = function(commentId) {
+  if (!window._cmtExpanded) window._cmtExpanded = new Set();
+  window._cmtExpanded.add(commentId);
+  if (typeof renderComments === 'function') renderComments();
+};
 
 // "No reply needed" button on an @-mention comment. Marks ALL of the
 // current user's undismissed mention notifications on this ticket as
@@ -17429,6 +17511,9 @@ function watchTicketDetailPanel() {
       // and re-call renderComments as soon as the server responds.
       try {
         localComments.length = 0;
+        // Reset per-comment expansion state — flags from the previous
+        // ticket's threads must not leak into the new one.
+        if (window._cmtExpanded && typeof window._cmtExpanded.clear === 'function') window._cmtExpanded.clear();
         if (typeof renderComments === 'function') renderComments();
         const attPanel = document.getElementById('det-panel-attachments');
         if (attPanel) attPanel.innerHTML = '<div style="text-align:center;padding:18px;color:var(--text3);font-size:11.5px">Loading attachments…</div>';
