@@ -315,6 +315,68 @@
     box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);
     animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1);
   }
+
+  /* Daily reminders popup — the .modal class alone doesn't position the
+     outer element, so without these overrides it lands wherever the
+     document flow drops it (off-screen right on desktop, invisible on
+     mobile). Force the outer to act as a full-viewport backdrop and
+     center the .modal-content card inside it. */
+  #modal-reminder-daily{
+    position:fixed!important;
+    inset:0!important;
+    width:auto!important;
+    max-width:none!important;
+    max-height:none!important;
+    margin:0!important;
+    padding:20px!important;
+    border:0!important;
+    border-radius:0!important;
+    box-shadow:none!important;
+    background:rgba(15,23,42,.5)!important;
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+    align-items:center;
+    justify-content:center;
+    z-index:20000;
+    animation:modal-overlay-in .18s ease-out;
+    overflow-y:auto;
+  }
+  #modal-reminder-daily > .modal-content{
+    width:100%;
+    max-width:560px;
+    box-sizing:border-box;
+  }
+  /* Mobile: bottom-sheet pattern. The card hugs the bottom of the screen
+     so it's reachable with one thumb, and the rounded top corners +
+     slide-up animation match native iOS/Android sheet conventions. The
+     "Got it" CTA stays pinned inside the scrollable card. */
+  @media (max-width:600px){
+    #modal-reminder-daily{
+      align-items:flex-end!important;
+      padding:0!important;
+    }
+    #modal-reminder-daily > .modal-content{
+      max-width:100%!important;
+      border-radius:18px 18px 0 0!important;
+      max-height:88vh!important;
+      padding:18px 16px 22px!important;
+      animation:rem-daily-slide-up .26s cubic-bezier(.2,.8,.2,1);
+    }
+    #modal-reminder-daily > .modal-content::before{
+      /* Drag-indicator pip, matches every other bottom sheet the user
+         knows from their phone. Visual only — the sheet doesn't drag. */
+      content:'';
+      display:block;
+      width:36px;height:4px;
+      background:var(--border2,#cbd5e1);
+      border-radius:99px;
+      margin:0 auto 12px;
+    }
+  }
+  @keyframes rem-daily-slide-up{
+    from{transform:translateY(40%);opacity:0}
+    to{transform:translateY(0);opacity:1}
+  }
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .form-row{margin-bottom:11px}
 
@@ -5805,17 +5867,28 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     </div>
 
     <!-- ========== DAILY REMINDER POPUP (auto-shown once a day) ========== -->
-    <div id="modal-reminder-daily" class="modal" style="display:none">
-      <div class="modal-overlay" onclick="closeDailyRemindersPopup()"></div>
-      <div class="modal-content" style="max-width:560px;padding:24px;max-height:80vh;overflow:auto">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <h2 style="font-size:16px;font-weight:600;margin:0">📺 Today's Reminders</h2>
-          <button onclick="closeDailyRemindersPopup()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0;line-height:1">×</button>
+    <!-- Outer div is the backdrop (full viewport, pinned position via the
+         #modal-reminder-daily CSS overrides). The inner .modal-content is
+         the card that gets centered on desktop and slides up as a bottom
+         sheet on mobile. The hidden inner .modal-overlay legacy element is
+         removed — backdrop clicks now fire from the outer div itself. -->
+    <div id="modal-reminder-daily" class="modal" style="display:none"
+         onclick="if(event.target===this) closeDailyRemindersPopup()">
+      <div class="modal-content" style="padding:22px 22px 18px;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:12px">
+          <h2 style="font-size:16px;font-weight:600;margin:0;display:flex;align-items:center;gap:8px">
+            <span style="font-size:18px">☀️</span> Today's Reminders
+          </h2>
+          <button onclick="closeDailyRemindersPopup()" aria-label="Close"
+                  style="background:var(--bg2);border:0;width:30px;height:30px;border-radius:8px;font-size:18px;cursor:pointer;color:var(--text2);line-height:1;display:inline-flex;align-items:center;justify-content:center">×</button>
         </div>
-        <p style="color:var(--text2);font-size:12px;margin:0 0 14px">These reminders are set to show daily until you mark them done.</p>
+        <p style="color:var(--text2);font-size:12.5px;margin:0 0 14px;line-height:1.45">
+          These reminders are set to show daily until you mark them done.
+        </p>
         <div id="rem-daily-list" style="display:flex;flex-direction:column;gap:10px"></div>
-        <div style="display:flex;justify-content:flex-end;margin-top:14px">
-          <button onclick="closeDailyRemindersPopup()" class="btn-primary" style="font-size:12px;padding:7px 14px">Got it</button>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px;gap:8px">
+          <button onclick="closeDailyRemindersPopup()" class="btn-primary"
+                  style="font-size:13px;padding:9px 18px;min-height:40px">Got it</button>
         </div>
       </div>
     </div>
@@ -19268,14 +19341,16 @@ async function maybeShowDailyRemindersPopup() {
       const desc = r.description ? `<div style="font-size:11.5px;color:var(--text2);margin-top:4px;white-space:pre-wrap">${_esc(r.description)}</div>` : '';
       const ticketLink = r.ticketId ? ` · <a onclick="closeDailyRemindersPopup();openTicketDetailById('${_esc(r.ticketId)}')" style="color:var(--accent);cursor:pointer">${_esc(r.ticketId)}</a>` : '';
       return `
-        <div style="padding:10px 12px;background:#fafbff;border:1px solid var(--border);border-radius:6px">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div style="padding:12px 14px;background:#fafbff;border:1px solid var(--border);border-radius:10px">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
             <div style="flex:1;min-width:0">
-              <div style="font-size:12.5px;font-weight:600">${_esc(r.title)}</div>
-              <div style="font-size:10.5px;color:${dueColor};margin-top:2px">⏰ ${_remFmtLocal(r.dueAt)}${ticketLink}${overdue ? ' · Overdue' : ''}</div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.35">${_esc(r.title)}</div>
+              <div style="font-size:11.5px;color:${dueColor};margin-top:4px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+                <span>⏰ ${_remFmtLocal(r.dueAt)}</span>${ticketLink}${overdue ? '<span style="background:#fee2e2;color:#b91c1c;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:600">Overdue</span>' : ''}
+              </div>
               ${desc}
             </div>
-            <button onclick="completeReminderFromDailyPopup(${r.id}, this)" style="font-size:11px;padding:5px 10px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:4px;cursor:pointer;flex-shrink:0">✓ Done</button>
+            <button onclick="completeReminderFromDailyPopup(${r.id}, this)" style="font-size:12px;padding:8px 12px;min-height:36px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:8px;cursor:pointer;flex-shrink:0;font-weight:600;display:inline-flex;align-items:center;gap:5px">✓ Done</button>
           </div>
         </div>
       `;
