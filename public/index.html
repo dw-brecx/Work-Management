@@ -320,6 +320,68 @@
     box-shadow:0 24px 60px -12px rgba(15,23,42,.32),0 8px 20px -6px rgba(15,23,42,.18);
     animation:modal-card-in .22s cubic-bezier(.2,.8,.2,1);
   }
+
+  /* Daily reminders popup — the .modal class alone doesn't position the
+     outer element, so without these overrides it lands wherever the
+     document flow drops it (off-screen right on desktop, invisible on
+     mobile). Force the outer to act as a full-viewport backdrop and
+     center the .modal-content card inside it. */
+  #modal-reminder-daily{
+    position:fixed!important;
+    inset:0!important;
+    width:auto!important;
+    max-width:none!important;
+    max-height:none!important;
+    margin:0!important;
+    padding:20px!important;
+    border:0!important;
+    border-radius:0!important;
+    box-shadow:none!important;
+    background:rgba(15,23,42,.5)!important;
+    backdrop-filter:blur(4px);
+    -webkit-backdrop-filter:blur(4px);
+    align-items:center;
+    justify-content:center;
+    z-index:20000;
+    animation:modal-overlay-in .18s ease-out;
+    overflow-y:auto;
+  }
+  #modal-reminder-daily > .modal-content{
+    width:100%;
+    max-width:560px;
+    box-sizing:border-box;
+  }
+  /* Mobile: bottom-sheet pattern. The card hugs the bottom of the screen
+     so it's reachable with one thumb, and the rounded top corners +
+     slide-up animation match native iOS/Android sheet conventions. The
+     "Got it" CTA stays pinned inside the scrollable card. */
+  @media (max-width:600px){
+    #modal-reminder-daily{
+      align-items:flex-end!important;
+      padding:0!important;
+    }
+    #modal-reminder-daily > .modal-content{
+      max-width:100%!important;
+      border-radius:18px 18px 0 0!important;
+      max-height:88vh!important;
+      padding:18px 16px 22px!important;
+      animation:rem-daily-slide-up .26s cubic-bezier(.2,.8,.2,1);
+    }
+    #modal-reminder-daily > .modal-content::before{
+      /* Drag-indicator pip, matches every other bottom sheet the user
+         knows from their phone. Visual only — the sheet doesn't drag. */
+      content:'';
+      display:block;
+      width:36px;height:4px;
+      background:var(--border2,#cbd5e1);
+      border-radius:99px;
+      margin:0 auto 12px;
+    }
+  }
+  @keyframes rem-daily-slide-up{
+    from{transform:translateY(40%);opacity:0}
+    to{transform:translateY(0);opacity:1}
+  }
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   .form-row{margin-bottom:11px}
 
@@ -1115,19 +1177,55 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
   /* Comment row actions (Reply / Delete) — small ghost buttons that hover
      to a soft tinted background. Clear hierarchy with primary tint for
      Reply and red tint for Delete. */
-  .cmt-actions{display:flex;align-items:center;gap:4px;margin-top:7px}
+  .cmt-actions{display:flex;align-items:center;gap:4px;margin-top:7px;flex-wrap:wrap}
   .cmt-action{
     display:inline-flex;align-items:center;gap:5px;
     padding:4px 9px;border-radius:7px;
     font-size:11px;font-weight:500;line-height:1;
     background:transparent;border:0;cursor:pointer;
     color:var(--text2);font-family:inherit;
+    white-space:nowrap;
     transition:background .12s,color .12s;
   }
   .cmt-action svg{flex-shrink:0;opacity:.85}
   .cmt-action:hover{background:#eef2ff;color:var(--accent)}
   .cmt-action-danger{color:#9ca3af}
   .cmt-action-danger:hover{background:#fef2f2;color:#dc2626}
+
+  /* Reply threading visual aids — a soft vertical line on every reply
+     bubble makes parent → child relationships visible even when the
+     parent has scrolled out of view, and the "↩ @name" hint in the
+     bubble head gives explicit context for orphaned-looking replies. */
+  .td-comment-thread.is-reply{position:relative}
+  .td-comment-thread.is-reply::before{
+    content:'';
+    position:absolute;
+    left:-10px;top:14px;bottom:6px;
+    width:2px;border-radius:1px;
+    background:var(--border);
+  }
+  .td-comment-reply-to{
+    display:inline-flex;align-items:center;gap:3px;
+    font-size:10px;color:var(--text3);
+    background:var(--bg2);padding:1px 6px;border-radius:99px;
+    font-weight:500;
+  }
+  .td-comment-reply-to .rt-arrow{opacity:.7}
+
+  /* "View N earlier replies" expander — shown when a comment has 3+
+     direct replies and the thread is collapsed. Sits between the parent
+     bubble and the latest 2 visible replies. */
+  .cmt-show-more{
+    display:inline-flex;align-items:center;gap:5px;
+    margin:6px 0 2px 22px;
+    padding:5px 11px;border-radius:8px;
+    background:var(--bg2);border:1px dashed var(--border);
+    color:var(--text2);font-size:11px;font-weight:500;
+    cursor:pointer;font-family:inherit;
+    transition:background .12s,color .12s,border-color .12s;
+  }
+  .cmt-show-more:hover{background:#eef2ff;color:var(--accent);border-color:#c7d2fe;border-style:solid}
+  .cmt-show-more svg{opacity:.85}
 
   /* PLAN DETAIL PAGE */
   .pd-grid{display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start}
@@ -5788,17 +5886,28 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     </div>
 
     <!-- ========== DAILY REMINDER POPUP (auto-shown once a day) ========== -->
-    <div id="modal-reminder-daily" class="modal" style="display:none">
-      <div class="modal-overlay" onclick="closeDailyRemindersPopup()"></div>
-      <div class="modal-content" style="max-width:560px;padding:24px;max-height:80vh;overflow:auto">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <h2 style="font-size:16px;font-weight:600;margin:0">📺 Today's Reminders</h2>
-          <button onclick="closeDailyRemindersPopup()" style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);padding:0;line-height:1">×</button>
+    <!-- Outer div is the backdrop (full viewport, pinned position via the
+         #modal-reminder-daily CSS overrides). The inner .modal-content is
+         the card that gets centered on desktop and slides up as a bottom
+         sheet on mobile. The hidden inner .modal-overlay legacy element is
+         removed — backdrop clicks now fire from the outer div itself. -->
+    <div id="modal-reminder-daily" class="modal" style="display:none"
+         onclick="if(event.target===this) closeDailyRemindersPopup()">
+      <div class="modal-content" style="padding:22px 22px 18px;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:12px">
+          <h2 style="font-size:16px;font-weight:600;margin:0;display:flex;align-items:center;gap:8px">
+            <span style="font-size:18px">☀️</span> Today's Reminders
+          </h2>
+          <button onclick="closeDailyRemindersPopup()" aria-label="Close"
+                  style="background:var(--bg2);border:0;width:30px;height:30px;border-radius:8px;font-size:18px;cursor:pointer;color:var(--text2);line-height:1;display:inline-flex;align-items:center;justify-content:center">×</button>
         </div>
-        <p style="color:var(--text2);font-size:12px;margin:0 0 14px">These reminders are set to show daily until you mark them done.</p>
+        <p style="color:var(--text2);font-size:12.5px;margin:0 0 14px;line-height:1.45">
+          These reminders are set to show daily until you mark them done.
+        </p>
         <div id="rem-daily-list" style="display:flex;flex-direction:column;gap:10px"></div>
-        <div style="display:flex;justify-content:flex-end;margin-top:14px">
-          <button onclick="closeDailyRemindersPopup()" class="btn-primary" style="font-size:12px;padding:7px 14px">Got it</button>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px;gap:8px">
+          <button onclick="closeDailyRemindersPopup()" class="btn-primary"
+                  style="font-size:13px;padding:9px 18px;min-height:40px">Got it</button>
         </div>
       </div>
     </div>
@@ -11620,6 +11729,17 @@ function renderCommentAttachment(a) {
   </a>`;
 }
 
+// Per-comment expansion state for collapsed reply threads. Survives across
+// re-renders within the same ticket-detail session; cleared when the user
+// opens a different ticket (window.localComments is replaced).
+window._cmtExpanded = window._cmtExpanded || new Set();
+// Show the latest N replies by default when a comment has more than this
+// many direct replies; the rest hide behind a "View N earlier replies"
+// expander. Tuned for the narrow right panel — bigger numbers defeat the
+// purpose of collapsing.
+const CMT_VISIBLE_REPLIES_DEFAULT = 2;
+const CMT_COLLAPSE_AT = 3;
+
 function renderComments() {
   const el = document.getElementById('cmt-drawer-list');
   if (!el) return;
@@ -11637,16 +11757,25 @@ function renderComments() {
         tops.push(c);
       }
     }
-    function renderOne(c, depth) {
-      const replies = childrenOf[c.id] || [];
+    function renderOne(c, depth, parent) {
+      const allReplies = childrenOf[c.id] || [];
       const isReply = depth > 0;
       // Cap visual indent at 2 levels. Anything nested deeper still renders
       // (the thread relationship is preserved) but at the same left-edge as
       // depth-2 — otherwise a 4-deep thread squeezes the inner bubble down
-      // to 2 words per line. 22px per level is generous enough to read as
-      // "this is a reply" but tight enough that 2 levels still leaves room.
+      // to 2 words per line. Tightened from 22 → 16px per level so the
+      // inner bubble still has reading room on a narrow right panel.
       const visualDepth = Math.min(depth, 2);
-      const indentPx = visualDepth * 22;
+      const indentPx = visualDepth * 16;
+      // Collapse N-th-from-newest replies behind a "View N earlier" pill
+      // unless the user has already expanded this thread. Showing the
+      // newest matches chat-style reading order (most recent at the bottom).
+      const expanded = window._cmtExpanded.has(c.id);
+      const shouldCollapse = allReplies.length >= CMT_COLLAPSE_AT && !expanded;
+      const visibleReplies = shouldCollapse
+        ? allReplies.slice(-CMT_VISIBLE_REPLIES_DEFAULT)
+        : allReplies;
+      const hiddenCount = allReplies.length - visibleReplies.length;
       const replyForm = `
         <div class="td-comment-reply-form" id="reply-form-${c.id}" style="display:none;margin-top:8px;display:none">
           <textarea id="reply-text-${c.id}" placeholder="Write a reply…" rows="2" style="width:100%;font-size:11.5px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;resize:vertical;font-family:inherit"></textarea>
@@ -11699,14 +11828,29 @@ function renderComments() {
       // Replies are rendered as siblings of the parent bubble (not inside
       // it) so the parent's padding doesn't compound on every nesting
       // level. The wrapper carries the depth-based left margin.
+      // The .is-reply class enables the soft vertical thread line via CSS
+      // ::before, so the parent-child relationship stays visible even
+      // when the parent has scrolled out of view.
+      const replyToHint = parent
+        ? `<span class="td-comment-reply-to" title="Reply to ${escapeHtml(parent.author)}"><span class="rt-arrow">↩</span> ${escapeHtml(parent.author)}</span>`
+        : '';
+      // Show-more pill: rendered between the parent bubble and its visible
+      // replies. Clicking flips the per-comment expanded flag and re-renders.
+      const showMoreBtn = shouldCollapse
+        ? `<button type="button" class="cmt-show-more" onclick="expandCommentThread(${c.id})">
+             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+             <span>View ${hiddenCount} earlier ${hiddenCount === 1 ? 'reply' : 'replies'}</span>
+           </button>`
+        : '';
       return `
-        <div class="td-comment-thread" style="margin-left:${indentPx}px${isReply ? ';margin-top:6px' : ''}">
+        <div class="td-comment-thread${isReply ? ' is-reply' : ''}" style="margin-left:${indentPx}px${isReply ? ';margin-top:6px' : ''}">
           <div class="td-comment-item">
             <div class="avatar" style="background:${c.bg};color:${c.col}">${c.init}</div>
             <div class="td-comment-bubble" style="${isReply ? 'background:#fafbff' : ''}">
               <div class="td-comment-head">
                 <span class="td-comment-name">${escapeHtml(c.author)}</span>
                 <span class="td-comment-time">${escapeHtml(c.createdAt ? _fmtUtcLocal(c.createdAt) : (c.time || ''))}</span>
+                ${replyToHint}
               </div>
               <div class="td-comment-body">${formatCommentText(c.text)}</div>
               ${attsHtml}
@@ -11714,14 +11858,15 @@ function renderComments() {
               ${replyForm}
             </div>
           </div>
-          ${replies.map(r => renderOne(r, depth + 1)).join('')}
+          ${showMoreBtn}
+          ${visibleReplies.map(r => renderOne(r, depth + 1, c)).join('')}
         </div>
       `;
     }
     // Chat-style: oldest at top, newest at the bottom. The composer is
     // pinned below the list, so reading the conversation top-down stays
     // natural and the newest reply lands right next to the input.
-    el.innerHTML = tops.map(c => renderOne(c, 0)).join('');
+    el.innerHTML = tops.map(c => renderOne(c, 0, null)).join('');
   }
   const triggerCount = document.getElementById('comments-trigger-count');
   if (triggerCount) triggerCount.textContent = localComments.length;
@@ -11730,6 +11875,16 @@ function renderComments() {
   // accurate after the innerHTML replace.
   requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
 }
+
+// Expand a collapsed reply thread on a single comment. Sets a per-comment
+// flag in the shared `_cmtExpanded` set, then re-renders. The flag is
+// scoped to the current ticket — `loadCommentsForTicket` clears the set
+// when a new ticket is opened so an unrelated ticket doesn't inherit it.
+window.expandCommentThread = function(commentId) {
+  if (!window._cmtExpanded) window._cmtExpanded = new Set();
+  window._cmtExpanded.add(commentId);
+  if (typeof renderComments === 'function') renderComments();
+};
 
 // "No reply needed" button on an @-mention comment. Marks ALL of the
 // current user's undismissed mention notifications on this ticket as
@@ -17479,6 +17634,9 @@ function watchTicketDetailPanel() {
       // and re-call renderComments as soon as the server responds.
       try {
         localComments.length = 0;
+        // Reset per-comment expansion state — flags from the previous
+        // ticket's threads must not leak into the new one.
+        if (window._cmtExpanded && typeof window._cmtExpanded.clear === 'function') window._cmtExpanded.clear();
         if (typeof renderComments === 'function') renderComments();
         const attPanel = document.getElementById('det-panel-attachments');
         if (attPanel) attPanel.innerHTML = '<div style="text-align:center;padding:18px;color:var(--text3);font-size:11.5px">Loading attachments…</div>';
@@ -19233,14 +19391,16 @@ async function maybeShowDailyRemindersPopup() {
       const desc = r.description ? `<div style="font-size:11.5px;color:var(--text2);margin-top:4px;white-space:pre-wrap">${_esc(r.description)}</div>` : '';
       const ticketLink = r.ticketId ? ` · <a onclick="closeDailyRemindersPopup();openTicketDetailById('${_esc(r.ticketId)}')" style="color:var(--accent);cursor:pointer">${_esc(r.ticketId)}</a>` : '';
       return `
-        <div style="padding:10px 12px;background:#fafbff;border:1px solid var(--border);border-radius:6px">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div style="padding:12px 14px;background:#fafbff;border:1px solid var(--border);border-radius:10px">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
             <div style="flex:1;min-width:0">
-              <div style="font-size:12.5px;font-weight:600">${_esc(r.title)}</div>
-              <div style="font-size:10.5px;color:${dueColor};margin-top:2px">⏰ ${_remFmtLocal(r.dueAt)}${ticketLink}${overdue ? ' · Overdue' : ''}</div>
+              <div style="font-size:13.5px;font-weight:600;line-height:1.35">${_esc(r.title)}</div>
+              <div style="font-size:11.5px;color:${dueColor};margin-top:4px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+                <span>⏰ ${_remFmtLocal(r.dueAt)}</span>${ticketLink}${overdue ? '<span style="background:#fee2e2;color:#b91c1c;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:600">Overdue</span>' : ''}
+              </div>
               ${desc}
             </div>
-            <button onclick="completeReminderFromDailyPopup(${r.id}, this)" style="font-size:11px;padding:5px 10px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:4px;cursor:pointer;flex-shrink:0">✓ Done</button>
+            <button onclick="completeReminderFromDailyPopup(${r.id}, this)" style="font-size:12px;padding:8px 12px;min-height:36px;background:#10b981;color:#fff;border:1px solid #10b981;border-radius:8px;cursor:pointer;flex-shrink:0;font-weight:600;display:inline-flex;align-items:center;gap:5px">✓ Done</button>
           </div>
         </div>
       `;
