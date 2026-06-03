@@ -743,6 +743,125 @@ async function nameForUserId(userId, fallback) {
   return u ? u.name : (fallback || '');
 }
 
+// Create a single main-app ticket programmatically. Used by the Flavor
+// Reviews scheduler so a scheduled review spawns real tickets in everyone's
+// normal queue (linked to the reviews flavor via fr_flavor_id). Centralised
+// here so TKT-id allocation + assignee notification + timeline stay in one
+// place instead of being duplicated inside the route modules.
+async function createTicket(opts) {
+  const {
+    title, description = '', assigneeUserId = null, priority = 'Medium',
+    dept = 'General', due = '', status = 'Open', tags = [],
+    frFlavorId = null, frFlavorName = '', createdBy = null,
+  } = opts || {};
+  if (!title) throw new Error('createTicket: title required');
+
+  // Allocate a unique TKT-#### id (retry on race with other writers).
+  let id = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const maxRow = await get(`SELECT id FROM tickets WHERE id LIKE 'TKT-%' ORDER BY CAST(SUBSTRING(id FROM 5) AS INTEGER) DESC LIMIT 1`);
+    let nextNum = 1000;
+    if (maxRow?.id) { const m = /^TKT-(\d+)$/.exec(maxRow.id); if (m) nextNum = parseInt(m[1], 10); }
+    const candidate = 'TKT-' + (nextNum + 1);
+    if (!await get('SELECT id FROM tickets WHERE id=?', candidate)) { id = candidate; break; }
+  }
+  if (!id) throw new Error('Could not allocate a unique ticket id — please retry.');
+
+  const creatorName  = createdBy ? await nameForUserId(createdBy, '') : '';
+  const assigneeName = assigneeUserId ? await nameForUserId(assigneeUserId, '') : '';
+  const createdStr   = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  await run(
+    `INSERT INTO tickets (id,title,req,assignee,reporter,priority,status,dept,due,created,overdue,tags_json,comments_count,created_by,assignee_user_id,reporter_user_id,req_user_id,fr_flavor_id,fr_flavor_name)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)`,
+    id, title, creatorName || '', assigneeName || '', creatorName || '',
+    priority, status, dept, due, createdStr, 0, JSON.stringify(tags || []),
+    createdBy, assigneeUserId, createdBy, createdBy,
+    frFlavorId || null, frFlavorName || null
+  );
+  await run(
+    `INSERT INTO ticket_details (ticket_id, description) VALUES (?, ?)
+       ON CONFLICT (ticket_id) DO UPDATE SET description = EXCLUDED.description`,
+    id, String(description || '')
+  );
+  if (assigneeName) {
+    await run('INSERT INTO ticket_assignees (ticket_id,user_name,user_id) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, assigneeName, assigneeUserId);
+    if (assigneeUserId && assigneeUserId !== createdBy) {
+      await run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        assigneeUserId, 'assigned', '👤', `${creatorName || 'The review scheduler'} assigned you "${title}"`, id);
+    }
+  }
+  await writeTimeline(id, TL.create, `Ticket created by ${creatorName || 'the review scheduler'}${assigneeName ? ` · assigned to ${assigneeName}` : ''}`);
+  return { id, title, assignee: assigneeName, due };
+}
+
+// ── Flavor-review ticket materialisation ──────────────────────────────────
+// Tickets for a scheduled review day are NOT all created up front. Each type
+// (gather / check) is only created once "today" is within its lead window of
+// the review date, so a reviewer never has a stack of tickets for dates weeks
+// away. Called immediately when a flavor is scheduled (creates anything
+// already in-window) and hourly by runReviewTicketsJob (creates the rest as
+// their windows open).
+function _frDueString(dateIso) {
+  try { return new Date(dateIso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }); }
+  catch { return dateIso; }
+}
+function _frAddDays(dateIso, n) {
+  const d = new Date(dateIso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + Number(n || 0));
+  return d.toISOString().slice(0, 10);
+}
+async function ensureReviewTicketsForCycle(cycle, s) {
+  if (!cycle || cycle.status === 'done' || cycle.status === 'skipped') return null;
+  if (!cycle.tickets_enabled) return null;
+  s = s || await get('SELECT * FROM fr_settings WHERE id=1');
+  const today = new Date().toISOString().slice(0, 10);
+  const gathererId = s?.review_gatherer_id || s?.default_reviewer_id || null;
+  const checkerId  = s?.product_checker_id || null;
+  const gatherLead = Number(s?.gather_lead_days ?? 7);
+  const checkLead  = Number(s?.check_lead_days ?? 2);
+  const checkerOffset = Number(s?.checker_offset_days ?? 3);
+  const f = await get('SELECT id, name FROM fr_flavors WHERE id=?', cycle.flavor_id);
+  if (!f) return null;
+  const tag = `Flavor review: ${f.name}`;
+  let g = cycle.gather_ticket_id || '', c = cycle.check_ticket_id || '', changed = false;
+  if (!g && today >= _frAddDays(cycle.scheduled_for, -gatherLead)) {
+    try {
+      const t = await createTicket({
+        title: `Gather all reviews — ${f.name}`,
+        description: `Collect every recent review for "${f.name}" (Regular + Sugar-free) ahead of the ${_frDueString(cycle.scheduled_for)} review — pull via the Rainforest API on the flavor page or upload a review file.`,
+        assigneeUserId: gathererId, dept: 'Reviews', due: _frDueString(cycle.scheduled_for),
+        tags: [tag, 'Gather reviews'], frFlavorId: f.id, frFlavorName: f.name, createdBy: null,
+      });
+      g = t.id; changed = true;
+    } catch (e) { console.warn('[review-tickets] gather create failed:', e.message); }
+  }
+  if (!c && today >= _frAddDays(cycle.scheduled_for, -checkLead)) {
+    try {
+      const t = await createTicket({
+        title: `Check product & adjust — ${f.name}`,
+        description: `Review the gathered feedback for "${f.name}" and decide if the product needs changes (reformulate, bottle/label, listing copy, etc.). Record what you changed on the flavor's Review history.`,
+        assigneeUserId: checkerId, dept: 'Product', due: _frDueString(_frAddDays(cycle.scheduled_for, checkerOffset)),
+        tags: [tag, 'Check product'], frFlavorId: f.id, frFlavorName: f.name, createdBy: null,
+      });
+      c = t.id; changed = true;
+    } catch (e) { console.warn('[review-tickets] check create failed:', e.message); }
+  }
+  if (changed) await run('UPDATE fr_cycles SET gather_ticket_id=?, check_ticket_id=? WHERE id=?', g, c, cycle.id);
+  return { gather_ticket_id: g, check_ticket_id: c };
+}
+
+// Hourly sweep: create any review tickets whose lead window has now opened.
+async function runReviewTicketsJob() {
+  try {
+    const s = await get('SELECT * FROM fr_settings WHERE id=1');
+    const rows = await all("SELECT * FROM fr_cycles WHERE status IN ('scheduled','in_progress') AND tickets_enabled=1 AND (gather_ticket_id='' OR check_ticket_id='')");
+    let made = 0;
+    for (const cyc of rows) { const r = await ensureReviewTicketsForCycle(cyc, s); if (r && (r.gather_ticket_id || r.check_ticket_id)) made++; }
+    if (made) console.log(`[cron:review-tickets] materialised tickets for ${made} cycle(s)`);
+  } catch (e) { console.error('[cron:review-tickets] failed:', e.message); }
+}
+
 async function buildTicket(row) {
   if (!row) return null;
   // Pull all assignees with both user_id and stored user_name; prefer the
@@ -8238,6 +8357,12 @@ require('./routes/flavors')(app, {
   UPLOADS_DIR,
 });
 
+// ── Flavor Reviews ────────────────────────────────────────────────────────
+// In-market flavor catalog + customer-review tracking + scheduled review
+// cycles. Lives in routes/flavor-reviews.js and is served on
+// /flavor-reviews.html (standalone page outside the SPA shell).
+require('./routes/flavor-reviews')(app, { get, all, run, requireAuth, pool, createTicket, ensureReviewTicketsForCycle });
+
 // Unauthenticated standalone HTML for the public share viewer (rendered at
 // /p/:token). Lives outside the SPA shell so it works without a session.
 const publicSpacePath = path.join(__dirname, 'public', 'public-space.html');
@@ -8868,6 +8993,16 @@ async function mktInsertTask(templateId, position, c) {
   return Number(ins.lastInsertRowid);
 }
 
+// Marketing templates additionally support a non-recurring 'one_time' type
+// (a single post on the start date). Recurring tickets don't, so this wraps
+// the shared rtCleanRecurFields rather than widening it.
+function mktCleanRecurFields(body) {
+  if (body.recur_type === 'one_time') {
+    return { recur_type: 'one_time', recur_day: null, recur_weekday: null, recur_interval: null };
+  }
+  return rtCleanRecurFields(body);
+}
+
 function mktCleanTemplateFields(body) {
   const platform = MKT_PLATFORMS.includes(body.platform) ? body.platform : 'instagram';
   const post_kind = MKT_POST_KINDS.includes(body.post_kind) ? body.post_kind : 'post';
@@ -9027,6 +9162,13 @@ function mktReminderAtUtc(dueYmd, offsetHours) {
 // A hard SAFETY_CAP of 1000 guards against pathological inputs.
 function mktExpandOccurrences(template) {
   const dates = [];
+  // One-time templates produce a single post on the start date — no recurrence
+  // walk and no end condition. Handled here so we never fall into the
+  // advance-by-one-day fallback in rtComputeNextRunDate for an unknown type.
+  if (template.recur_type === 'one_time') {
+    const only = String(template.start_date || '');
+    return /^\d{4}-\d{2}-\d{2}$/.test(only) ? [only] : [];
+  }
   let current = rtInitialNextRunDate(template);
   if (!current) return dates;
   const endDateLimit = template.end_type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(template.end_date || '') ? template.end_date : null;
@@ -9226,7 +9368,7 @@ app.post('/api/marketing/templates', requireAdmin, async (req, res) => {
     const { name, description, start_date, tasks } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(start_date || ''))) return res.status(400).json({ error: 'start_date required (YYYY-MM-DD)' });
-    const r = rtCleanRecurFields(req.body);
+    const r = mktCleanRecurFields(req.body);
     const m = mktCleanTemplateFields(req.body);
     const next_post_date = rtInitialNextRunDate({ start_date, ...r });
     const ins = await run(
@@ -9284,7 +9426,7 @@ app.put('/api/marketing/templates/:id', requireAdmin, async (req, res) => {
     }
     let { recur_type, recur_day, recur_weekday, recur_interval } = existing;
     if (b.recur_type !== undefined) {
-      const r = rtCleanRecurFields(b);
+      const r = mktCleanRecurFields(b);
       recur_type = r.recur_type; recur_day = r.recur_day;
       recur_weekday = r.recur_weekday; recur_interval = r.recur_interval;
     }
@@ -9710,6 +9852,8 @@ app.get('*', (req, res) => {
     // Every hour: materialise upcoming marketing posts within their lead-time
     // window and spawn the prep tickets.
     setInterval(runMarketingPostsJob, 60 * 60 * 1000);
+    // Every hour: create review-day tickets whose per-type lead window opened.
+    setInterval(runReviewTicketsJob, 60 * 60 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {
@@ -9723,6 +9867,7 @@ app.get('*', (req, res) => {
       runTicketAttachmentRetentionJob();
       runRecurringTasksJob();
       runMarketingPostsJob();
+      runReviewTicketsJob();
     }, 30 * 1000);
     console.log('✅  Email cron loops scheduled (meeting/ticket/personal reminders, deadline, overdue-digest).');
   } catch(e) {

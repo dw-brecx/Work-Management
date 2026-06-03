@@ -1310,6 +1310,11 @@ async function init() {
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_id INTEGER DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_step TEXT DEFAULT NULL");
   await safeAlter("ALTER TABLE tickets ADD COLUMN flavor_v2_name TEXT DEFAULT NULL");
+  // Flavor Reviews — tickets spawned by the review-day scheduler carry the
+  // reviews-app flavor id (distinct from syruvia_flavor_id, which links to the
+  // external Syruvia app) so the ticket can deep-link to that flavor's reviews.
+  await safeAlter("ALTER TABLE tickets ADD COLUMN fr_flavor_id INTEGER DEFAULT NULL");
+  await safeAlter("ALTER TABLE tickets ADD COLUMN fr_flavor_name TEXT DEFAULT NULL");
   // Per-channel SKU naming pattern. Placeholders are substituted in
   // routes/flavors.js's generateChannelSku() — defaults to a sensible
   // convention; admins override per channel from Flavors → Settings.
@@ -1798,6 +1803,276 @@ async function init() {
       );
     }
   }
+
+  // ── Flavor Reviews ──────────────────────────────────────────────────────
+  // Separate catalog from flavors_v2 — flavors_v2 is for launching new
+  // flavors (UPC / SKU / label pipeline); fr_flavors is the in-market list
+  // the reviewer checks every cycle. Bulk-pasted from a sheet.
+  //
+  //   fr_flavors        — the catalog
+  //   fr_flavor_links   — where each flavor is sold (URL per channel,
+  //                       so the reviewer can pull up reviews)
+  //   fr_reviews        — one row per review the reviewer logs; sentiment +
+  //                       ai_summary populated when AI runs
+  //   fr_issues         — actionable bad-review issue. status flows
+  //                       open → fixed (with resolution + fixed_at) or
+  //                       open → ignored or open → merged (into another
+  //                       still-open issue, e.g. when the fix is in
+  //                       flight and the same complaint keeps coming in)
+  //   fr_review_issues  — many-to-many: a review can attach to an issue;
+  //                       a single issue collects many reviews
+  //   fr_cycles         — the scheduler. One row per (flavor, due date).
+  //                       AI bumps the priority on flavors with recent
+  //                       bad reviews so the calendar can sort by it
+  //   fr_settings       — single-row global config (cadence, threshold)
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_flavors (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'coffee',
+    variant TEXT NOT NULL DEFAULT 'regular',
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_fr_flavors_name_variant ON fr_flavors (LOWER(name), variant)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_flavors_status ON fr_flavors (status)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_flavor_links (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_flavor_links_flavor ON fr_flavor_links (flavor_id, position)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_issues (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT 'medium',
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT NOT NULL DEFAULT '',
+    merged_into_id INTEGER REFERENCES fr_issues(id) ON DELETE SET NULL,
+    fixed_at TEXT,
+    fixed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ignored_at TEXT,
+    ignored_reason TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_issues_flavor ON fr_issues (flavor_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_issues_status ON fr_issues (status)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_reviews (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    source TEXT NOT NULL DEFAULT '',
+    source_review_id TEXT NOT NULL DEFAULT '',
+    rating INTEGER NOT NULL DEFAULT 0,
+    reviewer_name TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    posted_at TEXT NOT NULL DEFAULT '',
+    sentiment TEXT NOT NULL DEFAULT '',
+    ai_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    issue_id INTEGER REFERENCES fr_issues(id) ON DELETE SET NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_flavor ON fr_reviews (flavor_id, posted_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_status ON fr_reviews (status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_issue ON fr_reviews (issue_id)`);
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_cycles (
+    id SERIAL PRIMARY KEY,
+    flavor_id INTEGER NOT NULL REFERENCES fr_flavors(id) ON DELETE CASCADE,
+    scheduled_for TEXT NOT NULL DEFAULT '',
+    assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    priority INTEGER NOT NULL DEFAULT 3,
+    ai_priority_bump INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_cycles_flavor ON fr_cycles (flavor_id, scheduled_for)`);
+
+  // The 4 main Amazon parent listings reviews are grabbed from. They're the
+  // type × pump matrix (regular/sugar_free × with/without pump); each parent
+  // spans many flavor variations. This is a small fixed registry — a home
+  // for the 4 URLs/ASINs + a "grab reviews" launch point. Reviews still
+  // attach to individual flavors (matched by flavor name + the listing's
+  // variant), not to the listing itself.
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_main_listings (
+    id SERIAL PRIMARY KEY,
+    variant TEXT NOT NULL,                 -- regular | sugar_free
+    has_pump BOOLEAN NOT NULL DEFAULT FALSE,
+    asin TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  // Seed the 4 fixed slots once. Empty asin/url — the user fills them in.
+  const mlRows = await get('SELECT COUNT(*) AS n FROM fr_main_listings');
+  if (!mlRows || Number(mlRows.n) === 0) {
+    for (const s of [
+      { variant: 'regular',    has_pump: false },
+      { variant: 'regular',    has_pump: true  },
+      { variant: 'sugar_free', has_pump: false },
+      { variant: 'sugar_free', has_pump: true  },
+    ]) {
+      await run('INSERT INTO fr_main_listings (variant, has_pump) VALUES (?,?)', s.variant, s.has_pump);
+    }
+  }
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_cycles_due ON fr_cycles (status, scheduled_for)`);
+
+  // Singleton settings row (id=1 always). Upsert pattern in the route.
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    cadence_months INTEGER NOT NULL DEFAULT 3,
+    default_reviewer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    bad_review_threshold INTEGER NOT NULL DEFAULT 2,
+    auto_schedule INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+  )`);
+  await pool.query(`INSERT INTO fr_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+
+  // ── Flavor Reviews: import-from-URL fields ───────────────────────────────
+  // Added via safeAlter so existing installs upgrade in place. The Amazon
+  // import flow stamps these once the user approves the extracted data:
+  //   fr_flavors.image_url    — main product image (first link's hero)
+  //   fr_flavors.amazon_asin  — primary listing ASIN (the "single bottle" one)
+  //   fr_flavor_links.asin    — per-listing Amazon ASIN
+  //   fr_flavor_links.listing_type — single | with_pump | 4_pack | 6_pack | other
+  //   fr_flavor_links.image_url    — per-listing hero image
+  //   fr_flavor_links.title        — Amazon's product title at link time
+  //   fr_flavor_links.pack_size    — numeric pack (1/4/6) for matching
+  await safeAlter("ALTER TABLE fr_flavors ADD COLUMN image_url TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavors ADD COLUMN amazon_asin TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN asin TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN listing_type TEXT NOT NULL DEFAULT 'single'");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN image_url TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_flavor_links ADD COLUMN pack_size INTEGER NOT NULL DEFAULT 1");
+
+  // Bookmarklet scraper: a shared workspace token lets the user's own
+  // browser POST captured HTML back to us from amazon.com (bypassing
+  // every server-side bot wall). The inbox queues raw captures until
+  // Claude parses them on demand. Stored as TEXT — captures can be
+  // several MB (esp. 10-page review walks); PG handles that fine.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN scraper_token TEXT NOT NULL DEFAULT ''");
+  // Rainforest API key (third-party Amazon reviews data). Stored server-side;
+  // the settings API only ever returns whether it's configured, never the key.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN rainforest_key TEXT NOT NULL DEFAULT ''");
+
+  // ── Review-day scheduling (calendar) ─────────────────────────────────────
+  // A "review day" = one date per week holding up to ~5 flavors (in order).
+  // Scheduling a flavor onto a date spawns two real main-app tickets: one to
+  // gather all its reviews, one for someone to check the product and make
+  // adjustments. We remember both ticket ids on the cycle, the order the
+  // flavor sits in on that day, and the outcome/changes once it's reviewed
+  // (so each product gets a dated history of what we actually did).
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN position INTEGER NOT NULL DEFAULT 0");
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN gather_ticket_id TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN check_ticket_id TEXT NOT NULL DEFAULT ''");
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN outcome TEXT NOT NULL DEFAULT ''");   // '' | no_action | adjusted | escalated
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN changes TEXT NOT NULL DEFAULT ''");   // free text: what we changed
+  // Who the two auto-created tickets default to, plus the weekly flavor cap
+  // (soft) and how many days after the review day the product-check ticket is
+  // due.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN review_gatherer_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN product_checker_id INTEGER REFERENCES users(id) ON DELETE SET NULL");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN weekly_cap INTEGER NOT NULL DEFAULT 5");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN checker_offset_days INTEGER NOT NULL DEFAULT 3");
+  // Lead time per ticket type: each ticket is only created this many days
+  // before the review date (so a reviewer isn't buried in tickets for dates
+  // weeks out). A daily/hourly sweep materialises them as their window opens.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN gather_lead_days INTEGER NOT NULL DEFAULT 7");
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN check_lead_days INTEGER NOT NULL DEFAULT 2");
+  // Whether a cycle should spawn tickets at all (the scheduling toggle).
+  await safeAlter("ALTER TABLE fr_cycles ADD COLUMN tickets_enabled INTEGER NOT NULL DEFAULT 1");
+
+  // Reviews carry which listing they came from, so an uploaded file can be
+  // tagged "sugar-free, 1-pack, with pump" etc. at import time.
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN listing_type TEXT NOT NULL DEFAULT ''"); // single | with_pump
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN pack_size INTEGER NOT NULL DEFAULT 1");
+
+  // Strict review dedup: a normalized key on (reviewer_name, posted_at, body)
+  // catches re-imports and Claude double-emitting the same row. Computed in
+  // JS at insert time (see routes); we mirror the normalization here for the
+  // one-time backfill + retroactive cleanup below. Indexed on
+  // (flavor_id, dedup_key) so the runtime lookup is O(log N).
+  await safeAlter("ALTER TABLE fr_reviews ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''");
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_reviews_dedup
+    ON fr_reviews(flavor_id, dedup_key) WHERE dedup_key <> ''`);
+
+  // One-time: backfill dedup_key for existing rows, then delete duplicates
+  // (keep MIN(id) per (flavor_id, dedup_key) group, skipping rows whose body
+  // is empty since their key would collapse other empty-body rows together).
+  // Gated by a fr_settings flag so it runs exactly once per install — even
+  // if the server restarts mid-cleanup, idempotency comes from the flag.
+  await safeAlter("ALTER TABLE fr_settings ADD COLUMN dedup_v1_done BOOLEAN NOT NULL DEFAULT FALSE");
+  try {
+    const flag = await pool.query("SELECT dedup_v1_done FROM fr_settings WHERE id=1");
+    if (flag.rows[0] && !flag.rows[0].dedup_v1_done) {
+      // Backfill keys. Empty-body rows get an empty key so they're never
+      // deduped against each other.
+      await pool.query(`
+        UPDATE fr_reviews
+        SET dedup_key = CASE
+          WHEN BTRIM(COALESCE(body, '')) = '' THEN ''
+          ELSE LOWER(BTRIM(COALESCE(reviewer_name, '')))
+               || E'\\x01' || COALESCE(posted_at, '')
+               || E'\\x01' || LOWER(REGEXP_REPLACE(BTRIM(body), E'\\s+', ' ', 'g'))
+        END
+        WHERE dedup_key = ''`);
+      // Retroactive cleanup. Keeps the earliest (lowest-id) row in each
+      // duplicate group. Logs the count so the operator can verify.
+      const del = await pool.query(`
+        DELETE FROM fr_reviews
+        WHERE dedup_key <> ''
+          AND id NOT IN (
+            SELECT MIN(id) FROM fr_reviews
+            WHERE dedup_key <> ''
+            GROUP BY flavor_id, dedup_key
+          )`);
+      console.log('[flavor-reviews] dedup_v1 cleanup: removed ' + (del.rowCount || 0) + ' duplicate review row(s)');
+      await pool.query("UPDATE fr_settings SET dedup_v1_done=TRUE WHERE id=1");
+    }
+  } catch (e) {
+    console.warn('[flavor-reviews] dedup_v1 cleanup skipped:', e.message);
+  }
+  await pool.query(`CREATE TABLE IF NOT EXISTS fr_scraper_inbox (
+    id BIGSERIAL PRIMARY KEY,
+    kind TEXT NOT NULL,                 -- 'product' | 'reviews'
+    source_url TEXT NOT NULL DEFAULT '',
+    page_title TEXT NOT NULL DEFAULT '',
+    html TEXT NOT NULL DEFAULT '',
+    bytes INTEGER NOT NULL DEFAULT 0,
+    page_count INTEGER NOT NULL DEFAULT 1,
+    parsed_json TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'raw', -- raw | parsed | consumed
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+    parsed_at TEXT,
+    consumed_at TEXT
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fr_scraper_inbox_status_created
+    ON fr_scraper_inbox(status, created_at DESC)`);
 
   // Seed a real Syruvia listing as the starter row in
   // flavor_listing_examples so the admin has something to clone + edit per

@@ -639,6 +639,7 @@
 
   function describeRecurrence(t) {
     const FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    if (t.recur_type === 'one_time')      return `One time on ${t.start_date}`;
     if (t.recur_type === 'weekly')        return `Every ${FULL[t.recur_weekday || 0]}`;
     if (t.recur_type === 'monthly_day')   return `Monthly on the ${t.recur_day || 1}${ordinalSuffix(t.recur_day || 1)}`;
     if (t.recur_type === 'monthly_same')  return `Monthly on the same day as ${t.start_date}`;
@@ -1053,6 +1054,7 @@
     const timeInp   = el('input', { type: 'time', value: draft.post_time || '' });
 
     const recurTypeSel = el('select', null,
+      el('option', { value: 'one_time',      selected: draft.recur_type === 'one_time'      ? '' : null }, 'One time (does not repeat)'),
       el('option', { value: 'weekly',        selected: draft.recur_type === 'weekly'        ? '' : null }, 'Weekly'),
       el('option', { value: 'monthly_day',   selected: draft.recur_type === 'monthly_day'   ? '' : null }, 'Monthly (day of month)'),
       el('option', { value: 'monthly_same',  selected: draft.recur_type === 'monthly_same'  ? '' : null }, 'Monthly (same as start)'),
@@ -1103,7 +1105,16 @@
       Array.from(recurRow.children).forEach(c => {
         if (c.dataset && c.dataset.recurType) c.style.display = c.dataset.recurType === draft.recur_type ? '' : 'none';
       });
+      syncOneTime();
     });
+    // One-time templates spawn a single post on the start date, so the "Ends"
+    // condition is meaningless — hide it and relabel the date field.
+    let endField, startLabel;
+    function syncOneTime() {
+      const oneTime = recurTypeSel.value === 'one_time';
+      if (endField)   endField.style.display = oneTime ? 'none' : '';
+      if (startLabel) startLabel.textContent = oneTime ? 'Post date' : 'Start date (first post)';
+    }
 
     // Task list ── mutate `draft.tasks` directly, then re-render.
     const taskListEl = el('div', { class: 'mk-task-list' });
@@ -1167,6 +1178,8 @@
       renderTasks();
     } }, '+ Add prep task');
 
+    startLabel = el('label', null, draft.recur_type === 'one_time' ? 'Post date' : 'Start date (first post)');
+    endField = el('div', { class: 'mk-field' }, el('label', null, 'Ends'), endRow);
     const body = el('div', null,
       el('div', { class: 'mk-field' }, el('label', null, 'Template name'), nameInput),
       el('div', { class: 'mk-field' }, el('label', null, 'Description'), descInput),
@@ -1175,11 +1188,11 @@
         el('div', { class: 'mk-field' }, el('label', null, 'Kind'), kindSel),
       ),
       el('div', { class: 'mk-grid-2' },
-        el('div', { class: 'mk-field' }, el('label', null, 'Start date (first post)'), startInp),
+        el('div', { class: 'mk-field' }, startLabel, startInp),
         el('div', { class: 'mk-field' }, el('label', null, 'Post time (optional)'), timeInp),
       ),
       el('div', { class: 'mk-field' }, el('label', null, 'Recurrence'), recurRow),
-      el('div', { class: 'mk-field' }, el('label', null, 'Ends'), endRow),
+      endField,
       el('div', { class: 'mk-field' },
         el('label', null, 'Prep tasks'),
         el('div', { style: 'font-size:11.5px;color:var(--text2);margin-bottom:8px' },
@@ -1190,6 +1203,7 @@
         el('div', { style: 'margin-top:8px' }, addTaskBtn),
       ),
     );
+    syncOneTime();
 
     async function save() {
       const payload = {
@@ -1203,9 +1217,10 @@
         recur_weekday: recurTypeSel.value === 'weekly' ? Number(recurWeekdaySel.value) : null,
         recur_day:     recurTypeSel.value === 'monthly_day' ? Number(recurDayInp.value) : null,
         recur_interval:recurTypeSel.value === 'every_n_days' ? Number(recurIntInp.value) : null,
-        end_type:  endTypeSel.value,
-        end_count: endTypeSel.value === 'count' ? Number(endCountInp.value) : null,
-        end_date:  endTypeSel.value === 'date'  ? endDateInp.value : '',
+        // One-time templates have a single occurrence, so the end condition is N/A.
+        end_type:  recurTypeSel.value === 'one_time' ? 'never' : endTypeSel.value,
+        end_count: recurTypeSel.value !== 'one_time' && endTypeSel.value === 'count' ? Number(endCountInp.value) : null,
+        end_date:  recurTypeSel.value !== 'one_time' && endTypeSel.value === 'date'  ? endDateInp.value : '',
         active: draft.active ? 1 : 0,
         tasks: draft.tasks.filter(t => t.title && t.title.trim()),
       };

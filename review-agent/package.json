@@ -1,0 +1,16 @@
+{
+  "name": "review-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local agent that opens an Amazon listing in a real browser (your own session) and gathers all of a flavor's reviews into a downloadable file for the Flavor Reviews app.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "playwright": "^1.48.0",
+    "xlsx": "^0.18.5"
+  }
+}

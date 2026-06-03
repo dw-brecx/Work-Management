@@ -5,7 +5,8 @@
    ============================================================ */
 
 :root {
-  --nav:#0f172a;
+  --nav:#061525;
+  --nav2:#0a2740;
   --accent:#3b82f6;
   --accent2:#6366f1;
   --bg:#f8fafc;
@@ -62,7 +63,12 @@ a { color:inherit; }
 
 #mk-sidebar {
   /* Match index.html's sidebar — white gradient with cool-blue accents.
-     Tokens copied so the look stays in sync if either side ever changes. */
+     Tokens copied so the look stays in sync if either side ever changes.
+     The main app's sidebar is forced to this light gradient via
+     unconditional !important rules on #sidebar (see index.html ~line 633),
+     so even though --nav resolves to a dark navy elsewhere we explicitly
+     hardcode the light values here to stay in sync with what users
+     actually see. */
   --sidebar-line:#dce8f2;
   --sidebar-text:#31465a;
   --sidebar-muted:#7d91a3;
@@ -96,17 +102,20 @@ a { color:inherit; }
   margin: 8px 6px 0;
 }
 .mk-sb-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 10px; margin-bottom: 2px;
-  border-radius: 8px;
+  /* Sizing/spacing adopted from main's sidebar polish; light colour
+     scheme kept from this branch to match the actual light-theme nav. */
+  position: relative;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 12px; margin-bottom: 5px;
+  border-radius: 13px;
   color: var(--sidebar-text);
   background: transparent;
   border: 1px solid transparent;
-  font-size: 12px;
+  font-size: 13px; font-weight: 560;
   text-decoration: none; user-select: none;
   transition: background .15s, color .15s, border-color .15s, transform .12s;
 }
-.mk-sb-item svg { flex-shrink: 0; color: #6f879b; opacity: .9; transition: color .15s; }
+.mk-sb-item svg { flex-shrink: 0; width: 17px; height: 17px; color: #6f879b; opacity: .9; transition: color .15s; }
 .mk-sb-item:hover {
   background: #f0f7fc;
   color: #004874;
@@ -121,6 +130,12 @@ a { color:inherit; }
   box-shadow: 0 10px 22px rgba(0,72,116,.08);
 }
 .mk-sb-item.active svg { color: #004874; }
+.mk-sb-item.active::before {
+  /* Vertical accent rail on the left of the active item — matches the
+     main app's `.nav-item.active:before` cue (navy on light theme). */
+  content: ""; position: absolute; left: -8px; top: 11px; bottom: 11px;
+  width: 4px; border-radius: 0 8px 8px 0; background: #004874;
+}
 
 /* Collapse to a slim icon-rail on narrow screens. Keep nav reachable but
    give the calendar more horizontal space. */
