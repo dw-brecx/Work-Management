@@ -1091,7 +1091,7 @@ app.post('/api/tickets/bulk-mark-viewed', requireAuth, async (req, res) => {
 // notification + still sees the ticket in their own list (with a
 // "Snoozed until …" pill on the row), so nothing silently disappears
 // on the person who asked for the work.
-const SNOOZE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+const SNOOZE_MAX_MS = 3 * 24 * 60 * 60 * 1000;
 app.post('/api/tickets/:id/snooze', requireAuth, requireTicketAccess, async (req, res) => {
   try {
     const id = req.params.id;
@@ -1106,7 +1106,7 @@ app.post('/api/tickets/:id/snooze', requireAuth, requireTicketAccess, async (req
       return res.status(400).json({ error: 'Snooze date must be in the future' });
     }
     if (wake.getTime() > now + SNOOZE_MAX_MS) {
-      return res.status(400).json({ error: 'Snooze max is 7 days' });
+      return res.status(400).json({ error: 'Snooze max is 3 days' });
     }
     const ticket = await get('SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL', id);
     if (!ticket) return res.status(404).json({ error: 'Not found' });
