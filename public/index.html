@@ -4944,7 +4944,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
               Remind me
             </button>
-            <button class="td-action-btn" id="snooze-trigger" onclick="openSnoozeModal()" title="Park this ticket for up to 3 days">
+            <button class="td-action-btn" id="snooze-trigger" onclick="openSnoozeModal()" title="Park this ticket for up to 6 days">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg>
               Snooze
             </button>
@@ -5637,7 +5637,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </div>
     </div>
 
-    <!-- ========== SNOOZED (tickets parked for up to 3 days) ========== -->
+    <!-- ========== SNOOZED (tickets parked for up to 6 days) ========== -->
     <div id="page-snoozed" class="page">
       <h1 style="font-size:20px;font-weight:600;margin-bottom:4px">Snoozed Tickets</h1>
       <p style="color:var(--text2);font-size:12px;margin-bottom:14px">
@@ -5646,7 +5646,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
       </p>
       <div id="snoozed-list" style="display:flex;flex-direction:column;gap:10px;max-width:820px"></div>
       <div id="snoozed-empty" style="display:none;color:var(--text3);font-size:13px;padding:30px 0;text-align:center">
-        Nothing snoozed. Open any ticket and click "Snooze" to park it for up to 3 days.
+        Nothing snoozed. Open any ticket and click "Snooze" to park it for up to 6 days.
       </div>
     </div>
 
@@ -5804,7 +5804,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
         </div>
         <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.5">
           The ticket disappears from your main list until it wakes up, then comes back automatically.
-          Max 3 days. The requester is notified and keeps seeing it in their list with a "Snoozed until" pill.
+          Max 6 days. The requester is notified and keeps seeing it in their list with a "Snoozed until" pill.
         </p>
         <div style="font-size:11px;color:var(--text3);font-weight:600;margin-bottom:6px">Quick picks</div>
         <div id="snooze-preset-row" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>
@@ -8613,8 +8613,8 @@ async function ticketSwipeAction(ticketId, action) {
 }
 
 // ── Snooze ───────────────────────────────────────────────────────────────────
-// Park a ticket for up to 3 days. Modal offers a few presets (3h, tomorrow
-// 9am, in 2 days, in 3 days) plus a custom datetime-local
+// Park a ticket for up to 6 days. Modal offers a few presets (3h, tomorrow
+// 9am, in 2 days, end of week, in 6 days) plus a custom datetime-local
 // input. The ticket disappears from the main list of everyone EXCEPT the
 // requester (who keeps seeing it with a "Snoozed until …" pill).
 
@@ -8641,9 +8641,20 @@ function _snoozePresets() {
   out.push({ label: 'Tomorrow 9am', date: tomorrow9 });
   const in2d = new Date(); in2d.setDate(in2d.getDate() + 2); in2d.setHours(9, 0, 0, 0);
   out.push({ label: 'In 2 days', date: in2d });
-  const in3 = new Date(Date.now() + 2.9 * 24 * 60 * 60 * 1000);
-  // 2.9 days keeps us safely under the 3-day server cap once round-trip latency is factored in.
-  out.push({ label: 'In 3 days', date: in3 });
+  // End of work week (Friday 5pm). If we're already past Friday this week,
+  // pick next Friday instead so the preset is always in the future. On a
+  // Saturday this could otherwise land ~6.5 days out and bust the 6-day
+  // server cap, so we clamp it to 5.9 days from now as a hard ceiling.
+  const eow = new Date();
+  const daysToFri = (5 - eow.getDay() + 7) % 7;
+  eow.setDate(eow.getDate() + (daysToFri === 0 && eow.getHours() >= 17 ? 7 : daysToFri));
+  eow.setHours(17, 0, 0, 0);
+  const sixDayCeil = Date.now() + 5.9 * 24 * 60 * 60 * 1000;
+  if (eow.getTime() > sixDayCeil) eow.setTime(sixDayCeil);
+  out.push({ label: 'End of week', date: eow });
+  const inMax = new Date(Date.now() + 5.9 * 24 * 60 * 60 * 1000);
+  // 5.9 days keeps us safely under the 6-day server cap once round-trip latency is factored in.
+  out.push({ label: 'In 6 days', date: inMax });
   return out;
 }
 
@@ -8688,11 +8699,11 @@ async function submitSnooze() {
     if (err) { err.textContent = 'Wake-up time must be in the future.'; err.style.display = 'block'; }
     return;
   }
-  if (d.getTime() > Date.now() + 3 * 24 * 60 * 60 * 1000) {
+  if (d.getTime() > Date.now() + 6 * 24 * 60 * 60 * 1000) {
     // Over the cap: surface it as a popup (not just the inline error) so it's
     // impossible to miss before the request goes out.
-    alert('Snooze max is 3 days. Please pick a wake-up time within the next 3 days.');
-    if (err) { err.textContent = 'Snooze max is 3 days.'; err.style.display = 'block'; }
+    alert('Snooze max is 6 days. Please pick a wake-up time within the next 6 days.');
+    if (err) { err.textContent = 'Snooze max is 6 days.'; err.style.display = 'block'; }
     return;
   }
   try {
@@ -9325,7 +9336,7 @@ function renderTicketDetail() {
       snoozeBtn.setAttribute('onclick', "unsnoozeTicket(currentTicketId)");
     } else {
       snoozeBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a10 10 0 1 0-10-10"/><polyline points="2 8 6 8 6 12"/><path d="M9 9h6l-6 6h6"/></svg> Snooze';
-      snoozeBtn.setAttribute('title', 'Park this ticket for up to 3 days');
+      snoozeBtn.setAttribute('title', 'Park this ticket for up to 6 days');
       snoozeBtn.setAttribute('onclick', 'openSnoozeModal()');
     }
   }
