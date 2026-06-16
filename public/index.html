@@ -8699,7 +8699,10 @@ async function submitSnooze() {
     if (err) { err.textContent = 'Wake-up time must be in the future.'; err.style.display = 'block'; }
     return;
   }
-  if (d.getTime() > Date.now() + 7 * 24 * 60 * 60 * 1000) {
+  if (d.getTime() > Date.now() + 6 * 24 * 60 * 60 * 1000) {
+    // Over the cap: surface it as a popup (not just the inline error) so it's
+    // impossible to miss before the request goes out.
+    alert('Snooze max is 6 days. Please pick a wake-up time within the next 6 days.');
     if (err) { err.textContent = 'Snooze max is 6 days.'; err.style.display = 'block'; }
     return;
   }
