@@ -1126,6 +1126,90 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
     min-height:0;
     margin-bottom:0;
   }
+
+  /* ── Ticket-detail two-column body: comments (main, ~75%) on the left,
+     details sidebar (~25%) on the right. The header + breadcrumb above
+     this still span full width because they're siblings of .td-body-split,
+     not children. The drag handle on the right edge of the comments
+     column lets users widen or narrow the split. ──────────────────── */
+  /* Only force the block layout while the page is active — otherwise the
+     base `.page-with-right{display:none}` rule must still hide it when the
+     user navigates elsewhere. */
+  #page-ticket-detail.page-with-right.active { display:block !important; overflow:hidden; }
+  #page-ticket-detail > .page-content {
+    height:100%;
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+    overflow:hidden;
+  }
+  #page-ticket-detail .td-body-split {
+    display:flex;
+    gap:14px;
+    margin-top:6px;
+    flex:1 1 auto;
+    min-height:0;
+  }
+  /* Comments column — main focus, ~75% of the available width. The
+     legacy fixed-width rules on .right-panel.td-right are overridden so
+     the column flexes freely. */
+  #page-ticket-detail .td-body-split > .right-panel.td-right {
+    flex:3 1 0;
+    min-width:340px;
+    width:auto !important;
+    max-width:none !important;
+    border:1px solid var(--border);
+    border-left:1px solid var(--border) !important;
+    border-radius:12px;
+    background:var(--card);
+    padding:14px;
+    position:relative;
+    overflow:hidden;
+  }
+  /* Details column — ~25%, scrolls independently. */
+  #page-ticket-detail .td-details-col {
+    flex:1 1 0;
+    min-width:280px;
+    max-width:460px;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    overflow-y:auto;
+    min-height:0;
+    padding-right:2px;
+  }
+  /* Resizer now lives on the RIGHT edge of the comments column (where it
+     borders the details column). Drag-direction flips in the JS. */
+  #page-ticket-detail .td-right-resizer {
+    left:auto !important;
+    right:-3px !important;
+  }
+  /* The global @max-width:1180px rule hides .right-panel for narrow
+     desktops, which would erase the comments column here. Override. */
+  @media (max-width:1180px) {
+    #page-ticket-detail .td-body-split > .right-panel.td-right { display:flex !important; }
+  }
+  /* Stack on small screens — comments on top (the main thing), details
+     below. The legacy mobile-only block ~line 4261 styled the right-
+     panel for the OLD "below the content" layout (margin-top + border-
+     top); zero those out so the comments column reads as the top card.
+     Aligned with the 768px breakpoint used elsewhere on this page. */
+  @media (max-width:768px) {
+    #page-ticket-detail .td-body-split { flex-direction:column; gap:10px; }
+    #page-ticket-detail .td-body-split > .right-panel.td-right,
+    #page-ticket-detail .td-details-col {
+      flex:none !important;
+      width:100% !important;
+      max-width:none !important;
+      min-width:0 !important;
+    }
+    #page-ticket-detail .td-body-split > .right-panel.td-right {
+      margin-top:0 !important;
+      border-top:1px solid var(--border) !important;
+      min-height:55vh;
+    }
+    #page-ticket-detail .td-right-resizer { display:none !important; }
+  }
   .td-comment-composer{display:flex;gap:8px;align-items:flex-start;margin-top:10px;flex-shrink:0}
   .td-composer-box{flex:1;min-width:0;border:1px solid var(--border);border-radius:9px;background:#fff;position:relative;transition:border-color .14s,box-shadow .14s,background-color .14s}
   .td-composer-box textarea{width:100%;border:none;padding:9px 11px;font-size:11.5px;line-height:1.55;background:transparent;outline:none;font-family:inherit;resize:none;min-height:72px;display:block;color:var(--text)}
@@ -4971,93 +5055,104 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
           </div>
         </div>
 
-        <!-- Ticket Details grid -->
-        <div class="card editable-card td-card" style="margin-bottom:8px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <h2 class="td-card-title">Ticket Details</h2>
-            <div id="details-actions">
-              <button class="edit-btn" id="details-edit-btn" onclick="startEditAllDetails()" title="Edit all fields">✎</button>
+        <!-- ── Two-column body: comments (main, ~75%) + details sidebar
+             (~25%) ───────────────────────────────────────────────────── -->
+        <div class="td-body-split">
+          <!-- Comments column (was the right-panel; lifted inside page-content
+               so the header above can still span full width). All IDs/classes
+               are preserved so existing JS (renderComments, addComment,
+               openReplyForm, etc.) keeps working unchanged. -->
+          <div class="right-panel td-right">
+            <!-- Drag handle to widen / narrow the comments pane (desktop only). -->
+            <div class="td-right-resizer" title="Drag to resize" aria-hidden="true"></div>
+            <!-- Comments (always visible) -->
+            <div class="td-side-block">
+              <div class="td-side-head">
+                <span class="td-side-title">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  Comments
+                </span>
+                <span class="td-side-progress" id="comments-trigger-count">0</span>
+              </div>
+
+              <div class="td-comment-list" id="cmt-drawer-list"></div>
+
+              <div class="td-comment-composer">
+                <div class="avatar td-composer-avatar" id="td-comment-composer-avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px;overflow:hidden">JD</div>
+                <div class="td-composer-box">
+                  <textarea id="comment-input" placeholder="Write a comment… (use @ to mention)" rows="3"></textarea>
+                  <div id="mention-dropdown" class="mention-dropdown" role="listbox"></div>
+                  <div class="td-composer-actions">
+                    <button onclick="addComment()" class="btn-primary" style="padding:5px 12px;font-size:11px">Comment</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div id="det-info-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
-        </div>
 
-        <!-- Description -->
-        <div class="card editable-card td-card" style="margin-bottom:8px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <h2 class="td-card-title">Description</h2>
-            <button class="edit-btn" id="desc-edit-btn" onclick="startEditDescription()" title="Edit description">✎</button>
-          </div>
-          <div id="det-desc-view" style="font-size:11.5px;color:var(--text2);line-height:1.55;white-space:pre-wrap"></div>
-          <div id="det-desc-edit" style="display:none">
-            <textarea id="det-desc-textarea" style="width:100%;min-height:90px;font-size:11.5px;line-height:1.55;padding:8px 10px;border:1px solid var(--border);border-radius:8px;resize:vertical;background:#fff;color:var(--text);font-family:inherit;outline:none"></textarea>
-            <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">
-              <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="cancelEditDescription()">Cancel</button>
-              <button class="btn-primary" style="font-size:11px;padding:5px 12px" onclick="saveDescription()">Save</button>
+          <!-- Details sidebar — everything that's not comments. -->
+          <div class="td-details-col">
+            <!-- Ticket Details grid -->
+            <div class="card editable-card td-card" style="margin-bottom:8px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <h2 class="td-card-title">Ticket Details</h2>
+                <div id="details-actions">
+                  <button class="edit-btn" id="details-edit-btn" onclick="startEditAllDetails()" title="Edit all fields">✎</button>
+                </div>
+              </div>
+              <div id="det-info-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px"></div>
             </div>
-          </div>
-        </div>
 
-        <!-- My Reminders (private to this user, scoped to this ticket) -->
-        <div class="card td-card" style="margin-bottom:8px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <h2 class="td-card-title">My Reminders <span style="font-size:10px;font-weight:400;color:var(--text3)">(only you can see these)</span></h2>
-            <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="openReminderEditorForCurrentTicket()">+ Add reminder</button>
-          </div>
-          <div id="det-reminders-list" style="display:flex;flex-direction:column;gap:6px"></div>
-          <div id="det-reminders-empty" style="display:none;color:var(--text3);font-size:11.5px;padding:6px 0">No personal reminders for this ticket yet.</div>
-        </div>
+            <!-- Description -->
+            <div class="card editable-card td-card" style="margin-bottom:8px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <h2 class="td-card-title">Description</h2>
+                <button class="edit-btn" id="desc-edit-btn" onclick="startEditDescription()" title="Edit description">✎</button>
+              </div>
+              <div id="det-desc-view" style="font-size:11.5px;color:var(--text2);line-height:1.55;white-space:pre-wrap"></div>
+              <div id="det-desc-edit" style="display:none">
+                <textarea id="det-desc-textarea" style="width:100%;min-height:90px;font-size:11.5px;line-height:1.55;padding:8px 10px;border:1px solid var(--border);border-radius:8px;resize:vertical;background:#fff;color:var(--text);font-family:inherit;outline:none"></textarea>
+                <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">
+                  <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="cancelEditDescription()">Cancel</button>
+                  <button class="btn-primary" style="font-size:11px;padding:5px 12px" onclick="saveDescription()">Save</button>
+                </div>
+              </div>
+            </div>
 
-        <!-- Activity / Subtasks / Attachments tabs -->
-        <div class="card td-card">
-          <div class="tabs" style="margin-bottom:10px">
-            <button class="tab active" onclick="switchDetailTab(this,'activity')">Activity</button>
-            <button class="tab" onclick="switchDetailTab(this,'subtasks')">Subtasks <span class="tab-count" id="subtasks-tab-count">0</span></button>
-            <button class="tab" onclick="switchDetailTab(this,'attachments')">Attachments <span class="tab-count" id="det-att-count">0</span></button>
-          </div>
-          <div id="det-panel-activity">
-            <div id="activity-feed" style="display:flex;flex-direction:column;gap:8px"></div>
-          </div>
-          <div id="det-panel-subtasks" style="display:none">
-            <div id="checklist-items"></div>
-            <button id="chk-add-btn" onclick="addChecklistRow()"
-                    style="margin-top:8px;background:#f0f5ff;border:1px dashed #c7d7fe;color:#2563eb;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;cursor:pointer;width:100%;text-align:left">
-              + Add subtask
-            </button>
-          </div>
-          <div id="det-panel-attachments" style="display:none">
-            <!-- Populated at runtime by renderAttachments() from
-                 /api/tickets/:id/attachments. Previously held 3 hardcoded
-                 placeholder rows (API-spec.pdf, screenshot-error.png,
-                 flow-notes.docx) which leaked through as ghost attachments
-                 on every fresh ticket render until the real fetch resolved. -->
-            <div style="display:flex;flex-direction:column;gap:6px"></div>
-          </div>
-        </div>
-      </div>
-      <!-- Ticket detail right panel -->
-      <div class="right-panel td-right">
-        <!-- Drag handle to widen / narrow the comments pane (desktop only). -->
-        <div class="td-right-resizer" title="Drag to resize" aria-hidden="true"></div>
-        <!-- Comments (always visible) -->
-        <div class="td-side-block">
-          <div class="td-side-head">
-            <span class="td-side-title">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              Comments
-            </span>
-            <span class="td-side-progress" id="comments-trigger-count">0</span>
-          </div>
+            <!-- My Reminders (private to this user, scoped to this ticket) -->
+            <div class="card td-card" style="margin-bottom:8px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <h2 class="td-card-title">My Reminders <span style="font-size:10px;font-weight:400;color:var(--text3)">(only you can see these)</span></h2>
+                <button class="btn-sec" style="font-size:11px;padding:5px 10px" onclick="openReminderEditorForCurrentTicket()">+ Add reminder</button>
+              </div>
+              <div id="det-reminders-list" style="display:flex;flex-direction:column;gap:6px"></div>
+              <div id="det-reminders-empty" style="display:none;color:var(--text3);font-size:11.5px;padding:6px 0">No personal reminders for this ticket yet.</div>
+            </div>
 
-          <div class="td-comment-list" id="cmt-drawer-list"></div>
-
-          <div class="td-comment-composer">
-            <div class="avatar td-composer-avatar" id="td-comment-composer-avatar" style="width:26px;height:26px;background:linear-gradient(135deg,#6366f1,#8b5cf6);flex-shrink:0;font-size:10px;overflow:hidden">JD</div>
-            <div class="td-composer-box">
-              <textarea id="comment-input" placeholder="Write a comment… (use @ to mention)" rows="3"></textarea>
-              <div id="mention-dropdown" class="mention-dropdown" role="listbox"></div>
-              <div class="td-composer-actions">
-                <button onclick="addComment()" class="btn-primary" style="padding:5px 12px;font-size:11px">Comment</button>
+            <!-- Activity / Subtasks / Attachments tabs -->
+            <div class="card td-card">
+              <div class="tabs" style="margin-bottom:10px">
+                <button class="tab active" onclick="switchDetailTab(this,'activity')">Activity</button>
+                <button class="tab" onclick="switchDetailTab(this,'subtasks')">Subtasks <span class="tab-count" id="subtasks-tab-count">0</span></button>
+                <button class="tab" onclick="switchDetailTab(this,'attachments')">Attachments <span class="tab-count" id="det-att-count">0</span></button>
+              </div>
+              <div id="det-panel-activity">
+                <div id="activity-feed" style="display:flex;flex-direction:column;gap:8px"></div>
+              </div>
+              <div id="det-panel-subtasks" style="display:none">
+                <div id="checklist-items"></div>
+                <button id="chk-add-btn" onclick="addChecklistRow()"
+                        style="margin-top:8px;background:#f0f5ff;border:1px dashed #c7d7fe;color:#2563eb;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;cursor:pointer;width:100%;text-align:left">
+                  + Add subtask
+                </button>
+              </div>
+              <div id="det-panel-attachments" style="display:none">
+                <!-- Populated at runtime by renderAttachments() from
+                     /api/tickets/:id/attachments. Previously held 3 hardcoded
+                     placeholder rows (API-spec.pdf, screenshot-error.png,
+                     flow-notes.docx) which leaked through as ghost attachments
+                     on every fresh ticket render until the real fetch resolved. -->
+                <div style="display:flex;flex-direction:column;gap:6px"></div>
               </div>
             </div>
           </div>
@@ -23121,18 +23216,21 @@ window.scheduleEventForCurrentTicket = function() {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TICKET-DETAIL right-panel resizer
+// TICKET-DETAIL comments-pane resizer
 // ═══════════════════════════════════════════════════════════════════════════
-// Drag the left edge of the Comments pane to make it wider (or narrower).
-// Persisted in localStorage per browser so each user's preference sticks.
-// Skipped on mobile — the panel stacks below the main pane there.
+// After the 75/25 layout flip, the Comments pane lives on the LEFT and the
+// details sidebar on the RIGHT. The drag handle sits on the RIGHT edge of
+// the comments pane, so dragging RIGHT widens it (and squeezes details).
+// Persisted in localStorage per browser. Skipped on mobile — the panes
+// stack vertically there.
+// Storage key bumped to _v2 so values saved against the OLD right-panel
+// layout don't accidentally narrow comments in the new layout.
 (function attachTicketRightPanelResizer() {
-  const STORAGE_KEY = 'ticketCommentsPaneWidth';
-  // Apply any persisted width as soon as the page is ready.
+  const STORAGE_KEY = 'ticketCommentsPaneWidth_v2';
   function applyPersistedWidth() {
     let saved = null;
     try { saved = Number(localStorage.getItem(STORAGE_KEY)); } catch {}
-    if (!saved || !isFinite(saved) || saved < 280 || saved > 900) return;
+    if (!saved || !isFinite(saved) || saved < 340 || saved > 1600) return;
     const panel = document.querySelector('#page-ticket-detail .right-panel.td-right');
     if (!panel) return;
     panel.style.width = saved + 'px';
@@ -23144,8 +23242,6 @@ window.scheduleEventForCurrentTicket = function() {
   } else {
     applyPersistedWidth();
   }
-  // Drag-to-resize. Listen on document so the cursor doesn't have to be
-  // perfectly on the handle during the drag.
   let drag = null;
   document.addEventListener('mousedown', (ev) => {
     const handle = ev.target.closest && ev.target.closest('#page-ticket-detail .td-right-resizer');
@@ -23163,8 +23259,11 @@ window.scheduleEventForCurrentTicket = function() {
   });
   document.addEventListener('mousemove', (ev) => {
     if (!drag) return;
-    const dx = drag.startX - ev.clientX; // dragging LEFT widens the panel
-    const next = Math.min(Math.max(drag.startW + dx, 320), Math.min(window.innerWidth - 380, 900));
+    // Comments column is on the LEFT now, so dragging RIGHT widens it.
+    const dx = ev.clientX - drag.startX;
+    // Keep at least 280px for the details sidebar on the right.
+    const max = Math.max(340, window.innerWidth - 320);
+    const next = Math.min(Math.max(drag.startW + dx, 340), max);
     drag.panel.style.width = next + 'px';
     drag.panel.style.minWidth = next + 'px';
     drag.panel.style.flex = '0 0 ' + next + 'px';
