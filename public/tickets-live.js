@@ -110,8 +110,9 @@
       const since = parseUtc(t.waitingSince);
       const due = parseDue(t.due);
       const pastDue = due && (t.overdue || due.getTime() < serverNow());
+      // A pending update request blinks red until the user replies.
       return `
-      <div class="tl-row">
+      <div class="tl-row ${t.updateRequestedAt ? 'urgent' : ''}">
         <div class="tl-row-main">
           <div class="tl-row-title"><span class="tid">${esc(t.id)}</span>${esc(t.title)}</div>
           <div class="tl-row-meta">${waitReasonBadges(t)}
@@ -216,8 +217,12 @@
 
     const rows = ranked.map((u, i) => {
       const lw = longestWait(u);
+      // Row links use the user's secret board token (same URL as the share
+      // link) instead of a guessable ?user=<id>. Until the links map has
+      // loaded there's nothing safe to link to, so the row is inert.
+      const href = links && links[u.id] ? esc(links[u.id]) : '#';
       return `
-      <a class="tl-trow" href="/tickets-live.html?user=${u.id}">
+      <a class="tl-trow" href="${href}">
         <div class="tl-rank">${i + 1}</div>
         <div class="tl-user">${avatar(u)}<div style="min-width:0"><div class="nm">${esc(u.name)}</div><div class="rl">${esc(u.role || u.dept || '')}</div></div>
           ${links && links[u.id] ? `<span class="tl-rowacts">
@@ -225,7 +230,7 @@
             <button class="tl-iconbtn tl-rotate" data-user="${u.id}" title="Reset link (old link stops working)">↻</button>
           </span>` : ''}
         </div>
-        <div><div class="num ${u.needsReplyCount ? 'n-serious' : 'n-zero'}">${u.needsReplyCount}</div><div class="sub">waiting</div></div>
+        <div><div class="num ${u.needsReplyCount ? 'n-serious' : 'n-zero'}">${u.needsReplyCount}${u.updateRequestedCount ? '<span class="tl-reddot" title="Update requested — still no reply"></span>' : ''}</div><div class="sub">waiting</div></div>
         <div>${lw ? `<span class="tl-team-timer" data-epoch="${lw.getTime()}">${fmtDur(serverNow() - lw.getTime())}</span>` : '<span class="num n-zero">—</span>'}<div class="sub">longest wait</div></div>
         <div class="hide-sm"><div class="num">${u.openCount}</div><div class="sub">open</div></div>
         <div class="hide-sm"><div class="num ${u.overdueCount ? 'n-critical' : 'n-zero'}">${u.overdueCount}</div><div class="sub">overdue</div></div>
