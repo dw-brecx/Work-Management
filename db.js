@@ -667,6 +667,12 @@ async function init() {
       days_offset INTEGER DEFAULT 7
     )`,
     `CREATE INDEX IF NOT EXISTS idx_project_template_tasks_tpl ON project_template_tasks (template_id, position)`,
+    // Generic workspace-level key/value store (first use: the Tickets Live
+    // team-board share token).
+    `CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT DEFAULT ''
+    )`,
     // Workspace docs — a notion/ClickUp-style document store. Anyone in the
     // workspace can read/write any doc (no per-doc ACL yet). parent_id +
     // position are wired in advance so subpages can be added later without

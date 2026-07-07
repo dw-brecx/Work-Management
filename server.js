@@ -7324,6 +7324,64 @@ app.post('/api/tickets-live/links/:id/rotate', requireAdmin, async (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Team-board share link: one workspace-level secret token so the WHOLE team
+// view can run on a wall display without a login session. Same rules as the
+// per-user tokens — lazy-generated, admin-rotatable, unknown token → 404.
+async function ensureTeamBoardToken() {
+  const row = await get(`SELECT value FROM app_settings WHERE key='tickets_live_team_token'`);
+  if (row && row.value) return row.value;
+  const token = randomBytes(24).toString('hex');
+  await run(
+    `INSERT INTO app_settings (key, value) VALUES ('tickets_live_team_token', ?)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, token);
+  return token;
+}
+function teamLinkUrl(req, token) {
+  const base = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  return `${base}/tickets-live.html?team=${token}`;
+}
+
+app.get('/api/tickets-live/team-link', requireAdmin, async (req, res) => {
+  try {
+    res.json({ url: teamLinkUrl(req, await ensureTeamBoardToken()) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/tickets-live/team-link/rotate', requireAdmin, async (req, res) => {
+  try {
+    const token = randomBytes(24).toString('hex');
+    await run(
+      `INSERT INTO app_settings (key, value) VALUES ('tickets_live_team_token', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, token);
+    res.json({ url: teamLinkUrl(req, token) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Public team board — NO auth, gated by the workspace token. Includes each
+// user's personal board URL so rows stay clickable (that data is a subset
+// of what this payload already contains).
+app.get('/api/tickets-live/team/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '');
+    if (!/^[a-f0-9]{48}$/.test(token)) return res.status(404).json({ error: 'Board not found' });
+    const row = await get(`SELECT value FROM app_settings WHERE key='tickets_live_team_token'`);
+    if (!row || !row.value || row.value !== token) return res.status(404).json({ error: 'Board not found' });
+    const targets = await all('SELECT id,name,role,dept,color,avatar_url FROM users ORDER BY LOWER(name) ASC');
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+    const users = [];
+    const links = {};
+    for (const t of targets) {
+      users.push(await ticketsLiveBoard(t, nowUtc, cutoff30));
+      links[t.id] = boardLinkUrl(req, await ensureBoardToken(t.id));
+    }
+    res.json({ now: nowUtc, mode: 'team', public: true, viewer: null, users, links });
+  } catch (e) {
+    console.error('[tickets-live:team] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Public board — NO auth. The 48-hex-char token IS the credential; an
 // unknown token is a plain 404. Read-only by construction (GET, and the
 // handler only ever SELECTs). Exposes exactly what the personal board

@@ -8,11 +8,15 @@
 
   const REFRESH_MS = 30000;
   const $app = document.getElementById('tl-app');
-  // ?board=<token> = public share-link mode: no login, no auth check, the
-  // token scopes the whole page to one user's read-only board.
+  // ?board=<token> = one user's board, ?team=<token> = the whole team view.
+  // Either token opens the page WITHOUT a login session — the token is the
+  // credential and the page stays read-only.
   const PUBLIC_TOKEN = new URLSearchParams(location.search).get('board');
+  const TEAM_TOKEN = new URLSearchParams(location.search).get('team');
+  const NO_LOGIN = !!(PUBLIC_TOKEN || TEAM_TOKEN);
   let data = null;         // last /api/tickets-live payload
-  let links = null;        // userId → share URL (logged-in mode only)
+  let links = null;        // userId → share URL
+  let teamLink = null;     // team-board share URL (admins only)
   let skewMs = 0;          // server clock minus client clock
   let lastFetch = 0;
 
@@ -22,7 +26,7 @@
 
   async function api(p, opts) {
     const r = await fetch(p, Object.assign({ credentials: 'same-origin' }, opts));
-    if (r.status === 401 && !PUBLIC_TOKEN) { location.href = '/login.html'; throw new Error('unauthorized'); }
+    if (r.status === 401 && !NO_LOGIN) { location.href = '/login.html'; throw new Error('unauthorized'); }
     if (!r.ok) {
       const b = await r.json().catch(() => ({}));
       throw new Error(b.error || ('HTTP ' + r.status));
@@ -110,8 +114,9 @@
       const since = parseUtc(t.waitingSince);
       const due = parseDue(t.due);
       const pastDue = due && (t.overdue || due.getTime() < serverNow());
+      // A pending update request blinks red until the user replies.
       return `
-      <div class="tl-row">
+      <div class="tl-row ${t.updateRequestedAt ? 'urgent' : ''}">
         <div class="tl-row-main">
           <div class="tl-row-title"><span class="tid">${esc(t.id)}</span>${esc(t.title)}</div>
           <div class="tl-row-meta">${waitReasonBadges(t)}
@@ -216,16 +221,20 @@
 
     const rows = ranked.map((u, i) => {
       const lw = longestWait(u);
+      // Row links use the user's secret board token (same URL as the share
+      // link) instead of a guessable ?user=<id>. Until the links map has
+      // loaded there's nothing safe to link to, so the row is inert.
+      const href = links && links[u.id] ? esc(links[u.id]) : '#';
       return `
-      <a class="tl-trow" href="/tickets-live.html?user=${u.id}">
+      <a class="tl-trow" href="${href}">
         <div class="tl-rank">${i + 1}</div>
         <div class="tl-user">${avatar(u)}<div style="min-width:0"><div class="nm">${esc(u.name)}</div><div class="rl">${esc(u.role || u.dept || '')}</div></div>
-          ${links && links[u.id] ? `<span class="tl-rowacts">
+          ${!data.public && links && links[u.id] ? `<span class="tl-rowacts">
             <button class="tl-iconbtn tl-copy" data-url="${esc(links[u.id])}" title="Copy ${esc(u.name)}'s board link (opens without login)">🔗</button>
             <button class="tl-iconbtn tl-rotate" data-user="${u.id}" title="Reset link (old link stops working)">↻</button>
           </span>` : ''}
         </div>
-        <div><div class="num ${u.needsReplyCount ? 'n-serious' : 'n-zero'}">${u.needsReplyCount}</div><div class="sub">waiting</div></div>
+        <div><div class="num ${u.needsReplyCount ? 'n-serious' : 'n-zero'}">${u.needsReplyCount}${u.updateRequestedCount ? '<span class="tl-reddot" title="Update requested — still no reply"></span>' : ''}</div><div class="sub">waiting</div></div>
         <div>${lw ? `<span class="tl-team-timer" data-epoch="${lw.getTime()}">${fmtDur(serverNow() - lw.getTime())}</span>` : '<span class="num n-zero">—</span>'}<div class="sub">longest wait</div></div>
         <div class="hide-sm"><div class="num">${u.openCount}</div><div class="sub">open</div></div>
         <div class="hide-sm"><div class="num ${u.overdueCount ? 'n-critical' : 'n-zero'}">${u.overdueCount}</div><div class="sub">overdue</div></div>
@@ -270,14 +279,23 @@
     const board = single ? data.users[0] : null;
     const backLink = (single && data.viewer?.isAdmin)
       ? `<a href="/tickets-live.html" style="color:var(--ink-3);font-size:13px;text-decoration:none">← All users</a>` : '';
-    const sub = data.public ? `${esc(board.name)}'s live board`
+    const sub = data.public
+      ? (single ? `${esc(board.name)}'s live board` : 'Team live board')
       : (single ? 'Your ticket response board' : 'Team ticket response board');
-    const shareUrl = (!data.public && single && links && links[board.id]) ? links[board.id] : null;
-    const shareBtns = shareUrl ? `
+    let shareBtns = '';
+    if (!data.public && single && links && links[board.id]) {
+      shareBtns = `
           <span class="tl-share">
-            <button class="tl-linkbtn tl-copy" data-url="${esc(shareUrl)}" title="${esc(shareUrl)}">🔗 Copy board link</button>
+            <button class="tl-linkbtn tl-copy" data-url="${esc(links[board.id])}" title="${esc(links[board.id])}">🔗 Copy board link</button>
             ${data.viewer?.isAdmin ? `<button class="tl-iconbtn tl-rotate" data-user="${board.id}" title="Reset this link (old link stops working)">↻</button>` : ''}
-          </span>` : '';
+          </span>`;
+    } else if (!data.public && !single && data.viewer?.isAdmin && teamLink) {
+      shareBtns = `
+          <span class="tl-share">
+            <button class="tl-linkbtn tl-copy" data-url="${esc(teamLink)}" title="${esc(teamLink)}">🔗 Copy team board link</button>
+            <button class="tl-iconbtn tl-rotate" data-team="1" title="Reset the team link (old link stops working)">↻</button>
+          </span>`;
+    }
 
     $app.innerHTML = `
       <div class="tl-header">
@@ -317,23 +335,29 @@
 
   async function load() {
     const qs = new URLSearchParams(location.search);
-    const url = PUBLIC_TOKEN
-      ? '/api/tickets-live/board/' + encodeURIComponent(PUBLIC_TOKEN)
-      : '/api/tickets-live' + (qs.get('user') ? ('?user=' + encodeURIComponent(qs.get('user'))) : '');
+    let url;
+    if (PUBLIC_TOKEN)      url = '/api/tickets-live/board/' + encodeURIComponent(PUBLIC_TOKEN);
+    else if (TEAM_TOKEN)   url = '/api/tickets-live/team/' + encodeURIComponent(TEAM_TOKEN);
+    else                   url = '/api/tickets-live' + (qs.get('user') ? ('?user=' + encodeURIComponent(qs.get('user'))) : '');
     const payload = await apiGet(url);
     const sv = parseUtc(payload.now);
     if (sv) skewMs = sv.getTime() - Date.now();
     data = payload;
+    // The public team payload ships each user's board URL so rows stay
+    // clickable without a session.
+    if (payload.links) links = payload.links;
     lastFetch = Date.now();
     render();
   }
 
-  // Share links: members get their own, Admin/Manager gets everyone's.
+  // Share links: members get their own, Admin/Manager gets everyone's
+  // plus the team-board link.
   async function loadLinks() {
-    if (PUBLIC_TOKEN || !data?.viewer) return;
+    if (NO_LOGIN || !data?.viewer) return;
     const map = {};
     if (data.viewer.isAdmin) {
       (await apiGet('/api/tickets-live/links')).forEach(l => { map[l.id] = l.url; });
+      teamLink = (await apiGet('/api/tickets-live/team-link')).url;
     } else {
       const l = await apiGet('/api/tickets-live/my-link');
       map[l.userId] = l.url;
@@ -360,8 +384,12 @@
     } else if (rotate) {
       if (!window.confirm('Reset this board link? The old link will stop working immediately.')) return;
       try {
-        const r = await apiPost('/api/tickets-live/links/' + encodeURIComponent(rotate.dataset.user) + '/rotate');
-        if (links) links[Number(rotate.dataset.user)] = r.url;
+        if (rotate.dataset.team) {
+          teamLink = (await apiPost('/api/tickets-live/team-link/rotate')).url;
+        } else {
+          const r = await apiPost('/api/tickets-live/links/' + encodeURIComponent(rotate.dataset.user) + '/rotate');
+          if (links) links[Number(rotate.dataset.user)] = r.url;
+        }
         render();
       } catch (err) { window.alert('Could not reset the link: ' + err.message); }
     }
@@ -369,14 +397,14 @@
 
   async function boot() {
     try {
-      if (!PUBLIC_TOKEN) await apiGet('/api/auth/me');   // 401 → redirected to /login.html
+      if (!NO_LOGIN) await apiGet('/api/auth/me');   // 401 → redirected to /login.html
       await load();
-      if (!PUBLIC_TOKEN) { await loadLinks().catch(() => {}); render(); }
+      if (!NO_LOGIN) { await loadLinks().catch(() => {}); render(); }
       $app.addEventListener('click', onAction);
       setInterval(() => load().catch(() => {}), REFRESH_MS);
       setInterval(tick, 1000);
     } catch (e) {
-      const msg = PUBLIC_TOKEN
+      const msg = NO_LOGIN
         ? 'This board link is invalid or has been reset — ask your admin for a new one.'
         : `Couldn't load the live board: ${esc(e.message)}`;
       if ($app) $app.innerHTML = `<div class="tl-error">${msg}</div>`;
