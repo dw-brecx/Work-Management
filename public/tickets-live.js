@@ -79,6 +79,57 @@
     return `<span class="tl-av" style="background:${esc(u.color || '#2563eb')}">${esc(initials(u.name))}</span>`;
   }
 
+  // ── beeper ─────────────────────────────────────────────────────────────
+  // While any update-requested ticket is on the board, a synthesized
+  // double-beep repeats every BEEP_EVERY_MS. Opt-in via the 🔊 toggle
+  // (browsers require a user gesture before audio anyway); preference is
+  // remembered per device.
+  const BEEP_EVERY_MS = 15000;
+  let soundOn = localStorage.getItem('tl-sound') === '1';
+  let audioCtx = null;
+  let lastBeepAt = 0;
+
+  function ensureAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch { return null; }
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    return audioCtx;
+  }
+  function beepOnce(ctx, at) {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'square';
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(0.18, at + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + 0.15);
+    o.connect(g).connect(ctx.destination);
+    o.start(at);
+    o.stop(at + 0.16);
+  }
+  function beep() {
+    const ctx = ensureAudio();
+    if (!ctx || ctx.state !== 'running') return;
+    beepOnce(ctx, ctx.currentTime);
+    beepOnce(ctx, ctx.currentTime + 0.22);
+  }
+  function hasUrgent() {
+    return !!data && data.users.some(u => (u.updateRequestedCount || 0) > 0);
+  }
+  function setSound(on) {
+    soundOn = on;
+    localStorage.setItem('tl-sound', on ? '1' : '0');
+    const btn = document.getElementById('tl-sound');
+    if (btn) {
+      btn.textContent = on ? '🔊' : '🔇';
+      btn.title = on ? 'Beeping is ON while an update request is unanswered — click to mute'
+                     : 'Click to beep while an update request is unanswered';
+    }
+    if (on) { ensureAudio(); lastBeepAt = 0; }   // audible feedback right away
+  }
+
   // A live-ticking duration span. data-epoch = the moment waiting started.
   const timerSpan = (dateObj, cls) => {
     if (!dateObj) return '—';
@@ -308,6 +359,7 @@
           ${shareBtns}
           ${board ? `<span class="tl-who">${avatar(board)} ${esc(board.name)}</span>` : ''}
           <div class="tl-clock" id="tl-clock"></div>
+          <button class="tl-fs tl-snd" id="tl-sound">🔇</button>
           <button class="tl-fs" id="tl-fs" title="Fullscreen">⛶</button>
         </div>
       </div>
@@ -318,6 +370,8 @@
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen().catch(() => {});
     };
+    document.getElementById('tl-sound').onclick = () => setSound(!soundOn);
+    setSound(soundOn);   // sync the icon with the stored preference
     tick();
   }
 
@@ -331,6 +385,10 @@
     });
     const note = document.getElementById('tl-note');
     if (note && lastFetch) note.textContent = `Read-only board · last updated ${Math.max(0, Math.round((Date.now() - lastFetch) / 1000))}s ago`;
+    if (soundOn && hasUrgent() && Date.now() - lastBeepAt >= BEEP_EVERY_MS) {
+      lastBeepAt = Date.now();
+      beep();
+    }
   }
 
   async function load() {
@@ -401,6 +459,9 @@
       await load();
       if (!NO_LOGIN) { await loadLinks().catch(() => {}); render(); }
       $app.addEventListener('click', onAction);
+      // If beeping was left on last visit, the browser still requires one
+      // interaction before audio may play — unlock on the first tap/click.
+      if (soundOn) document.addEventListener('pointerdown', () => ensureAudio(), { once: true });
       setInterval(() => load().catch(() => {}), REFRESH_MS);
       setInterval(tick, 1000);
     } catch (e) {

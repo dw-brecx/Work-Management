@@ -298,6 +298,7 @@ a.tl-trow:hover { background: var(--surface-2); }
   .tl-header-right { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
   .tl-clock { font-size: 24px; margin-left: auto; }
   .tl-fs { display: none; }               /* fullscreen is a wall-display thing */
+  .tl-fs.tl-snd { display: block; width: 34px; height: 34px; }  /* beeper stays */
   .tl-who { font-size: 13px; padding: 5px 12px 5px 6px; }
 
   .tl-grid { gap: 12px; }
