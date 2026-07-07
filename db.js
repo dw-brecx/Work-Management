@@ -673,6 +673,23 @@ async function init() {
       key TEXT PRIMARY KEY,
       value TEXT DEFAULT ''
     )`,
+    // Per-user ticket "nag schedule" (admin-configured): at each time of day
+    // in times, if the user still has tickets matching triggers, a digest
+    // goes to every address in emails and an SMS to phone. Nothing pending →
+    // nothing sent, so the nagging stops by itself once tickets are handled.
+    `CREATE TABLE IF NOT EXISTS ticket_nag_configs (
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      enabled INTEGER DEFAULT 1,
+      emails TEXT DEFAULT '[]',
+      phone TEXT DEFAULT '',
+      times TEXT DEFAULT '[]',
+      tz TEXT DEFAULT '',
+      triggers TEXT DEFAULT '["needsReply","updateRequested","overdue","dueSoon"]',
+      due_soon_days INTEGER DEFAULT 2,
+      last_sent_key TEXT DEFAULT '',
+      updated_by INTEGER,
+      updated_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+    )`,
     // Workspace docs — a notion/ClickUp-style document store. Anyone in the
     // workspace can read/write any doc (no per-doc ACL yet). parent_id +
     // position are wired in advance so subpages can be added later without

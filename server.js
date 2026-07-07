@@ -160,6 +160,7 @@ const {
   sendPersonalReminderEmail,
   sendUpdateRequestedEmail,
   sendBulkUpdateRequestedEmail,
+  sendTicketNagEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
 } = require('./email');
@@ -204,6 +205,36 @@ function fireEmail(label, promiseFactory) {
   Promise.resolve()
     .then(() => promiseFactory())
     .catch(e => console.error(`[email:${label}] failed:`, e.message));
+}
+
+// ── SMS (Twilio) ─────────────────────────────────────────────────────────────
+// Text messages for the ticket nag schedule. No-op (logged) until the three
+// env vars are set — same graceful-degrade pattern as Slack/push/email.
+const TWILIO_SID   = process.env.TWILIO_ACCOUNT_SID || '';
+const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN || '';
+const TWILIO_FROM  = process.env.TWILIO_FROM_NUMBER || '';
+if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM) {
+  console.log('[sms] disabled — set TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + TWILIO_FROM_NUMBER to enable');
+}
+async function sendSms(to, body) {
+  if (!to) return { skipped: true, reason: 'no-recipient' };
+  if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM) {
+    console.log(`[sms] (dev / no Twilio) would text ${to}: ${body}`);
+    return { skipped: true, reason: 'no-twilio' };
+  }
+  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(TWILIO_SID)}/Messages.json`, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Basic ' + Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ To: to, From: TWILIO_FROM, Body: body }).toString(),
+  });
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '');
+    throw new Error(`Twilio ${resp.status}: ${detail.slice(0, 200)}`);
+  }
+  return { ok: true };
 }
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'public', 'uploads');
@@ -7402,6 +7433,172 @@ app.get('/api/tickets-live/board/:token', async (req, res) => {
   }
 });
 
+// ── Ticket nag schedule ──────────────────────────────────────────────────────
+// Admin-configured, per user: at each configured time of day (in the config's
+// timezone), if the user still has tickets matching the configured triggers,
+// a digest email goes to EVERY configured address and an SMS to the phone.
+// When nothing is pending the run sends nothing — so the nagging stops on its
+// own once every ticket is replied to / closed.
+const NAG_TRIGGERS = ['needsReply', 'updateRequested', 'overdue', 'dueSoon'];
+
+function _nagParseArr(s) {
+  try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+
+function _nagSerialize(cfg, userRow) {
+  return {
+    userId: cfg.user_id,
+    name: userRow?.name,
+    enabled: Number(cfg.enabled) === 1,
+    emails: _nagParseArr(cfg.emails),
+    phone: cfg.phone || '',
+    times: _nagParseArr(cfg.times),
+    tz: cfg.tz || '',
+    triggers: _nagParseArr(cfg.triggers),
+    dueSoonDays: Number(cfg.due_soon_days) || 0,
+    lastSentKey: cfg.last_sent_key || '',
+  };
+}
+
+// Everything currently actionable for the user, filtered by the config's
+// triggers. Reuses the live-board derivation so the definition of "needs
+// reply" / "update requested" is identical to what the wallboard shows.
+async function nagItemsForUser(user, cfg) {
+  const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+  const board = await ticketsLiveBoard(user, nowUtc, cutoff30);
+  const triggers = new Set(_nagParseArr(cfg.triggers));
+  const dueSoonMs = (Number(cfg.due_soon_days) || 0) * 86400000;
+  const items = [];
+  for (const t of board.tickets) {
+    if (t.snoozed) continue;
+    const reasons = [];
+    if (triggers.has('updateRequested') && t.updateRequestedAt) reasons.push('update requested');
+    if (triggers.has('needsReply') && t.newCommentSince) reasons.push('reply needed');
+    if (triggers.has('overdue') && t.overdue) reasons.push('overdue');
+    if (triggers.has('dueSoon') && !t.overdue && t.due && dueSoonMs > 0) {
+      const d = new Date(t.due);
+      if (!isNaN(d)) {
+        const diff = d.getTime() - Date.now();
+        if (diff >= 0 && diff <= dueSoonMs) reasons.push(`due in ${Math.max(1, Math.ceil(diff / 86400000))}d`);
+      }
+    }
+    if (reasons.length) items.push({ id: t.id, title: t.title, reasons, due: t.due });
+  }
+  return items;
+}
+
+// Fan out one nag run (all emails + SMS). Returns what was sent.
+async function dispatchNag(user, cfg, timeLabel) {
+  const items = await nagItemsForUser(user, cfg);
+  if (!items.length) return { items: 0, emails: 0, sms: false };
+  const emails = _nagParseArr(cfg.emails).filter(e => /\S+@\S+\.\S+/.test(e));
+  for (const em of emails) {
+    fireEmail('ticket-nag', () => sendTicketNagEmail({ toEmail: em, targetName: user.name, items, timeLabel }));
+  }
+  let smsSent = false;
+  if (cfg.phone) {
+    const top = items.slice(0, 5).map(i => `${i.id} (${i.reasons.join(', ')})`).join('; ');
+    const more = items.length > 5 ? ` +${items.length - 5} more` : '';
+    const link = (process.env.APP_URL || '').replace(/\/+$/, '');
+    const body = `Syruvia: ${user.name}, ${items.length} ticket${items.length === 1 ? '' : 's'} need your action — ${top}${more}. Reply or close them.${link ? ' ' + link + '/my-tickets' : ''}`;
+    try { await sendSms(cfg.phone, body); smsSent = true; }
+    catch (e) { console.warn('[nag] sms failed for', user.name, '-', e.message); }
+  }
+  return { items: items.length, emails: emails.length, sms: smsSent };
+}
+
+// Runs twice a minute; a config fires when the current HH:MM in its timezone
+// matches one of its times. last_sent_key (claimed BEFORE sending) makes the
+// fire idempotent within that minute.
+async function runTicketNagJob() {
+  try {
+    const cfgs = await all(`
+      SELECT c.*, u.name, u.tz AS user_tz
+        FROM ticket_nag_configs c JOIN users u ON u.id = c.user_id
+       WHERE c.enabled = 1`);
+    for (const cfg of cfgs) {
+      const times = _nagParseArr(cfg.times);
+      if (!times.length) continue;
+      const tz = cfg.tz || cfg.user_tz || 'UTC';
+      let hhmm, dayKey;
+      try {
+        hhmm = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+        dayKey = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+      } catch {
+        hhmm = new Date().toISOString().slice(11, 16);
+        dayKey = new Date().toISOString().slice(0, 10);
+      }
+      if (!times.includes(hhmm)) continue;
+      const sentKey = `${dayKey} ${hhmm}`;
+      if (cfg.last_sent_key === sentKey) continue;
+      await run('UPDATE ticket_nag_configs SET last_sent_key=? WHERE user_id=?', sentKey, cfg.user_id);
+      const user = await get('SELECT id, name FROM users WHERE id=?', cfg.user_id);
+      if (!user) continue;
+      const r = await dispatchNag(user, cfg, hhmm);
+      if (r.items) console.log(`[nag] ${sentKey} → ${user.name}: ${r.items} item(s), ${r.emails} email(s)${r.sms ? ' + sms' : ''}`);
+    }
+  } catch (e) { console.error('[cron:ticket-nag]', e.message); }
+}
+
+// All configs (one row per workspace user, config nullable).
+app.get('/api/ticket-nags', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT u.id, u.name, u.tz AS user_tz, c.*
+        FROM users u LEFT JOIN ticket_nag_configs c ON c.user_id = u.id
+       ORDER BY LOWER(u.name) ASC`);
+    res.json(rows.map(r => r.user_id
+      ? _nagSerialize(r, { name: r.name })
+      : { userId: r.id, name: r.name, enabled: false, emails: [], phone: '', times: [], tz: r.user_tz || '', triggers: NAG_TRIGGERS.slice(), dueSoonDays: 2 }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/ticket-nags/:userId', requireAdmin, async (req, res) => {
+  try {
+    const uid = Number(req.params.userId);
+    const user = await get('SELECT id, name FROM users WHERE id=?', uid);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const b = req.body || {};
+    const emails = (Array.isArray(b.emails) ? b.emails : [])
+      .map(e => String(e).trim().toLowerCase()).filter(e => /\S+@\S+\.\S+/.test(e)).slice(0, 20);
+    const times = (Array.isArray(b.times) ? b.times : [])
+      .map(t => String(t).trim()).filter(t => /^([01]\d|2[0-3]):[0-5]\d$/.test(t));
+    const triggers = (Array.isArray(b.triggers) ? b.triggers : []).filter(t => NAG_TRIGGERS.includes(t));
+    const phone = String(b.phone || '').replace(/[^\d+]/g, '').slice(0, 20);
+    const tz = String(b.tz || '').trim().slice(0, 64);
+    if (tz) { try { new Intl.DateTimeFormat('en', { timeZone: tz }); } catch { return res.status(400).json({ error: `Unknown timezone: ${tz}` }); } }
+    const dueSoonDays = Math.min(30, Math.max(0, Number(b.dueSoonDays) || 0));
+    const enabled = b.enabled ? 1 : 0;
+    await run(`
+      INSERT INTO ticket_nag_configs (user_id, enabled, emails, phone, times, tz, triggers, due_soon_days, updated_by, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?, TO_CHAR(NOW() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'))
+      ON CONFLICT (user_id) DO UPDATE SET
+        enabled = EXCLUDED.enabled, emails = EXCLUDED.emails, phone = EXCLUDED.phone,
+        times = EXCLUDED.times, tz = EXCLUDED.tz, triggers = EXCLUDED.triggers,
+        due_soon_days = EXCLUDED.due_soon_days, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+      uid, enabled, JSON.stringify(emails), phone, JSON.stringify(times), tz,
+      JSON.stringify(triggers.length ? triggers : NAG_TRIGGERS), dueSoonDays, req.session.userId);
+    const row = await get('SELECT * FROM ticket_nag_configs WHERE user_id=?', uid);
+    res.json(_nagSerialize(row, user));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Fire one nag run right now (ignores the schedule) — lets the admin verify
+// delivery without waiting for the next configured time.
+app.post('/api/ticket-nags/:userId/test', requireAdmin, async (req, res) => {
+  try {
+    const uid = Number(req.params.userId);
+    const user = await get('SELECT id, name FROM users WHERE id=?', uid);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const cfg = await get('SELECT * FROM ticket_nag_configs WHERE user_id=?', uid);
+    if (!cfg) return res.status(400).json({ error: 'No nag schedule saved for this user yet' });
+    const r = await dispatchNag(user, cfg, 'manual');
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
 // Cross-app API for syncing tickets ↔ Syruvia Lab flavors.
 // All bridge routes require the shared CROSS_APP_SECRET in the Authorization header.
@@ -10170,6 +10367,9 @@ app.get('*', (req, res) => {
     setInterval(runMarketingPostsJob, 60 * 60 * 1000);
     // Every hour: create review-day tickets whose per-type lead window opened.
     setInterval(runReviewTicketsJob, 60 * 60 * 1000);
+    // Twice a minute: fire ticket nag schedules whose HH:MM just arrived
+    // (last_sent_key makes each minute idempotent).
+    setInterval(runTicketNagJob, 30 * 1000);
     // Run all jobs once at startup (slightly delayed) so a freshly-deployed
     // server doesn't have to wait an hour to start sending alerts.
     setTimeout(() => {

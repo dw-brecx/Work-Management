@@ -17,6 +17,7 @@
   let data = null;         // last /api/tickets-live payload
   let links = null;        // userId → share URL
   let teamLink = null;     // team-board share URL (admins only)
+  let nags = null;         // userId → nag schedule config (admins only)
   let skewMs = 0;          // server clock minus client clock
   let lastFetch = 0;
 
@@ -283,6 +284,7 @@
           ${!data.public && links && links[u.id] ? `<span class="tl-rowacts">
             <button class="tl-iconbtn tl-copy" data-url="${esc(links[u.id])}" title="Copy ${esc(u.name)}'s board link (opens without login)">🔗</button>
             <button class="tl-iconbtn tl-rotate" data-user="${u.id}" title="Reset link (old link stops working)">↻</button>
+            ${nags ? `<button class="tl-iconbtn tl-nag ${nags[u.id]?.enabled && nags[u.id]?.times?.length ? 'on' : ''}" data-user="${u.id}" title="Email/SMS reminder schedule for ${esc(u.name)}">⏰</button>` : ''}
           </span>` : ''}
         </div>
         <div><div class="num ${u.needsReplyCount ? 'n-serious' : 'n-zero'}">${u.needsReplyCount}${u.updateRequestedCount ? '<span class="tl-reddot" title="Update requested — still no reply"></span>' : ''}</div><div class="sub">waiting</div></div>
@@ -416,6 +418,8 @@
     if (data.viewer.isAdmin) {
       (await apiGet('/api/tickets-live/links')).forEach(l => { map[l.id] = l.url; });
       teamLink = (await apiGet('/api/tickets-live/team-link')).url;
+      nags = {};
+      (await apiGet('/api/ticket-nags')).forEach(n => { nags[n.userId] = n; });
     } else {
       const l = await apiGet('/api/tickets-live/my-link');
       map[l.userId] = l.url;
@@ -429,9 +433,93 @@
     setTimeout(() => { btn.textContent = prev; }, 1400);
   }
 
+  // ── nag schedule dialog (admins, team view) ────────────────────────────
+  // Lives on document.body, NOT inside #tl-app, so the 30s board re-render
+  // can't wipe it while the admin is typing.
+  function openNagModal(userId) {
+    const cfg = (nags && nags[userId]) || { emails: [], phone: '', times: [], tz: '', triggers: ['needsReply', 'updateRequested', 'overdue', 'dueSoon'], dueSoonDays: 2, enabled: true };
+    const user = data.users.find(u => u.id === userId);
+    document.getElementById('tl-nag-modal')?.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'tl-nag-modal';
+    wrap.className = 'tl-modal-overlay';
+    const trig = (key, label) => `
+      <label class="tl-check"><input type="checkbox" name="trig" value="${key}" ${cfg.triggers.includes(key) ? 'checked' : ''}/> ${label}</label>`;
+    wrap.innerHTML = `
+      <div class="tl-modal">
+        <div class="tl-modal-title">⏰ Reminder schedule — ${esc(user?.name || '')}</div>
+        <div class="tl-modal-sub">At each time below, if ${esc(user?.name || 'the user')} still has matching tickets, every address gets an email and the cell gets a text. Nothing pending = nothing sent, so it stops by itself once tickets are replied to or closed.</div>
+        <label class="tl-check tl-check-main"><input type="checkbox" id="nag-enabled" ${cfg.enabled ? 'checked' : ''}/> Schedule active</label>
+        <div class="tl-field"><span>Send to emails (one per line — as many as you want)</span>
+          <textarea id="nag-emails" rows="3" placeholder="bryan@company.com&#10;boss@company.com">${esc(cfg.emails.join('\n'))}</textarea></div>
+        <div class="tl-field"><span>Text (SMS) to cell — with country code</span>
+          <input id="nag-phone" type="text" placeholder="+15551234567" value="${esc(cfg.phone)}"/></div>
+        <div class="tl-field"><span>Times of day, 24h HH:MM, comma-separated (as many as you want)</span>
+          <input id="nag-times" type="text" placeholder="09:00, 13:00, 17:30" value="${esc(cfg.times.join(', '))}"/></div>
+        <div class="tl-field"><span>Timezone for those times (blank = user's own, else UTC)</span>
+          <input id="nag-tz" type="text" placeholder="America/New_York" value="${esc(cfg.tz)}"/></div>
+        <div class="tl-field"><span>Remind about</span>
+          <div class="tl-checks">
+            ${trig('needsReply', '💬 Reply needed')}
+            ${trig('updateRequested', '📩 Update requested')}
+            ${trig('overdue', '⏰ Overdue')}
+            ${trig('dueSoon', '📅 Due date approaching')}
+          </div></div>
+        <div class="tl-field tl-field-inline"><span>"Approaching" means due within</span>
+          <input id="nag-duesoon" type="number" min="0" max="30" value="${cfg.dueSoonDays}"/> <span>days</span></div>
+        <div class="tl-modal-btns">
+          <button class="tl-btn tl-btn-primary" id="nag-save">Save</button>
+          <button class="tl-btn" id="nag-test" title="Fire one run right now to verify delivery">Send test now</button>
+          <button class="tl-btn" id="nag-close">Close</button>
+        </div>
+        <div class="tl-modal-msg" id="nag-msg"></div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const msg = (t, bad) => { const m = wrap.querySelector('#nag-msg'); m.textContent = t; m.style.color = bad ? '#e66767' : '#0ca30c'; };
+    const readForm = () => ({
+      enabled: wrap.querySelector('#nag-enabled').checked,
+      emails: wrap.querySelector('#nag-emails').value.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean),
+      phone: wrap.querySelector('#nag-phone').value.trim(),
+      times: wrap.querySelector('#nag-times').value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean),
+      tz: wrap.querySelector('#nag-tz').value.trim(),
+      triggers: [...wrap.querySelectorAll('input[name=trig]:checked')].map(i => i.value),
+      dueSoonDays: Number(wrap.querySelector('#nag-duesoon').value) || 0,
+    });
+    const save = async () => {
+      const body = readForm();
+      const bad = body.times.filter(t => !/^([01]\d|2[0-3]):[0-5]\d$/.test(t));
+      if (bad.length) { msg(`Times must be 24h HH:MM — check: ${bad.join(', ')}`, true); return null; }
+      const r = await fetch('/api/ticket-nags/' + userId, {
+        method: 'PUT', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { msg(j.error || ('HTTP ' + r.status), true); return null; }
+      nags[userId] = j;
+      render();
+      return j;
+    };
+    wrap.querySelector('#nag-save').onclick = async () => { if (await save()) msg('Saved ✓'); };
+    wrap.querySelector('#nag-test').onclick = async () => {
+      if (!await save()) return;
+      const r = await apiPost('/api/ticket-nags/' + userId + '/test').catch(e => ({ error: e.message }));
+      if (r.error) msg(r.error, true);
+      else msg(r.items ? `Sent: ${r.items} ticket(s) → ${r.emails} email(s)${r.sms ? ' + SMS' : ''} ✓` : 'Nothing pending right now — no reminder needed ✓');
+    };
+    wrap.querySelector('#nag-close').onclick = () => wrap.remove();
+    wrap.addEventListener('click', (ev) => { if (ev.target === wrap) wrap.remove(); });
+  }
+
   async function onAction(e) {
     const copy = e.target.closest('.tl-copy');
     const rotate = e.target.closest('.tl-rotate');
+    const nag = e.target.closest('.tl-nag');
+    if (nag) {
+      e.preventDefault();
+      e.stopPropagation();
+      openNagModal(Number(nag.dataset.user));
+      return;
+    }
     if (!copy && !rotate) return;
     e.preventDefault();
     e.stopPropagation();
