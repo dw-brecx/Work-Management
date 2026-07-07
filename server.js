@@ -7086,6 +7086,264 @@ app.post('/api/reports/user/:id/request-update', requireStrictAdmin, async (req,
   }
 });
 
+// ── Tickets Live (read-only wallboard) ───────────────────────────────────────
+// GET /api/tickets-live?user=<id>
+// Per-user responsiveness board: open tickets, tickets waiting on the user's
+// reply (pending update requests + comments by others they haven't answered),
+// how long each has been waiting, and avg reply/close speed. Members always
+// get their own board regardless of ?user; Admin/Manager can target any user
+// or omit ?user for one board per workspace user (team view).
+const _TL_INVOLVED = `
+      (t.assignee_user_id = ?
+       OR (t.assignee_user_id IS NULL AND t.assignee = ?)
+       OR EXISTS (SELECT 1 FROM ticket_assignees ta
+                   WHERE ta.ticket_id = t.id
+                     AND (ta.user_id = ? OR (ta.user_id IS NULL AND ta.user_name = ?))))`;
+
+async function ticketsLiveBoard(u, nowUtc, cutoff30) {
+  const uid = u.id, uname = u.name;
+  // "My last comment on this ticket" — used both to detect unanswered
+  // comments by others and to decide whether an update request is still
+  // pending (a comment after the request counts as the reply). Takes an
+  // alias so it can be embedded several times in one statement.
+  const myLastComment = (a) => `
+      (SELECT MAX(${a}.created_at) FROM ticket_comments ${a}
+        WHERE ${a}.ticket_id = t.id
+          AND (${a}.author_user_id = ? OR (${a}.author_user_id IS NULL AND ${a}.author = ?)))`;
+  const rows = await all(`
+    SELECT t.id, t.title, t.priority, t.status, t.due, t.overdue,
+           t.created_at, t.snoozed_until,
+           ${myLastComment('mc')} AS my_last_comment_at,
+           (SELECT MAX(oc.created_at) FROM ticket_comments oc
+             WHERE oc.ticket_id = t.id
+               AND oc.author_user_id IS DISTINCT FROM ?
+               AND NOT (oc.author_user_id IS NULL AND oc.author = ?)) AS others_last_comment_at,
+           (SELECT MIN(wc.created_at) FROM ticket_comments wc
+             WHERE wc.ticket_id = t.id
+               AND wc.author_user_id IS DISTINCT FROM ?
+               AND NOT (wc.author_user_id IS NULL AND wc.author = ?)
+               AND wc.created_at > COALESCE(${myLastComment('c2')}, '')) AS waiting_since_comment,
+           (SELECT MAX(n.created_at) FROM notifications n
+             WHERE n.user_id = ?
+               AND n.ticket_id = t.id
+               AND (n.type = 'update-requested'
+                    OR (n.type = 'comment' AND n.text LIKE '%asking for an update%'))
+               AND n.created_at > COALESCE(${myLastComment('c3')}, '')) AS update_requested_at
+      FROM tickets t
+     WHERE t.deleted_at IS NULL
+       AND t.status NOT IN ('Closed','Archived')
+       AND ${_TL_INVOLVED}
+     ORDER BY t.id DESC`,
+    uid, uname,                    // my_last_comment_at
+    uid, uname,                    // others_last_comment_at
+    uid, uname, uid, uname,        // waiting_since_comment (+ inner c2)
+    uid, uid, uname,               // update_requested_at (n.user_id + inner c3)
+    uid, uname, uid, uname         // involvement
+  );
+
+  const tickets = rows.map(r => {
+    const snoozed = !!(r.snoozed_until && r.snoozed_until > nowUtc);
+    const commentSince = r.waiting_since_comment || null;
+    const updateSince  = r.update_requested_at || null;
+    let waitingSince = null;
+    if (commentSince && updateSince) waitingSince = commentSince < updateSince ? commentSince : updateSince;
+    else waitingSince = commentSince || updateSince;
+    const needsReply = !snoozed && !!waitingSince;
+    return {
+      id: r.id,
+      title: r.title || '',
+      priority: r.priority || 'Medium',
+      status: r.status || 'Open',
+      due: r.due || '',
+      overdue: Number(r.overdue) === 1,
+      createdAt: r.created_at || null,
+      snoozed,
+      myLastReplyAt: r.my_last_comment_at || null,
+      othersLastCommentAt: r.others_last_comment_at || null,
+      updateRequestedAt: updateSince,
+      newCommentSince: commentSince,
+      waitingSince: needsReply ? waitingSince : null,
+      needsReply,
+    };
+  });
+
+  // Reply speed: for every comment by someone else on a ticket the user is
+  // assigned to, the gap until the user's next comment on that ticket.
+  const replyStats = await get(`
+    SELECT AVG(gap_h) AS avg_hours_all,
+           COUNT(*)   AS replies_all,
+           AVG(CASE WHEN prompt_at >= ? THEN gap_h END)  AS avg_hours_30,
+           COUNT(CASE WHEN prompt_at >= ? THEN 1 END)    AS replies_30
+      FROM (
+        SELECT c.created_at AS prompt_at,
+               EXTRACT(EPOCH FROM (TO_TIMESTAMP(rep.created_at, 'YYYY-MM-DD HH24:MI:SS')
+                                 - TO_TIMESTAMP(c.created_at,   'YYYY-MM-DD HH24:MI:SS'))) / 3600.0 AS gap_h
+          FROM ticket_comments c
+          JOIN tickets t ON t.id = c.ticket_id AND t.deleted_at IS NULL
+          CROSS JOIN LATERAL (
+            SELECT rc.created_at FROM ticket_comments rc
+             WHERE rc.ticket_id = c.ticket_id
+               AND (rc.author_user_id = ? OR (rc.author_user_id IS NULL AND rc.author = ?))
+               AND rc.created_at > c.created_at
+             ORDER BY rc.created_at ASC LIMIT 1
+          ) rep
+         WHERE c.author_user_id IS DISTINCT FROM ?
+           AND NOT (c.author_user_id IS NULL AND c.author = ?)
+           AND ${_TL_INVOLVED}
+      ) g`,
+    cutoff30, cutoff30, uid, uname, uid, uname, uid, uname, uid, uname);
+
+  // Close speed: created_at → closed_at on tickets the user was assigned to.
+  const closeStats = await get(`
+    SELECT COUNT(*)      AS closed_all,
+           AVG(close_d)  AS avg_days_all,
+           COUNT(CASE WHEN closed_at >= ? THEN 1 END)   AS closed_30,
+           AVG(CASE WHEN closed_at >= ? THEN close_d END) AS avg_days_30
+      FROM (
+        SELECT t.closed_at,
+               EXTRACT(EPOCH FROM (TO_TIMESTAMP(t.closed_at,  'YYYY-MM-DD HH24:MI:SS')
+                                 - TO_TIMESTAMP(t.created_at, 'YYYY-MM-DD HH24:MI:SS'))) / 86400.0 AS close_d
+          FROM tickets t
+         WHERE t.deleted_at IS NULL
+           AND t.status = 'Closed'
+           AND t.closed_at IS NOT NULL AND t.closed_at <> ''
+           AND t.created_at IS NOT NULL AND t.created_at <> ''
+           AND ${_TL_INVOLVED}
+      ) g`,
+    cutoff30, cutoff30, uid, uname, uid, uname);
+
+  const num = (v) => (v == null ? null : Math.round(Number(v) * 10) / 10);
+  const active = tickets.filter(t => !t.snoozed);
+  return {
+    id: u.id,
+    name: u.name,
+    role: u.role || '',
+    dept: u.dept || '',
+    color: u.color || '#2563eb',
+    avatarUrl: u.avatar_url || '',
+    openCount: tickets.length,
+    needsReplyCount: active.filter(t => t.needsReply).length,
+    updateRequestedCount: active.filter(t => t.updateRequestedAt).length,
+    newCommentCount: active.filter(t => t.newCommentSince).length,
+    overdueCount: active.filter(t => t.overdue).length,
+    avgReplyHours30:  num(replyStats?.avg_hours_30),
+    avgReplyHoursAll: num(replyStats?.avg_hours_all),
+    repliesCount30:   parseInt(replyStats?.replies_30 || 0, 10),
+    avgCloseDays30:   num(closeStats?.avg_days_30),
+    avgCloseDaysAll:  num(closeStats?.avg_days_all),
+    closedCount30:    parseInt(closeStats?.closed_30 || 0, 10),
+    closedCountAll:   parseInt(closeStats?.closed_all || 0, 10),
+    tickets,
+  };
+}
+
+app.get('/api/tickets-live', requireAuth, async (req, res) => {
+  try {
+    const me = await getUser(req.session.userId);
+    if (!me) return res.status(401).json({ error: 'Not signed in' });
+    const isAdmin = ['Admin', 'Manager'].includes(me.perm_role);
+    const requestedId = req.query.user ? Number(req.query.user) : null;
+
+    let targets;
+    if (!isAdmin) {
+      // Members only ever see their own board — ?user is ignored.
+      targets = [me];
+    } else if (requestedId) {
+      const t = await get('SELECT id,name,role,dept,color,avatar_url FROM users WHERE id=?', requestedId);
+      if (!t) return res.status(404).json({ error: 'User not found' });
+      targets = [t];
+    } else {
+      targets = await all('SELECT id,name,role,dept,color,avatar_url FROM users ORDER BY LOWER(name) ASC');
+    }
+
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+    const users = [];
+    for (const t of targets) users.push(await ticketsLiveBoard(t, nowUtc, cutoff30));
+
+    res.json({
+      now: nowUtc,
+      mode: targets.length > 1 ? 'team' : 'user',
+      viewer: { id: me.id, name: me.name, isAdmin },
+      users,
+    });
+  } catch (e) {
+    console.error('[tickets-live] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Tickets Live share links ─────────────────────────────────────────────────
+// Each user gets a secret token so their board can be opened WITHOUT logging
+// in (wall display / a link you send to the employee). The token is generated
+// lazily on first request and can be rotated by an admin to kill a leaked link.
+async function ensureBoardToken(userId) {
+  const row = await get('SELECT live_board_token FROM users WHERE id=?', userId);
+  if (!row) return null;
+  if (row.live_board_token) return row.live_board_token;
+  const token = randomBytes(24).toString('hex');
+  await run('UPDATE users SET live_board_token=? WHERE id=?', token, userId);
+  return token;
+}
+function boardLinkUrl(req, token) {
+  const base = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  return `${base}/tickets-live.html?board=${token}`;
+}
+
+// The signed-in user's own share link.
+app.get('/api/tickets-live/my-link', requireAuth, async (req, res) => {
+  try {
+    const token = await ensureBoardToken(req.session.userId);
+    if (!token) return res.status(404).json({ error: 'User not found' });
+    res.json({ userId: req.session.userId, url: boardLinkUrl(req, token) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin/Manager: every user's share link.
+app.get('/api/tickets-live/links', requireAdmin, async (req, res) => {
+  try {
+    const users = await all('SELECT id, name, email FROM users ORDER BY LOWER(name) ASC');
+    const out = [];
+    for (const u of users) {
+      const token = await ensureBoardToken(u.id);
+      out.push({ id: u.id, name: u.name, email: u.email, url: boardLinkUrl(req, token) });
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin/Manager: rotate a user's token — the old link stops working.
+app.post('/api/tickets-live/links/:id/rotate', requireAdmin, async (req, res) => {
+  try {
+    const uid = Number(req.params.id);
+    const u = await get('SELECT id FROM users WHERE id=?', uid);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    const token = randomBytes(24).toString('hex');
+    await run('UPDATE users SET live_board_token=? WHERE id=?', token, uid);
+    res.json({ userId: uid, url: boardLinkUrl(req, token) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Public board — NO auth. The 48-hex-char token IS the credential; an
+// unknown token is a plain 404. Read-only by construction (GET, and the
+// handler only ever SELECTs). Exposes exactly what the personal board
+// shows for that one user, nothing workspace-wide.
+app.get('/api/tickets-live/board/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '');
+    if (!/^[a-f0-9]{48}$/.test(token)) return res.status(404).json({ error: 'Board not found' });
+    const u = await get('SELECT id,name,role,dept,color,avatar_url FROM users WHERE live_board_token=?', token);
+    if (!u) return res.status(404).json({ error: 'Board not found' });
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+    const board = await ticketsLiveBoard(u, nowUtc, cutoff30);
+    res.json({ now: nowUtc, mode: 'user', public: true, viewer: null, users: [board] });
+  } catch (e) {
+    console.error('[tickets-live:board] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
 // Cross-app API for syncing tickets ↔ Syruvia Lab flavors.
 // All bridge routes require the shared CROSS_APP_SECRET in the Authorization header.
