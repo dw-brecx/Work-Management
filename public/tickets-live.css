@@ -285,6 +285,46 @@ a.tl-trow:hover { background: var(--surface-2); }
 .tl-note { font-size: 12px; color: var(--ink-3); text-align: center; padding: 14px 0 0; }
 .tl-error { color: #e66767; text-align: center; padding: 40px; font-size: 15px; }
 
+/* ── Nag-schedule dialog (admin) ─────────────────────────────────────── */
+.tl-iconbtn.tl-nag.on { color: var(--warning); border-color: rgba(250, 178, 25, 0.5); }
+.tl-modal-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.tl-modal {
+  background: var(--surface-2); border: 1px solid var(--hairline);
+  border-radius: 16px; padding: 22px; width: 520px; max-width: 100%;
+  max-height: 90vh; overflow-y: auto;
+}
+.tl-modal-title { font-size: 17px; font-weight: 800; margin-bottom: 6px; }
+.tl-modal-sub { font-size: 12.5px; color: var(--ink-3); line-height: 1.5; margin-bottom: 14px; }
+.tl-field { margin-bottom: 12px; }
+.tl-field > span { display: block; font-size: 11.5px; font-weight: 700; color: var(--ink-2); margin-bottom: 5px; }
+.tl-field input[type="text"], .tl-field input[type="number"], .tl-field textarea {
+  width: 100%; background: var(--page); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 8px 10px; font-size: 13px; font-family: inherit;
+}
+.tl-field textarea { resize: vertical; }
+.tl-field-inline { display: flex; align-items: center; gap: 8px; }
+.tl-field-inline > span { margin-bottom: 0; }
+.tl-field-inline input { width: 64px; }
+.tl-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tl-check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.tl-check-main { font-size: 14px; font-weight: 700; color: var(--ink); margin-bottom: 12px; }
+.tl-check input { accent-color: var(--good); width: 15px; height: 15px; }
+.tl-modal-btns { display: flex; gap: 8px; margin-top: 16px; }
+.tl-btn {
+  background: var(--surface); border: 1px solid var(--hairline); color: var(--ink-2);
+  border-radius: 9px; padding: 9px 16px; cursor: pointer; font-size: 13px; font-weight: 700;
+  font-family: inherit;
+}
+.tl-btn:hover { color: var(--ink); }
+.tl-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tl-btn-primary:hover { color: #fff; filter: brightness(1.1); }
+.tl-modal-msg { min-height: 18px; margin-top: 10px; font-size: 12.5px; font-weight: 600; }
+
 /* ── Mobile (phones) ─────────────────────────────────────────────────── */
 @media (max-width: 700px) {
   #tl-app { padding: 12px 12px 20px; }

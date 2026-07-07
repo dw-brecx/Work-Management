@@ -1358,6 +1358,52 @@ async function sendTicketUpdatedEmail({
   return sendMail({ to: toEmail, subject, html });
 }
 
+// Ticket nag digest — sent on the admin-configured schedule while the
+// target user still has tickets needing attention. `items` carry the
+// per-ticket reasons ("update requested", "reply needed", "overdue",
+// "due in Nd") already resolved by the caller.
+async function sendTicketNagEmail({ toEmail, targetName, items, timeLabel }) {
+  if (!toEmail) return { skipped: true };
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) return { skipped: true };
+  const subject = `⏰ ${targetName || 'A teammate'} has ${list.length} ticket${list.length === 1 ? '' : 's'} waiting for action`;
+  const rows = list.map(i => `
+      <tr>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:12px;vertical-align:top;white-space:nowrap">
+          <a href="${ticketUrl(String(i.id || ''))}" style="color:#0a78b3;text-decoration:none;font-weight:600">${escapeHtml(String(i.id || ''))}</a>
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:12px;vertical-align:top;color:#334155">
+          ${escapeHtml(String(i.title || ''))}
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:11px;vertical-align:top;color:#b91c1c;font-weight:600;white-space:nowrap">
+          ${escapeHtml((i.reasons || []).join(' · '))}
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:11px;vertical-align:top;color:#64748b;white-space:nowrap">
+          ${i.due ? 'due ' + escapeHtml(String(i.due)) : '—'}
+        </td>
+      </tr>`).join('');
+  const th = (label) =>
+    `<th align="left" style="padding:9px 12px;font-size:10px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e2e8f0">${label}</th>`;
+  const html = shell({
+    name: 'Tickets need action', subject,
+    preheader: `${targetName || 'A teammate'} has ${list.length} ticket${list.length === 1 ? '' : 's'} waiting for a reply, update, or past due.`,
+    headerEyebrow: 'Action needed',
+    headerEmoji: '⏰',
+    headerTitle: `${escapeHtml(targetName || 'A teammate')} has tickets waiting`,
+    headerSub: `${list.length} ticket${list.length === 1 ? '' : 's'}${timeLabel ? ` · ${escapeHtml(timeLabel)} check` : ''}`,
+    body:
+      `<table cellspacing="0" cellpadding="0" border="0" style="width:100%;border:1px solid #e2e8f0;border-radius:10px;border-collapse:separate;border-spacing:0;background:#fff;margin:0 0 18px;overflow:hidden">
+        <thead><tr style="background:#f8fafc">${th('Ticket')}${th('Title')}${th('Why')}${th('Due')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>` +
+      `<p style="margin:0;font-size:13px;color:#475569;line-height:1.65;">These reminders repeat on schedule until each ticket is replied to or closed.</p>`,
+    ctaText: 'Open the tickets',
+    ctaHref: `${APP_URL}/my-tickets`,
+    footerNote: `You're receiving this because an admin subscribed this address to ${escapeHtml(targetName || 'this user')}'s ticket reminders.`,
+  });
+  return sendMail({ to: toEmail, subject, html });
+}
+
 module.exports = {
   // Calendar
   sendMeetingInviteEmail,
@@ -1377,6 +1423,7 @@ module.exports = {
   sendPersonalReminderEmail,
   sendUpdateRequestedEmail,
   sendBulkUpdateRequestedEmail,
+  sendTicketNagEmail,
   sendFeedbackReplyEmail,
   sendFeedbackStatusChangedEmail,
   // Account
