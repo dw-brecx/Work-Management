@@ -191,21 +191,32 @@ html, body {
 .b-prio     { color: var(--ink-2);    border-color: var(--hairline); }
 .tl-row-meta .due { font-size: 12px; color: var(--ink-3); }
 
-/* Pending update request: the whole ticket row pulses red until the user
-   replies. Pairs with the "📩 Update requested" badge so the meaning never
-   rides on color alone. */
+/* Pending update request: the ticket's full box blinks red until the user
+   replies — a real bordered box that never fades below clearly-red. Pairs
+   with the "📩 Update requested" badge so the meaning never rides on the
+   animation alone. */
 .tl-row.urgent {
+  border: 1px solid #e66767;
   border-radius: 12px;
-  margin: 0 -8px;
-  padding-left: 12px;
-  padding-right: 12px;
-  animation: tl-urgent 1.1s ease-in-out infinite;
+  margin: 6px -8px;
+  padding: 12px;
+  background: rgba(208, 59, 59, 0.30);
+  animation: tl-urgent 1s ease-in-out infinite;
 }
+.tl-row.urgent + .tl-row { border-top-color: transparent; }
 @keyframes tl-urgent {
-  0%, 100% { background: rgba(208, 59, 59, 0.24); box-shadow: inset 0 0 0 1px rgba(230, 103, 103, 0.65); }
-  50%      { background: rgba(208, 59, 59, 0.05); box-shadow: inset 0 0 0 1px rgba(230, 103, 103, 0.18); }
+  0%, 100% {
+    background: rgba(208, 59, 59, 0.45);
+    box-shadow: 0 0 16px rgba(208, 59, 59, 0.55), inset 0 0 0 1px rgba(230, 103, 103, 0.9);
+  }
+  50% {
+    background: rgba(208, 59, 59, 0.16);
+    box-shadow: 0 0 0 rgba(208, 59, 59, 0), inset 0 0 0 1px rgba(230, 103, 103, 0.3);
+  }
 }
-.tl-row.urgent .tl-wait-timer { color: #e66767; }
+.tl-row.urgent .tl-wait-timer { color: #ff8f8f; }
+.tl-row.urgent .tl-wait-sub,
+.tl-row.urgent .tl-row-meta .due { color: #f3c1c1; }
 
 /* Team board: blinking red dot next to the waiting count when an update
    request is still unanswered. */
@@ -217,7 +228,7 @@ html, body {
 @keyframes tl-urgent-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.15; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .tl-row.urgent { animation: none; background: rgba(208, 59, 59, 0.18); box-shadow: inset 0 0 0 1px rgba(230, 103, 103, 0.5); }
+  .tl-row.urgent { animation: none; background: rgba(208, 59, 59, 0.30); box-shadow: inset 0 0 0 1px rgba(230, 103, 103, 0.7); }
   .tl-reddot { animation: none; }
   .tl-live-dot { animation: none; }
 }
