@@ -242,3 +242,57 @@ a.tl-trow:hover { background: var(--surface-2); }
 
 .tl-note { font-size: 12px; color: var(--ink-3); text-align: center; padding: 14px 0 0; }
 .tl-error { color: #e66767; text-align: center; padding: 40px; font-size: 15px; }
+
+/* ── Mobile (phones) ─────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  #tl-app { padding: 12px 12px 20px; }
+
+  /* Header wraps into two rows: brand+title, then link/name/clock. */
+  .tl-header { flex-wrap: wrap; gap: 10px; row-gap: 12px; padding-bottom: 14px; }
+  .tl-brand { width: 36px; height: 36px; border-radius: 10px; font-size: 19px; }
+  .tl-title { font-size: 20px; }
+  .tl-live { padding: 3px 9px; font-size: 10.5px; gap: 5px; }
+  .tl-sub { font-size: 12px; }
+  .tl-header-right { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 10px; }
+  .tl-clock { font-size: 24px; margin-left: auto; }
+  .tl-fs { display: none; }               /* fullscreen is a wall-display thing */
+  .tl-who { font-size: 13px; padding: 5px 12px 5px 6px; }
+
+  .tl-grid { gap: 12px; }
+  .tl-left { gap: 12px; }
+  .tl-tile { padding: 16px 18px; border-radius: 14px; }
+  .tl-tile-big { font-size: 56px; margin: 6px 0 10px; }
+  .tl-speed-row { gap: 12px; }
+  .tl-speed-big { font-size: 30px; margin: 8px 0 4px; }
+  .tl-speed-sub { font-size: 11.5px; }
+
+  .tl-panel { padding: 14px; border-radius: 14px; margin-bottom: 12px; }
+  .tl-panel-title { font-size: 15px; }
+  /* Ticket rows: stack — title+badges on top, timer on its own line below
+     (flex:1 main + auto-margin timer would squeeze the title to nothing). */
+  .tl-row { flex-wrap: wrap; gap: 8px; padding: 10px 2px; }
+  .tl-row-main { flex: 1 1 100%; }
+  .tl-row-title { white-space: normal; }
+  .tl-wait {
+    margin-left: 0; width: 100%; text-align: left;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  }
+  .tl-wait-timer { font-size: 19px; }
+  .tl-wait-sub { margin-top: 0; }
+  .tl-progress { padding: 14px 16px; border-radius: 14px; }
+
+  .tl-team-tiles { grid-template-columns: 1fr; gap: 12px; margin-bottom: 12px; }
+  /* Drop the rank column and wrap the link buttons under the name so the
+     name never gets squeezed out. */
+  .tl-trow { grid-template-columns: minmax(0, 1fr) 64px 96px; gap: 6px; }
+  .tl-rank { display: none; }
+  .tl-user { flex-wrap: wrap; row-gap: 6px; }
+  .tl-user .nm { font-size: 13.5px; }
+  .tl-user .rl { display: none; }
+  .tl-trow .num { font-size: 17px; }
+  .tl-team-timer { font-size: 15px; }
+  .tl-rowacts { margin-left: 0; flex-basis: 100%; }
+  /* Comfortable touch targets */
+  .tl-iconbtn { width: 34px; height: 34px; }
+  .tl-linkbtn { padding: 9px 14px; }
+}
