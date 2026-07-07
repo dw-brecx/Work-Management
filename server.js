@@ -7180,13 +7180,17 @@ async function ticketsLiveBoard(u, nowUtc, cutoff30) {
     if (commentSince && updateSince) waitingSince = commentSince < updateSince ? commentSince : updateSince;
     else waitingSince = commentSince || updateSince;
     const needsReply = !snoozed && !!waitingSince;
+    // Overdue = the maintained flag OR the due date itself has passed —
+    // the flag is refreshed by a cron and can lag behind reality.
+    const dueDate = r.due ? new Date(r.due) : null;
+    const duePassed = !!(dueDate && !isNaN(dueDate) && dueDate.getTime() < Date.now());
     return {
       id: r.id,
       title: r.title || '',
       priority: r.priority || 'Medium',
       status: r.status || 'Open',
       due: r.due || '',
-      overdue: Number(r.overdue) === 1,
+      overdue: Number(r.overdue) === 1 || duePassed,
       createdAt: r.created_at || null,
       snoozed,
       myLastReplyAt: r.my_last_comment_at || null,
@@ -7439,7 +7443,7 @@ app.get('/api/tickets-live/board/:token', async (req, res) => {
 // a digest email goes to EVERY configured address and an SMS to the phone.
 // When nothing is pending the run sends nothing — so the nagging stops on its
 // own once every ticket is replied to / closed.
-const NAG_TRIGGERS = ['needsReply', 'updateRequested', 'overdue', 'dueSoon'];
+const NAG_TRIGGERS = ['needsReply', 'updateRequested', 'overdue', 'dueSoon', 'open'];
 
 function _nagParseArr(s) {
   try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; }
@@ -7461,16 +7465,19 @@ function _nagSerialize(cfg, userRow) {
   };
 }
 
-// Everything currently actionable for the user, filtered by the config's
-// triggers. Reuses the live-board derivation so the definition of "needs
-// reply" / "update requested" is identical to what the wallboard shows.
+// Every OPEN ticket for the user, each tagged with the reasons that match
+// the config's triggers (reasons may be empty — the email still lists the
+// ticket under "other open"). Reuses the live-board derivation so "needs
+// reply" / "update requested" / "overdue" mean exactly what the wallboard
+// shows.
 async function nagItemsForUser(user, cfg) {
   const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
   const board = await ticketsLiveBoard(user, nowUtc, cutoff30);
   const triggers = new Set(_nagParseArr(cfg.triggers));
   const dueSoonMs = (Number(cfg.due_soon_days) || 0) * 86400000;
-  const items = [];
+  const actionable = [];
+  const openOnly = [];
   for (const t of board.tickets) {
     if (t.snoozed) continue;
     const reasons = [];
@@ -7484,29 +7491,45 @@ async function nagItemsForUser(user, cfg) {
         if (diff >= 0 && diff <= dueSoonMs) reasons.push(`due in ${Math.max(1, Math.ceil(diff / 86400000))}d`);
       }
     }
-    if (reasons.length) items.push({ id: t.id, title: t.title, reasons, due: t.due });
+    const item = { id: t.id, title: t.title, reasons, due: t.due, status: t.status };
+    if (reasons.length) actionable.push(item);
+    else openOnly.push(item);
   }
-  return items;
+  // Fire when anything is actionable, or — with the "any open ticket"
+  // trigger — whenever the user has open tickets at all.
+  const shouldSend = actionable.length > 0 || (triggers.has('open') && (actionable.length + openOnly.length) > 0);
+  return { actionable, openOnly, shouldSend };
 }
 
-// Fan out one nag run (all emails + SMS). Returns what was sent.
+// Fan out one nag run (all emails + SMS). Returns what was sent;
+// sms is 'sent' | 'skipped' (Twilio not configured) | 'failed' | 'none'.
 async function dispatchNag(user, cfg, timeLabel) {
-  const items = await nagItemsForUser(user, cfg);
-  if (!items.length) return { items: 0, emails: 0, sms: false };
+  const { actionable, openOnly, shouldSend } = await nagItemsForUser(user, cfg);
+  const totalOpen = actionable.length + openOnly.length;
+  if (!shouldSend) return { items: 0, open: totalOpen, emails: 0, sms: 'none' };
   const emails = _nagParseArr(cfg.emails).filter(e => /\S+@\S+\.\S+/.test(e));
   for (const em of emails) {
-    fireEmail('ticket-nag', () => sendTicketNagEmail({ toEmail: em, targetName: user.name, items, timeLabel }));
+    fireEmail('ticket-nag', () => sendTicketNagEmail({
+      toEmail: em, targetName: user.name, actionItems: actionable, openItems: openOnly, timeLabel,
+    }));
   }
-  let smsSent = false;
+  let sms = 'none';
   if (cfg.phone) {
-    const top = items.slice(0, 5).map(i => `${i.id} (${i.reasons.join(', ')})`).join('; ');
-    const more = items.length > 5 ? ` +${items.length - 5} more` : '';
     const link = (process.env.APP_URL || '').replace(/\/+$/, '');
-    const body = `Syruvia: ${user.name}, ${items.length} ticket${items.length === 1 ? '' : 's'} need your action — ${top}${more}. Reply or close them.${link ? ' ' + link + '/my-tickets' : ''}`;
-    try { await sendSms(cfg.phone, body); smsSent = true; }
-    catch (e) { console.warn('[nag] sms failed for', user.name, '-', e.message); }
+    const top = actionable.slice(0, 5).map(i => `${i.id} (${i.reasons.join(', ')})`).join('; ');
+    const more = actionable.length > 5 ? ` +${actionable.length - 5} more` : '';
+    const body = actionable.length
+      ? `Syruvia: ${user.name}, ${actionable.length} of your ${totalOpen} open ticket${totalOpen === 1 ? '' : 's'} need action — ${top}${more}. Reply or close them.${link ? ' ' + link + '/my-tickets' : ''}`
+      : `Syruvia: ${user.name}, you still have ${totalOpen} open ticket${totalOpen === 1 ? '' : 's'} — please update or close them.${link ? ' ' + link + '/my-tickets' : ''}`;
+    try {
+      const r = await sendSms(cfg.phone, body);
+      sms = r.skipped ? 'skipped' : 'sent';
+    } catch (e) {
+      sms = 'failed';
+      console.warn('[nag] sms failed for', user.name, '-', e.message);
+    }
   }
-  return { items: items.length, emails: emails.length, sms: smsSent };
+  return { items: actionable.length, open: totalOpen, emails: emails.length, sms };
 }
 
 // Runs twice a minute; a config fires when the current HH:MM in its timezone
@@ -7537,7 +7560,7 @@ async function runTicketNagJob() {
       const user = await get('SELECT id, name FROM users WHERE id=?', cfg.user_id);
       if (!user) continue;
       const r = await dispatchNag(user, cfg, hhmm);
-      if (r.items) console.log(`[nag] ${sentKey} → ${user.name}: ${r.items} item(s), ${r.emails} email(s)${r.sms ? ' + sms' : ''}`);
+      if (r.emails || r.sms !== 'none') console.log(`[nag] ${sentKey} → ${user.name}: ${r.items} need action / ${r.open} open, ${r.emails} email(s), sms=${r.sms}`);
     }
   } catch (e) { console.error('[cron:ticket-nag]', e.message); }
 }

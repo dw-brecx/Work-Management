@@ -464,6 +464,7 @@
             ${trig('updateRequested', '📩 Update requested')}
             ${trig('overdue', '⏰ Overdue')}
             ${trig('dueSoon', '📅 Due date approaching')}
+            ${trig('open', '🗂 Any open ticket (keep nagging while anything is open)')}
           </div></div>
         <div class="tl-field tl-field-inline"><span>"Approaching" means due within</span>
           <input id="nag-duesoon" type="number" min="0" max="30" value="${cfg.dueSoonDays}"/> <span>days</span></div>
@@ -503,8 +504,10 @@
     wrap.querySelector('#nag-test').onclick = async () => {
       if (!await save()) return;
       const r = await apiPost('/api/ticket-nags/' + userId + '/test').catch(e => ({ error: e.message }));
-      if (r.error) msg(r.error, true);
-      else msg(r.items ? `Sent: ${r.items} ticket(s) → ${r.emails} email(s)${r.sms ? ' + SMS' : ''} ✓` : 'Nothing pending right now — no reminder needed ✓');
+      if (r.error) { msg(r.error, true); return; }
+      if (!r.emails && r.sms === 'none') { msg('Nothing matches right now — no reminder needed ✓'); return; }
+      const smsTxt = { sent: ' + SMS ✓', skipped: ' — SMS SKIPPED: Twilio is not set up on the server', failed: ' — SMS FAILED (check server logs)', none: '' }[r.sms] || '';
+      msg(`Sent: ${r.items} need action / ${r.open} open → ${r.emails} email(s)${smsTxt}`, r.sms === 'skipped' || r.sms === 'failed');
     };
     wrap.querySelector('#nag-close').onclick = () => wrap.remove();
     wrap.addEventListener('click', (ev) => { if (ev.target === wrap) wrap.remove(); });
