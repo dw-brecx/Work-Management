@@ -1266,6 +1266,10 @@ async function init() {
   // their author/assignee display either. Application-side write resolution.
   await safeAlter("ALTER TABLE ticket_comments ADD COLUMN author_user_id INTEGER");
   await safeAlter("ALTER TABLE ticket_subtasks ADD COLUMN assignee_user_id INTEGER");
+  // Tickets Live: secret per-user token for the no-login wallboard link
+  // (/tickets-live.html?board=<token>). Generated lazily on first request;
+  // rotating it invalidates the old link.
+  await safeAlter("ALTER TABLE users ADD COLUMN live_board_token TEXT");
 
   // One-time best-effort back-fill: populate the new *_user_id columns by
   // matching the current name string against users.name. Rows whose stored

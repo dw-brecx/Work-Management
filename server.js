@@ -7273,6 +7273,77 @@ app.get('/api/tickets-live', requireAuth, async (req, res) => {
   }
 });
 
+// ── Tickets Live share links ─────────────────────────────────────────────────
+// Each user gets a secret token so their board can be opened WITHOUT logging
+// in (wall display / a link you send to the employee). The token is generated
+// lazily on first request and can be rotated by an admin to kill a leaked link.
+async function ensureBoardToken(userId) {
+  const row = await get('SELECT live_board_token FROM users WHERE id=?', userId);
+  if (!row) return null;
+  if (row.live_board_token) return row.live_board_token;
+  const token = randomBytes(24).toString('hex');
+  await run('UPDATE users SET live_board_token=? WHERE id=?', token, userId);
+  return token;
+}
+function boardLinkUrl(req, token) {
+  const base = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  return `${base}/tickets-live.html?board=${token}`;
+}
+
+// The signed-in user's own share link.
+app.get('/api/tickets-live/my-link', requireAuth, async (req, res) => {
+  try {
+    const token = await ensureBoardToken(req.session.userId);
+    if (!token) return res.status(404).json({ error: 'User not found' });
+    res.json({ userId: req.session.userId, url: boardLinkUrl(req, token) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin/Manager: every user's share link.
+app.get('/api/tickets-live/links', requireAdmin, async (req, res) => {
+  try {
+    const users = await all('SELECT id, name, email FROM users ORDER BY LOWER(name) ASC');
+    const out = [];
+    for (const u of users) {
+      const token = await ensureBoardToken(u.id);
+      out.push({ id: u.id, name: u.name, email: u.email, url: boardLinkUrl(req, token) });
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin/Manager: rotate a user's token — the old link stops working.
+app.post('/api/tickets-live/links/:id/rotate', requireAdmin, async (req, res) => {
+  try {
+    const uid = Number(req.params.id);
+    const u = await get('SELECT id FROM users WHERE id=?', uid);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    const token = randomBytes(24).toString('hex');
+    await run('UPDATE users SET live_board_token=? WHERE id=?', token, uid);
+    res.json({ userId: uid, url: boardLinkUrl(req, token) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Public board — NO auth. The 48-hex-char token IS the credential; an
+// unknown token is a plain 404. Read-only by construction (GET, and the
+// handler only ever SELECTs). Exposes exactly what the personal board
+// shows for that one user, nothing workspace-wide.
+app.get('/api/tickets-live/board/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '');
+    if (!/^[a-f0-9]{48}$/.test(token)) return res.status(404).json({ error: 'Board not found' });
+    const u = await get('SELECT id,name,role,dept,color,avatar_url FROM users WHERE live_board_token=?', token);
+    if (!u) return res.status(404).json({ error: 'Board not found' });
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
+    const board = await ticketsLiveBoard(u, nowUtc, cutoff30);
+    res.json({ now: nowUtc, mode: 'user', public: true, viewer: null, users: [board] });
+  } catch (e) {
+    console.error('[tickets-live:board] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Syruvia Lab Bridge ────────────────────────────────────────────────────────
 // Cross-app API for syncing tickets ↔ Syruvia Lab flavors.
 // All bridge routes require the shared CROSS_APP_SECRET in the Authorization header.

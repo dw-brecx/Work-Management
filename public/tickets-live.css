@@ -71,6 +71,22 @@ html, body {
 }
 .tl-fs:hover { background: var(--surface-2); }
 
+/* Share-link controls (hidden in public ?board= mode) */
+.tl-share { display: inline-flex; align-items: center; gap: 6px; }
+.tl-linkbtn {
+  background: var(--surface); border: 1px solid var(--hairline); color: var(--ink-2);
+  border-radius: 999px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
+  font-family: inherit;
+}
+.tl-linkbtn:hover { background: var(--surface-2); color: var(--ink); }
+.tl-iconbtn {
+  background: none; border: 1px solid var(--hairline); color: var(--ink-3);
+  border-radius: 8px; width: 28px; height: 28px; cursor: pointer; font-size: 13px;
+  flex: 0 0 auto;
+}
+.tl-iconbtn:hover { background: var(--surface-2); color: var(--ink); }
+.tl-rowacts { display: inline-flex; gap: 5px; margin-left: 10px; }
+
 /* ── Avatars ─────────────────────────────────────────────────────────── */
 .tl-av {
   width: 30px; height: 30px; border-radius: 50%; flex: 0 0 auto;

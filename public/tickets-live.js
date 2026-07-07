@@ -8,7 +8,11 @@
 
   const REFRESH_MS = 30000;
   const $app = document.getElementById('tl-app');
+  // ?board=<token> = public share-link mode: no login, no auth check, the
+  // token scopes the whole page to one user's read-only board.
+  const PUBLIC_TOKEN = new URLSearchParams(location.search).get('board');
   let data = null;         // last /api/tickets-live payload
+  let links = null;        // userId → share URL (logged-in mode only)
   let skewMs = 0;          // server clock minus client clock
   let lastFetch = 0;
 
@@ -16,15 +20,17 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  async function apiGet(p) {
-    const r = await fetch(p, { credentials: 'same-origin' });
-    if (r.status === 401) { location.href = '/login.html'; throw new Error('unauthorized'); }
+  async function api(p, opts) {
+    const r = await fetch(p, Object.assign({ credentials: 'same-origin' }, opts));
+    if (r.status === 401 && !PUBLIC_TOKEN) { location.href = '/login.html'; throw new Error('unauthorized'); }
     if (!r.ok) {
       const b = await r.json().catch(() => ({}));
       throw new Error(b.error || ('HTTP ' + r.status));
     }
     return r.json();
   }
+  const apiGet = (p) => api(p);
+  const apiPost = (p) => api(p, { method: 'POST' });
 
   // DB timestamps are UTC "YYYY-MM-DD HH:MM:SS" text.
   const parseUtc = (s) => {
@@ -213,7 +219,12 @@
       return `
       <a class="tl-trow" href="/tickets-live.html?user=${u.id}">
         <div class="tl-rank">${i + 1}</div>
-        <div class="tl-user">${avatar(u)}<div style="min-width:0"><div class="nm">${esc(u.name)}</div><div class="rl">${esc(u.role || u.dept || '')}</div></div></div>
+        <div class="tl-user">${avatar(u)}<div style="min-width:0"><div class="nm">${esc(u.name)}</div><div class="rl">${esc(u.role || u.dept || '')}</div></div>
+          ${links && links[u.id] ? `<span class="tl-rowacts">
+            <button class="tl-iconbtn tl-copy" data-url="${esc(links[u.id])}" title="Copy ${esc(u.name)}'s board link (opens without login)">🔗</button>
+            <button class="tl-iconbtn tl-rotate" data-user="${u.id}" title="Reset link (old link stops working)">↻</button>
+          </span>` : ''}
+        </div>
         <div><div class="num ${u.needsReplyCount ? 'n-serious' : 'n-zero'}">${u.needsReplyCount}</div><div class="sub">waiting</div></div>
         <div>${lw ? `<span class="tl-team-timer" data-epoch="${lw.getTime()}">${fmtDur(serverNow() - lw.getTime())}</span>` : '<span class="num n-zero">—</span>'}<div class="sub">longest wait</div></div>
         <div class="hide-sm"><div class="num">${u.openCount}</div><div class="sub">open</div></div>
@@ -257,17 +268,26 @@
     if (!data) return;
     const single = data.mode === 'user';
     const board = single ? data.users[0] : null;
-    const backLink = (single && data.viewer.isAdmin)
+    const backLink = (single && data.viewer?.isAdmin)
       ? `<a href="/tickets-live.html" style="color:var(--ink-3);font-size:13px;text-decoration:none">← All users</a>` : '';
+    const sub = data.public ? `${esc(board.name)}'s live board`
+      : (single ? 'Your ticket response board' : 'Team ticket response board');
+    const shareUrl = (!data.public && single && links && links[board.id]) ? links[board.id] : null;
+    const shareBtns = shareUrl ? `
+          <span class="tl-share">
+            <button class="tl-linkbtn tl-copy" data-url="${esc(shareUrl)}" title="${esc(shareUrl)}">🔗 Copy board link</button>
+            ${data.viewer?.isAdmin ? `<button class="tl-iconbtn tl-rotate" data-user="${board.id}" title="Reset this link (old link stops working)">↻</button>` : ''}
+          </span>` : '';
 
     $app.innerHTML = `
       <div class="tl-header">
         <div class="tl-brand">S</div>
         <div>
           <div class="tl-title">Tickets Live <span class="tl-live"><span class="tl-live-dot"></span>LIVE</span></div>
-          <div class="tl-sub">${single ? 'Your ticket response board' : 'Team ticket response board'} · refreshes every ${REFRESH_MS / 1000}s ${backLink}</div>
+          <div class="tl-sub">${sub} · refreshes every ${REFRESH_MS / 1000}s ${backLink}</div>
         </div>
         <div class="tl-header-right">
+          ${shareBtns}
           ${board ? `<span class="tl-who">${avatar(board)} ${esc(board.name)}</span>` : ''}
           <div class="tl-clock" id="tl-clock"></div>
           <button class="tl-fs" id="tl-fs" title="Fullscreen">⛶</button>
@@ -297,7 +317,9 @@
 
   async function load() {
     const qs = new URLSearchParams(location.search);
-    const url = '/api/tickets-live' + (qs.get('user') ? ('?user=' + encodeURIComponent(qs.get('user'))) : '');
+    const url = PUBLIC_TOKEN
+      ? '/api/tickets-live/board/' + encodeURIComponent(PUBLIC_TOKEN)
+      : '/api/tickets-live' + (qs.get('user') ? ('?user=' + encodeURIComponent(qs.get('user'))) : '');
     const payload = await apiGet(url);
     const sv = parseUtc(payload.now);
     if (sv) skewMs = sv.getTime() - Date.now();
@@ -306,14 +328,58 @@
     render();
   }
 
+  // Share links: members get their own, Admin/Manager gets everyone's.
+  async function loadLinks() {
+    if (PUBLIC_TOKEN || !data?.viewer) return;
+    const map = {};
+    if (data.viewer.isAdmin) {
+      (await apiGet('/api/tickets-live/links')).forEach(l => { map[l.id] = l.url; });
+    } else {
+      const l = await apiGet('/api/tickets-live/my-link');
+      map[l.userId] = l.url;
+    }
+    links = map;
+  }
+
+  function flash(btn, text) {
+    const prev = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => { btn.textContent = prev; }, 1400);
+  }
+
+  async function onAction(e) {
+    const copy = e.target.closest('.tl-copy');
+    const rotate = e.target.closest('.tl-rotate');
+    if (!copy && !rotate) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (copy) {
+      const url = copy.dataset.url;
+      try { await navigator.clipboard.writeText(url); flash(copy, copy.classList.contains('tl-linkbtn') ? '✓ Copied' : '✓'); }
+      catch { window.prompt('Copy this link:', url); }
+    } else if (rotate) {
+      if (!window.confirm('Reset this board link? The old link will stop working immediately.')) return;
+      try {
+        const r = await apiPost('/api/tickets-live/links/' + encodeURIComponent(rotate.dataset.user) + '/rotate');
+        if (links) links[Number(rotate.dataset.user)] = r.url;
+        render();
+      } catch (err) { window.alert('Could not reset the link: ' + err.message); }
+    }
+  }
+
   async function boot() {
     try {
-      await apiGet('/api/auth/me');            // 401 → redirected to /login.html
+      if (!PUBLIC_TOKEN) await apiGet('/api/auth/me');   // 401 → redirected to /login.html
       await load();
+      if (!PUBLIC_TOKEN) { await loadLinks().catch(() => {}); render(); }
+      $app.addEventListener('click', onAction);
       setInterval(() => load().catch(() => {}), REFRESH_MS);
       setInterval(tick, 1000);
     } catch (e) {
-      if ($app) $app.innerHTML = `<div class="tl-error">Couldn't load the live board: ${esc(e.message)}</div>`;
+      const msg = PUBLIC_TOKEN
+        ? 'This board link is invalid or has been reset — ask your admin for a new one.'
+        : `Couldn't load the live board: ${esc(e.message)}`;
+      if ($app) $app.innerHTML = `<div class="tl-error">${msg}</div>`;
     }
   }
 
