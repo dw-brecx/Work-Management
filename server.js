@@ -7117,6 +7117,132 @@ app.post('/api/reports/user/:id/request-update', requireStrictAdmin, async (req,
   }
 });
 
+// ── Quick tasks ──────────────────────────────────────────────────────────────
+// Instant "do this now" requests (office ↔ warehouse), distinct from tickets:
+// no due date, the clock runs from creation, statuses Open → Checking →
+// Closed. Optionally linked to a ticket. Everyone in the workspace can see
+// them; status changes are limited to the creator, the assignee, or an admin.
+const QT_STATUSES = ['Open', 'Checking', 'Closed'];
+const QT_SELECT = `
+  SELECT qt.*, cu.name AS creator_name, au.name AS assignee_name,
+         t.title AS ticket_title
+    FROM quick_tasks qt
+    LEFT JOIN users cu ON cu.id = qt.creator_user_id
+    LEFT JOIN users au ON au.id = qt.assignee_user_id
+    LEFT JOIN tickets t ON t.id = qt.ticket_id AND t.deleted_at IS NULL`;
+
+function qtSerialize(r) {
+  return {
+    id: r.id,
+    title: r.title,
+    description: r.description || '',
+    status: r.status,
+    creator: { id: r.creator_user_id, name: r.creator_name || '' },
+    assignee: { id: r.assignee_user_id, name: r.assignee_name || '' },
+    ticketId: r.ticket_id || '',
+    ticketTitle: r.ticket_title || '',
+    createdAt: r.created_at,
+    checkingAt: r.checking_at || null,
+    closedAt: r.closed_at || null,
+  };
+}
+
+// Active (Open/Checking) tasks, optionally scoped to one assignee — shared
+// with the live wallboard payloads.
+async function activeQuickTasks(assigneeUserId) {
+  const rows = await all(`${QT_SELECT}
+     WHERE qt.status IN ('Open','Checking')
+       ${assigneeUserId ? 'AND qt.assignee_user_id = ?' : ''}
+     ORDER BY qt.status DESC, qt.created_at ASC`,
+    ...(assigneeUserId ? [assigneeUserId] : []));
+  return rows.map(qtSerialize);
+}
+
+// All active tasks + tasks closed in the last 24h (for the Tasks page list).
+app.get('/api/quick-tasks', requireAuth, async (req, res) => {
+  try {
+    const cutoff = new Date(Date.now() - 24 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+    const rows = await all(`${QT_SELECT}
+       WHERE qt.status IN ('Open','Checking')
+          OR (qt.status = 'Closed' AND qt.closed_at >= ?)
+       ORDER BY CASE qt.status WHEN 'Open' THEN 0 WHEN 'Checking' THEN 1 ELSE 2 END,
+                qt.created_at ASC`, cutoff);
+    res.json(rows.map(qtSerialize));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/quick-tasks', requireAuth, async (req, res) => {
+  try {
+    const me = await getUser(req.session.userId);
+    if (!me) return res.status(401).json({ error: 'Not signed in' });
+    const title = String(req.body?.title || '').trim().slice(0, 200);
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+    const description = String(req.body?.description || '').trim().slice(0, 2000);
+    const assigneeId = Number(req.body?.assigneeUserId);
+    const assignee = assigneeId ? await get('SELECT id, name FROM users WHERE id=?', assigneeId) : null;
+    if (!assignee) return res.status(400).json({ error: 'Pick who should do this task' });
+    let ticketId = String(req.body?.ticketId || '').trim();
+    if (ticketId) {
+      const t = await get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', ticketId);
+      if (!t) return res.status(400).json({ error: `Ticket ${ticketId} not found` });
+      ticketId = t.id;
+    }
+    const ins = await run(
+      `INSERT INTO quick_tasks (title, description, creator_user_id, assignee_user_id, ticket_id)
+       VALUES (?,?,?,?,?) RETURNING id`,
+      title, description, me.id, assignee.id, ticketId);
+    ins.id = ins.lastInsertRowid;
+    // Fast-lane notify: bell + push (+ Slack DM when configured), best-effort.
+    if (assignee.id !== me.id) {
+      run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        assignee.id, 'task', '⚡', `${me.name} sent you a task: ${title}`, ticketId).catch(() => {});
+      sendPushToUser(assignee.id, {
+        title: `⚡ Task from ${me.name}`,
+        body: title,
+        tag: 'quick-task-' + ins.id,
+        url: '/tasks.html',
+      }).catch(() => {});
+      const _url = (process.env.APP_URL || `http://localhost:${PORT}`) + '/tasks.html';
+      slackDmUser(assignee.id, {
+        text: `⚡ *${me.name}* sent you a task: ${title}${ticketId ? ` (ticket ${ticketId})` : ''}\n<${_url}|Open the task list>`,
+      }).catch(() => {});
+    }
+    const row = await get(`${QT_SELECT} WHERE qt.id=?`, ins.id);
+    res.json(qtSerialize(row));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/quick-tasks/:id/status', requireAuth, async (req, res) => {
+  try {
+    const me = await getUser(req.session.userId);
+    if (!me) return res.status(401).json({ error: 'Not signed in' });
+    const status = String(req.body?.status || '');
+    if (!QT_STATUSES.includes(status)) return res.status(400).json({ error: 'Bad status' });
+    const task = await get('SELECT * FROM quick_tasks WHERE id=?', Number(req.params.id));
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    const isAdmin = ['Admin', 'Manager'].includes(me.perm_role);
+    if (!isAdmin && task.creator_user_id !== me.id && task.assignee_user_id !== me.id) {
+      return res.status(403).json({ error: 'Only the creator, the assignee, or an admin can change this task' });
+    }
+    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    await run(
+      `UPDATE quick_tasks SET status=?,
+         checking_at = CASE WHEN ?='Checking' THEN ? WHEN ?='Open' THEN '' ELSE checking_at END,
+         closed_at   = CASE WHEN ?='Closed' THEN ? ELSE '' END
+       WHERE id=?`,
+      status, status, nowUtc, status, status, nowUtc, task.id);
+    // Tell the other side what happened (bell only — this is a status echo).
+    const other = me.id === task.creator_user_id ? task.assignee_user_id : task.creator_user_id;
+    if (other && other !== me.id) {
+      const verb = status === 'Closed' ? 'closed' : status === 'Checking' ? 'is checking' : 'reopened';
+      run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+        other, 'task', status === 'Closed' ? '✅' : '👀', `${me.name} ${verb} the task: ${task.title}`, task.ticket_id || '').catch(() => {});
+    }
+    const row = await get(`${QT_SELECT} WHERE qt.id=?`, task.id);
+    res.json(qtSerialize(row));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Tickets Live (read-only wallboard) ───────────────────────────────────────
 // GET /api/tickets-live?user=<id>
 // Per-user responsiveness board: open tickets, tickets waiting on the user's
@@ -7180,13 +7306,17 @@ async function ticketsLiveBoard(u, nowUtc, cutoff30) {
     if (commentSince && updateSince) waitingSince = commentSince < updateSince ? commentSince : updateSince;
     else waitingSince = commentSince || updateSince;
     const needsReply = !snoozed && !!waitingSince;
+    // Overdue = the maintained flag OR the due date itself has passed —
+    // the flag is refreshed by a cron and can lag behind reality.
+    const dueDate = r.due ? new Date(r.due) : null;
+    const duePassed = !!(dueDate && !isNaN(dueDate) && dueDate.getTime() < Date.now());
     return {
       id: r.id,
       title: r.title || '',
       priority: r.priority || 'Medium',
       status: r.status || 'Open',
       due: r.due || '',
-      overdue: Number(r.overdue) === 1,
+      overdue: Number(r.overdue) === 1 || duePassed,
       createdAt: r.created_at || null,
       snoozed,
       myLastReplyAt: r.my_last_comment_at || null,
@@ -7297,6 +7427,7 @@ app.get('/api/tickets-live', requireAuth, async (req, res) => {
       mode: targets.length > 1 ? 'team' : 'user',
       viewer: { id: me.id, name: me.name, isAdmin },
       users,
+      tasks: await activeQuickTasks(targets.length > 1 ? null : targets[0].id),
     });
   } catch (e) {
     console.error('[tickets-live] error:', e.message);
@@ -7406,7 +7537,7 @@ app.get('/api/tickets-live/team/:token', async (req, res) => {
       users.push(await ticketsLiveBoard(t, nowUtc, cutoff30));
       links[t.id] = boardLinkUrl(req, await ensureBoardToken(t.id));
     }
-    res.json({ now: nowUtc, mode: 'team', public: true, viewer: null, users, links });
+    res.json({ now: nowUtc, mode: 'team', public: true, viewer: null, users, links, tasks: await activeQuickTasks(null) });
   } catch (e) {
     console.error('[tickets-live:team] error:', e.message);
     res.status(500).json({ error: e.message });
@@ -7426,7 +7557,7 @@ app.get('/api/tickets-live/board/:token', async (req, res) => {
     const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
     const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
     const board = await ticketsLiveBoard(u, nowUtc, cutoff30);
-    res.json({ now: nowUtc, mode: 'user', public: true, viewer: null, users: [board] });
+    res.json({ now: nowUtc, mode: 'user', public: true, viewer: null, users: [board], tasks: await activeQuickTasks(u.id) });
   } catch (e) {
     console.error('[tickets-live:board] error:', e.message);
     res.status(500).json({ error: e.message });
@@ -7439,7 +7570,7 @@ app.get('/api/tickets-live/board/:token', async (req, res) => {
 // a digest email goes to EVERY configured address and an SMS to the phone.
 // When nothing is pending the run sends nothing — so the nagging stops on its
 // own once every ticket is replied to / closed.
-const NAG_TRIGGERS = ['needsReply', 'updateRequested', 'overdue', 'dueSoon'];
+const NAG_TRIGGERS = ['needsReply', 'updateRequested', 'overdue', 'dueSoon', 'open'];
 
 function _nagParseArr(s) {
   try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; }
@@ -7461,16 +7592,19 @@ function _nagSerialize(cfg, userRow) {
   };
 }
 
-// Everything currently actionable for the user, filtered by the config's
-// triggers. Reuses the live-board derivation so the definition of "needs
-// reply" / "update requested" is identical to what the wallboard shows.
+// Every OPEN ticket for the user, each tagged with the reasons that match
+// the config's triggers (reasons may be empty — the email still lists the
+// ticket under "other open"). Reuses the live-board derivation so "needs
+// reply" / "update requested" / "overdue" mean exactly what the wallboard
+// shows.
 async function nagItemsForUser(user, cfg) {
   const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
   const board = await ticketsLiveBoard(user, nowUtc, cutoff30);
   const triggers = new Set(_nagParseArr(cfg.triggers));
   const dueSoonMs = (Number(cfg.due_soon_days) || 0) * 86400000;
-  const items = [];
+  const actionable = [];
+  const openOnly = [];
   for (const t of board.tickets) {
     if (t.snoozed) continue;
     const reasons = [];
@@ -7484,29 +7618,45 @@ async function nagItemsForUser(user, cfg) {
         if (diff >= 0 && diff <= dueSoonMs) reasons.push(`due in ${Math.max(1, Math.ceil(diff / 86400000))}d`);
       }
     }
-    if (reasons.length) items.push({ id: t.id, title: t.title, reasons, due: t.due });
+    const item = { id: t.id, title: t.title, reasons, due: t.due, status: t.status };
+    if (reasons.length) actionable.push(item);
+    else openOnly.push(item);
   }
-  return items;
+  // Fire when anything is actionable, or — with the "any open ticket"
+  // trigger — whenever the user has open tickets at all.
+  const shouldSend = actionable.length > 0 || (triggers.has('open') && (actionable.length + openOnly.length) > 0);
+  return { actionable, openOnly, shouldSend };
 }
 
-// Fan out one nag run (all emails + SMS). Returns what was sent.
+// Fan out one nag run (all emails + SMS). Returns what was sent;
+// sms is 'sent' | 'skipped' (Twilio not configured) | 'failed' | 'none'.
 async function dispatchNag(user, cfg, timeLabel) {
-  const items = await nagItemsForUser(user, cfg);
-  if (!items.length) return { items: 0, emails: 0, sms: false };
+  const { actionable, openOnly, shouldSend } = await nagItemsForUser(user, cfg);
+  const totalOpen = actionable.length + openOnly.length;
+  if (!shouldSend) return { items: 0, open: totalOpen, emails: 0, sms: 'none' };
   const emails = _nagParseArr(cfg.emails).filter(e => /\S+@\S+\.\S+/.test(e));
   for (const em of emails) {
-    fireEmail('ticket-nag', () => sendTicketNagEmail({ toEmail: em, targetName: user.name, items, timeLabel }));
+    fireEmail('ticket-nag', () => sendTicketNagEmail({
+      toEmail: em, targetName: user.name, actionItems: actionable, openItems: openOnly, timeLabel,
+    }));
   }
-  let smsSent = false;
+  let sms = 'none';
   if (cfg.phone) {
-    const top = items.slice(0, 5).map(i => `${i.id} (${i.reasons.join(', ')})`).join('; ');
-    const more = items.length > 5 ? ` +${items.length - 5} more` : '';
     const link = (process.env.APP_URL || '').replace(/\/+$/, '');
-    const body = `Syruvia: ${user.name}, ${items.length} ticket${items.length === 1 ? '' : 's'} need your action — ${top}${more}. Reply or close them.${link ? ' ' + link + '/my-tickets' : ''}`;
-    try { await sendSms(cfg.phone, body); smsSent = true; }
-    catch (e) { console.warn('[nag] sms failed for', user.name, '-', e.message); }
+    const top = actionable.slice(0, 5).map(i => `${i.id} (${i.reasons.join(', ')})`).join('; ');
+    const more = actionable.length > 5 ? ` +${actionable.length - 5} more` : '';
+    const body = actionable.length
+      ? `Syruvia: ${user.name}, ${actionable.length} of your ${totalOpen} open ticket${totalOpen === 1 ? '' : 's'} need action — ${top}${more}. Reply or close them.${link ? ' ' + link + '/my-tickets' : ''}`
+      : `Syruvia: ${user.name}, you still have ${totalOpen} open ticket${totalOpen === 1 ? '' : 's'} — please update or close them.${link ? ' ' + link + '/my-tickets' : ''}`;
+    try {
+      const r = await sendSms(cfg.phone, body);
+      sms = r.skipped ? 'skipped' : 'sent';
+    } catch (e) {
+      sms = 'failed';
+      console.warn('[nag] sms failed for', user.name, '-', e.message);
+    }
   }
-  return { items: items.length, emails: emails.length, sms: smsSent };
+  return { items: actionable.length, open: totalOpen, emails: emails.length, sms };
 }
 
 // Runs twice a minute; a config fires when the current HH:MM in its timezone
@@ -7537,7 +7687,7 @@ async function runTicketNagJob() {
       const user = await get('SELECT id, name FROM users WHERE id=?', cfg.user_id);
       if (!user) continue;
       const r = await dispatchNag(user, cfg, hhmm);
-      if (r.items) console.log(`[nag] ${sentKey} → ${user.name}: ${r.items} item(s), ${r.emails} email(s)${r.sms ? ' + sms' : ''}`);
+      if (r.emails || r.sms !== 'none') console.log(`[nag] ${sentKey} → ${user.name}: ${r.items} need action / ${r.open} open, ${r.emails} email(s), sms=${r.sms}`);
     }
   } catch (e) { console.error('[cron:ticket-nag]', e.message); }
 }

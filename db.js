@@ -673,6 +673,24 @@ async function init() {
       key TEXT PRIMARY KEY,
       value TEXT DEFAULT ''
     )`,
+    // Quick tasks — instant "do this now" requests between office and
+    // warehouse (distinct from tickets, which live for days). No due date:
+    // the clock runs from created_at until Closed. Optionally linked to a
+    // ticket (e.g. "go update the status on TKT-12").
+    `CREATE TABLE IF NOT EXISTS quick_tasks (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      status TEXT DEFAULT 'Open',
+      creator_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      assignee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      ticket_id TEXT DEFAULT '',
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      checking_at TEXT DEFAULT '',
+      closed_at TEXT DEFAULT ''
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_quick_tasks_status ON quick_tasks (status)`,
+    `CREATE INDEX IF NOT EXISTS idx_quick_tasks_assignee ON quick_tasks (assignee_user_id, status)`,
     // Per-user ticket "nag schedule" (admin-configured): at each time of day
     // in times, if the user still has tickets matching triggers, a digest
     // goes to every address in emails and an SMS to phone. Nothing pending →
