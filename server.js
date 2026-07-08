@@ -7212,6 +7212,25 @@ app.post('/api/quick-tasks', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Apply a status change (shared by the session endpoint and the board-token
+// endpoint). Stamps checking_at/closed_at and bell-notifies the other side.
+async function setQuickTaskStatus(task, status, actor) {
+  const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  await run(
+    `UPDATE quick_tasks SET status=?,
+       checking_at = CASE WHEN ?='Checking' THEN ? WHEN ?='Open' THEN '' ELSE checking_at END,
+       closed_at   = CASE WHEN ?='Closed' THEN ? ELSE '' END
+     WHERE id=?`,
+    status, status, nowUtc, status, status, nowUtc, task.id);
+  const other = actor.id === task.creator_user_id ? task.assignee_user_id : task.creator_user_id;
+  if (other && other !== actor.id) {
+    const verb = status === 'Closed' ? 'closed' : status === 'Checking' ? 'is checking' : 'reopened';
+    run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
+      other, 'task', status === 'Closed' ? '✅' : '👀', `${actor.name} ${verb} the task: ${task.title}`, task.ticket_id || '').catch(() => {});
+  }
+  return get(`${QT_SELECT} WHERE qt.id=?`, task.id);
+}
+
 app.put('/api/quick-tasks/:id/status', requireAuth, async (req, res) => {
   try {
     const me = await getUser(req.session.userId);
@@ -7224,22 +7243,7 @@ app.put('/api/quick-tasks/:id/status', requireAuth, async (req, res) => {
     if (!isAdmin && task.creator_user_id !== me.id && task.assignee_user_id !== me.id) {
       return res.status(403).json({ error: 'Only the creator, the assignee, or an admin can change this task' });
     }
-    const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    await run(
-      `UPDATE quick_tasks SET status=?,
-         checking_at = CASE WHEN ?='Checking' THEN ? WHEN ?='Open' THEN '' ELSE checking_at END,
-         closed_at   = CASE WHEN ?='Closed' THEN ? ELSE '' END
-       WHERE id=?`,
-      status, status, nowUtc, status, status, nowUtc, task.id);
-    // Tell the other side what happened (bell only — this is a status echo).
-    const other = me.id === task.creator_user_id ? task.assignee_user_id : task.creator_user_id;
-    if (other && other !== me.id) {
-      const verb = status === 'Closed' ? 'closed' : status === 'Checking' ? 'is checking' : 'reopened';
-      run('INSERT INTO notifications (user_id,type,icon,text,ticket_id,unread) VALUES (?,?,?,?,?,1)',
-        other, 'task', status === 'Closed' ? '✅' : '👀', `${me.name} ${verb} the task: ${task.title}`, task.ticket_id || '').catch(() => {});
-    }
-    const row = await get(`${QT_SELECT} WHERE qt.id=?`, task.id);
-    res.json(qtSerialize(row));
+    res.json(qtSerialize(await setQuickTaskStatus(task, status, me)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -7259,10 +7263,12 @@ const _TL_INVOLVED = `
 
 async function ticketsLiveBoard(u, nowUtc, cutoff30) {
   const uid = u.id, uname = u.name;
-  // "My last comment on this ticket" — used both to detect unanswered
-  // comments by others and to decide whether an update request is still
-  // pending (a comment after the request counts as the reply). Takes an
-  // alias so it can be embedded several times in one statement.
+  // "My last comment on this ticket" — used both to decide whether an
+  // @mention still awaits a reply and whether an update request is still
+  // pending (a comment after either counts as the reply). Takes an
+  // alias so it can be embedded several times in one statement. Note:
+  // a plain comment by someone else does NOT count as "needs reply" —
+  // only @mentions (notifications type='mention') and update requests do.
   const myLastComment = (a) => `
       (SELECT MAX(${a}.created_at) FROM ticket_comments ${a}
         WHERE ${a}.ticket_id = t.id
@@ -7275,11 +7281,11 @@ async function ticketsLiveBoard(u, nowUtc, cutoff30) {
              WHERE oc.ticket_id = t.id
                AND oc.author_user_id IS DISTINCT FROM ?
                AND NOT (oc.author_user_id IS NULL AND oc.author = ?)) AS others_last_comment_at,
-           (SELECT MIN(wc.created_at) FROM ticket_comments wc
-             WHERE wc.ticket_id = t.id
-               AND wc.author_user_id IS DISTINCT FROM ?
-               AND NOT (wc.author_user_id IS NULL AND wc.author = ?)
-               AND wc.created_at > COALESCE(${myLastComment('c2')}, '')) AS waiting_since_comment,
+           (SELECT MIN(mn.created_at) FROM notifications mn
+             WHERE mn.user_id = ?
+               AND mn.type = 'mention'
+               AND mn.ticket_id = t.id
+               AND mn.created_at > COALESCE(${myLastComment('c2')}, '')) AS waiting_since_comment,
            (SELECT MAX(n.created_at) FROM notifications n
              WHERE n.user_id = ?
                AND n.ticket_id = t.id
@@ -7293,7 +7299,7 @@ async function ticketsLiveBoard(u, nowUtc, cutoff30) {
      ORDER BY t.id DESC`,
     uid, uname,                    // my_last_comment_at
     uid, uname,                    // others_last_comment_at
-    uid, uname, uid, uname,        // waiting_since_comment (+ inner c2)
+    uid, uid, uname,               // waiting_since_comment (mention notif + inner c2)
     uid, uid, uname,               // update_requested_at (n.user_id + inner c3)
     uid, uname, uid, uname         // involvement
   );
@@ -7558,6 +7564,27 @@ app.get('/api/tickets-live/board/:token', async (req, res) => {
     const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString().replace('T', ' ').slice(0, 19);
     const board = await ticketsLiveBoard(u, nowUtc, cutoff30);
     res.json({ now: nowUtc, mode: 'user', public: true, viewer: null, users: [board], tasks: await activeQuickTasks(u.id) });
+  } catch (e) {
+    console.error('[tickets-live:board] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Change a task's status straight from the no-login board page. The board
+// token identifies the user; it may only touch tasks ASSIGNED to that user
+// (a leaked link can never move someone else's tasks). Everything else on
+// the board stays read-only.
+app.put('/api/tickets-live/board/:token/tasks/:id/status', async (req, res) => {
+  try {
+    const token = String(req.params.token || '');
+    if (!/^[a-f0-9]{48}$/.test(token)) return res.status(404).json({ error: 'Board not found' });
+    const u = await get('SELECT id, name FROM users WHERE live_board_token=?', token);
+    if (!u) return res.status(404).json({ error: 'Board not found' });
+    const status = String(req.body?.status || '');
+    if (!QT_STATUSES.includes(status)) return res.status(400).json({ error: 'Bad status' });
+    const task = await get('SELECT * FROM quick_tasks WHERE id=?', Number(req.params.id));
+    if (!task || task.assignee_user_id !== u.id) return res.status(404).json({ error: 'Task not found' });
+    res.json(qtSerialize(await setQuickTaskStatus(task, status, u)));
   } catch (e) {
     console.error('[tickets-live:board] error:', e.message);
     res.status(500).json({ error: e.message });
