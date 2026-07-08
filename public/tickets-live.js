@@ -137,6 +137,47 @@
     return `<span class="${cls || ''}" data-epoch="${dateObj.getTime()}">${fmtDur(serverNow() - dateObj.getTime())}</span>`;
   };
 
+  // ── tasks panel — the MAIN thing on the board ──────────────────────────
+  // Instant "do this now" requests. Rendered big, above everything; Open
+  // tasks pulse amber until someone starts checking. Read-only here —
+  // actions live on /tasks.html.
+  function renderTasksPanel() {
+    const list = Array.isArray(data.tasks) ? data.tasks : [];
+    const rows = list.map(t => {
+      const started = parseUtc(t.createdAt);
+      const ticketChip = t.ticketId
+        ? (data.public
+            ? `<span class="tl-task-ticket">🎫 ${esc(t.ticketId)}${t.ticketTitle ? ' · ' + esc(t.ticketTitle) : ''}</span>`
+            : `<a class="tl-task-ticket" href="/tickets/${encodeURIComponent(t.ticketId)}">🎫 ${esc(t.ticketId)}${t.ticketTitle ? ' · ' + esc(t.ticketTitle) : ''}</a>`)
+        : '';
+      return `
+      <div class="tl-task s-${t.status.toLowerCase()}">
+        <div class="tl-task-main">
+          <div class="tl-task-title">${esc(t.title)}</div>
+          ${t.description ? `<div class="tl-task-desc">${esc(t.description)}</div>` : ''}
+          <div class="tl-task-meta">
+            ${t.status === 'Checking'
+              ? '<span class="tl-badge b-task-checking">👀 Checking</span>'
+              : '<span class="tl-badge b-task-open">⚡ Open — do now</span>'}
+            <span class="tl-task-who">${esc(t.creator.name || '?')} → <b>${esc(t.assignee.name || '?')}</b></span>
+            ${ticketChip}
+          </div>
+        </div>
+        <div class="tl-task-side">
+          <span class="tl-task-timer" data-epoch="${started ? started.getTime() : Date.now()}">…</span>
+          <div class="tl-task-sub">${t.status === 'Checking' ? 'being checked' : 'waiting'}</div>
+        </div>
+      </div>`;
+    }).join('');
+    return `
+    <div class="tl-panel tl-tasks">
+      <div class="tl-panel-title tl-tasks-title">⚡ Tasks — do now <span class="cnt">${list.length}</span>
+        ${!data.public ? '<a class="tl-tasks-link" href="/tasks.html">open task list →</a>' : ''}
+      </div>
+      ${rows || '<div class="tl-empty">No tasks right now 🎉</div>'}
+    </div>`;
+  }
+
   function waitReasonBadges(t) {
     const b = [];
     if (t.updateRequestedAt) b.push('<span class="tl-badge b-update">📩 Update requested</span>');
@@ -365,6 +406,7 @@
           <button class="tl-fs" id="tl-fs" title="Fullscreen">⛶</button>
         </div>
       </div>
+      ${renderTasksPanel()}
       ${single ? renderUserBoard(board) : renderTeamBoard(data.users)}
       <div class="tl-note" id="tl-note"></div>`;
 

@@ -95,6 +95,57 @@ html, body {
 }
 .tl-av img { width: 100%; height: 100%; object-fit: cover; }
 
+/* ── Tasks panel — the MAIN thing, big, above everything ─────────────── */
+.tl-tasks {
+  border-color: rgba(250, 178, 25, 0.4);
+  background:
+    radial-gradient(130% 100% at 0% 0%, rgba(250, 178, 25, 0.09), transparent 55%),
+    var(--surface);
+  margin-bottom: 18px;
+}
+.tl-tasks-title { font-size: 20px; }
+.tl-tasks-link { margin-left: auto; font-size: 12.5px; font-weight: 600; color: var(--ink-3); text-decoration: none; }
+.tl-tasks-link:hover { color: var(--ink); }
+.tl-task {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  border: 1px solid var(--hairline); border-radius: 14px;
+  padding: 16px 18px; margin-top: 10px; background: var(--surface-2);
+}
+.tl-task.s-open {
+  border-color: rgba(250, 178, 25, 0.65);
+  animation: tl-task-pulse 1.3s ease-in-out infinite;
+}
+@keyframes tl-task-pulse {
+  0%, 100% { background: rgba(250, 178, 25, 0.20); box-shadow: 0 0 14px rgba(250, 178, 25, 0.28); }
+  50%      { background: rgba(250, 178, 25, 0.06); box-shadow: none; }
+}
+.tl-task.s-checking { border-color: rgba(57, 135, 229, 0.55); background: rgba(57, 135, 229, 0.08); }
+.tl-task-main { flex: 1; min-width: 240px; }
+.tl-task-title { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.tl-task-desc { font-size: 14px; color: var(--ink-2); margin-top: 4px; white-space: pre-wrap; }
+.tl-task-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; align-items: center; }
+.tl-task-who { font-size: 13px; color: var(--ink-3); }
+.tl-task-who b { color: var(--ink); }
+.b-task-open     { color: var(--warning); border-color: rgba(250, 178, 25, 0.55); background: rgba(250, 178, 25, 0.1); }
+.b-task-checking { color: #6da7ec;        border-color: rgba(57, 135, 229, 0.55); background: rgba(57, 135, 229, 0.1); }
+.tl-task-ticket {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 700; color: var(--accent);
+  border: 1px solid rgba(57, 135, 229, 0.45); border-radius: 999px; padding: 3px 10px;
+  text-decoration: none;
+}
+a.tl-task-ticket:hover { background: rgba(57, 135, 229, 0.12); }
+.tl-task-side { text-align: right; margin-left: auto; }
+.tl-task-timer {
+  font-size: 40px; font-weight: 800; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; color: var(--warning);
+}
+.s-checking .tl-task-timer { color: #6da7ec; }
+.tl-task-sub { font-size: 11.5px; color: var(--ink-3); }
+@media (prefers-reduced-motion: reduce) {
+  .tl-task.s-open { animation: none; background: rgba(250, 178, 25, 0.14); }
+}
+
 /* ── Layout ──────────────────────────────────────────────────────────── */
 .tl-grid { display: grid; grid-template-columns: 420px 1fr; gap: 18px; align-items: start; }
 @media (max-width: 980px) { .tl-grid { grid-template-columns: 1fr; } }
@@ -129,9 +180,10 @@ html, body {
 }
 .t-serious .tl-tile-label { color: var(--serious); }
 .t-neutral .tl-tile-label { color: var(--accent); }
+/* Tickets are the secondary layer now — tasks own the top of the board. */
 .tl-tile-big {
-  font-size: 84px; font-weight: 800; line-height: 1.05; letter-spacing: -0.03em;
-  margin: 10px 0 12px;
+  font-size: 48px; font-weight: 800; line-height: 1.05; letter-spacing: -0.03em;
+  margin: 8px 0 10px;
 }
 .tl-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .tl-chip {
@@ -151,7 +203,7 @@ html, body {
 .tl-speed-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .tl-speed .tl-tile-label { color: var(--ink-2); }
 .tl-speed-big {
-  font-size: 44px; font-weight: 800; letter-spacing: -0.02em; margin: 10px 0 4px;
+  font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin: 8px 0 4px;
   font-variant-numeric: tabular-nums;
 }
 .tl-speed-sub { font-size: 12.5px; color: var(--ink-3); }
@@ -252,7 +304,7 @@ html, body {
 /* ── Team mode ───────────────────────────────────────────────────────── */
 .tl-team-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 18px; }
 @media (max-width: 980px) { .tl-team-tiles { grid-template-columns: 1fr; } }
-.tl-team-tiles .tl-tile-big { font-size: 56px; margin: 8px 0 2px; }
+.tl-team-tiles .tl-tile-big { font-size: 40px; margin: 6px 0 2px; }
 
 .tl-thead, .tl-trow {
   display: grid;
@@ -344,7 +396,12 @@ a.tl-trow:hover { background: var(--surface-2); }
   .tl-grid { gap: 12px; }
   .tl-left { gap: 12px; }
   .tl-tile { padding: 16px 18px; border-radius: 14px; }
-  .tl-tile-big { font-size: 56px; margin: 6px 0 10px; }
+  .tl-tile-big { font-size: 40px; margin: 6px 0 10px; }
+  .tl-task { padding: 12px 14px; gap: 10px; }
+  .tl-task-title { font-size: 17px; }
+  .tl-task-timer { font-size: 26px; }
+  .tl-task-side { margin-left: 0; text-align: left; width: 100%; }
+  .tl-tasks-title { font-size: 16px; }
   .tl-speed-row { gap: 12px; }
   .tl-speed-big { font-size: 30px; margin: 8px 0 4px; }
   .tl-speed-sub { font-size: 11.5px; }

@@ -1,0 +1,119 @@
+/* Tasks — instant "do this now" requests between office and warehouse.
+   Same dark tokens as the Tickets Live board so the two read as one system. */
+
+:root {
+  --page:      #0d0d0f;
+  --surface:   #17171b;
+  --surface-2: #1f1f24;
+  --ink:       #ffffff;
+  --ink-2:     #c3c2b7;
+  --ink-3:     #898781;
+  --hairline:  rgba(255, 255, 255, 0.10);
+  --good:      #0ca30c;
+  --warning:   #fab219;
+  --accent:    #3987e5;
+  --critical:  #d03b3b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--page); color: var(--ink); min-height: 100%;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+#qt-app { max-width: 980px; margin: 0 auto; padding: 20px 20px 40px; }
+.qt-boot { color: var(--ink-3); padding: 48px; text-align: center; font-size: 15px; }
+.qt-error { color: #e66767; text-align: center; padding: 40px; font-size: 15px; }
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+.qt-header { display: flex; align-items: center; gap: 13px; padding: 4px 0 18px; flex-wrap: wrap; }
+.qt-brand {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: linear-gradient(135deg, #d97b26, #fab219);
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+}
+.qt-title { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+.qt-sub { font-size: 12.5px; color: var(--ink-3); margin-top: 1px; }
+.qt-header a { color: var(--ink-3); font-size: 13px; text-decoration: none; margin-left: auto; }
+.qt-header a:hover { color: var(--ink); }
+
+/* ── New-task card ───────────────────────────────────────────────────── */
+.qt-new {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 16px; padding: 18px; margin-bottom: 20px;
+}
+.qt-new-title { font-size: 15px; font-weight: 800; margin-bottom: 12px; }
+.qt-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.qt-row > * { flex: 1; min-width: 180px; }
+.qt-new input, .qt-new select, .qt-new textarea {
+  width: 100%; background: var(--page); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: 9px;
+  padding: 10px 12px; font-size: 14px; font-family: inherit;
+}
+.qt-new textarea { resize: vertical; }
+.qt-new label { display: block; font-size: 11px; font-weight: 700; color: var(--ink-2); margin-bottom: 4px; }
+.qt-send {
+  background: var(--warning); border: none; color: #201500;
+  border-radius: 10px; padding: 11px 22px; font-size: 14.5px; font-weight: 800;
+  cursor: pointer; font-family: inherit;
+}
+.qt-send:hover { filter: brightness(1.08); }
+.qt-send:disabled { opacity: 0.6; cursor: default; }
+.qt-msg { min-height: 18px; font-size: 12.5px; font-weight: 600; margin-top: 8px; }
+
+/* ── Task list ───────────────────────────────────────────────────────── */
+.qt-section { font-size: 15px; font-weight: 800; margin: 22px 0 10px; display: flex; align-items: center; gap: 8px; }
+.qt-section .cnt { color: var(--ink-3); font-weight: 700; font-size: 13px; }
+.qt-empty { color: var(--ink-3); font-size: 14px; padding: 14px 4px; }
+
+.qt-card {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 14px; padding: 14px 16px; margin-bottom: 10px;
+  display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap;
+}
+.qt-card.s-open { border-color: rgba(250, 178, 25, 0.55); animation: qt-open-pulse 1.4s ease-in-out infinite; }
+@keyframes qt-open-pulse {
+  0%, 100% { background: rgba(250, 178, 25, 0.12); }
+  50%      { background: rgba(250, 178, 25, 0.03); }
+}
+.qt-card.s-checking { border-color: rgba(57, 135, 229, 0.5); }
+.qt-card.s-closed { opacity: 0.65; }
+.qt-main { flex: 1; min-width: 240px; }
+.qt-card-title { font-size: 16px; font-weight: 750; }
+.qt-desc { font-size: 13px; color: var(--ink-2); margin-top: 4px; white-space: pre-wrap; }
+.qt-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; font-size: 12px; color: var(--ink-3); }
+.qt-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  border-radius: 999px; padding: 3px 10px; border: 1px solid;
+}
+.b-open     { color: var(--warning); border-color: rgba(250, 178, 25, 0.5);  background: rgba(250, 178, 25, 0.1); }
+.b-checking { color: #6da7ec;        border-color: rgba(57, 135, 229, 0.5);  background: rgba(57, 135, 229, 0.1); }
+.b-closed   { color: var(--good);    border-color: rgba(12, 163, 12, 0.5);   background: rgba(12, 163, 12, 0.1); }
+.qt-ticket-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 700; color: var(--accent);
+  border: 1px solid rgba(57, 135, 229, 0.45); border-radius: 999px; padding: 3px 10px;
+  text-decoration: none;
+}
+.qt-ticket-chip:hover { background: rgba(57, 135, 229, 0.12); }
+
+.qt-side { text-align: right; margin-left: auto; }
+.qt-timer { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--warning); }
+.s-checking .qt-timer { color: #6da7ec; }
+.s-closed .qt-timer { color: var(--good); font-size: 18px; }
+.qt-timer-sub { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
+.qt-actions { display: flex; gap: 7px; margin-top: 9px; justify-content: flex-end; flex-wrap: wrap; }
+.qt-btn {
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
+  border-radius: 9px; padding: 8px 13px; font-size: 12.5px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+}
+.qt-btn:hover { color: var(--ink); }
+.qt-btn.b-done { background: rgba(12, 163, 12, 0.15); border-color: rgba(12, 163, 12, 0.5); color: #35c46b; }
+.qt-btn.b-done:hover { background: rgba(12, 163, 12, 0.28); color: #fff; }
+
+@media (max-width: 640px) {
+  #qt-app { padding: 12px 12px 28px; }
+  .qt-side { text-align: left; margin-left: 0; width: 100%; }
+  .qt-actions { justify-content: flex-start; }
+}
