@@ -195,7 +195,7 @@
   function waitReasonBadges(t) {
     const b = [];
     if (t.updateRequestedAt) b.push('<span class="tl-badge b-update">📩 Update requested</span>');
-    if (t.newCommentSince)   b.push('<span class="tl-badge b-comment">💬 New comment</span>');
+    if (t.newCommentSince)   b.push('<span class="tl-badge b-comment">💬 Mentioned you</span>');
     if (t.overdue)           b.push('<span class="tl-badge b-overdue">⏰ Overdue</span>');
     if (t.snoozed)           b.push('<span class="tl-badge b-snoozed">💤 Snoozed</span>');
     return b.join(' ');
@@ -268,7 +268,7 @@
           <div class="tl-tile-big">${u.needsReplyCount}</div>
           <div class="tl-chips">
             <span class="tl-chip c-warning">📩 Update requested <b>${u.updateRequestedCount}</b></span>
-            <span class="tl-chip">💬 New comment <b>${u.newCommentCount}</b></span>
+            <span class="tl-chip">💬 Mentioned <b>${u.newCommentCount}</b></span>
             <span class="tl-chip c-critical">⏰ Overdue <b>${u.overdueCount}</b></span>
           </div>
           <div class="tl-tile-foot">tickets where teammates are waiting for you</div>
@@ -356,7 +356,7 @@
       <div class="tl-tile t-serious">
         <div class="tl-tile-label">⏳ Waiting for a reply</div>
         <div class="tl-tile-big">${sum('needsReplyCount')}</div>
-        <div class="tl-tile-foot">update requests + unanswered comments, team-wide</div>
+        <div class="tl-tile-foot">update requests + unanswered @mentions, team-wide</div>
       </div>
       <div class="tl-tile t-neutral">
         <div class="tl-tile-label">🗂 Open tickets</div>
@@ -516,7 +516,7 @@
           <input id="nag-tz" type="text" placeholder="America/New_York" value="${esc(cfg.tz)}"/></div>
         <div class="tl-field"><span>Remind about</span>
           <div class="tl-checks">
-            ${trig('needsReply', '💬 Reply needed')}
+            ${trig('needsReply', '💬 Mentioned / reply needed')}
             ${trig('updateRequested', '📩 Update requested')}
             ${trig('overdue', '⏰ Overdue')}
             ${trig('dueSoon', '📅 Due date approaching')}

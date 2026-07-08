@@ -7263,10 +7263,12 @@ const _TL_INVOLVED = `
 
 async function ticketsLiveBoard(u, nowUtc, cutoff30) {
   const uid = u.id, uname = u.name;
-  // "My last comment on this ticket" — used both to detect unanswered
-  // comments by others and to decide whether an update request is still
-  // pending (a comment after the request counts as the reply). Takes an
-  // alias so it can be embedded several times in one statement.
+  // "My last comment on this ticket" — used both to decide whether an
+  // @mention still awaits a reply and whether an update request is still
+  // pending (a comment after either counts as the reply). Takes an
+  // alias so it can be embedded several times in one statement. Note:
+  // a plain comment by someone else does NOT count as "needs reply" —
+  // only @mentions (notifications type='mention') and update requests do.
   const myLastComment = (a) => `
       (SELECT MAX(${a}.created_at) FROM ticket_comments ${a}
         WHERE ${a}.ticket_id = t.id
@@ -7279,11 +7281,11 @@ async function ticketsLiveBoard(u, nowUtc, cutoff30) {
              WHERE oc.ticket_id = t.id
                AND oc.author_user_id IS DISTINCT FROM ?
                AND NOT (oc.author_user_id IS NULL AND oc.author = ?)) AS others_last_comment_at,
-           (SELECT MIN(wc.created_at) FROM ticket_comments wc
-             WHERE wc.ticket_id = t.id
-               AND wc.author_user_id IS DISTINCT FROM ?
-               AND NOT (wc.author_user_id IS NULL AND wc.author = ?)
-               AND wc.created_at > COALESCE(${myLastComment('c2')}, '')) AS waiting_since_comment,
+           (SELECT MIN(mn.created_at) FROM notifications mn
+             WHERE mn.user_id = ?
+               AND mn.type = 'mention'
+               AND mn.ticket_id = t.id
+               AND mn.created_at > COALESCE(${myLastComment('c2')}, '')) AS waiting_since_comment,
            (SELECT MAX(n.created_at) FROM notifications n
              WHERE n.user_id = ?
                AND n.ticket_id = t.id
@@ -7297,7 +7299,7 @@ async function ticketsLiveBoard(u, nowUtc, cutoff30) {
      ORDER BY t.id DESC`,
     uid, uname,                    // my_last_comment_at
     uid, uname,                    // others_last_comment_at
-    uid, uname, uid, uname,        // waiting_since_comment (+ inner c2)
+    uid, uid, uname,               // waiting_since_comment (mention notif + inner c2)
     uid, uid, uname,               // update_requested_at (n.user_id + inner c3)
     uid, uname, uid, uname         // involvement
   );
