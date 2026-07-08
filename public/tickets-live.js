@@ -36,6 +36,9 @@
   }
   const apiGet = (p) => api(p);
   const apiPost = (p) => api(p, { method: 'POST' });
+  const apiPut = (p, body) => api(p, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+  });
 
   // DB timestamps are UTC "YYYY-MM-DD HH:MM:SS" text.
   const parseUtc = (s) => {
@@ -143,6 +146,13 @@
   // actions live on /tasks.html.
   function renderTasksPanel() {
     const list = Array.isArray(data.tasks) ? data.tasks : [];
+    // Tasks are actionable on a single-user board: on the no-login token
+    // page (the token belongs to the assignee) and, when logged in, for the
+    // board owner or an admin. Team views stay display-only.
+    const canAct = data.mode === 'user' && (
+      (data.public && !!PUBLIC_TOKEN) ||
+      (!data.public && data.viewer && (data.viewer.id === data.users[0].id || data.viewer.isAdmin))
+    );
     const rows = list.map(t => {
       const started = parseUtc(t.createdAt);
       const ticketChip = t.ticketId
@@ -166,6 +176,10 @@
         <div class="tl-task-side">
           <span class="tl-task-timer" data-epoch="${started ? started.getTime() : Date.now()}">…</span>
           <div class="tl-task-sub">${t.status === 'Checking' ? 'being checked' : 'waiting'}</div>
+          ${canAct ? `<div class="tl-task-acts">
+            ${t.status === 'Open' ? `<button class="tl-taskbtn tl-task-act" data-id="${t.id}" data-status="Checking">👀 I'm checking</button>` : ''}
+            <button class="tl-taskbtn b-done tl-task-act" data-id="${t.id}" data-status="Closed">✅ Done</button>
+          </div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -428,7 +442,7 @@
       el.textContent = fmtDur(now - Number(el.dataset.epoch));
     });
     const note = document.getElementById('tl-note');
-    if (note && lastFetch) note.textContent = `Read-only board · last updated ${Math.max(0, Math.round((Date.now() - lastFetch) / 1000))}s ago`;
+    if (note && lastFetch) note.textContent = `Live board · last updated ${Math.max(0, Math.round((Date.now() - lastFetch) / 1000))}s ago`;
     if (soundOn && hasUrgent() && Date.now() - lastBeepAt >= BEEP_EVERY_MS) {
       lastBeepAt = Date.now();
       beep();
@@ -556,6 +570,17 @@
   }
 
   async function onAction(e) {
+    const taskAct = e.target.closest('.tl-task-act');
+    if (taskAct) {
+      e.preventDefault();
+      taskAct.disabled = true;
+      const url = PUBLIC_TOKEN
+        ? `/api/tickets-live/board/${encodeURIComponent(PUBLIC_TOKEN)}/tasks/${taskAct.dataset.id}/status`
+        : `/api/quick-tasks/${taskAct.dataset.id}/status`;
+      try { await apiPut(url, { status: taskAct.dataset.status }); await load(); }
+      catch (err) { taskAct.disabled = false; window.alert(err.message); }
+      return;
+    }
     const copy = e.target.closest('.tl-copy');
     const rotate = e.target.closest('.tl-rotate');
     const nag = e.target.closest('.tl-nag');

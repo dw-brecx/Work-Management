@@ -142,6 +142,16 @@ a.tl-task-ticket:hover { background: rgba(57, 135, 229, 0.12); }
 }
 .s-checking .tl-task-timer { color: #6da7ec; }
 .tl-task-sub { font-size: 11.5px; color: var(--ink-3); }
+.tl-task-acts { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.tl-taskbtn {
+  background: var(--surface); border: 1px solid var(--hairline); color: var(--ink-2);
+  border-radius: 10px; padding: 10px 16px; font-size: 13.5px; font-weight: 800;
+  cursor: pointer; font-family: inherit;
+}
+.tl-taskbtn:hover { color: var(--ink); background: var(--surface-2); }
+.tl-taskbtn.b-done { background: rgba(12, 163, 12, 0.15); border-color: rgba(12, 163, 12, 0.5); color: #35c46b; }
+.tl-taskbtn.b-done:hover { background: rgba(12, 163, 12, 0.3); color: #fff; }
+.tl-taskbtn:disabled { opacity: 0.5; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .tl-task.s-open { animation: none; background: rgba(250, 178, 25, 0.14); }
 }
@@ -401,6 +411,7 @@ a.tl-trow:hover { background: var(--surface-2); }
   .tl-task-title { font-size: 17px; }
   .tl-task-timer { font-size: 26px; }
   .tl-task-side { margin-left: 0; text-align: left; width: 100%; }
+  .tl-task-acts { justify-content: flex-start; }
   .tl-tasks-title { font-size: 16px; }
   .tl-speed-row { gap: 12px; }
   .tl-speed-big { font-size: 30px; margin: 8px 0 4px; }
