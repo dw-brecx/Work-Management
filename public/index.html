@@ -4552,6 +4552,116 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 </div>
 <div id="sb-overlay" onclick="closeMobileSidebar()"></div>
 
+<!-- ── Collapsible sidebar groups ─────────────────────────────────────────
+     Tickets and Personal (and the single-item Overview) stay always
+     visible; every other section (Plans & Calendar, Workspace, Build,
+     Admin, Apps, Help) collapses behind its section label. Click the
+     label to expand/collapse; the choice is remembered per group, and a
+     group auto-expands while one of its pages is the active page. When
+     the sidebar itself is in icon-only collapsed mode, group hiding is
+     ignored so every icon stays reachable. -->
+<style>
+  .sb-grp-head{cursor:pointer;display:flex;align-items:center;gap:6px;user-select:none}
+  .sb-grp-head::after{content:"▾";margin-left:auto;font-size:8px;opacity:.65;transition:transform .15s ease}
+  .sb-grp-head:hover{opacity:.8}
+  .sb-grp-head.sb-grp-collapsed::after{transform:rotate(-90deg)}
+  .nav-item.sb-grp-hidden,
+  #sb-apps-list.sb-grp-hidden{display:none!important}
+  #sidebar.collapsed .nav-item.sb-grp-hidden{display:flex!important}
+  #sidebar.collapsed #sb-apps-list.sb-grp-hidden{display:block!important}
+</style>
+<script>
+(function () {
+  'use strict';
+  var ALWAYS_OPEN = { overview: 1, tickets: 1, personal: 1 };
+  var KEY = 'sb-nav-groups-v1';
+  var applying = false;
+
+  function readState() {
+    try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function saveState(s) {
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
+  }
+  function slug(t) { return String(t || '').trim().toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, ''); }
+
+  function scanGroups() {
+    var nav = document.getElementById('nav');
+    if (!nav) return [];
+    var out = [];
+    nav.querySelectorAll('.sb-section-label').forEach(function (lb) {
+      var items = [];
+      var el = lb.nextElementSibling;
+      while (el && !el.classList.contains('sb-section-label') && !el.classList.contains('sb-divider')) {
+        items.push(el);
+        el = el.nextElementSibling;
+      }
+      out.push({ label: lb, name: slug(lb.textContent), items: items });
+    });
+    return out;
+  }
+
+  function groupHasActive(g) {
+    for (var i = 0; i < g.items.length; i++) {
+      var it = g.items[i];
+      if (it.classList && it.classList.contains('nav-item') && it.classList.contains('active')) return true;
+      if (it.querySelector && it.querySelector('.nav-item.active')) return true;
+    }
+    return false;
+  }
+
+  function apply() {
+    if (applying) return;
+    applying = true;
+    try {
+      var s = readState();
+      scanGroups().forEach(function (g) {
+        if (ALWAYS_OPEN[g.name]) {
+          g.label.classList.remove('sb-grp-head', 'sb-grp-collapsed');
+          g.items.forEach(function (it) { it.classList.remove('sb-grp-hidden'); });
+          return;
+        }
+        g.label.classList.add('sb-grp-head');
+        // Collapsed by default; stays open if the user opened it, or while
+        // it contains the currently-active page.
+        var open = s[g.name] === true || groupHasActive(g);
+        g.label.classList.toggle('sb-grp-collapsed', !open);
+        g.items.forEach(function (it) { it.classList.toggle('sb-grp-hidden', !open); });
+        if (!g.label._sbGrpWired) {
+          g.label._sbGrpWired = true;
+          g.label.addEventListener('click', function () {
+            var st = readState();
+            var isOpen = !g.label.classList.contains('sb-grp-collapsed');
+            st[g.name] = !isOpen;
+            saveState(st);
+            apply();
+          });
+        }
+      });
+    } finally {
+      applying = false;
+    }
+  }
+
+  function init() {
+    apply();
+    var nav = document.getElementById('nav');
+    if (!nav) return;
+    // Re-apply when nav content changes: external Apps section injecting
+    // its links, or the active page highlight moving on navigation.
+    var t = null;
+    new MutationObserver(function () {
+      if (applying) return;
+      clearTimeout(t);
+      t = setTimeout(apply, 120);
+    }).observe(nav, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
 <!-- Quick-view bottom sheet (mobile-only): a tap on a dashboard ticket
      row slides this up with the full ticket meta and an "Open full
      ticket →" CTA. Lazy-populated by showTicketQuickView(). -->
