@@ -324,6 +324,14 @@ function rateLimit({ windowMs, max, key = 'ip' }) {
 const authLimiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 10, key: 'route' });
 const resetLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, key: 'route' });
 
+// Gzip every compressible response (HTML, JS, CSS, JSON). The SPA shell
+// alone is ~1.4 MB of HTML served fresh on every load — uncompressed that
+// transfer dominated page-load time on real connections; gzipped it's
+// ~15% of the size. /uploads media is already-compressed binary and is
+// skipped automatically by the content-type filter.
+const compression = require('compression');
+app.use(compression());
+
 // Body limits bumped to 50 MB so Spaces can ship base64-encoded media
 // (voice notes, screen recordings, images) inside a single JSON POST.
 // Per-item soft cap of 25 MB is enforced client-side; 50 MB here gives
@@ -377,7 +385,14 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
 }));
 
 app.use(express.static(path.join(__dirname, 'public'), {
-  setHeaders(res) { res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); }
+  // no-cache (NOT no-store): the browser may keep a copy but must
+  // revalidate before using it. With ETags that means repeat loads are
+  // tiny 304 responses instead of full re-downloads — no-store forced a
+  // complete re-transfer of every CSS/JS file on every single page view,
+  // which is where much of the "app feels slow" time went. Deploys still
+  // show up immediately because every use revalidates first.
+  etag: true,
+  setHeaders(res) { res.setHeader('Cache-Control', 'no-cache, must-revalidate'); }
 }));
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
@@ -1523,6 +1538,100 @@ app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Everything the standalone ticket-detail page needs to paint, in ONE
+// request: ticket, comments, timeline, description, subtasks, attachments,
+// the caller's private reminders, team + departments for pickers, the
+// caller's identity, and the previous last-viewed stamp (this call also
+// stamps the view, replacing a separate mark-viewed POST). The page used
+// to fire ~11 parallel requests — each paying its own session lookup and
+// access check — which crawled on slow hosting tiers; this pays that
+// overhead once.
+app.get('/api/tickets/:id/bootstrap', requireAuth, requireTicketAccess, async (req, res) => {
+  try {
+    const tid = req.params.id;
+    const uid = req.session.userId;
+    const row = await get('SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL', tid);
+    if (!row) return res.status(404).json({ error: 'Not found' });
+
+    const prevView = await get(
+      'SELECT last_viewed_at FROM ticket_views WHERE user_id=? AND ticket_id=?', uid, tid
+    );
+    // Stamp the view (fire-and-forget — same upsert as POST /mark-viewed).
+    run(
+      `INSERT INTO ticket_views (user_id, ticket_id, last_viewed_at)
+       VALUES (?, ?, TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+       ON CONFLICT (user_id, ticket_id)
+       DO UPDATE SET last_viewed_at = EXCLUDED.last_viewed_at`,
+      uid, tid
+    ).catch(err => console.warn('[bootstrap] mark-viewed failed:', err && err.message));
+
+    const [ticket, me, comments, timelineRows, detailsRow, subtasks, attRows, team, departments, remRows] =
+      await Promise.all([
+        buildTicket(row),
+        getUser(uid),
+        fetchTicketComments(tid),
+        all('SELECT * FROM ticket_timelines WHERE ticket_id=? ORDER BY created_at DESC', tid),
+        get('SELECT * FROM ticket_details WHERE ticket_id=?', tid),
+        fetchTicketSubtasks(tid),
+        all('SELECT * FROM attachments WHERE ticket_id=? ORDER BY created_at ASC', tid),
+        all('SELECT id,name,email,role,dept,color,perm_role,avatar_url FROM users ORDER BY id'),
+        all('SELECT name FROM departments ORDER BY name ASC'),
+        all('SELECT * FROM personal_reminders WHERE user_id=? AND ticket_id=? ORDER BY due_at ASC, id ASC', uid, tid),
+      ]);
+
+    // Timeline: same shape + created-fallback as GET /timeline.
+    const timeline = timelineRows.length
+      ? timelineRows.map(r => ({
+          id: r.id, dot: r.dot, text: r.text,
+          createdAt: r.created_at,
+          sub: formatUSDateTime(r.created_at) || r.sub,
+        }))
+      : [{
+          dot: 'var(--green)', text: 'Ticket created',
+          createdAt: row.created_at,
+          sub: formatUSDateTime(row.created_at) || row.created,
+        }];
+
+    // Reminder attachments (private files pinned to each reminder).
+    const remIds = remRows.map(r => r.id);
+    const remAtts = new Map();
+    if (remIds.length) {
+      const ph = remIds.map(() => '?').join(',');
+      (await all(`SELECT * FROM attachments WHERE reminder_id IN (${ph}) ORDER BY id ASC`, ...remIds))
+        .forEach(a => {
+          if (!remAtts.has(a.reminder_id)) remAtts.set(a.reminder_id, []);
+          remAtts.get(a.reminder_id).push(a);
+        });
+    }
+
+    res.json({
+      ticket,
+      me: me ? {
+        id: me.id, name: me.name, email: me.email, role: me.role, dept: me.dept,
+        color: me.color, permRole: me.perm_role, avatarUrl: me.avatar_url || '', tz: me.tz || '',
+      } : null,
+      comments,
+      timeline,
+      details: detailsRow
+        ? { description: detailsRow.description || '', checklist: JSON.parse(detailsRow.checklist_json || '[]') }
+        : { description: '', checklist: [] },
+      subtasks,
+      attachments: attRows.map(r => ({
+        id: r.id, filename: r.filename, originalName: r.original_name,
+        mimeType: r.mime_type, size: r.size, uploader: r.uploader,
+        commentId: r.comment_id, createdAt: r.created_at, url: `/uploads/${r.filename}`,
+      })),
+      team: team.map(m => ({
+        id: m.id, name: m.name, email: m.email, role: m.role, dept: m.dept,
+        color: m.color, permRole: m.perm_role, avatarUrl: m.avatar_url || '',
+      })),
+      departments: departments.map(d => d.name),
+      myReminders: remRows.map(r => _serializeReminder(r, remAtts.get(r.id) || [])),
+      previousViewedAt: prevView ? prevView.last_viewed_at : null,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/tickets', requireAuth, async (req, res) => {
   try {
     const { id: clientId, title, req:reqName, assignee, assignees, reporter, priority, status, dept, due, created, overdue, tags, checklist, parentTicketId, syruvia_flavor_id, syruvia_flavor_name } = req.body;
@@ -2492,52 +2601,54 @@ app.put('/api/tickets/:id/details', requireAuth, requireTicketAccess, async (req
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Shared by GET /comments and GET /bootstrap. Derives the live author name
+// from users.name when author_user_id is set (renames update history), and
+// attaches each comment's linked files so the client renders them inline.
+async function fetchTicketComments(ticketId) {
+  const rows = await all(`
+    SELECT tc.*, u.name AS author_name_now
+      FROM ticket_comments tc
+      LEFT JOIN users u ON u.id = tc.author_user_id
+     WHERE tc.ticket_id=?
+     ORDER BY tc.created_at ASC`, ticketId);
+  const commentIds = rows.map(r => r.id);
+  const attsByComment = new Map();
+  if (commentIds.length) {
+    const ph = commentIds.map(() => '?').join(',');
+    const atts = await all(
+      `SELECT id, comment_id, filename, original_name, mime_type, size, uploader, created_at
+         FROM attachments WHERE comment_id IN (${ph})
+         ORDER BY id ASC`,
+      ...commentIds
+    );
+    for (const a of atts) {
+      if (!attsByComment.has(a.comment_id)) attsByComment.set(a.comment_id, []);
+      attsByComment.get(a.comment_id).push({
+        id: a.id,
+        originalName: a.original_name || a.filename,
+        mimeType: a.mime_type || '',
+        size: a.size || 0,
+        uploader: a.uploader || '',
+        url: '/uploads/' + a.filename,
+      });
+    }
+  }
+  return rows.map(r => ({
+    id: r.id, parentId: r.parent_id || null,
+    author: r.author_name_now || r.author,
+    init: r.author_init, bg: r.author_bg, col: r.author_col,
+    text: r.text,
+    attachments: attsByComment.get(r.id) || [],
+    // Raw UTC stamp — client formats this in the user's local time.
+    // `time` retained as a server-formatted fallback for any legacy caller.
+    createdAt: r.created_at,
+    time: timeAgo(r.created_at),
+  }));
+}
+
 app.get('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (req, res) => {
   try {
-    // Derive the live author name from users.name when author_user_id is set,
-    // so a profile rename retroactively updates how every comment appears.
-    const rows = await all(`
-      SELECT tc.*, u.name AS author_name_now
-        FROM ticket_comments tc
-        LEFT JOIN users u ON u.id = tc.author_user_id
-       WHERE tc.ticket_id=?
-       ORDER BY tc.created_at ASC`, req.params.id);
-    // Pull every attachment that's linked to a comment in this ticket, so
-    // the client can render them inline under their parent comment.
-    const commentIds = rows.map(r => r.id);
-    const attsByComment = new Map();
-    if (commentIds.length) {
-      const ph = commentIds.map(() => '?').join(',');
-      const atts = await all(
-        `SELECT id, comment_id, filename, original_name, mime_type, size, uploader, created_at
-           FROM attachments WHERE comment_id IN (${ph})
-           ORDER BY id ASC`,
-        ...commentIds
-      );
-      for (const a of atts) {
-        if (!attsByComment.has(a.comment_id)) attsByComment.set(a.comment_id, []);
-        attsByComment.get(a.comment_id).push({
-          id: a.id,
-          originalName: a.original_name || a.filename,
-          mimeType: a.mime_type || '',
-          size: a.size || 0,
-          uploader: a.uploader || '',
-          url: '/uploads/' + a.filename,
-        });
-      }
-    }
-    res.json(rows.map(r => ({
-      id:r.id, parentId: r.parent_id || null,
-      author: r.author_name_now || r.author,
-      init: r.author_init, bg: r.author_bg, col: r.author_col,
-      text: r.text,
-      attachments: attsByComment.get(r.id) || [],
-      // Raw UTC stamp — client formats this in the user's local time.
-      // `time` retained as a server-formatted fallback for any legacy
-      // caller, but the client prefers createdAt when present.
-      createdAt: r.created_at,
-      time: timeAgo(r.created_at),
-    })));
+    res.json(await fetchTicketComments(req.params.id));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3535,32 +3646,37 @@ async function buildSubtask(r) {
   };
 }
 
+// Shared by GET /subtasks and GET /bootstrap. Includes the one-time
+// migration that lifts legacy checklist_json items into real subtask rows.
+async function fetchTicketSubtasks(ticketId) {
+  let rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', ticketId);
+  if (!rows.length) {
+    const det = await get('SELECT checklist_json FROM ticket_details WHERE ticket_id=?', ticketId);
+    let legacy = [];
+    try { legacy = JSON.parse(det?.checklist_json || '[]'); } catch {}
+    if (Array.isArray(legacy) && legacy.length) {
+      const tk = await get('SELECT assignee FROM tickets WHERE id=?', ticketId);
+      let pos = 1;
+      for (const item of legacy) {
+        const text = typeof item === 'string' ? item : (item?.text || '');
+        const trimmed = String(text).trim();
+        if (!trimmed) continue;
+        await run(
+          'INSERT INTO ticket_subtasks (ticket_id, position, text, done, assignee) VALUES (?,?,?,?,?)',
+          ticketId, pos++, trimmed, item?.done ? 1 : 0, tk?.assignee || ''
+        );
+      }
+      // Clear the legacy field so this only runs once
+      await run('UPDATE ticket_details SET checklist_json=? WHERE ticket_id=?', '[]', ticketId);
+      rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', ticketId);
+    }
+  }
+  return Promise.all(rows.map(buildSubtask));
+}
+
 app.get('/api/tickets/:id/subtasks', requireAuth, requireTicketAccess, async (req, res) => {
   try {
-    let rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
-    // One-time migration: if no subtask rows yet, but legacy checklist_json on ticket_details has items, lift them in.
-    if (!rows.length) {
-      const det = await get('SELECT checklist_json FROM ticket_details WHERE ticket_id=?', req.params.id);
-      let legacy = [];
-      try { legacy = JSON.parse(det?.checklist_json || '[]'); } catch {}
-      if (Array.isArray(legacy) && legacy.length) {
-        const tk = await get('SELECT assignee FROM tickets WHERE id=?', req.params.id);
-        let pos = 1;
-        for (const item of legacy) {
-          const text = typeof item === 'string' ? item : (item?.text || '');
-          const trimmed = String(text).trim();
-          if (!trimmed) continue;
-          await run(
-            'INSERT INTO ticket_subtasks (ticket_id, position, text, done, assignee) VALUES (?,?,?,?,?)',
-            req.params.id, pos++, trimmed, item?.done ? 1 : 0, tk?.assignee || ''
-          );
-        }
-        // Clear the legacy field so this only runs once
-        await run('UPDATE ticket_details SET checklist_json=? WHERE ticket_id=?', '[]', req.params.id);
-        rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', req.params.id);
-      }
-    }
-    res.json(await Promise.all(rows.map(buildSubtask)));
+    res.json(await fetchTicketSubtasks(req.params.id));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
