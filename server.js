@@ -10413,7 +10413,9 @@ app.get('/tickets/:id', (req, res) => {
   </script>`;
   html = html.replace('<head>', '<head>' + inject);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  // no-cache (not no-store) — same reasoning as the SPA catch-all below:
+  // fresh on every real load, but back/forward cache stays usable.
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.send(html);
@@ -10442,12 +10444,13 @@ app.get('*', (req, res) => {
   </script>`;
   html = html.replace('<head>', '<head>' + inject);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  // Critical: never cache the SPA shell. Without this header browsers
-  // (especially mobile Safari + installed PWAs) hold onto an old copy
-  // and users don't see new code after a deploy until they manually
-  // clear site data. Static assets under /public are already no-cache
-  // via the express.static middleware.
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  // Keep the SPA shell fresh across deploys: no-cache forces the browser
+  // to revalidate before every real load, so users always get new code.
+  // Deliberately NOT no-store — no-store also disables the browser's
+  // back/forward cache, which made pressing Back from a ticket page do a
+  // full multi-second SPA reboot instead of an instant restore. Static
+  // assets under /public are already no-cache via express.static.
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.send(html);

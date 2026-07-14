@@ -6,6 +6,12 @@
 <title>Ticket · Work Management</title>
 <meta name="theme-color" content="#0f172a"/>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<!-- Non-blocking font load — system fallbacks render immediately, Inter
+     swaps in when (and only when) the CDN responds. -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet" media="print" onload="this.media='all'"/>
 <link rel="stylesheet" href="/ticket-detail.css"/>
 <link rel="stylesheet" href="/ui-dialog.css"/>
 <script src="/ui-dialog.js"></script>
@@ -16,7 +22,9 @@
   <!-- ── Compact header ─────────────────────────────────────── -->
   <div class="td-head" id="td-head">
     <div class="td-head-r1">
-      <button class="td-back" id="td-back" title="Back to tickets" aria-label="Back to tickets">‹</button>
+      <button class="td-back" id="td-back" title="Back to the tickets list" aria-label="Back to all tickets">
+        <span class="td-back-arrow">‹</span><span class="td-back-label">All tickets</span>
+      </button>
       <span class="td-tid" id="td-tid">#TKT-…</span>
       <button class="td-copy" id="td-copy" title="Copy ticket ID" aria-label="Copy ticket ID">⧉</button>
       <h1 class="td-ttl" id="td-title" title="Click to rename">Loading…</h1>

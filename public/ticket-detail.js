@@ -411,25 +411,55 @@ function worktrackLinkFor(ticketId) {
 /* ══════════════════════════════════════════════════════════════
    BOOT
    ══════════════════════════════════════════════════════════════ */
+/* sessionStorage-cached GET for slow-changing lists (team, departments).
+   Serves the cached copy instantly and refreshes it in the background so
+   repeat ticket opens don't pay the round-trip. */
+async function cachedGet(key, path, ttlMs, onRefresh) {
+  let cached = null;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Date.now() - parsed.at < (ttlMs || 300000)) cached = parsed.data;
+    }
+  } catch {}
+  const refresh = apiGet(path).then(data => {
+    try { sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), data })); } catch {}
+    if (cached && onRefresh) onRefresh(data);
+    return data;
+  });
+  if (cached !== null) { refresh.catch(() => {}); return cached; }
+  return refresh;
+}
+
 async function boot() {
   if (!TICKET_ID) {
     $('td-boot').innerHTML = 'No ticket id in the URL. <a href="/">Back to the app</a>';
     return;
   }
-  try {
-    ME = await apiGet('/api/auth/me');
-  } catch { return; /* api() already redirected to /login.html on 401 */ }
 
-  try {
-    const [team, depts, ticket] = await Promise.all([
-      apiGet('/api/team').catch(() => []),
-      apiGet('/api/departments').catch(() => ['Engineering', 'Design', 'Support', 'Operations']),
-      apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID)),
-    ]);
-    TEAM = Array.isArray(team) ? team : [];
-    DEPARTMENTS = Array.isArray(depts) && depts.length ? depts : ['Engineering', 'Design', 'Support', 'Operations'];
-    T = ticket;
-  } catch (e) {
+  // Fire EVERYTHING in parallel on the first tick — none of these depend on
+  // each other's responses, only on the ticket id from the URL. The content
+  // loaders render as they land; the guards inside each renderer keep them
+  // safe if they resolve before the ticket itself does.
+  const pMe = apiGet('/api/auth/me');            // 401 → api() redirects to /login.html
+  const pTicket = apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID));
+  const pTeam = cachedGet('td-team', '/api/team', 300000, (fresh) => {
+    TEAM = Array.isArray(fresh) ? fresh : TEAM;
+  }).catch(() => []);
+  const pDepts = cachedGet('td-depts', '/api/departments', 600000).catch(() => null);
+  loadComments();
+  loadTimeline();
+  loadDescription();
+  loadSubtasks();
+  loadAttachments();
+  loadMyReminders();
+  // Mark viewed immediately so we capture the previous last-viewed stamp
+  // for the "new since your last visit" divider (server returns it).
+  markViewed();
+
+  try { ME = await pMe; } catch { return; }
+  try { T = await pTicket; } catch (e) {
     $('td-boot').innerHTML = `Couldn't open <b>${esc(TICKET_ID)}</b> — ${esc(e.message)}.<br><br><a href="/">Back to the app</a>`;
     return;
   }
@@ -444,33 +474,40 @@ async function boot() {
   restoreAccordions();
   restoreSideWidth();
 
-  // Mark viewed FIRST so we capture the previous last-viewed stamp for the
-  // "new since your last visit" divider (server returns it), before any
-  // other client would re-stamp it.
-  markViewed();
-
-  // Parallel loads — each renders as it lands.
-  loadComments();
-  loadTimeline();
-  loadDescription();
-  loadSubtasks();
-  loadAttachments();
-  loadMyReminders();
+  // Anything that arrived before the ticket did was skipped by its render
+  // guard — paint it all now.
+  renderConvo();
+  renderSubtasks();
+  renderAttachments();
+  renderMyReminders();
+  renderTimelineAcc();
   if (T.isProject) loadChildren();
 
   wireHeader();
   wireComposer();
   wireSidebar();
+
+  // Team / departments are only needed for avatars and pickers — patch them
+  // in when they land (usually from sessionStorage, i.e. instantly).
+  Promise.resolve(pTeam).then(team => {
+    TEAM = Array.isArray(team) ? team : [];
+    if (!T) return;
+    renderHeader(); renderDetails(); renderSubtasks();
+    if (commentsState === 'loaded') renderConvo();
+  });
+  Promise.resolve(pDepts).then(depts => {
+    if (Array.isArray(depts) && depts.length) DEPARTMENTS = depts;
+  });
 }
 
 async function markViewed() {
   try {
-    const r = await apiPost('/api/tickets/' + encodeURIComponent(T.id) + '/mark-viewed', {});
+    const r = await apiPost('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/mark-viewed', {});
     if (r && r.previousViewedAt !== undefined) prevViewedAt = r.previousViewedAt;
   } catch {}
   // Local fallback for older server responses (no previousViewedAt field).
   if (prevViewedAt === null) {
-    const k = 'td-lastseen-' + (ME ? ME.id : 0) + '-' + T.id;
+    const k = 'td-lastseen-' + (ME ? ME.id : 0) + '-' + TICKET_ID;
     prevViewedAt = localStorage.getItem(k) || null;
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
     try { localStorage.setItem(k, now); } catch {}
@@ -536,12 +573,19 @@ function applyClosedState() {
 
 function wireHeader() {
   $('td-back').addEventListener('click', () => {
+    // Always land on the tickets list. When the user CAME from the list,
+    // prefer history.back() — the browser restores it from the back/forward
+    // cache instantly, with scroll position and filters intact. Any other
+    // entry point (dashboard, notification email, direct link) navigates
+    // to /tickets directly so the button does exactly what it says.
     try {
-      if (document.referrer && new URL(document.referrer).origin === location.origin && history.length > 1) {
-        history.back(); return;
+      const ref = document.referrer ? new URL(document.referrer) : null;
+      if (ref && ref.origin === location.origin && /^\/tickets\/?$/.test(ref.pathname) && history.length > 1) {
+        history.back();
+        return;
       }
     } catch {}
-    location.href = '/';
+    location.href = '/tickets';
   });
 
   $('td-copy').addEventListener('click', async () => {
@@ -1330,7 +1374,7 @@ async function loadDescription() {
   renderDescription();
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
-      const det = await apiGet('/api/tickets/' + encodeURIComponent(T.id) + '/details');
+      const det = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/details');
       DETAILS.description = (det && det.description) || '';
       DETAILS.checklist = (det && det.checklist) || [];
       descState = 'loaded';
@@ -1386,7 +1430,7 @@ $('desc-save').addEventListener('click', async () => {
 async function loadComments(retries) {
   if (typeof retries !== 'number') retries = 2;
   try {
-    const cmts = await apiGet('/api/tickets/' + encodeURIComponent(T.id) + '/comments');
+    const cmts = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/comments');
     COMMENTS = Array.isArray(cmts) ? cmts : [];
     commentsState = 'loaded';
     renderConvo();
@@ -1398,13 +1442,13 @@ async function loadComments(retries) {
 }
 async function loadTimeline() {
   try {
-    const rows = await apiGet('/api/tickets/' + encodeURIComponent(T.id) + '/timeline');
+    const rows = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/timeline');
     // Server returns newest-first; keep oldest-first for the conversation.
     TIMELINE = (Array.isArray(rows) ? rows : []).slice().reverse();
   } catch { TIMELINE = []; }
   // Derive the "Reopened" chip from the audit log so it survives page
   // refreshes (there's no reopened column — the log is the source of truth).
-  if (!T.reopened && T.status !== 'Closed' && TIMELINE.some(a => / reopened the ticket/.test(a.text || ''))) {
+  if (T && !T.reopened && T.status !== 'Closed' && TIMELINE.some(a => / reopened the ticket/.test(a.text || ''))) {
     T.reopened = true;
     renderHeader();
   }
@@ -1433,6 +1477,7 @@ function filterCounts() {
 }
 
 function renderConvo() {
+  if (!T) return; // ticket still loading — boot() repaints when it lands
   const el = $('td-convo');
   $('cmt-count').textContent = COMMENTS.length;
   const counts = filterCounts();
@@ -1964,11 +2009,12 @@ function wireMentionTypeahead(ta) {
    SUBTASKS
    ══════════════════════════════════════════════════════════════ */
 async function loadSubtasks() {
-  try { SUBTASKS = await apiGet('/api/tickets/' + encodeURIComponent(T.id) + '/subtasks'); }
+  try { SUBTASKS = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/subtasks'); }
   catch { SUBTASKS = []; }
   renderSubtasks();
 }
 function renderSubtasks() {
+  if (!T) return; // ticket still loading — boot() repaints when it lands
   const done = SUBTASKS.filter(s => s.done).length;
   const total = SUBTASKS.length;
   $('sub-count').textContent = total ? `${done}/${total}` : '0';
@@ -2204,7 +2250,7 @@ $('sub-add-btn').addEventListener('click', async () => {
    ATTACHMENTS (canonical ticket-wide list)
    ══════════════════════════════════════════════════════════════ */
 async function loadAttachments() {
-  try { ATTS = await apiGet('/api/tickets/' + encodeURIComponent(T.id) + '/attachments'); }
+  try { ATTS = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/attachments'); }
   catch { ATTS = []; }
   renderAttachments();
 }
@@ -2270,7 +2316,7 @@ $('att-upload-input').addEventListener('change', async function () {
    MY REMINDERS (private, per-ticket)
    ══════════════════════════════════════════════════════════════ */
 async function loadMyReminders() {
-  try { MYREMS = await apiGet('/api/my-reminders?filter=all&ticketId=' + encodeURIComponent(T.id)); }
+  try { MYREMS = await apiGet('/api/my-reminders?filter=all&ticketId=' + encodeURIComponent(TICKET_ID)); }
   catch { MYREMS = []; }
   renderMyReminders();
 }
