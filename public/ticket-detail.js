@@ -438,10 +438,47 @@ async function boot() {
     return;
   }
 
-  // Fire EVERYTHING in parallel on the first tick — none of these depend on
-  // each other's responses, only on the ticket id from the URL. The content
-  // loaders render as they land; the guards inside each renderer keep them
-  // safe if they resolve before the ticket itself does.
+  // One request carries the entire page: ticket + comments + timeline +
+  // description + subtasks + attachments + reminders + team + departments +
+  // identity + previous-visit stamp. On slow hosting each request pays its
+  // own session lookup + access check, so collapsing ~11 calls into one is
+  // the difference between "loads in one round-trip" and "crawls".
+  let b = null;
+  try {
+    b = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/bootstrap');
+  } catch (e) {
+    // 401 already redirected inside api(). A 404 means no access/deleted.
+    if (String(e.message || '').toLowerCase().includes('not found')) {
+      $('td-boot').innerHTML = `Couldn't open <b>${esc(TICKET_ID)}</b> — ${esc(e.message)}.<br><br><a href="/">Back to the app</a>`;
+      return;
+    }
+    b = null; // any other failure → fall back to individual endpoints below
+  }
+
+  if (b && b.ticket) {
+    ME = b.me;
+    T = b.ticket;
+    TEAM = Array.isArray(b.team) ? b.team : [];
+    if (Array.isArray(b.departments) && b.departments.length) DEPARTMENTS = b.departments;
+    COMMENTS = Array.isArray(b.comments) ? b.comments : [];
+    commentsState = 'loaded';
+    // Server returns the timeline newest-first; the conversation wants
+    // oldest-first (same as loadTimeline()).
+    TIMELINE = (Array.isArray(b.timeline) ? b.timeline : []).slice().reverse();
+    DETAILS = b.details || { description: '', checklist: [] };
+    descState = 'loaded';
+    SUBTASKS = Array.isArray(b.subtasks) ? b.subtasks : [];
+    ATTS = Array.isArray(b.attachments) ? b.attachments : [];
+    MYREMS = Array.isArray(b.myReminders) ? b.myReminders : [];
+    prevViewedAt = b.previousViewedAt || null;
+    if (T && !T.reopened && T.status !== 'Closed' && TIMELINE.some(a => / reopened the ticket/.test(a.text || ''))) {
+      T.reopened = true;
+    }
+    finishBoot();
+    return;
+  }
+
+  // ── Fallback: the parallel individual endpoints (older server build). ──
   const pMe = apiGet('/api/auth/me');            // 401 → api() redirects to /login.html
   const pTicket = apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID));
   const pTeam = cachedGet('td-team', '/api/team', 300000, (fresh) => {
@@ -454,8 +491,6 @@ async function boot() {
   loadSubtasks();
   loadAttachments();
   loadMyReminders();
-  // Mark viewed immediately so we capture the previous last-viewed stamp
-  // for the "new since your last visit" divider (server returns it).
   markViewed();
 
   try { ME = await pMe; } catch { return; }
@@ -463,7 +498,20 @@ async function boot() {
     $('td-boot').innerHTML = `Couldn't open <b>${esc(TICKET_ID)}</b> — ${esc(e.message)}.<br><br><a href="/">Back to the app</a>`;
     return;
   }
+  finishBoot();
 
+  Promise.resolve(pTeam).then(team => {
+    TEAM = Array.isArray(team) ? team : [];
+    if (!T) return;
+    renderHeader(); renderDetails(); renderSubtasks();
+    if (commentsState === 'loaded') renderConvo();
+  });
+  Promise.resolve(pDepts).then(depts => {
+    if (Array.isArray(depts) && depts.length) DEPARTMENTS = depts;
+  });
+}
+
+function finishBoot() {
   document.title = T.id + ' · ' + (T.title || 'Ticket');
   $('td-boot').style.display = 'none';
   $('td-app').style.display = '';
@@ -474,8 +522,6 @@ async function boot() {
   restoreAccordions();
   restoreSideWidth();
 
-  // Anything that arrived before the ticket did was skipped by its render
-  // guard — paint it all now.
   renderConvo();
   renderSubtasks();
   renderAttachments();
@@ -486,18 +532,6 @@ async function boot() {
   wireHeader();
   wireComposer();
   wireSidebar();
-
-  // Team / departments are only needed for avatars and pickers — patch them
-  // in when they land (usually from sessionStorage, i.e. instantly).
-  Promise.resolve(pTeam).then(team => {
-    TEAM = Array.isArray(team) ? team : [];
-    if (!T) return;
-    renderHeader(); renderDetails(); renderSubtasks();
-    if (commentsState === 'loaded') renderConvo();
-  });
-  Promise.resolve(pDepts).then(depts => {
-    if (Array.isArray(depts) && depts.length) DEPARTMENTS = depts;
-  });
 }
 
 async function markViewed() {
