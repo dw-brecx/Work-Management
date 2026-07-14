@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Ticket · Work Management</title>
+<meta name="theme-color" content="#0f172a"/>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+<link rel="stylesheet" href="/ticket-detail.css"/>
+<link rel="stylesheet" href="/ui-dialog.css"/>
+<script src="/ui-dialog.js"></script>
+</head>
+<body>
+<div id="td-app" style="display:none">
+
+  <!-- ── Compact header ─────────────────────────────────────── -->
+  <div class="td-head" id="td-head">
+    <div class="td-head-r1">
+      <button class="td-back" id="td-back" title="Back to tickets" aria-label="Back to tickets">‹</button>
+      <span class="td-tid" id="td-tid">#TKT-…</span>
+      <button class="td-copy" id="td-copy" title="Copy ticket ID" aria-label="Copy ticket ID">⧉</button>
+      <h1 class="td-ttl" id="td-title" title="Click to rename">Loading…</h1>
+      <button class="td-status-pill" id="td-status-pill" title="Change status">
+        <span class="dot"></span><span id="td-status-label">…</span><span class="car">▾</span>
+      </button>
+      <div class="td-actions">
+        <button class="td-act primary" id="td-assign-btn">
+          <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m22 11-3 3-2-2"/></svg>
+          Assign
+        </button>
+        <button class="td-act" id="td-more-btn">⋯ More</button>
+      </div>
+    </div>
+    <div class="td-head-r2" id="td-chips"></div>
+  </div>
+
+  <!-- Project banner slot -->
+  <div id="td-project-banner" style="display:none"></div>
+
+  <!-- ── Body: conversation + sidebar ───────────────────────── -->
+  <div class="td-body">
+
+    <!-- Conversation stage -->
+    <div class="td-stage">
+      <div class="td-stage-head">
+        <h2 class="td-stage-title">Conversation <span class="cnt" id="cmt-count">0</span></h2>
+        <div class="td-filters" role="tablist">
+          <button class="filt on" data-filt="all" role="tab">All</button>
+          <button class="filt" data-filt="mentions" role="tab">@ Mentions <span class="fcnt" id="filt-mentions-n"></span></button>
+          <button class="filt" data-filt="files" role="tab">Files <span class="fcnt" id="filt-files-n"></span></button>
+        </div>
+        <label class="td-acttoggle" title="Show status changes and assignments inside the conversation">
+          <input type="checkbox" id="convo-activity-toggle" checked/>
+          <span class="sw" aria-hidden="true"></span> show activity
+        </label>
+      </div>
+
+      <div class="td-convo" id="td-convo">
+        <div class="td-convo-loading">Loading conversation…</div>
+      </div>
+
+      <button class="td-jump" id="td-jump" style="display:none">↓ Jump to latest</button>
+
+      <!-- Composer -->
+      <div class="td-compwrap" id="td-compwrap">
+        <div class="td-composer">
+          <textarea id="composer-text" placeholder="Write a comment… use @ to mention a teammate" rows="3"></textarea>
+          <div class="mention-dd" id="mention-dd" role="listbox" style="display:none"></div>
+          <div class="pv-row" id="pv-row"></div>
+          <div class="comp-tools">
+            <label class="tool" title="Attach files">
+              <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+              Attach
+              <input type="file" id="comp-file-input" multiple style="display:none"
+                     accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip"/>
+            </label>
+            <button class="tool" id="comp-voice-btn" title="Record a voice note">
+              <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+              Voice
+            </button>
+            <button class="tool" id="comp-screen-btn" title="Record your screen (up to 10 min)" style="display:none">
+              <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              Screen
+            </button>
+            <span class="rec-timer" id="comp-rec-timer" style="display:none">0:00</span>
+            <button class="send" id="comp-send">Comment</button>
+          </div>
+        </div>
+        <div class="comp-hint">
+          <span>paste an image with <span class="kbd">Ctrl+V</span></span>
+          <span>drag &amp; drop files onto the composer</span>
+          <span><span class="kbd">Ctrl+Enter</span> to send</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="td-side" id="td-side">
+      <div class="td-side-resizer" id="td-side-resizer" title="Drag to resize" aria-hidden="true"></div>
+
+      <div class="acc open" id="acc-details">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">Details</h3>
+          <span class="acc-car">▾</span>
+          <button class="pencil" id="details-edit-btn" title="Edit all fields">✎</button>
+        </div>
+        <div class="acc-body" id="details-body"></div>
+      </div>
+
+      <div class="acc open" id="acc-desc">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">Description</h3>
+          <span class="acc-car">▾</span>
+          <button class="pencil" id="desc-edit-btn" title="Edit description">✎</button>
+        </div>
+        <div class="acc-body">
+          <div class="td-desc" id="desc-view">Loading…</div>
+          <div id="desc-edit" style="display:none">
+            <textarea id="desc-textarea" rows="7"></textarea>
+            <div class="row-end">
+              <button class="btn-sec" id="desc-cancel">Cancel</button>
+              <button class="btn-pri" id="desc-save">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="acc open" id="acc-subtasks">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">Subtasks</h3><span class="cnt" id="sub-count">0</span>
+          <span class="acc-car">▾</span>
+        </div>
+        <div class="acc-body">
+          <div class="prog-row" id="sub-prog-row" style="display:none">
+            <div class="prog-bar"><i id="sub-prog-fill"></i></div>
+            <span class="prog-num" id="sub-prog-num"></span>
+          </div>
+          <div id="subtask-list"></div>
+          <button class="ghost-btn" id="sub-add-btn">+ Add subtask</button>
+        </div>
+      </div>
+
+      <div class="acc" id="acc-atts">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">Attachments</h3><span class="cnt" id="att-count">0</span>
+          <span class="acc-car">▾</span>
+        </div>
+        <div class="acc-body">
+          <div id="att-list"></div>
+          <label class="ghost-btn" style="display:block;cursor:pointer">+ Upload file
+            <input type="file" id="att-upload-input" multiple style="display:none"/>
+          </label>
+        </div>
+      </div>
+
+      <div class="acc" id="acc-activity">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">Activity</h3><span class="cnt" id="tl-count">0</span>
+          <span class="acc-car">▾</span>
+        </div>
+        <div class="acc-body">
+          <div class="tl" id="tl-list"></div>
+        </div>
+      </div>
+
+      <div class="acc" id="acc-rem">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">My reminders</h3><span class="cnt" id="rem-count">0</span>
+          <span class="priv">🔒 only you</span>
+          <span class="acc-car">▾</span>
+        </div>
+        <div class="acc-body">
+          <div id="rem-list"></div>
+          <button class="ghost-btn" id="rem-add-btn">+ Add reminder</button>
+        </div>
+      </div>
+
+      <!-- Sub-tickets (projects only) -->
+      <div class="acc open" id="acc-children" style="display:none">
+        <div class="acc-head" data-acc>
+          <h3 class="acc-title">Sub-tickets</h3><span class="cnt" id="child-count">0</span>
+          <span class="acc-car">▾</span>
+        </div>
+        <div class="acc-body">
+          <div id="child-list"></div>
+          <button class="ghost-btn" id="child-add-btn">+ Add sub-ticket</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Boot / error state -->
+<div id="td-boot" class="td-boot">Loading ticket…</div>
+
+<!-- ── Modals ─────────────────────────────────────────────────── -->
+<div class="md-overlay" id="md-snooze">
+  <div class="md-card">
+    <div class="md-title">Snooze this ticket</div>
+    <p class="md-p">Park it for up to 6 days. It leaves the main list and comes back automatically at the time you pick (the requester keeps seeing it with a "Snoozed" pill).</p>
+    <div class="md-presets" id="snooze-presets"></div>
+    <label class="md-label">Wake up at</label>
+    <input type="datetime-local" id="snooze-until"/>
+    <div class="md-err" id="snooze-err" style="display:none"></div>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-snooze">Cancel</button>
+      <button class="btn-pri" id="snooze-go">Snooze</button>
+    </div>
+  </div>
+</div>
+
+<div class="md-overlay" id="md-close">
+  <div class="md-card">
+    <div class="md-title">Close this ticket?</div>
+    <p class="md-p">Optionally note how it was resolved — the reason shows in the header and the activity log.</p>
+    <label class="md-label">Reason (optional)</label>
+    <input type="text" id="close-reason" placeholder="e.g. fixed in v2.4.1, duplicate of TKT-1200…" maxlength="300"/>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-close">Cancel</button>
+      <button class="btn-pri danger" id="close-go">Close ticket</button>
+    </div>
+  </div>
+</div>
+
+<div class="md-overlay" id="md-remind">
+  <div class="md-card">
+    <div class="md-title">Remind me about this ticket</div>
+    <p class="md-p">We'll email you at the date and time you pick. Reminders are personal — only you get them.</p>
+    <label class="md-label">When</label>
+    <input type="datetime-local" id="tkrem-when"/>
+    <label class="md-label">Note (optional, goes in the email)</label>
+    <input type="text" id="tkrem-note" placeholder="e.g. chase QA sign-off" maxlength="500"/>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-remind">Done</button>
+      <button class="btn-pri" id="tkrem-add">Add reminder</button>
+    </div>
+    <div class="md-sub">Scheduled</div>
+    <div id="tkrem-list" class="md-list"></div>
+  </div>
+</div>
+
+<div class="md-overlay" id="md-event">
+  <div class="md-card">
+    <div class="md-title">Schedule a calendar event</div>
+    <p class="md-p">Creates an event on the shared calendar, linked to this ticket. Meeting invites email every attendee.</p>
+    <label class="md-label">Title</label>
+    <input type="text" id="ev-title"/>
+    <div class="md-grid2">
+      <div><label class="md-label">Type</label>
+        <select id="ev-type"><option value="meeting">Meeting</option><option value="task">Task</option><option value="deadline">Deadline</option></select></div>
+      <div><label class="md-label">Date</label><input type="date" id="ev-date"/></div>
+      <div><label class="md-label">Start</label><input type="time" id="ev-start"/></div>
+      <div><label class="md-label">End</label><input type="time" id="ev-end"/></div>
+    </div>
+    <label class="md-label">Attendees</label>
+    <div class="ev-att-picker" id="ev-att-picker"></div>
+    <label class="md-label">Location (optional)</label>
+    <input type="text" id="ev-location" placeholder="Meet link, room…"/>
+    <label class="md-label">Notes (optional)</label>
+    <input type="text" id="ev-desc"/>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-event">Cancel</button>
+      <button class="btn-pri" id="ev-go">Create event</button>
+    </div>
+  </div>
+</div>
+
+<div class="md-overlay" id="md-worktrack">
+  <div class="md-card">
+    <div class="md-title">Send to WorkTrack</div>
+    <div class="md-p" id="swt-info"></div>
+    <label class="md-label">Worker</label>
+    <select id="swt-worker"></select>
+    <label class="md-label">Time estimate (optional)</label>
+    <input type="text" id="swt-estimate" placeholder="e.g. 2h, 1 day"/>
+    <label class="md-label">Instructions (optional)</label>
+    <input type="text" id="swt-notes"/>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-worktrack">Cancel</button>
+      <button class="btn-pri" id="swt-go">Send</button>
+    </div>
+  </div>
+</div>
+
+<div class="md-overlay" id="md-myrem">
+  <div class="md-card">
+    <div class="md-title" id="myrem-title">New reminder</div>
+    <label class="md-label">Title</label>
+    <input type="text" id="myrem-t" maxlength="200"/>
+    <label class="md-label">When</label>
+    <input type="datetime-local" id="myrem-when"/>
+    <label class="md-label">Notes (optional)</label>
+    <input type="text" id="myrem-desc" maxlength="1000"/>
+    <div class="md-checks">
+      <label><input type="checkbox" id="myrem-email" checked/> 📧 Email me</label>
+      <label><input type="checkbox" id="myrem-repeat"/> 🔁 Repeat daily until done</label>
+      <label><input type="checkbox" id="myrem-inapp"/> 📺 Show in daily in-app popup</label>
+    </div>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-myrem">Cancel</button>
+      <button class="btn-pri" id="myrem-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="md-overlay" id="md-subticket">
+  <div class="md-card">
+    <div class="md-title">New sub-ticket</div>
+    <label class="md-label">Title</label>
+    <input type="text" id="sk-title"/>
+    <div class="md-grid2">
+      <div><label class="md-label">Priority</label>
+        <select id="sk-priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
+      <div><label class="md-label">Due date</label><input type="date" id="sk-due"/></div>
+    </div>
+    <label class="md-label">Assignee (optional)</label>
+    <select id="sk-assignee"><option value="">— unassigned —</option></select>
+    <div class="row-end">
+      <button class="btn-sec" data-close="md-subticket">Cancel</button>
+      <button class="btn-pri" id="sk-go">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Attachment lightbox -->
+<div class="lb-overlay" id="lb-overlay">
+  <div class="lb-top">
+    <span class="lb-title" id="lb-title"></span>
+    <a class="lb-dl" id="lb-dl" download>⬇ Download</a>
+    <button class="lb-x" id="lb-x" aria-label="Close preview">✕</button>
+  </div>
+  <div class="lb-body" id="lb-body"></div>
+</div>
+
+<script src="/ticket-detail.js" defer></script>
+</body>
+</html>

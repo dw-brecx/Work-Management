@@ -1078,9 +1078,16 @@ app.get('/api/tickets', requireAuth, async (req, res) => {
 
 // Mark a ticket as viewed by the current user. Upserts ticket_views
 // with the current UTC timestamp. Idempotent and cheap — called every
-// time the user opens a ticket detail page.
+// time the user opens a ticket detail page. Returns the PREVIOUS
+// last-viewed stamp (null on first visit) so the detail page can draw
+// its "new since your last visit" divider from server truth instead of
+// a per-device localStorage guess.
 app.post('/api/tickets/:id/mark-viewed', requireAuth, requireTicketAccess, async (req, res) => {
   try {
+    const prev = await get(
+      'SELECT last_viewed_at FROM ticket_views WHERE user_id=? AND ticket_id=?',
+      req.session.userId, req.params.id
+    );
     await run(
       `INSERT INTO ticket_views (user_id, ticket_id, last_viewed_at)
        VALUES (?, ?, TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
@@ -1088,7 +1095,7 @@ app.post('/api/tickets/:id/mark-viewed', requireAuth, requireTicketAccess, async
        DO UPDATE SET last_viewed_at = EXCLUDED.last_viewed_at`,
       req.session.userId, req.params.id
     );
-    res.json({ ok: true });
+    res.json({ ok: true, previousViewedAt: prev ? prev.last_viewed_at : null });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -10392,6 +10399,26 @@ app.delete('/api/marketing/posts/:id', requireAdmin, async (req, res) => {
 // Registered last, after every API route, so it doesn't intercept genuine
 // /api/* GETs (which previously returned a fake 404 because this handler ran
 // before the bridge + chat routes had a chance to match).
+// Ticket deep links open the standalone conversation-first detail page
+// (public/ticket-detail.html) instead of the SPA shell. Same env-var
+// injection as the catch-all so the page can build Syruvia flavor links.
+app.get('/tickets/:id', (req, res) => {
+  const pagePath = path.join(__dirname, 'public', 'ticket-detail.html');
+  let html;
+  try { html = fs.readFileSync(pagePath, 'utf8'); }
+  catch { return res.status(404).send('Not found'); }
+  const inject = `<script>
+    window.__SYRUVIA_URL__       = ${JSON.stringify(process.env.SYRUVIA_URL      || '')};
+    window.__CROSS_APP_SECRET__  = ${JSON.stringify(process.env.CROSS_APP_SECRET || '')};
+  </script>`;
+  html = html.replace('<head>', '<head>' + inject);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.send(html);
+});
+
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error:'Not found' });
   // Don't fall through to the SPA HTML for missing /uploads paths — that

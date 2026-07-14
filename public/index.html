@@ -9215,6 +9215,15 @@ const TICKET_TIMELINES = {
 let currentTicketId = null;
 
 function openTicketDetail(id) {
+  // Ticket detail moved to the standalone conversation-first page
+  // (public/ticket-detail.html, served at /tickets/:id). Redirect there;
+  // everything below is the legacy in-SPA renderer, kept for the wrappers
+  // that patch this function but unreachable after the redirect.
+  const targetId = id || (TICKETS_DATA[0] && TICKETS_DATA[0].id);
+  if (targetId) {
+    window.location.href = '/tickets/' + encodeURIComponent(targetId);
+    return;
+  }
   const t = TICKETS_DATA.find(x => x.id === id) || TICKETS_DATA[0];
   currentTicketId = t.id;
   // Mirror the id into window.currentDetailTicketId so the comment-fetch
@@ -19754,8 +19763,8 @@ function openTicketDetailById(id) {
   const t = (typeof TICKETS_DATA !== 'undefined') ? TICKETS_DATA.find(x => x.id === id) : null;
   if (t && typeof openTicketDetail === 'function') { openTicketDetail(id); return; }
   // If the ticket isn't in our local cache (shouldn't happen — the user has
-  // access since they linked it), fall back to navigating to the URL.
-  try { history.pushState({}, '', '/tickets/' + encodeURIComponent(id)); window.dispatchEvent(new PopStateEvent('popstate')); } catch {}
+  // access since they linked it), hard-navigate to the standalone detail page.
+  window.location.href = '/tickets/' + encodeURIComponent(id);
 }
 
 // ── Workspace docs (Notion-style document store) ───────────────────────────
