@@ -9340,6 +9340,12 @@ function openTicketDetail(id) {
   // that patch this function but unreachable after the redirect.
   const targetId = id || (TICKETS_DATA[0] && TICKETS_DATA[0].id);
   if (targetId) {
+    // Flag for the wrapper chain: location.href only STARTS the navigation —
+    // the wrappers around this function keep executing and used to fire the
+    // full legacy fetch set (description + comments + attachments, each with
+    // retries) into the void while the browser was already leaving the page.
+    // That doubled the server load of every ticket open for nothing.
+    window.__tdRedirecting = true;
     window.location.href = '/tickets/' + encodeURIComponent(targetId);
     return;
   }
@@ -17880,6 +17886,10 @@ function watchTicketDetailPanel() {
         if (attPanel) attPanel.innerHTML = '<div style="text-align:center;padding:18px;color:var(--text3);font-size:11.5px">Loading attachments…</div>';
       } catch {}
       const r = _orig.call(this, id, ...args);
+      // openTicketDetail redirects to the standalone detail page — skip all
+      // the legacy panel fetches below (they'd fire while the browser is
+      // already navigating away, doubling server load per ticket open).
+      if (window.__tdRedirecting) return r;
       // Project-aware additions: banner up top (Convert / Disconnect /
       // Sub-ticket parent link) and the Sub-tickets section underneath.
       try { if (typeof renderTicketDetailProjectBanner === 'function') renderTicketDetailProjectBanner(id); } catch {}
