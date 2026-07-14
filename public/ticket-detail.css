@@ -91,11 +91,17 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,input:focus-visibl
 }
 .td-head-r1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .td-back{
-  width:28px;height:28px;border-radius:9px;border:1px solid var(--border);
+  height:28px;border-radius:9px;border:1px solid var(--border);
   background:var(--bg2);color:var(--text2);cursor:pointer;flex-shrink:0;
-  display:inline-flex;align-items:center;justify-content:center;font-size:15px;line-height:1;
+  display:inline-flex;align-items:center;gap:6px;padding:0 11px 0 8px;
+  font-size:11.5px;font-weight:700;white-space:nowrap;
 }
-.td-back:hover{border-color:var(--border2);color:var(--text)}
+.td-back:hover{border-color:var(--border2);color:var(--accent2)}
+.td-back-arrow{font-size:15px;line-height:1}
+@media(max-width:560px){
+  .td-back{width:28px;padding:0;justify-content:center}
+  .td-back-label{display:none}
+}
 .td-tid{
   font-size:10.5px;font-weight:800;letter-spacing:.05em;color:var(--accent2);
   background:var(--chip-open-bg);padding:3px 8px;border-radius:7px;white-space:nowrap;

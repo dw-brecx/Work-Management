@@ -1981,7 +1981,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
 
   <!-- Modern light redesign -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Async font load: media="print" makes the stylesheet non-render-blocking;
+       onload flips it live once it arrives. Previously this was a normal
+       blocking <link>, so when fonts.googleapis.com was slow or unreachable
+       the WHOLE app sat on a blank screen until the request timed out
+       (10+ seconds) — on every single page load. System-font fallbacks in
+       the CSS cover the gap until Inter arrives. -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"></noscript>
   <style id="wn-redesign">
     /* ── Global: Inter font + forced light mode ── */
     *, body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
@@ -21878,24 +21887,14 @@ window.refreshPageData = refreshPageData;
     const orig = window.openTicketDetail;
     if (typeof orig !== 'function' || orig._urlPatched) return;
     const patched = function(id, ...rest) {
-      const r = orig.apply(this, [id, ...rest]);
-      if (id) {
-        pushUrl('ticket-detail', { ticketId: id });
-        // Pull the latest copy of this ticket from the server so the detail
-        // view always reflects current state — useful when arriving via a
-        // direct URL or after another user edited it.
-        apiGet('/api/tickets/' + encodeURIComponent(id)).then(t => {
-          if (!t || t.error) return;
-          const i = TICKETS_DATA.findIndex(x => x.id === t.id);
-          if (i >= 0) TICKETS_DATA[i] = t;
-          else TICKETS_DATA.unshift(t);
-          if (typeof currentTicketId !== 'undefined' && currentTicketId === t.id
-              && typeof renderTicketDetail === 'function') {
-            renderTicketDetail();
-          }
-        }).catch(() => {});
-      }
-      return r;
+      // openTicketDetail now hard-navigates to the standalone detail page
+      // (/tickets/:id). Do NOT pushState here: pushing the target URL and
+      // then location.href-ing to the same URL left a phantom SPA history
+      // entry, so the browser Back button bounced users straight back into
+      // the ticket instead of returning to the list. The refetch that used
+      // to run here is dead weight too — the standalone page loads its own
+      // fresh copy.
+      return orig.apply(this, [id, ...rest]);
     };
     patched._urlPatched = true;
     patched._original = orig;
