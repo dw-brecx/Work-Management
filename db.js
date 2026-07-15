@@ -11,7 +11,14 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://localhost/syruvia',
   ssl: isLocal ? false : { rejectUnauthorized: false },
   max: 10,
-  idleTimeoutMillis: 30000,
+  // Keep pooled connections around for 10 minutes instead of 30 seconds.
+  // The server is a long-lived process; with a 30s idle timeout every
+  // request after a short quiet spell paid a fresh TLS connection setup
+  // to the hosted Postgres (easily 100-500ms — and the first page hit
+  // opens several connections at once). TCP keepalive stops the hosting
+  // provider's idle reaper from silently killing them in between.
+  idleTimeoutMillis: 600000,
+  keepAlive: true,
   connectionTimeoutMillis: 10000,
 });
 

@@ -444,8 +444,20 @@ async function boot() {
   // own session lookup + access check, so collapsing ~11 calls into one is
   // the difference between "loads in one round-trip" and "crawls".
   let b = null;
+  const tFetch = performance.now();
   try {
     b = await apiGet('/api/tickets/' + encodeURIComponent(TICKET_ID) + '/bootstrap');
+    // Timing breakdown in the console: how long the page shell took to
+    // arrive vs. the bootstrap round-trip vs. pure server build time.
+    // "network" = round-trip minus server time (latency + transfer +
+    // any host cold-start queueing).
+    try {
+      const nav = performance.getEntriesByType('navigation')[0];
+      const rt = Math.round(performance.now() - tFetch);
+      console.log('[ticket-detail] page shell ' + (nav ? Math.round(nav.responseEnd) + 'ms' : '?')
+        + ' · bootstrap round-trip ' + rt + 'ms'
+        + ' (server ' + (b && b.tookMs != null ? b.tookMs : '?') + 'ms, network ' + (b && b.tookMs != null ? rt - b.tookMs : '?') + 'ms)');
+    } catch {}
   } catch (e) {
     // 401 already redirected inside api(). A 404 means no access/deleted.
     if (String(e.message || '').toLowerCase().includes('not found')) {

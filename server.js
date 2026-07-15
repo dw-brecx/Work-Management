@@ -332,6 +332,19 @@ const resetLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, key: 'route' 
 const compression = require('compression');
 app.use(compression());
 
+// Slow-request visibility: any request that takes longer than 300ms to
+// finish gets one log line with its real duration. When the app "feels
+// slow" in production, these lines in the host logs say exactly which
+// endpoint is paying and how much — no guessing.
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - t0;
+    if (ms > 300) console.log(`[slow] ${req.method} ${req.originalUrl} → ${res.statusCode} in ${ms}ms`);
+  });
+  next();
+});
+
 // Body limits bumped to 50 MB so Spaces can ship base64-encoded media
 // (voice notes, screen recordings, images) inside a single JSON POST.
 // Per-item soft cap of 25 MB is enforced client-side; 50 MB here gives
@@ -422,10 +435,13 @@ async function requireAdmin(req, res, next) {
 // here either way — recovery goes through the admin dump/restore endpoints.
 async function canAccessTicket(req, ticketId) {
   if (!req.session.userId) return false;
-  const me = await getUser(req.session.userId);
+  // Independent lookups — run together so the access gate costs one DB
+  // round-trip of latency instead of two on every ticket-scoped request.
+  const [me, exists] = await Promise.all([
+    getUser(req.session.userId),
+    get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', ticketId),
+  ]);
   if (!me) return false;
-  // Confirm the ticket exists and isn't soft-deleted.
-  const exists = await get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', ticketId);
   if (!exists) return false;
   if (me.perm_role === 'Admin') return true;
   const t = await get(
@@ -910,30 +926,43 @@ async function runReviewTicketsJob() {
 
 async function buildTicket(row) {
   if (!row) return null;
-  // Pull all assignees with both user_id and stored user_name; prefer the
-  // current user.name when user_id resolves.
-  const assigneeRows = await all(
-    `SELECT ta.user_name, u.name AS current_name
-       FROM ticket_assignees ta
-       LEFT JOIN users u ON u.id = ta.user_id
-      WHERE ta.ticket_id=?`, row.id
-  );
-  const assignees = assigneeRows.map(a => a.current_name || a.user_name);
-  const liveAssignee = await nameForUserId(row.assignee_user_id, row.assignee);
-  const liveReporter = await nameForUserId(row.reporter_user_id, row.reporter);
-  const liveReq      = await nameForUserId(row.req_user_id, row.req);
-  // Count of child tickets (only meaningful when is_project = 1, but cheap
-  // either way). Used by the projects page + the project badge on the list.
-  const childRow = await get(
-    'SELECT COUNT(*)::int AS n FROM tickets WHERE parent_ticket_id = ? AND deleted_at IS NULL',
-    row.id
-  );
   // A snooze is "active" only if snoozed_until is still in the future.
   // Past that we expose null so the client treats it as a normal ticket
   // (no auto-clear is needed at the DB level — filtering is lazy).
   const nowUtcText = new Date().toISOString().replace('T', ' ').slice(0, 19);
   const snoozeActive = row.snoozed_until && row.snoozed_until > nowUtcText;
-  const snoozedByName = snoozeActive ? await nameForUserId(row.snoozed_by, '') : null;
+  // This function used to make ~6 SEQUENTIAL queries (per-name lookups for
+  // assignee/reporter/requester/snoozer, plus assignees + child count) —
+  // and it runs once per ticket on list endpoints. On hosted Postgres with
+  // real web↔DB latency that chain dominated response times. Now: two
+  // parallel queries — one JOIN resolving every live user name at once,
+  // one for the multi-assignee list (with the child count folded in).
+  const [assigneeRows, names] = await Promise.all([
+    all(
+      `SELECT ta.user_name, u.name AS current_name
+         FROM ticket_assignees ta
+         LEFT JOIN users u ON u.id = ta.user_id
+        WHERE ta.ticket_id=?`, row.id
+    ),
+    get(
+      `SELECT a.name AS assignee_name, r.name AS reporter_name,
+              q.name AS req_name,      s.name AS snoozed_name,
+              (SELECT COUNT(*)::int FROM tickets c
+                WHERE c.parent_ticket_id = t.id AND c.deleted_at IS NULL) AS child_n
+         FROM tickets t
+         LEFT JOIN users a ON a.id = t.assignee_user_id
+         LEFT JOIN users r ON r.id = t.reporter_user_id
+         LEFT JOIN users q ON q.id = t.req_user_id
+         LEFT JOIN users s ON s.id = t.snoozed_by
+        WHERE t.id=?`, row.id
+    ),
+  ]);
+  const assignees = assigneeRows.map(a => a.current_name || a.user_name);
+  const liveAssignee = (names && names.assignee_name) || row.assignee || '';
+  const liveReporter = (names && names.reporter_name) || row.reporter || '';
+  const liveReq      = (names && names.req_name)      || row.req || '';
+  const childRow = { n: (names && names.child_n) || 0 };
+  const snoozedByName = snoozeActive ? ((names && names.snoozed_name) || '') : null;
   return {
     ...row,
     tags: JSON.parse(row.tags_json || '[]'),
@@ -1548,14 +1577,14 @@ app.get('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
 // overhead once.
 app.get('/api/tickets/:id/bootstrap', requireAuth, requireTicketAccess, async (req, res) => {
   try {
+    const t0 = Date.now();
     const tid = req.params.id;
     const uid = req.session.userId;
-    const row = await get('SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL', tid);
+    const [row, prevView] = await Promise.all([
+      get('SELECT * FROM tickets WHERE id=? AND deleted_at IS NULL', tid),
+      get('SELECT last_viewed_at FROM ticket_views WHERE user_id=? AND ticket_id=?', uid, tid),
+    ]);
     if (!row) return res.status(404).json({ error: 'Not found' });
-
-    const prevView = await get(
-      'SELECT last_viewed_at FROM ticket_views WHERE user_id=? AND ticket_id=?', uid, tid
-    );
     // Stamp the view (fire-and-forget — same upsert as POST /mark-viewed).
     run(
       `INSERT INTO ticket_views (user_id, ticket_id, last_viewed_at)
@@ -1628,7 +1657,12 @@ app.get('/api/tickets/:id/bootstrap', requireAuth, requireTicketAccess, async (r
       departments: departments.map(d => d.name),
       myReminders: remRows.map(r => _serializeReminder(r, remAtts.get(r.id) || [])),
       previousViewedAt: prevView ? prevView.last_viewed_at : null,
+      // Server-side time spent building this response, so client logs (and
+      // Render logs, via the slow-request middleware) can separate "server
+      // was slow" from "network / cold start was slow".
+      tookMs: Date.now() - t0,
     });
+    console.log(`[bootstrap] ${tid} built in ${Date.now() - t0}ms`);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3649,7 +3683,14 @@ async function buildSubtask(r) {
 // Shared by GET /subtasks and GET /bootstrap. Includes the one-time
 // migration that lifts legacy checklist_json items into real subtask rows.
 async function fetchTicketSubtasks(ticketId) {
-  let rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', ticketId);
+  // JOIN the live assignee name in one pass — buildSubtask's per-row user
+  // lookup multiplied round-trips by subtask count.
+  const selectAll = () => all(
+    `SELECT s.*, u.name AS assignee_name_now
+       FROM ticket_subtasks s
+       LEFT JOIN users u ON u.id = s.assignee_user_id
+      WHERE s.ticket_id=? ORDER BY s.position ASC, s.id ASC`, ticketId);
+  let rows = await selectAll();
   if (!rows.length) {
     const det = await get('SELECT checklist_json FROM ticket_details WHERE ticket_id=?', ticketId);
     let legacy = [];
@@ -3668,10 +3709,17 @@ async function fetchTicketSubtasks(ticketId) {
       }
       // Clear the legacy field so this only runs once
       await run('UPDATE ticket_details SET checklist_json=? WHERE ticket_id=?', '[]', ticketId);
-      rows = await all('SELECT * FROM ticket_subtasks WHERE ticket_id=? ORDER BY position ASC, id ASC', ticketId);
+      rows = await selectAll();
     }
   }
-  return Promise.all(rows.map(buildSubtask));
+  return rows.map(r => ({
+    id: r.id, ticketId: r.ticket_id, position: r.position,
+    text: r.text || '', description: r.description || '',
+    done: !!r.done,
+    assignee: r.assignee_name_now || r.assignee || '',
+    due: r.due || '', priority: r.priority || '',
+    createdAt: r.created_at,
+  }));
 }
 
 app.get('/api/tickets/:id/subtasks', requireAuth, requireTicketAccess, async (req, res) => {
