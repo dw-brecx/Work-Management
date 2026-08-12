@@ -435,10 +435,18 @@ async function requireAdmin(req, res, next) {
 // here either way — recovery goes through the admin dump/restore endpoints.
 async function canAccessTicket(req, ticketId) {
   if (!req.session.userId) return false;
+  return userCanAccessTicket(req.session.userId, ticketId);
+}
+
+// Same rule keyed by a bare user id, so callers authenticated by something
+// other than a session cookie (the /api/v1 API-key routes) share one access
+// gate with the interactive app instead of growing their own copy.
+async function userCanAccessTicket(userId, ticketId) {
+  if (!userId) return false;
   // Independent lookups — run together so the access gate costs one DB
   // round-trip of latency instead of two on every ticket-scoped request.
   const [me, exists] = await Promise.all([
-    getUser(req.session.userId),
+    getUser(userId),
     get('SELECT id FROM tickets WHERE id=? AND deleted_at IS NULL', ticketId),
   ]);
   if (!me) return false;
@@ -9223,6 +9231,16 @@ require('./routes/flavors')(app, {
 // cycles. Lives in routes/flavor-reviews.js and is served on
 // /flavor-reviews.html (standalone page outside the SPA shell).
 require('./routes/flavor-reviews')(app, { get, all, run, requireAuth, pool, createTicket, ensureReviewTicketsForCycle });
+
+// ── API Keys + external read API ──────────────────────────────────────────
+// Personal API keys (managed on /api-keys.html) that let other apps pull
+// ticket data via GET /api/v1/tickets[/:id] with a Bearer token. Lives in
+// routes/api-keys.js; a key inherits its owner's ticket visibility via the
+// same userCanAccessTicket gate the interactive routes use.
+require('./routes/api-keys')(app, {
+  get, all, run, requireAuth, getUser, userCanAccessTicket,
+  buildTicket, fetchTicketComments, fetchTicketSubtasks, formatUSDateTime,
+});
 
 // Unauthenticated standalone HTML for the public share viewer (rendered at
 // /p/:token). Lives outside the SPA shell so it works without a session.

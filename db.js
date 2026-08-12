@@ -650,6 +650,22 @@ async function init() {
       created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
     )`,
     `CREATE INDEX IF NOT EXISTS idx_external_apps_position ON external_apps (position)`,
+    // Personal API keys for the external read API (/api/v1/*). Only a
+    // SHA-256 hash of the key is stored — the plaintext (wm_live_…) is
+    // shown exactly once at creation. A key acts as its owner: external
+    // callers see the same tickets the owning user can see. Revocation is
+    // a soft delete (revoked_at) so the row keeps its audit trail.
+    `CREATE TABLE IF NOT EXISTS api_keys (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      key_prefix TEXT NOT NULL,
+      key_hash TEXT UNIQUE NOT NULL,
+      created_at TEXT DEFAULT TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'),
+      last_used_at TEXT,
+      revoked_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys (user_id)`,
     // Recurring-project templates: named bundles of tasks the admin can
     // spawn into a real project + child tickets in one click. Same idea
     // as flavor_tasks but with multiple named templates instead of one
