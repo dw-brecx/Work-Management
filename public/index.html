@@ -6518,6 +6518,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover,input[type=time]::-web
             <div class="settings-tab" data-stab="notifications" onclick="switchSettingsTab('notifications')">
               <span class="stab-icon">🔔</span> Notifications
             </div>
+            <!-- Visible to EVERY role (no admin-only class): personal API keys
+                 + usage docs live on the standalone /api-keys.html page. -->
+            <div class="settings-tab" onclick="window.location.href='/api-keys.html'">
+              <span class="stab-icon">🔑</span> API Access
+            </div>
             <div class="settings-divider"></div>
             <div class="settings-section-label">Workspace</div>
             <div class="settings-tab admin-only" data-stab="users" onclick="switchSettingsTab('users')" id="users-settings-tab">
