@@ -168,6 +168,7 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,input:focus-visibl
 .chip.wt .live.pulse{animation:wtPulse 1.5s ease-in-out infinite}
 @keyframes wtPulse{0%,100%{opacity:1}50%{opacity:.35}}
 .chip.mail{background:var(--note-bg);color:var(--note-fg);border-color:var(--note-bd);cursor:pointer}
+.chip.src{background:#e0f2fe;color:#075985;border-color:#bae6fd}
 .chip.snz{background:var(--chip-sn-bg);color:var(--chip-sn-fg);border-color:var(--chip-sn-bd)}
 .chip.reop{background:var(--flavor-bg);color:var(--flavor-fg)}
 .chip.closed{background:var(--chip-cl-bg);color:var(--chip-cl-fg);max-width:340px}
@@ -278,6 +279,7 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,input:focus-visibl
 .cmt-name{font-size:12px;font-weight:750}
 .cmt-time{font-size:10px;color:var(--text3)}
 .replyto{font-size:10px;color:var(--text3)}
+.via-chip{font-size:9.5px;font-weight:600;color:#075985;background:#e0f2fe;border:1px solid #bae6fd;border-radius:8px;padding:1px 6px;white-space:nowrap}
 .cmt-body{font-size:12.5px;color:var(--text2);line-height:1.6;max-width:76ch;word-wrap:break-word;overflow-wrap:break-word}
 .cmt-body code{background:var(--bg3);border-radius:4px;padding:0 5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:90%}
 .cmt-body a{color:var(--accent2)}

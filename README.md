@@ -247,6 +247,45 @@ def get_ticket(ticket_id):
 
 ---
 
+## External write API — `/api/external/tickets` (Inventory Hub)
+
+A separate server-to-server API so another backend (Inventory Hub at
+inventory.brecx.com) can **open, read, reply to, re-assign, close, and
+delete** tickets. Unlike the personal read-only `/api/v1` keys above, this
+surface uses **one static key** from the `TICKETS_API_KEY` env var, sent on
+every request as a header (never as a query parameter):
+
+```
+x-tickets-api-key: <key>
+```
+
+Wrong or missing key → `401 { "ok": false, "error": "…" }`. All errors use
+`{ ok: false, error }` with 400/401/404 codes. Dates are ISO-8601 UTC.
+Statuses use a stable 3-value vocabulary (`open` / `pending` / `closed`;
+the app's finer statuses are collapsed, with the raw value in
+`statusDetail`), priorities `low|normal|high|urgent`.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/external/tickets` | Create. Body: `subject`, `body`, `requesterEmail` (required); `requesterName`, `assigneeEmail`, `priority`, `category`, `source`, `externalRef` optional. `externalRef` is an idempotency key — a repeat create with the same value returns the existing ticket (200) instead of a duplicate. |
+| `GET /api/external/tickets` | List. Query: `status` (`open`\|`pending`\|`closed`\|`all`, default `open`), `assigneeEmail`, `requesterEmail`, `source`, `updatedSince` (ISO — cheap polling), `page`/`limit` (default 50). |
+| `GET /api/external/tickets/:id` | One ticket + full `messages[]` thread, oldest first. |
+| `POST /api/external/tickets/:id/messages` | Reply. Body: `body` (required), `authorEmail`, `authorName`. A matching user posts as themselves (badged "via Inventory Hub"); otherwise the reply posts as the external app. |
+| `PATCH /api/external/tickets/:id` | Update `status` and/or `assigneeEmail` (the new assignee is notified like any assignment). |
+| `DELETE /api/external/tickets/:id` | Remove the ticket (same soft delete the UI uses; an Admin can restore). Close instead when possible. |
+
+Tickets/replies created here fire the **same notifications** as UI actions
+(in-app bell, email, web push, Slack DM), and are visibly tagged
+"Inventory Hub" in the UI.
+
+**Outbound webhook** (optional): set `TICKETS_WEBHOOK_URL` (+
+`TICKETS_WEBHOOK_SECRET`). Any new message or status change on an
+externally-sourced ticket — including ones made in the UI — POSTs
+`{ event, ticketId, ticket }` with header `x-tickets-webhook-secret`.
+Events: `message.created`, `ticket.status_changed`. Unset = silently off.
+
+---
+
 ## Development
 
 ```bash

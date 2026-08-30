@@ -57,6 +57,8 @@ const STATUS_OPTIONS = [
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const escAttr = esc;
+// Friendly label for an external ticket/comment source (tickets.source).
+const sourceLabel = (s) => ({ 'inventory-hub': 'Inventory Hub' }[s] || s || '');
 
 async function api(method, path, body) {
   const opts = { method, credentials: 'same-origin', headers: {} };
@@ -596,6 +598,9 @@ function renderHeader() {
   }
   if (T.sourceEmailUrl) {
     chips.push(`<a class="chip mail" href="${escAttr(T.sourceEmailUrl)}" target="_blank" rel="noopener" title="Open the original email in Gmail">✉ Open email</a>`);
+  }
+  if (T.source) {
+    chips.push(`<span class="chip src" title="This ticket was opened from ${escAttr(sourceLabel(T.source))}">📦 ${esc(sourceLabel(T.source))}</span>`);
   }
   if (T.snoozedUntil) {
     chips.push(`<span class="chip snz" title="Snoozed by ${escAttr(T.snoozedByName || 'someone')}">💤 Snoozed until ${esc(fmtLocal(T.snoozedUntil))}${T.snoozedByName ? ' · by ' + esc(T.snoozedByName) : ''}</span>`);
@@ -1641,6 +1646,7 @@ function renderOneComment(c, depth, parent, childrenOf) {
       <div class="bubble ${mine ? 'mine' : ''}">
         <div class="cmt-head">
           <span class="cmt-name">${esc(c.author)}</span>
+          ${c.source ? `<span class="via-chip" title="Posted through ${escAttr(sourceLabel(c.source))}">via ${esc(sourceLabel(c.source))}</span>` : ''}
           <span class="cmt-time">${esc(c.createdAt ? fmtTimeOnly(c.createdAt) : (c.time || ''))}</span>
           ${replyTo}
         </div>
