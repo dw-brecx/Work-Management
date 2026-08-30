@@ -985,6 +985,11 @@ async function buildTicket(row) {
     childCount: parseInt(childRow?.n || 0, 10),
     closeReason: row.close_reason || '',
     sourceEmailUrl: row.source_email_url || null,
+    // Provenance for externally-created tickets (e.g. 'inventory-hub') —
+    // drives the source chip on the ticket detail page.
+    source: row.source || null,
+    externalRef: row.external_ref || null,
+    requesterEmail: row.requester_email || null,
     snoozedUntil: snoozeActive ? row.snoozed_until : null,
     snoozedBy:    snoozeActive ? row.snoozed_by    : null,
     snoozedByName,
@@ -2015,6 +2020,9 @@ app.put('/api/tickets/:id', requireAuth, requireTicketAccess, async (req, res) =
       const _oldStatus = oldStatus;
       const _newStatus = status;
       const _oldClosedFlag = exists.closed_email_sent;
+      // Push the status change to Inventory Hub when this ticket came from
+      // an external app (no-op otherwise, or when the webhook is unset).
+      req.app.locals.fireTicketsWebhook?.('ticket.status_changed', req.params.id);
       setImmediate(() => { (async () => {
         try {
           const updated  = await get('SELECT * FROM tickets WHERE id=?', req.params.id);
@@ -2680,6 +2688,9 @@ async function fetchTicketComments(ticketId) {
     author: r.author_name_now || r.author,
     init: r.author_init, bg: r.author_bg, col: r.author_col,
     text: r.text,
+    // Provenance for comments posted through the external API — drives
+    // the "via Inventory Hub" badge next to the author name.
+    source: r.source || null,
     attachments: attsByComment.get(r.id) || [],
     // Raw UTC stamp — client formats this in the user's local time.
     // `time` retained as a server-formatted fallback for any legacy caller.
@@ -2760,6 +2771,9 @@ app.post('/api/tickets/:id/comments', requireAuth, requireTicketAccess, async (r
       req.params.id, u.name, u.id, init, bg, col, commentText, safeParentId);
     await run('UPDATE tickets SET comments_count=comments_count+1 WHERE id=?', req.params.id);
     writeTimeline(req.params.id, TL.comment, `${u.name} commented${safeParentId ? ' (reply)' : ''}`);
+    // Push the new message to Inventory Hub when this ticket came from an
+    // external app (no-op for in-app tickets or when the webhook is unset).
+    req.app.locals.fireTicketsWebhook?.('message.created', req.params.id);
 
     // ── All comment fan-out (mentions, reply, watchers) runs in the
     //    background so the POST returns immediately. Sequential awaits
@@ -9240,6 +9254,20 @@ require('./routes/flavor-reviews')(app, { get, all, run, requireAuth, pool, crea
 require('./routes/api-keys')(app, {
   get, all, run, requireAuth, getUser, userCanAccessTicket,
   buildTicket, fetchTicketComments, fetchTicketSubtasks, formatUSDateTime,
+});
+
+// ── External ticket API (Inventory Hub) ───────────────────────────────────
+// Server-to-server write API on /api/external/tickets, authenticated with
+// the static TICKETS_API_KEY env var. Creates/reads/replies/updates tickets
+// with the same notification fan-out as the interactive routes, and exposes
+// app.locals.fireTicketsWebhook so in-app comments and status changes on
+// externally-sourced tickets push a webhook back to Inventory Hub.
+require('./routes/external-tickets')(app, {
+  get, all, run, writeTimeline, TL,
+  sendPushToUser, slackDmUser, fireEmail,
+  sendTicketAssignedEmail, sendNewCommentEmail,
+  sendTicketStatusChangedEmail, sendTicketClosedEmail,
+  appUrl: process.env.APP_URL || `http://localhost:${PORT}`,
 });
 
 // Unauthenticated standalone HTML for the public share viewer (rendered at

@@ -1504,6 +1504,21 @@ async function init() {
   await safeAlter('ALTER TABLE personal_reminders ADD COLUMN source_email_id TEXT DEFAULT NULL');
   await safeAlter('ALTER TABLE personal_reminders ADD COLUMN source_email_url TEXT DEFAULT NULL');
 
+  // External server-to-server ticket API (routes/external-tickets.js).
+  // tickets.source marks where a ticket came from (e.g. 'inventory-hub');
+  // NULL means created in-app. external_ref is the caller's idempotency
+  // key — the partial unique index makes duplicate-event creates race-safe.
+  // requester_email keeps the raw requester address even when it doesn't
+  // match a workspace user. Comments get the same provenance pair so
+  // API-posted replies can carry a "via Inventory Hub" badge and an
+  // author email for non-user authors.
+  await safeAlter('ALTER TABLE tickets ADD COLUMN source TEXT DEFAULT NULL');
+  await safeAlter('ALTER TABLE tickets ADD COLUMN external_ref TEXT DEFAULT NULL');
+  await safeAlter('ALTER TABLE tickets ADD COLUMN requester_email TEXT DEFAULT NULL');
+  await run('CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_external_ref ON tickets (external_ref) WHERE external_ref IS NOT NULL');
+  await safeAlter('ALTER TABLE ticket_comments ADD COLUMN source TEXT DEFAULT NULL');
+  await safeAlter('ALTER TABLE ticket_comments ADD COLUMN author_email TEXT DEFAULT NULL');
+
   // Consolidate roles to the canonical three: Admin / Manager / Member.
   // Old installs may have Owner / User / Viewer values; map them onto the
   // new set so every user falls into one of the three buckets.
